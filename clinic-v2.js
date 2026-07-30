@@ -1,3 +1,47 @@
+        // --- DOM builders -------------------------------------------------
+        // All dynamic markup is built through these instead of HTML strings, so
+        // patient data is only ever assigned via textContent / value / dataset
+        // and can never be parsed as markup.
+
+        function el(tag, props, children) {
+            const node = document.createElement(tag);
+            if (props) {
+                for (const [key, value] of Object.entries(props)) {
+                    if (value === undefined || value === null || value === false) continue;
+                    if (key === 'text') node.textContent = value;
+                    else if (key === 'class') node.className = value;
+                    else if (key === 'style') node.style.cssText = value;
+                    else if (key === 'dataset') Object.assign(node.dataset, value);
+                    else if (key === 'value') node.value = value;
+                    else if (key === 'checked' || key === 'disabled' || key === 'selected') node[key] = !!value;
+                    else if (key === 'on') {
+                        for (const [evt, handler] of Object.entries(value)) node.addEventListener(evt, handler);
+                    } else node.setAttribute(key, value);
+                }
+            }
+            appendChildren(node, children);
+            return node;
+        }
+
+        function appendChildren(node, children) {
+            if (children === undefined || children === null || children === false) return;
+            if (Array.isArray(children)) {
+                children.forEach(child => appendChildren(node, child));
+                return;
+            }
+            node.append(children instanceof Node ? children : document.createTextNode(String(children)));
+        }
+
+        function frag(children) {
+            const f = document.createDocumentFragment();
+            appendChildren(f, children);
+            return f;
+        }
+
+        function option(value, label, selected) {
+            return el('option', { value, text: label, selected: !!selected });
+        }
+
         function getCookie(name) {
             const escaped = name.replace(/[.$?*|{}()[\]\\/+^]/g, '\\$&');
             const match = document.cookie.match(new RegExp('(?:^|; )' + escaped + '=([^;]*)'));
@@ -81,17 +125,21 @@
             },
 
             showMigrationBanner(count) {
-                const bar = document.createElement('div');
-                bar.id = 'legacyMigrationBanner';
-                bar.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--warning-soft, #fff3cd);color:var(--text-primary);border-bottom:1px solid var(--warning, #f0ad4e);padding:10px 16px;display:flex;gap:12px;align-items:center;justify-content:center;font-size:13px;';
-                bar.innerHTML = `
-                    <span>В этом браузере найдены данные пациентов из старой версии (${count} шт.). Перенести их на сервер?</span>
-                    <button type="button" class="filter-btn" id="legacyMigrationConfirm">Перенести</button>
-                    <button type="button" class="filter-btn" id="legacyMigrationDismiss">Не сейчас</button>
-                `;
+                const bar = el('div', {
+                    id: 'legacyMigrationBanner',
+                    style: 'position:fixed;top:0;left:0;right:0;z-index:9999;background:var(--warning-soft, #fff3cd);color:var(--text-primary);border-bottom:1px solid var(--warning, #f0ad4e);padding:10px 16px;display:flex;gap:12px;align-items:center;justify-content:center;font-size:13px;',
+                }, [
+                    el('span', { text: `В этом браузере найдены данные пациентов из старой версии (${count} шт.). Перенести их на сервер?` }),
+                    el('button', {
+                        type: 'button', class: 'filter-btn', id: 'legacyMigrationConfirm', text: 'Перенести',
+                        on: { click: () => this.runLegacyMigration(bar) },
+                    }),
+                    el('button', {
+                        type: 'button', class: 'filter-btn', id: 'legacyMigrationDismiss', text: 'Не сейчас',
+                        on: { click: () => bar.remove() },
+                    }),
+                ]);
                 document.body.prepend(bar);
-                document.getElementById('legacyMigrationDismiss').addEventListener('click', () => bar.remove());
-                document.getElementById('legacyMigrationConfirm').addEventListener('click', () => this.runLegacyMigration(bar));
             },
 
             async runLegacyMigration(bannerEl) {
@@ -995,11 +1043,13 @@
                 return 1.0;
             },
 
-            renderNosologyOptions(selected) {
-                const opts = Object.keys(this.nosologyData).map(key =>
-                    `<option value="${key}" ${selected === key ? 'selected' : ''}>${this.nosologyData[key].label}</option>`
-                ).join('');
-                return `<option value="">-- Не указана --</option>${opts}`;
+            nosologyOptionNodes(selected) {
+                return [
+                    option('', '-- Не указана --', !selected),
+                    ...Object.keys(this.nosologyData).map(key =>
+                        option(key, this.nosologyData[key].label, selected === key)
+                    ),
+                ];
             },
 
             stageNames: {
@@ -1227,7 +1277,7 @@
 
             resetDiagnosisSelect() {
                 const diagnosisSelect = document.getElementById('diagnosis');
-                diagnosisSelect.innerHTML = '<option value="">-- Сначала выберите локализацию --</option>';
+                diagnosisSelect.replaceChildren(option('', '-- Сначала выберите локализацию --'));
                 diagnosisSelect.disabled = true;
             },
 
@@ -1240,8 +1290,10 @@
                 }
                 const loc = this.icd10Localizations[locId];
                 diagnosisSelect.disabled = false;
-                diagnosisSelect.innerHTML = '<option value="">-- Выберите диагноз --</option>' +
-                    loc.diagnoses.map(d => `<option value="${d.code}">${d.code} - ${d.label}</option>`).join('');
+                diagnosisSelect.replaceChildren(frag([
+                    option('', '-- Выберите диагноз --'),
+                    ...loc.diagnoses.map(d => option(d.code, `${d.code} - ${d.label}`)),
+                ]));
             },
 
             async addPatient(e) {
@@ -1376,26 +1428,6 @@
                 }
             },
 
-            escapeHtml(str) {
-                if (str === null || str === undefined) return '';
-                const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
-                return String(str).replace(/[&<>"']/g, c => map[c]);
-            },
-
-            // For values embedded inside an inline event-handler attribute as a
-            // single-quoted JS string literal, e.g. onclick="app.f('${x}')".
-            // Escapes for the JS string context first, then HTML-escapes the
-            // result so the browser's attribute parsing can't be broken out of
-            // (single escapeHtml alone would leave the JS-string quoting rules
-            // unhandled; single JS-escaping alone would leave the HTML
-            // attribute-breakout rules unhandled).
-            escapeJsAttr(str) {
-                const jsEscaped = String(str === null || str === undefined ? '' : str)
-                    .replace(/\\/g, '\\\\')
-                    .replace(/'/g, "\\'");
-                return this.escapeHtml(jsEscaped);
-            },
-
             formatElapsed(ms) {
                 if (ms < 60000) return 'только что';
                 const units = [
@@ -1468,16 +1500,21 @@
 
             renderExportHeadsFilter() {
                 const heads = [...new Set(this.patients.map(p => p.head).filter(Boolean))].sort();
-                const html = `
-                    <button type="button" class="filter-btn ${!this.exportHeadFilter ? 'active' : ''}" onclick="app.filterExportByHead('all')">Все</button>
-                    ${heads.map(h => {
-                        const isActive = this.exportHeadFilter === h;
-                        const safeHead = this.escapeJsAttr(h);
-                        const count = this.patients.filter(p => p.head === h).length;
-                        return `<button type="button" class="filter-btn ${isActive ? 'active' : ''}" onclick="app.filterExportByHead('${safeHead}')">${this.escapeHtml(h.split(' ')[0])} (${count})</button>`;
-                    }).join('')}
-                `;
-                document.getElementById('exportHeadsFilter').innerHTML = html;
+                document.getElementById('exportHeadsFilter').replaceChildren(frag([
+                    el('button', {
+                        type: 'button',
+                        class: `filter-btn ${!this.exportHeadFilter ? 'active' : ''}`,
+                        text: 'Все',
+                        on: { click: () => this.filterExportByHead('all') },
+                    }),
+                    ...heads.map(h => el('button', {
+                        type: 'button',
+                        class: `filter-btn ${this.exportHeadFilter === h ? 'active' : ''}`,
+                        title: h,
+                        text: `${h.split(' ')[0]} (${this.patients.filter(p => p.head === h).length})`,
+                        on: { click: () => this.filterExportByHead(h) },
+                    })),
+                ]));
             },
 
             filterExportByHead(head) {
@@ -1493,21 +1530,28 @@
                     (p.name.toLowerCase().includes(q) || (p.head || '').toLowerCase().includes(q)) &&
                     (!this.exportHeadFilter || p.head === this.exportHeadFilter)
                 );
-                const html = filtered.map(p => {
-                    const checked = this.exportSelectedIds.has(p.id);
-                    return `
-                        <label style="display:flex; align-items:center; gap:10px; padding:8px; border-radius:6px; cursor:pointer;">
-                            <input type="checkbox" ${checked ? 'checked' : ''} onchange="app.toggleExportSelection('${p.id}', this.checked)">
-                            <div style="flex:1; min-width:0;">
-                                <div style="font-weight:600; font-size:13px; color:var(--text-primary);">${this.escapeHtml(p.name)}</div>
-                                <div style="font-size:11px; color:var(--text-secondary);">${this.getCurrentStageLabel(p)}${p.head ? ' · ' + this.escapeHtml(p.head) : ''}</div>
-                            </div>
-                        </label>
-                    `;
-                }).join('') || '<div class="no-selection" style="padding:20px;">Никого не найдено</div>';
+                const rows = filtered.map(p => el('label', {
+                    style: 'display:flex; align-items:center; gap:10px; padding:8px; border-radius:6px; cursor:pointer;',
+                }, [
+                    el('input', {
+                        type: 'checkbox',
+                        checked: this.exportSelectedIds.has(p.id),
+                        on: { change: (event) => this.toggleExportSelection(p.id, event.target.checked) },
+                    }),
+                    el('div', { style: 'flex:1; min-width:0;' }, [
+                        el('div', { style: 'font-weight:600; font-size:13px; color:var(--text-primary);', text: p.name }),
+                        el('div', {
+                            style: 'font-size:11px; color:var(--text-secondary);',
+                            text: this.getCurrentStageLabel(p) + (p.head ? ' · ' + p.head : ''),
+                        }),
+                    ]),
+                ]));
+
                 const listEl = document.getElementById('exportPatientList');
-                listEl.innerHTML = html;
-                listEl.dataset.filteredIds = JSON.stringify(filtered.map(p => p.id));
+                listEl.replaceChildren(rows.length
+                    ? frag(rows)
+                    : el('div', { class: 'no-selection', style: 'padding:20px;', text: 'Никого не найдено' }));
+                this.exportFilteredIds = filtered.map(p => p.id);
                 this.updateExportCount();
             },
 
@@ -1519,15 +1563,13 @@
 
             exportSelectAll() {
                 if (!this.exportSelectedIds) this.exportSelectedIds = new Set();
-                const ids = JSON.parse(document.getElementById('exportPatientList').dataset.filteredIds || '[]');
-                ids.forEach(id => this.exportSelectedIds.add(id));
+                (this.exportFilteredIds || []).forEach(id => this.exportSelectedIds.add(id));
                 this.renderExportPatientList(document.getElementById('exportSearchInput').value);
             },
 
             exportSelectNone() {
                 if (!this.exportSelectedIds) this.exportSelectedIds = new Set();
-                const ids = JSON.parse(document.getElementById('exportPatientList').dataset.filteredIds || '[]');
-                ids.forEach(id => this.exportSelectedIds.delete(id));
+                (this.exportFilteredIds || []).forEach(id => this.exportSelectedIds.delete(id));
                 this.renderExportPatientList(document.getElementById('exportSearchInput').value);
             },
 
@@ -1646,7 +1688,10 @@
                 const category = this.getDateIndicatorCategory(days);
                 const text = this.getDateIndicatorText(days, timeStr);
                 const dotClass = category === 'urgent' ? 'date-indicator-dot pulse' : 'date-indicator-dot';
-                return `<span class="date-indicator date-indicator-${category}"><span class="${dotClass}"></span>${text}${extraLabel}</span>`;
+                return el('span', { class: `date-indicator date-indicator-${category}` }, [
+                    el('span', { class: dotClass }),
+                    text + extraLabel,
+                ]);
             },
 
             getDateIndicatorText(days, timeStr = null) {
@@ -1659,35 +1704,55 @@
                 return `${days} дн.${time}`;
             },
 
+            // One funnel segment: count + label + click handler bound by closure.
+            segButton({ classes, grow, title, count, label, onClick }) {
+                return el('button', {
+                    type: 'button',
+                    class: `seg ${classes}`.trim(),
+                    style: grow === undefined ? undefined : `flex-grow:${grow};`,
+                    title,
+                    on: { click: onClick },
+                }, [
+                    el('span', { class: 'n', text: String(count) }),
+                    el('span', { class: 'l', text: label }),
+                ]);
+            },
+
             updateStats() {
                 document.getElementById('totalStat').textContent = this.patients.length;
 
                 const priorityLabels = { urgent: 'Срочно', high: 'Высокий', normal: 'Обычный' };
-                const priorityBarHtml = Object.keys(priorityLabels).map(key => {
-                    const count = this.patients.filter(p => p.priority === key).length;
-                    const isActive = this.priorityFilter === key;
-                    return `
-                        <button type="button" class="seg ${key} ${isActive ? 'active' : ''}" style="flex-grow:${count + 1};"
-                            onclick="app.filterByPriority(app.priorityFilter==='${key}' ? 'all' : '${key}')" title="Приоритет: ${priorityLabels[key]}">
-                            <span class="n">${count}</span><span class="l">${priorityLabels[key]}</span>
-                        </button>`;
-                }).join('');
-                document.getElementById('priorityBar').innerHTML = priorityBarHtml;
+                document.getElementById('priorityBar').replaceChildren(frag(
+                    Object.keys(priorityLabels).map(key => {
+                        const count = this.patients.filter(p => p.priority === key).length;
+                        return this.segButton({
+                            classes: `${key} ${this.priorityFilter === key ? 'active' : ''}`,
+                            grow: count + 1,
+                            title: `Приоритет: ${priorityLabels[key]}`,
+                            count,
+                            label: priorityLabels[key],
+                            onClick: () => this.filterByPriority(this.priorityFilter === key ? 'all' : key),
+                        });
+                    })
+                ));
 
                 const stageShortLabels = {
                     'primary-appointment': 'Приём', exam: 'Обслед.', appointment: 'Запись', consult: 'ОК',
                     'treatment-prep': 'Направл.', treatment: 'Лечение', completed: 'Готово'
                 };
-                const stageFunnelHtml = this.stageOrder.map(stage => {
-                    const count = this.patients.filter(p => p.stage === stage).length;
-                    const isActive = this.stageFilter === stage;
-                    return `
-                        <button type="button" class="seg ${isActive ? 'active' : ''}" style="flex-grow:${count + 1};"
-                            onclick="app.filterByStage(app.stageFilter==='${stage}' ? 'all' : '${stage}')" title="${this.stageNames[stage]}">
-                            <span class="n">${count}</span><span class="l">${stageShortLabels[stage]}</span>
-                        </button>`;
-                }).join('');
-                document.getElementById('stageFunnel').innerHTML = stageFunnelHtml;
+                document.getElementById('stageFunnel').replaceChildren(frag(
+                    this.stageOrder.map(stage => {
+                        const count = this.patients.filter(p => p.stage === stage).length;
+                        return this.segButton({
+                            classes: this.stageFilter === stage ? 'active' : '',
+                            grow: count + 1,
+                            title: this.stageNames[stage],
+                            count,
+                            label: stageShortLabels[stage],
+                            onClick: () => this.filterByStage(this.stageFilter === stage ? 'all' : stage),
+                        });
+                    })
+                ));
 
                 const deadlineBuckets = [
                     { key: 'overdue', label: 'Просрочено', tint: 'deadline-urgent', test: d => d !== null && d < 0 },
@@ -1697,16 +1762,19 @@
                     { key: 'no-date', label: 'Дата не установлена', tint: 'deadline-nodate', test: d => d === null }
                 ];
                 const deadlineDays = this.patients.map(p => this.getPatientDeadlineDays(p));
-                const deadlineFunnelHtml = deadlineBuckets.map(bucket => {
-                    const count = deadlineDays.filter(bucket.test).length;
-                    const isActive = this.deadlineFilter === bucket.key;
-                    return `
-                        <button type="button" class="seg ${bucket.tint} ${isActive ? 'active' : ''}" style="flex-grow:${count + 1};"
-                            onclick="app.filterByDeadline(app.deadlineFilter==='${bucket.key}' ? 'all' : '${bucket.key}')" title="${bucket.label}">
-                            <span class="n">${count}</span><span class="l">${bucket.label}</span>
-                        </button>`;
-                }).join('');
-                document.getElementById('deadlineFunnel').innerHTML = deadlineFunnelHtml;
+                document.getElementById('deadlineFunnel').replaceChildren(frag(
+                    deadlineBuckets.map(bucket => {
+                        const count = deadlineDays.filter(bucket.test).length;
+                        return this.segButton({
+                            classes: `${bucket.tint} ${this.deadlineFilter === bucket.key ? 'active' : ''}`,
+                            grow: count + 1,
+                            title: bucket.label,
+                            count,
+                            label: bucket.label,
+                            onClick: () => this.filterByDeadline(this.deadlineFilter === bucket.key ? 'all' : bucket.key),
+                        });
+                    })
+                ));
 
                 document.getElementById('priorityResetBtn').classList.toggle('active', !this.priorityFilter);
                 document.getElementById('stageResetBtn').classList.toggle('active', !this.stageFilter);
@@ -1715,34 +1783,35 @@
 
             renderHeads() {
                 const heads = [...new Set(this.patients.map(p => p.head).filter(Boolean))].sort();
-                const headsFunnelHtml = heads.map(h => {
-                    const isActive = this.selectedHead === h;
-                    const safeHead = this.escapeJsAttr(h);
-                    const count = this.patients.filter(p => p.head === h).length;
-                    return `
-                        <button type="button" class="seg ${isActive ? 'active' : ''}"
-                            onclick="app.filterByHead(app.selectedHead==='${safeHead}' ? 'all' : '${safeHead}')" title="${this.escapeHtml(h)}">
-                            <span class="n">${count}</span><span class="l">${this.escapeHtml(h.split(' ')[0])}</span>
-                        </button>`;
-                }).join('');
-                document.getElementById('headsFunnel').innerHTML = headsFunnelHtml;
+                document.getElementById('headsFunnel').replaceChildren(frag(
+                    heads.map(h => this.segButton({
+                        classes: this.selectedHead === h ? 'active' : '',
+                        title: h,
+                        count: this.patients.filter(p => p.head === h).length,
+                        label: h.split(' ')[0],
+                        onClick: () => this.filterByHead(this.selectedHead === h ? 'all' : h),
+                    }))
+                ));
                 document.getElementById('headsResetBtn').classList.toggle('active', !this.selectedHead);
             },
 
             renderPatients() {
+                const listEl = document.getElementById('patientsList');
                 const filtered = this.getFiltered();
                 if (filtered.length === 0) {
-                    document.getElementById('patientsList').innerHTML = '<div class="no-selection">Нет пациентов по выбранным критериям</div>';
+                    listEl.replaceChildren(el('div', { class: 'no-selection', text: 'Нет пациентов по выбранным критериям' }));
                     return;
                 }
 
-                const html = filtered.map(p => {
+                const treatmentTypeNames = { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия' };
+
+                listEl.replaceChildren(frag(filtered.map(p => {
                     const addedElapsed = this.formatElapsed(Date.now() - new Date(p.arrival).getTime());
                     const updatedAt = p.updatedAt || p.arrival;
                     const wasUpdated = updatedAt !== p.arrival;
                     const updatedElapsed = wasUpdated ? this.formatElapsed(Date.now() - new Date(updatedAt).getTime()) : null;
 
-                    let dateIndicator = '';
+                    let dateIndicator = null;
                     const occ = this.getCurrentOccurrence(p);
                     const lastEvent = (occ && occ.events && occ.events.length) ? occ.events[occ.events.length - 1] : null;
                     const schedulableStages = ['exam', 'appointment', 'consult', 'treatment', 'treatment-prep'];
@@ -1755,37 +1824,62 @@
                         dateIndicator = this.renderDateIndicator(null);
                     }
 
-                    const treatmentTypeNames = { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия' };
-                    const treatmentBadge = ((p.stage === 'treatment' || p.stage === 'treatment-prep') && lastEvent && lastEvent.treatmentType) ? `<span class="treatment-indicator priority-tint-${p.priority}">${treatmentTypeNames[lastEvent.treatmentType]}</span>` : '';
+                    const treatmentBadge = ((p.stage === 'treatment' || p.stage === 'treatment-prep') && lastEvent && lastEvent.treatmentType)
+                        ? el('span', { class: `treatment-indicator priority-tint-${p.priority}`, text: treatmentTypeNames[lastEvent.treatmentType] })
+                        : null;
 
                     const isExpanded = this.expandedPatients && this.expandedPatients.has(p.id);
 
-                    return `
-                        <div class="patient-card priority-${p.priority} ${isExpanded ? 'selected' : ''}" onclick="app.toggleTimeline('${p.id}')">
-                            <div class="patient-name-row">
-                                <div class="patient-name-group">
-                                    <span class="patient-name-big">${this.escapeHtml(p.name)}</span>
-                                    <span class="patient-age-inline">${p.age} лет</span>
-                                </div>
-                                <div class="patient-name-meta">
-                                    <div class="patient-time-block">
-                                        <span class="patient-time-added" title="Добавлен">Добавлено: <b class="num">${addedElapsed}</b></span>
-                                        ${wasUpdated ? `<span class="patient-time-updated" title="Изменён">Обновлено: <b class="num">${updatedElapsed}</b></span>` : ''}
-                                    </div>
-                                    <button onclick="event.stopPropagation(); app.toggleTimeline('${p.id}')" style="background:none; border:none; cursor:pointer; font-size:16px; color:var(--text-secondary); padding:0 4px; transition: transform 0.2s; transform: rotate(${isExpanded ? '180' : '0'}deg);" title="Информация о пациенте" aria-label="${isExpanded ? 'Свернуть' : 'Развернуть'} карточку пациента" aria-expanded="${isExpanded ? 'true' : 'false'}">▼</button>
-                                </div>
-                            </div>
-                            <div class="patient-info-row">
-                                <span class="badge priority-tint-${p.priority}">${this.getCurrentStageLabel(p)}</span>
-                                <span class="meta-chip">${this.escapeHtml(p.diagnosis)}</span>
-                            </div>
-                            ${(treatmentBadge || dateIndicator) ? `<div class="patient-status-row">${dateIndicator}${treatmentBadge}</div>` : ''}
-                        </div>
-                        ${isExpanded ? `<div class="timeline-panel" onclick="event.stopPropagation()">${this.renderPatientDetails(p)}</div>` : ''}
-                    `;
-                }).join('');
+                    const card = el('div', {
+                        class: `patient-card priority-${p.priority} ${isExpanded ? 'selected' : ''}`,
+                        on: { click: () => this.toggleTimeline(p.id) },
+                    }, [
+                        el('div', { class: 'patient-name-row' }, [
+                            el('div', { class: 'patient-name-group' }, [
+                                el('span', { class: 'patient-name-big', text: p.name }),
+                                el('span', { class: 'patient-age-inline', text: `${p.age} лет` }),
+                            ]),
+                            el('div', { class: 'patient-name-meta' }, [
+                                el('div', { class: 'patient-time-block' }, [
+                                    el('span', { class: 'patient-time-added', title: 'Добавлен' }, [
+                                        'Добавлено: ', el('b', { class: 'num', text: addedElapsed }),
+                                    ]),
+                                    wasUpdated && el('span', { class: 'patient-time-updated', title: 'Изменён' }, [
+                                        'Обновлено: ', el('b', { class: 'num', text: updatedElapsed }),
+                                    ]),
+                                ]),
+                                el('button', {
+                                    type: 'button',
+                                    style: `background:none; border:none; cursor:pointer; font-size:16px; color:var(--text-secondary); padding:0 4px; transition: transform 0.2s; transform: rotate(${isExpanded ? '180' : '0'}deg);`,
+                                    title: 'Информация о пациенте',
+                                    'aria-label': `${isExpanded ? 'Свернуть' : 'Развернуть'} карточку пациента`,
+                                    'aria-expanded': isExpanded ? 'true' : 'false',
+                                    text: '▼',
+                                    on: {
+                                        click: (event) => {
+                                            event.stopPropagation();
+                                            this.toggleTimeline(p.id);
+                                        },
+                                    },
+                                }),
+                            ]),
+                        ]),
+                        el('div', { class: 'patient-info-row' }, [
+                            el('span', { class: `badge priority-tint-${p.priority}`, text: this.getCurrentStageLabel(p) }),
+                            el('span', { class: 'meta-chip', text: p.diagnosis }),
+                        ]),
+                        (treatmentBadge || dateIndicator) && el('div', { class: 'patient-status-row' }, [dateIndicator, treatmentBadge]),
+                    ]);
 
-                document.getElementById('patientsList').innerHTML = html;
+                    const panel = isExpanded
+                        ? el('div', {
+                            class: 'timeline-panel',
+                            on: { click: (event) => event.stopPropagation() },
+                        }, this.renderPatientDetails(p))
+                        : null;
+
+                    return frag([card, panel]);
+                })));
             },
 
             async changeStage(id, newStage) {
@@ -1920,30 +2014,51 @@
                 this.changeStage(patientId, stage);
             },
 
+            planFieldInput(p, templateIndex, field, type, value) {
+                return el('input', {
+                    class: 'form-input', type, value: value || '',
+                    on: { change: (event) => this.updateFuturePlan(p.id, templateIndex, field, event.target.value) },
+                });
+            },
+
             renderFuturePlanEditor(p, templateIndex) {
                 const stageKey = this.stageOrder[templateIndex];
                 const label = this.stageNames[stageKey];
                 if (!p.futurePlans) p.futurePlans = {};
                 const plan = p.futurePlans[templateIndex] || { date: '', time: '', treatmentType: '' };
                 const showType = (stageKey === 'treatment' || stageKey === 'treatment-prep');
-                return `
-                    <div class="section-label">Предварительное планирование: ${label}</div>
-                    <div style="border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-bottom:15px; background:var(--surface-alt);">
-                        <div style="font-size:11px; color:var(--text-secondary); margin-bottom:8px;">Этап ещё не наступил — здесь можно заранее отметить ожидаемую дату (необязательно, для планирования).</div>
-                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-                            <input class="form-input" type="date" value="${this.escapeHtml(plan.date || '')}" onchange="app.updateFuturePlan('${p.id}', ${templateIndex}, 'date', this.value)">
-                            <input class="form-input" type="time" value="${this.escapeHtml(plan.time || '')}" onchange="app.updateFuturePlan('${p.id}', ${templateIndex}, 'time', this.value)">
-                        </div>
-                        ${showType ? `
-                        <select class="form-select" style="margin-top:8px; margin-bottom:0;" onchange="app.updateFuturePlan('${p.id}', ${templateIndex}, 'treatmentType', this.value)">
-                            <option value="">-- Тип лечения (предварительно) --</option>
-                            <option value="surgery" ${plan.treatmentType === 'surgery' ? 'selected' : ''}>Хирургическое лечение</option>
-                            <option value="radiation" ${plan.treatmentType === 'radiation' ? 'selected' : ''}>Лучевая терапия</option>
-                            <option value="chemo" ${plan.treatmentType === 'chemo' ? 'selected' : ''}>Химиотерапия</option>
-                        </select>` : ''}
-                        <button type="button" class="btn" style="background:var(--surface-alt); color:var(--text-primary); margin-top:10px; margin-bottom:0;" onclick="app.advanceToStage('${p.id}', '${stageKey}', '${this.escapeJsAttr(label)}')">Перевести пациента сюда сейчас</button>
-                    </div>
-                `;
+
+                return frag([
+                    el('div', { class: 'section-label', text: `Предварительное планирование: ${label}` }),
+                    el('div', {
+                        style: 'border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-bottom:15px; background:var(--surface-alt);',
+                    }, [
+                        el('div', {
+                            style: 'font-size:11px; color:var(--text-secondary); margin-bottom:8px;',
+                            text: 'Этап ещё не наступил — здесь можно заранее отметить ожидаемую дату (необязательно, для планирования).',
+                        }),
+                        el('div', { style: 'display:grid; grid-template-columns:1fr 1fr; gap:8px;' }, [
+                            this.planFieldInput(p, templateIndex, 'date', 'date', plan.date),
+                            this.planFieldInput(p, templateIndex, 'time', 'time', plan.time),
+                        ]),
+                        showType && el('select', {
+                            class: 'form-select',
+                            style: 'margin-top:8px; margin-bottom:0;',
+                            on: { change: (event) => this.updateFuturePlan(p.id, templateIndex, 'treatmentType', event.target.value) },
+                        }, [
+                            option('', '-- Тип лечения (предварительно) --', !plan.treatmentType),
+                            option('surgery', 'Хирургическое лечение', plan.treatmentType === 'surgery'),
+                            option('radiation', 'Лучевая терапия', plan.treatmentType === 'radiation'),
+                            option('chemo', 'Химиотерапия', plan.treatmentType === 'chemo'),
+                        ]),
+                        el('button', {
+                            type: 'button', class: 'btn',
+                            style: 'background:var(--surface-alt); color:var(--text-primary); margin-top:10px; margin-bottom:0;',
+                            text: 'Перевести пациента сюда сейчас',
+                            on: { click: () => this.advanceToStage(p.id, stageKey, label) },
+                        }),
+                    ]),
+                ]);
             },
 
             async updateFuturePlan(patientId, templateIndex, field, value) {
@@ -1977,33 +2092,49 @@
             },
 
             renderChecklist(p, occIndex, requiredItems, optionalItems) {
-                if ((!requiredItems || !requiredItems.length) && (!optionalItems || !optionalItems.length)) return '';
+                if ((!requiredItems || !requiredItems.length) && (!optionalItems || !optionalItems.length)) return null;
                 const occ = p.history[occIndex];
                 if (!occ.checklist) occ.checklist = {};
                 const checklist = occ.checklist;
 
+                // The item name is captured in the closure rather than written into
+                // a data-* attribute, so it never has to survive a string round-trip.
                 const renderItem = (item, isRequired) => {
                     const checked = !!checklist[item];
-                    return `
-                        <label style="display:flex; align-items:flex-start; gap:8px; padding:6px 0; font-size:12px; color:var(--text-body); cursor:pointer;">
-                            <input type="checkbox" ${checked ? 'checked' : ''} style="margin-top:2px;" onchange="app.updateChecklistItem('${p.id}', ${occIndex}, '${this.escapeJsAttr(item)}', this.checked)">
-                            <span style="${checked ? 'text-decoration:line-through; color:var(--text-tertiary);' : ''}">${item}${isRequired ? ' <span style="color:var(--danger);">*</span>' : ''}</span>
-                        </label>
-                    `;
+                    return el('label', {
+                        style: 'display:flex; align-items:flex-start; gap:8px; padding:6px 0; font-size:12px; color:var(--text-body); cursor:pointer;',
+                    }, [
+                        el('input', {
+                            type: 'checkbox', checked, style: 'margin-top:2px;',
+                            on: { change: (event) => this.updateChecklistItem(p.id, occIndex, item, event.target.checked) },
+                        }),
+                        el('span', {
+                            style: checked ? 'text-decoration:line-through; color:var(--text-tertiary);' : undefined,
+                        }, [
+                            item,
+                            isRequired && el('span', { style: 'color:var(--danger);', text: ' *' }),
+                        ]),
+                    ]);
                 };
 
                 const requiredCount = (requiredItems || []).length;
                 const requiredChecked = (requiredItems || []).filter(i => checklist[i]).length;
 
-                return `
-                    <div class="section-label">Чек-лист исследований (${this.nosologyData[p.nosology].label})</div>
-                    ${requiredCount ? `<div style="font-size:11px; color:var(--text-secondary); margin-bottom:8px;">Обязательные выполнены: ${requiredChecked} из ${requiredCount}</div>` : ''}
-                    <div style="border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; margin-bottom:15px;">
-                        ${(requiredItems || []).map(i => renderItem(i, true)).join('')}
-                        ${(optionalItems && optionalItems.length) ? `<div style="font-size:10px; color:var(--text-tertiary); margin:8px 0 4px; text-transform:uppercase; letter-spacing:0.3px;">Опционально / по показаниям</div>` : ''}
-                        ${(optionalItems || []).map(i => renderItem(i, false)).join('')}
-                    </div>
-                `;
+                return frag([
+                    el('div', { class: 'section-label', text: `Чек-лист исследований (${this.nosologyData[p.nosology].label})` }),
+                    requiredCount ? el('div', {
+                        style: 'font-size:11px; color:var(--text-secondary); margin-bottom:8px;',
+                        text: `Обязательные выполнены: ${requiredChecked} из ${requiredCount}`,
+                    }) : null,
+                    el('div', { style: 'border:1px solid var(--border-color); border-radius:8px; padding:10px 12px; margin-bottom:15px;' }, [
+                        (requiredItems || []).map(i => renderItem(i, true)),
+                        (optionalItems && optionalItems.length) ? el('div', {
+                            style: 'font-size:10px; color:var(--text-tertiary); margin:8px 0 4px; text-transform:uppercase; letter-spacing:0.3px;',
+                            text: 'Опционально / по показаниям',
+                        }) : null,
+                        (optionalItems || []).map(i => renderItem(i, false)),
+                    ]),
+                ]);
             },
 
             renderTimeline(p) {
@@ -2011,7 +2142,8 @@
                 const remaining = nodes.filter(n => n.status === 'future').length;
                 const selectedKey = this.selectedTimelineNodes ? this.selectedTimelineNodes[p.id] : null;
 
-                const stepParts = nodes.map((node, idx) => {
+                const stepNodes = [];
+                nodes.forEach((node, idx) => {
                     const color = node.status === 'done' ? '#4caf50' : node.status === 'current' ? 'var(--accent)' : (node.isNext ? '#f6c00c' : 'var(--border-color)');
                     const icon = node.status === 'done' ? '✓' : String(idx + 1);
                     const textColor = node.status === 'future' ? (node.isNext ? '#92650b' : 'var(--text-tertiary)') : (node.status === 'current' ? 'var(--text-primary)' : 'var(--text-secondary)');
@@ -2021,34 +2153,61 @@
                     const nodeKey = node.status === 'future' ? `future:${node.templateIndex}` : `occ:${node.occIndex}`;
                     const isSelected = selectedKey === nodeKey;
                     const stageLabel = this.stageNames[node.stage];
-                    const onClickAction = isNext
-                        ? `app.advanceToStage('${p.id}', '${node.stage}', '${this.escapeJsAttr(stageLabel)}')`
-                        : `app.selectTimelineNode('${p.id}', '${nodeKey}')`;
+                    const activate = isNext
+                        ? () => this.advanceToStage(p.id, node.stage, stageLabel)
+                        : () => this.selectTimelineNode(p.id, nodeKey);
                     const title = isNext ? 'Нажмите, чтобы перевести пациента на этот этап' : 'Нажмите, чтобы указать даты';
 
-                    let deadlineHint = '';
+                    let deadlineHint = null;
                     if (p.nosology && (node.stage === 'appointment' || node.stage === 'consult')) {
                         const dl = this.getStageDeadline(p, node.stage);
                         if (dl) {
-                            deadlineHint = `<div style="font-size:9px; color:${node.status === 'done' ? 'var(--text-tertiary)' : '#c2760a'}; margin-top:2px;">до ${this.formatDeadlineDate(dl)}</div>`;
+                            deadlineHint = el('div', {
+                                style: `font-size:9px; color:${node.status === 'done' ? 'var(--text-tertiary)' : '#c2760a'}; margin-top:2px;`,
+                                text: `до ${this.formatDeadlineDate(dl)}`,
+                            });
                         }
                     }
 
-                    const nodeHtml = `
-                        <div style="flex: 1; min-width: 85px; text-align: center; cursor: pointer;" onclick="${onClickAction}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();${onClickAction}}" title="${title}" role="button" tabindex="0" aria-label="${title}: ${stageLabel}">
-                            <div style="width: 38px; height: 38px; border-radius: 50%; background: ${color}; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; margin: 0 auto 8px; box-shadow: 0 3px 8px var(--shadow-color); ${isSelected ? 'box-shadow: 0 0 0 3px var(--accent-ring), 0 3px 8px var(--shadow-color);' : ''} ${isNext ? 'box-shadow: 0 0 0 4px rgba(246,192,12,0.5), 0 3px 8px var(--shadow-color); animation: pulse-next 1.8s infinite;' : ''}">${icon}</div>
-                            <div style="font-size: 11px; font-weight: ${node.status === 'current' || isNext ? '700' : '500'}; color: ${textColor};">${label}</div>
-                            ${isNext ? '<div style="font-size:9px; color:var(--warning); font-weight:600;">нажмите →</div>' : ''}
-                            ${deadlineHint}
-                        </div>
-                    `;
-                    if (idx === nodes.length - 1) return nodeHtml;
-                    const connectorColor = node.status === 'done' ? '#4caf50' : 'var(--border-color)';
-                    return nodeHtml + `<div style="flex: 0 0 20px; height: 3px; border-radius: 2px; background: ${connectorColor}; margin-top: 19px;"></div>`;
-                });
-                const steps = stepParts.join('');
+                    const circleStyle = 'width: 38px; height: 38px; border-radius: 50%; background: ' + color +
+                        '; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; margin: 0 auto 8px; box-shadow: 0 3px 8px var(--shadow-color);' +
+                        (isSelected ? ' box-shadow: 0 0 0 3px var(--accent-ring), 0 3px 8px var(--shadow-color);' : '') +
+                        (isNext ? ' box-shadow: 0 0 0 4px rgba(246,192,12,0.5), 0 3px 8px var(--shadow-color); animation: pulse-next 1.8s infinite;' : '');
 
-                let nodeEditor = '';
+                    stepNodes.push(el('div', {
+                        style: 'flex: 1; min-width: 85px; text-align: center; cursor: pointer;',
+                        title,
+                        role: 'button',
+                        tabindex: '0',
+                        'aria-label': `${title}: ${stageLabel}`,
+                        on: {
+                            click: activate,
+                            keydown: (event) => {
+                                if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    activate();
+                                }
+                            },
+                        },
+                    }, [
+                        el('div', { style: circleStyle, text: icon }),
+                        el('div', {
+                            style: `font-size: 11px; font-weight: ${node.status === 'current' || isNext ? '700' : '500'}; color: ${textColor};`,
+                            text: label,
+                        }),
+                        isNext && el('div', { style: 'font-size:9px; color:var(--warning); font-weight:600;', text: 'нажмите →' }),
+                        deadlineHint,
+                    ]));
+
+                    if (idx !== nodes.length - 1) {
+                        const connectorColor = node.status === 'done' ? '#4caf50' : 'var(--border-color)';
+                        stepNodes.push(el('div', {
+                            style: `flex: 0 0 20px; height: 3px; border-radius: 2px; background: ${connectorColor}; margin-top: 19px;`,
+                        }));
+                    }
+                });
+
+                let nodeEditor = null;
                 if (selectedKey) {
                     if (selectedKey.startsWith('occ:')) {
                         nodeEditor = this.renderStageEventsPanel(p, parseInt(selectedKey.split(':')[1]));
@@ -2057,163 +2216,194 @@
                     }
                 }
 
-                const detailLog = this.renderHistoryLog(p);
-                const summary = this.escapeHtml(this.generateSummary(p)).replace(/\n/g, '<br>');
+                return frag([
+                    el('div', { style: 'display: flex; align-items: flex-start; overflow-x: auto; padding: 5px 5px 10px;' }, stepNodes),
+                    el('div', { style: 'text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 15px;' },
+                        remaining > 0 ? ['Осталось этапов: ', el('strong', { text: String(remaining) })] : 'Лечение завершено'),
+                    nodeEditor || el('div', {
+                        style: 'text-align:center; font-size:11px; color:var(--text-tertiary); margin-bottom:15px;',
+                        text: 'Нажмите на этап выше, чтобы указать/изменить даты',
+                    }),
+                    el('div', { class: 'section-label', text: 'Подробная хронология' }),
+                    this.renderHistoryLog(p),
+                    el('div', { class: 'section-label', text: 'Саммари для отчётности' }),
+                    el('div', {
+                        style: 'background: var(--surface-alt); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-size: 12px; line-height: 1.6; color: var(--text-body); white-space: pre-wrap;',
+                        text: this.generateSummary(p),
+                    }),
+                    el('button', {
+                        type: 'button', class: 'btn btn-primary', style: 'margin-top: 10px;', text: 'Скопировать саммари',
+                        on: { click: () => this.copySummary(p.id) },
+                    }),
+                ]);
+            },
 
-                return `
-                    <div style="display: flex; align-items: flex-start; overflow-x: auto; padding: 5px 5px 10px;">${steps}</div>
-                    <div style="text-align: center; font-size: 12px; color: var(--text-secondary); margin-bottom: 15px;">
-                        ${remaining > 0 ? `Осталось этапов: <strong>${remaining}</strong>` : 'Лечение завершено'}
-                    </div>
-                    ${nodeEditor || '<div style="text-align:center; font-size:11px; color:var(--text-tertiary); margin-bottom:15px;">Нажмите на этап выше, чтобы указать/изменить даты</div>'}
-                    <div class="section-label">Подробная хронология</div>
-                    ${detailLog}
-                    <div class="section-label">Саммари для отчётности</div>
-                    <div style="background: var(--surface-alt); border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; font-size: 12px; line-height: 1.6; color: var(--text-body);">${summary}</div>
-                    <button class="btn btn-primary" style="margin-top: 10px;" onclick="app.copySummary('${p.id}')">Скопировать саммари</button>
-                `;
+            HEAD_OPTIONS: [
+                'Шашолин Михаил Аркадьевич',
+                'Глашева Зарина Муссаевна',
+                'Иванюк Мария Алексеевна',
+                'Крылова Виктория Сергеевна',
+                'Салпагаров Магомет Хасанович',
+                'Мехтиев Вадим Николаевич',
+                'Крамская Людмила Викторовна',
+                'Хацаюк Владимир Викторович',
+            ],
+
+            // Labelled form row whose control writes one patient field back to the API.
+            patientFieldRow(p, label, field, control) {
+                return el('div', { class: 'form-group' }, [
+                    el('label', { class: 'form-label', text: label }),
+                    control,
+                ]);
+            },
+
+            patientFieldInput(p, field, type, value, transform) {
+                return el('input', {
+                    class: 'form-input',
+                    type,
+                    value: value === null || value === undefined ? '' : value,
+                    on: {
+                        change: (event) => this.updatePatientField(
+                            p.id, field, transform ? transform(event.target.value) : event.target.value
+                        ),
+                    },
+                });
+            },
+
+            patientFieldSelect(p, field, optionNodes, afterChange) {
+                return el('select', {
+                    class: 'form-select',
+                    on: {
+                        change: async (event) => {
+                            await this.updatePatientField(p.id, field, event.target.value);
+                            if (afterChange) afterChange();
+                        },
+                    },
+                }, optionNodes);
             },
 
             renderPatientDetails(p) {
                 const dataExpanded = this.expandedPatientData && this.expandedPatientData.has(p.id);
 
-                const dataPanel = dataExpanded ? `
-                    <div class="patient-data-panel">
-                        <div class="section-label">Личные данные</div>
+                const dataPanel = dataExpanded ? el('div', { class: 'patient-data-panel' }, [
+                    el('div', { class: 'section-label', text: 'Личные данные' }),
+                    this.patientFieldRow(p, 'ФИО', 'name', this.patientFieldInput(p, 'name', 'text', p.name)),
+                    this.patientFieldRow(p, 'Возраст', 'age',
+                        this.patientFieldInput(p, 'age', 'number', p.age, v => parseInt(v, 10) || 0)),
+                    this.patientFieldRow(p, 'Телефон', 'phone', this.patientFieldInput(p, 'phone', 'tel', p.phone)),
 
-                        <div class="form-group">
-                            <label class="form-label">ФИО</label>
-                            <input class="form-input" type="text" value="${this.escapeHtml(p.name)}" onchange="app.updatePatientField('${p.id}', 'name', this.value)">
-                        </div>
+                    el('div', { class: 'section-label', text: 'Медицинская информация' }),
+                    this.patientFieldRow(p, 'Диагноз', 'diagnosis', this.patientFieldInput(p, 'diagnosis', 'text', p.diagnosis)),
+                    this.patientFieldRow(p, 'Нозология (для сроков и чек-листа)', 'nosology',
+                        this.patientFieldSelect(p, 'nosology', this.nosologyOptionNodes(p.nosology))),
+                    this.patientFieldRow(p, 'Стадия заболевания', 'diseaseStage',
+                        this.patientFieldSelect(p, 'diseaseStage', [
+                            option('', '-- Не указана --', !p.diseaseStage),
+                            ...['I', 'II', 'III', 'IV'].map(s => option(s, s, p.diseaseStage === s)),
+                        ])),
 
-                        <div class="form-group">
-                            <label class="form-label">Возраст</label>
-                            <input class="form-input" type="number" value="${p.age}" onchange="app.updatePatientField('${p.id}', 'age', parseInt(this.value) || 0)">
-                        </div>
+                    el('div', { class: 'section-label', text: 'Классификация' }),
+                    this.patientFieldRow(p, 'Приоритет', 'priority',
+                        this.patientFieldSelect(p, 'priority', [
+                            option('urgent', 'Срочно', p.priority === 'urgent'),
+                            option('high', 'Высокий', p.priority === 'high'),
+                            option('normal', 'Обычный', p.priority === 'normal'),
+                        ])),
+                    this.patientFieldRow(p, 'Лечащий врач', 'doctor', this.patientFieldInput(p, 'doctor', 'text', p.doctor)),
+                    this.patientFieldRow(p, 'ФИО Заведующего', 'head',
+                        this.patientFieldSelect(p, 'head',
+                            this.HEAD_OPTIONS.map(h => option(h, h, p.head === h)),
+                            () => this.renderHeads())),
 
-                        <div class="form-group">
-                            <label class="form-label">Телефон</label>
-                            <input class="form-input" type="tel" value="${this.escapeHtml(p.phone)}" onchange="app.updatePatientField('${p.id}', 'phone', this.value)">
-                        </div>
+                    this.patientFieldRow(p, 'Жалобы и симптомы', 'complaint',
+                        el('textarea', {
+                            class: 'form-textarea',
+                            value: p.complaint || '',
+                            on: { change: (event) => this.updatePatientField(p.id, 'complaint', event.target.value) },
+                        })),
 
-                        <div class="section-label">Медицинская информация</div>
+                    el('button', {
+                        type: 'button', class: 'btn btn-danger', text: 'Удалить пациента',
+                        on: { click: () => this.deletePatient(p.id) },
+                    }),
+                ]) : null;
 
-                        <div class="form-group">
-                            <label class="form-label">Диагноз</label>
-                            <input class="form-input" type="text" value="${this.escapeHtml(p.diagnosis)}" onchange="app.updatePatientField('${p.id}', 'diagnosis', this.value)">
-                        </div>
+                return frag([
+                    el('div', {
+                        style: 'background: var(--accent); padding: 12px; border-radius: 8px; color: var(--accent-contrast); margin-bottom: 15px; font-size: 13px;',
+                    }, el('strong', { text: this.getCurrentStageLabel(p) })),
 
-                        <div class="form-group">
-                            <label class="form-label">Нозология (для сроков и чек-листа)</label>
-                            <select class="form-select" onchange="app.updatePatientField('${p.id}', 'nosology', this.value)">
-                                ${this.renderNosologyOptions(p.nosology)}
-                            </select>
-                        </div>
+                    el('button', {
+                        type: 'button', class: 'btn patient-data-toggle',
+                        on: { click: () => this.togglePatientData(p.id) },
+                    }, [
+                        'Просмотр и редактирование данных пациента ',
+                        el('span', {
+                            style: `transition: transform 0.2s; display:inline-block; transform: rotate(${dataExpanded ? '180' : '0'}deg);`,
+                            text: '▼',
+                        }),
+                    ]),
+                    dataPanel,
 
-                        <div class="form-group">
-                            <label class="form-label">Стадия заболевания</label>
-                            <select class="form-select" onchange="app.updatePatientField('${p.id}', 'diseaseStage', this.value)">
-                                <option value="" ${!p.diseaseStage ? 'selected' : ''}>-- Не указана --</option>
-                                <option value="I" ${p.diseaseStage === 'I' ? 'selected' : ''}>I</option>
-                                <option value="II" ${p.diseaseStage === 'II' ? 'selected' : ''}>II</option>
-                                <option value="III" ${p.diseaseStage === 'III' ? 'selected' : ''}>III</option>
-                                <option value="IV" ${p.diseaseStage === 'IV' ? 'selected' : ''}>IV</option>
-                            </select>
-                        </div>
-
-                        <div class="section-label">Классификация</div>
-
-                        <div class="form-group">
-                            <label class="form-label">Приоритет</label>
-                            <select class="form-select" onchange="app.updatePatientField('${p.id}', 'priority', this.value)">
-                                <option value="urgent" ${p.priority==='urgent'?'selected':''}>Срочно</option>
-                                <option value="high" ${p.priority==='high'?'selected':''}>Высокий</option>
-                                <option value="normal" ${p.priority==='normal'?'selected':''}>Обычный</option>
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label">Лечащий врач</label>
-                            <input class="form-input" type="text" value="${this.escapeHtml(p.doctor)}" onchange="app.updatePatientField('${p.id}', 'doctor', this.value)">
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label">ФИО Заведующего</label>
-                            <select class="form-select" onchange="app.updatePatientField('${p.id}', 'head', this.value); app.renderHeads();">
-                                <option value="Шашолин Михаил Аркадьевич" ${p.head==='Шашолин Михаил Аркадьевич'?'selected':''}>Шашолин Михаил Аркадьевич</option>
-                                <option value="Глашева Зарина Муссаевна" ${p.head==='Глашева Зарина Муссаевна'?'selected':''}>Глашева Зарина Муссаевна</option>
-                                <option value="Иванюк Мария Алексеевна" ${p.head==='Иванюк Мария Алексеевна'?'selected':''}>Иванюк Мария Алексеевна</option>
-                                <option value="Крылова Виктория Сергеевна" ${p.head==='Крылова Виктория Сергеевна'?'selected':''}>Крылова Виктория Сергеевна</option>
-                                <option value="Салпагаров Магомет Хасанович" ${p.head==='Салпагаров Магомет Хасанович'?'selected':''}>Салпагаров Магомет Хасанович</option>
-                                <option value="Мехтиев Вадим Николаевич" ${p.head==='Мехтиев Вадим Николаевич'?'selected':''}>Мехтиев Вадим Николаевич</option>
-                                <option value="Крамская Людмила Викторовна" ${p.head==='Крамская Людмила Викторовна'?'selected':''}>Крамская Людмила Викторовна</option>
-                                <option value="Хацаюк Владимир Викторович" ${p.head==='Хацаюк Владимир Викторович'?'selected':''}>Хацаюк Владимир Викторович</option>
-                            </select>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label">Жалобы и симптомы</label>
-                            <textarea class="form-textarea" onchange="app.updatePatientField('${p.id}', 'complaint', this.value)">${this.escapeHtml(p.complaint)}</textarea>
-                        </div>
-
-                        <button class="btn btn-danger" onclick="app.deletePatient('${p.id}')">Удалить пациента</button>
-                    </div>
-                ` : '';
-
-                return `
-                    <div style="background: var(--accent); padding: 12px; border-radius: 8px; color: var(--accent-contrast); margin-bottom: 15px; font-size: 13px;">
-                        <strong>${this.getCurrentStageLabel(p)}</strong>
-                    </div>
-
-                    <button type="button" class="btn patient-data-toggle" onclick="app.togglePatientData('${p.id}')">
-                        Просмотр и редактирование данных пациента <span style="transition: transform 0.2s; display:inline-block; transform: rotate(${dataExpanded ? '180' : '0'}deg);">▼</span>
-                    </button>
-                    ${dataPanel}
-
-                    <div class="section-label">Таймлайн — текущий этап: <strong>${this.getCurrentStageLabel(p)}</strong></div>
-                    <div style="font-size:11px; color:var(--text-secondary); margin-bottom:8px;">Нажмите на подсвеченный следующий этап, чтобы перевести пациента дальше. Остальные этапы — для планирования или редактирования дат.</div>
-                    ${this.renderTimeline(p)}
-                `;
+                    el('div', { class: 'section-label' }, [
+                        'Таймлайн — текущий этап: ',
+                        el('strong', { text: this.getCurrentStageLabel(p) }),
+                    ]),
+                    el('div', {
+                        style: 'font-size:11px; color:var(--text-secondary); margin-bottom:8px;',
+                        text: 'Нажмите на подсвеченный следующий этап, чтобы перевести пациента дальше. Остальные этапы — для планирования или редактирования дат.',
+                    }),
+                    this.renderTimeline(p),
+                ]);
             },
 
             renderHistoryLog(p) {
-                if (!p.history || !p.history.length) return '<div class="no-selection" style="padding:10px;">Нет данных</div>';
+                if (!p.history || !p.history.length) {
+                    return el('div', { class: 'no-selection', style: 'padding:10px;', text: 'Нет данных' });
+                }
                 const treatmentTypeNames = { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия' };
+                const badgeStyle = (fill) => `background:var(${fill});color:#fff;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;`;
 
-                return p.history.map((occ, i) => {
+                return frag(p.history.map((occ, i) => {
                     const isCurrentOcc = i === p.history.length - 1;
                     const enteredFormatted = new Date(occ.enteredAt).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
                     const events = occ.events || [];
 
-                    const eventsHtml = events.map((ev, idx) => {
+                    const eventRows = events.map((ev, idx) => {
                         const isLastEvent = idx === events.length - 1;
                         const isPendingEvent = isCurrentOcc && isLastEvent && !ev.actualDate;
-                        let badge = '';
+                        let badge = null;
                         if (!isPendingEvent) {
                             const deviated = ev.actualDate && !ev.matchedPlan;
                             badge = deviated
-                                ? `<span style="background:var(--warning-fill);color:#fff;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;">✓ состоялось (с отклонением)</span>`
-                                : `<span style="background:var(--good-fill);color:#fff;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:600;">✓ состоялось по плану</span>`;
+                                ? el('span', { style: badgeStyle('--warning-fill'), text: '✓ состоялось (с отклонением)' })
+                                : el('span', { style: badgeStyle('--good-fill'), text: '✓ состоялось по плану' });
                         } else if (ev.date) {
-                            const days = this.getDaysUntil(ev.date);
-                            badge = this.renderDateIndicator(days, ev.time);
+                            badge = this.renderDateIndicator(this.getDaysUntil(ev.date), ev.time);
                         }
                         const { text: eventText } = this.formatEventText(ev, isPendingEvent, treatmentTypeNames);
                         const label = events.length > 1 ? `Событие ${idx + 1}: ` : '';
-                        return `<div style="font-size:11px; color:var(--text-body); margin:4px 0 4px 12px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                            <span>${label}${this.escapeHtml(eventText)}</span> ${badge}
-                        </div>`;
-                    }).join('');
+                        return el('div', {
+                            style: 'font-size:11px; color:var(--text-body); margin:4px 0 4px 12px; display:flex; align-items:center; gap:6px; flex-wrap:wrap;',
+                        }, [
+                            el('span', { text: label + eventText }),
+                            badge,
+                        ]);
+                    });
 
-                    return `
-                        <div style="border-left: 3px solid ${isCurrentOcc ? 'var(--accent)' : 'var(--border-color)'}; padding: 8px 0 8px 12px; margin-bottom: 8px;">
-                            <div style="font-size:12px; font-weight:700; color:var(--text-primary);">${this.getStageLabel(occ)}</div>
-                            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:4px;">Статус проставлен: ${enteredFormatted}</div>
-                            ${eventsHtml || '<div style="font-size:11px;color:var(--text-tertiary);margin-left:12px;">Плановая дата не указана</div>'}
-                            ${occ.note ? `<div style="font-size:11px; color:var(--text-body); margin-top:6px; padding:6px 8px; background:var(--warning-soft); border-radius:6px;"><strong>Заметка:</strong> ${this.escapeHtml(occ.note)}</div>` : ''}
-                        </div>
-                    `;
-                }).join('');
+                    return el('div', {
+                        style: `border-left: 3px solid ${isCurrentOcc ? 'var(--accent)' : 'var(--border-color)'}; padding: 8px 0 8px 12px; margin-bottom: 8px;`,
+                    }, [
+                        el('div', { style: 'font-size:12px; font-weight:700; color:var(--text-primary);', text: this.getStageLabel(occ) }),
+                        el('div', { style: 'font-size:10px; color:var(--text-tertiary); margin-bottom:4px;', text: `Статус проставлен: ${enteredFormatted}` }),
+                        eventRows.length ? eventRows : el('div', {
+                            style: 'font-size:11px;color:var(--text-tertiary);margin-left:12px;', text: 'Плановая дата не указана',
+                        }),
+                        occ.note && el('div', {
+                            style: 'font-size:11px; color:var(--text-body); margin-top:6px; padding:6px 8px; background:var(--warning-soft); border-radius:6px;',
+                        }, [el('strong', { text: 'Заметка:' }), ' ' + occ.note]),
+                    ]);
+                }));
             },
 
             generateSummary(p) {
@@ -2278,6 +2468,30 @@
                 });
             },
 
+            warningBox(text, tone = 'danger') {
+                const fill = tone === 'danger' ? '--danger' : '--warning';
+                return el('div', {
+                    style: `background:var(${fill}-soft);border-left:4px solid var(${fill}-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(${fill});font-weight:600;font-size:12px;`,
+                    text,
+                });
+            },
+
+            eventFieldInput(p, occIndex, eventIndex, field, type, value) {
+                return el('input', {
+                    class: 'form-input', type, value: value || '',
+                    on: { change: (event) => this.updateEvent(p.id, occIndex, eventIndex, field, event.target.value) },
+                });
+            },
+
+            occurrenceNoteTextarea(p, occIndex, note) {
+                return el('textarea', {
+                    class: 'form-textarea',
+                    placeholder: 'Свободный комментарий по этому этапу...',
+                    value: note || '',
+                    on: { change: (event) => this.updateOccurrenceNote(p.id, occIndex, event.target.value) },
+                });
+            },
+
             renderStageEventsPanel(p, occIndex) {
                 if (occIndex === undefined || occIndex === null) occIndex = p.history.length - 1;
                 const occ = p.history[occIndex];
@@ -2293,19 +2507,18 @@
                         occ.events.push({ date: null, time: null, treatmentType: null, actualDate: '', actualTime: '', matchedPlan: null, noPlan: true });
                     }
                     const ev = occ.events[0];
-                    const warn = !ev.actualDate ? `<div style="background:var(--danger-soft);border-left:4px solid var(--danger-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--danger);font-weight:600;font-size:12px;">ВАЖНО: Дата первичного приема не заполнена (обязательно)!</div>` : '';
-                    return `
-                        <div class="section-label">Первичный прием (факт, обязательно)</div>
-                        ${warn}
-                        <div style="border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-bottom:15px;">
-                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-                                <input class="form-input" type="date" value="${this.escapeHtml(ev.actualDate || '')}" onchange="app.updateEvent('${p.id}', ${occIndex}, 0, 'actualDate', this.value)">
-                                <input class="form-input" type="time" value="${this.escapeHtml(ev.actualTime || '')}" onchange="app.updateEvent('${p.id}', ${occIndex}, 0, 'actualTime', this.value)">
-                            </div>
-                        </div>
-                        <div class="section-label">Примечание к этапу</div>
-                        <textarea class="form-textarea" placeholder="Свободный комментарий по этому этапу..." onchange="app.updateOccurrenceNote('${p.id}', ${occIndex}, this.value)">${this.escapeHtml(occ.note || '')}</textarea>
-                    `;
+                    return frag([
+                        el('div', { class: 'section-label', text: 'Первичный прием (факт, обязательно)' }),
+                        !ev.actualDate && this.warningBox('ВАЖНО: Дата первичного приема не заполнена (обязательно)!'),
+                        el('div', { style: 'border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-bottom:15px;' }, [
+                            el('div', { style: 'display:grid; grid-template-columns:1fr 1fr; gap:8px;' }, [
+                                this.eventFieldInput(p, occIndex, 0, 'actualDate', 'date', ev.actualDate),
+                                this.eventFieldInput(p, occIndex, 0, 'actualTime', 'time', ev.actualTime),
+                            ]),
+                        ]),
+                        el('div', { class: 'section-label', text: 'Примечание к этапу' }),
+                        this.occurrenceNoteTextarea(p, occIndex, occ.note),
+                    ]);
                 }
 
                 const schedulableLabels = {
@@ -2315,20 +2528,20 @@
                     'treatment-prep': 'лечения',
                     treatment: 'лечения'
                 };
-                if (!schedulableLabels[stageKey]) return '';
+                if (!schedulableLabels[stageKey]) return null;
 
                 const events = occ.events || [];
                 const showType = (stageKey === 'treatment' || stageKey === 'treatment-prep');
                 const isCurrentOcc = occIndex === p.history.length - 1;
 
-                let warnings = '';
+                let warnings = null;
                 if (events.length === 0) {
-                    warnings = `<div style="background:var(--danger-soft);border-left:4px solid var(--danger-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--danger);font-weight:600;font-size:12px;">ВАЖНО: Дата ${schedulableLabels[stageKey]} не заполнена!</div>`;
+                    warnings = this.warningBox(`ВАЖНО: Дата ${schedulableLabels[stageKey]} не заполнена!`);
                 } else if (showType && !events[events.length - 1].treatmentType) {
-                    warnings = `<div style="background:var(--danger-soft);border-left:4px solid var(--danger-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--danger);font-weight:600;font-size:12px;">ВАЖНО: Тип лечения не указан!</div>`;
+                    warnings = this.warningBox('ВАЖНО: Тип лечения не указан!');
                 }
 
-                let deadlineBox = '';
+                let deadlineBox = null;
                 if (stageKey === 'appointment' || stageKey === 'consult') {
                     const deadline = this.getStageDeadline(p, stageKey);
                     if (deadline) {
@@ -2336,9 +2549,22 @@
                         const checkDate = lastEv ? (lastEv.actualDate || lastEv.date) : null;
                         const overrun = checkDate && new Date(checkDate) > deadline;
                         const deadlineLabel = stageKey === 'appointment' ? 'первого повторного приема' : 'онкологического консилиума';
+                        const nosologyLabel = this.nosologyData[p.nosology].label;
                         deadlineBox = overrun
-                            ? `<div style="background:var(--danger-soft);border-left:4px solid var(--danger-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--danger);font-weight:600;font-size:12px;">Регламентный срок нарушен! Дата ${deadlineLabel} должна быть не позднее <strong>${this.formatDeadlineDate(deadline)}</strong> (нозология: ${this.nosologyData[p.nosology].label}).</div>`
-                            : `<div style="background:var(--warning-soft);border-left:4px solid var(--warning-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--warning);font-weight:600;font-size:12px;">Регламентный срок: не позднее <strong>${this.formatDeadlineDate(deadline)}</strong> (${this.nosologyData[p.nosology].label}${p.priority !== 'normal' ? ', приоритет учтён' : ''}).</div>`;
+                            ? el('div', {
+                                style: 'background:var(--danger-soft);border-left:4px solid var(--danger-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--danger);font-weight:600;font-size:12px;',
+                            }, [
+                                `Регламентный срок нарушен! Дата ${deadlineLabel} должна быть не позднее `,
+                                el('strong', { text: this.formatDeadlineDate(deadline) }),
+                                ` (нозология: ${nosologyLabel}).`,
+                            ])
+                            : el('div', {
+                                style: 'background:var(--warning-soft);border-left:4px solid var(--warning-fill);padding:10px;border-radius:6px;margin-bottom:10px;color:var(--warning);font-weight:600;font-size:12px;',
+                            }, [
+                                'Регламентный срок: не позднее ',
+                                el('strong', { text: this.formatDeadlineDate(deadline) }),
+                                ` (${nosologyLabel}${p.priority !== 'normal' ? ', приоритет учтён' : ''}).`,
+                            ]);
                     }
                 }
 
@@ -2347,43 +2573,58 @@
                 const rows = events.map((ev, idx) => {
                     const isLast = idx === events.length - 1;
                     const isPending = isCurrentOcc && isLast && !ev.actualDate;
-                    let statusLine = '';
+                    let statusLine = null;
                     if (!isPending && ev.actualDate) {
-                        const deviated = !ev.matchedPlan;
-                        statusLine = deviated
-                            ? `<div style="font-size:11px; color:var(--warning); font-weight:600; margin-bottom:6px;">✓ Состоялось (с отклонением от плана)</div>`
-                            : `<div style="font-size:11px; color:var(--good); font-weight:600; margin-bottom:6px;">✓ Состоялось по плану</div>`;
+                        statusLine = !ev.matchedPlan
+                            ? el('div', { style: 'font-size:11px; color:var(--warning); font-weight:600; margin-bottom:6px;', text: '✓ Состоялось (с отклонением от плана)' })
+                            : el('div', { style: 'font-size:11px; color:var(--good); font-weight:600; margin-bottom:6px;', text: '✓ Состоялось по плану' });
                     } else if (isPending && ev.date) {
-                        const days = this.getDaysUntil(ev.date);
-                        statusLine = `<div style="margin-bottom:6px;">${this.renderDateIndicator(days, ev.time)}</div>`;
+                        statusLine = el('div', { style: 'margin-bottom:6px;' }, this.renderDateIndicator(this.getDaysUntil(ev.date), ev.time));
                     }
-                    return `
-                        <div style="border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-bottom:8px; background:${isPending ? '#fff' : 'var(--surface-alt)'};">
-                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-                                <span style="font-size:11px; font-weight:700; color:var(--text-secondary);">${events.length > 1 ? `Событие ${idx + 1}` : 'Дата'}</span>
-                                <button type="button" onclick="app.removeEvent('${p.id}', ${occIndex}, ${idx})" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:10px;margin:-10px;line-height:1;" aria-label="Удалить событие" title="Удалить событие">✕</button>
-                            </div>
-                            ${statusLine}
-                            <div style="font-size:10px; color:var(--text-tertiary); margin-bottom:4px;">План:</div>
-                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-                                <input class="form-input" type="date" value="${this.escapeHtml(ev.date || '')}" onchange="app.updateEvent('${p.id}', ${occIndex}, ${idx}, 'date', this.value)">
-                                <input class="form-input" type="time" value="${this.escapeHtml(ev.time || '')}" onchange="app.updateEvent('${p.id}', ${occIndex}, ${idx}, 'time', this.value)">
-                            </div>
-                            <div style="font-size:10px; color:var(--text-tertiary); margin:6px 0 4px;">Факт${stageKey === 'appointment' ? ' (заполните, когда прием состоится)' : ''}:</div>
-                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
-                                <input class="form-input" type="date" value="${this.escapeHtml(ev.actualDate || '')}" onchange="app.updateEvent('${p.id}', ${occIndex}, ${idx}, 'actualDate', this.value)">
-                                <input class="form-input" type="time" value="${this.escapeHtml(ev.actualTime || '')}" onchange="app.updateEvent('${p.id}', ${occIndex}, ${idx}, 'actualTime', this.value)">
-                            </div>
-                            ${showType ? `
-                            <select class="form-select" style="margin-top:8px; margin-bottom:0;" onchange="app.updateEvent('${p.id}', ${occIndex}, ${idx}, 'treatmentType', this.value)">
-                                <option value="">-- Тип лечения --</option>
-                                <option value="surgery" ${ev.treatmentType === 'surgery' ? 'selected' : ''}>${treatmentTypeNames.surgery}</option>
-                                <option value="radiation" ${ev.treatmentType === 'radiation' ? 'selected' : ''}>${treatmentTypeNames.radiation}</option>
-                                <option value="chemo" ${ev.treatmentType === 'chemo' ? 'selected' : ''}>${treatmentTypeNames.chemo}</option>
-                            </select>` : ''}
-                        </div>
-                    `;
-                }).join('');
+
+                    return el('div', {
+                        style: `border:1px solid var(--border-color); border-radius:8px; padding:10px; margin-bottom:8px; background:${isPending ? '#fff' : 'var(--surface-alt)'};`,
+                    }, [
+                        el('div', { style: 'display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;' }, [
+                            el('span', {
+                                style: 'font-size:11px; font-weight:700; color:var(--text-secondary);',
+                                text: events.length > 1 ? `Событие ${idx + 1}` : 'Дата',
+                            }),
+                            el('button', {
+                                type: 'button',
+                                style: 'background:none;border:none;color:var(--danger);cursor:pointer;font-size:13px;padding:10px;margin:-10px;line-height:1;',
+                                'aria-label': 'Удалить событие',
+                                title: 'Удалить событие',
+                                text: '✕',
+                                on: { click: () => this.removeEvent(p.id, occIndex, idx) },
+                            }),
+                        ]),
+                        statusLine,
+                        el('div', { style: 'font-size:10px; color:var(--text-tertiary); margin-bottom:4px;', text: 'План:' }),
+                        el('div', { style: 'display:grid; grid-template-columns:1fr 1fr; gap:8px;' }, [
+                            this.eventFieldInput(p, occIndex, idx, 'date', 'date', ev.date),
+                            this.eventFieldInput(p, occIndex, idx, 'time', 'time', ev.time),
+                        ]),
+                        el('div', {
+                            style: 'font-size:10px; color:var(--text-tertiary); margin:6px 0 4px;',
+                            text: `Факт${stageKey === 'appointment' ? ' (заполните, когда прием состоится)' : ''}:`,
+                        }),
+                        el('div', { style: 'display:grid; grid-template-columns:1fr 1fr; gap:8px;' }, [
+                            this.eventFieldInput(p, occIndex, idx, 'actualDate', 'date', ev.actualDate),
+                            this.eventFieldInput(p, occIndex, idx, 'actualTime', 'time', ev.actualTime),
+                        ]),
+                        showType && el('select', {
+                            class: 'form-select',
+                            style: 'margin-top:8px; margin-bottom:0;',
+                            on: { change: (event) => this.updateEvent(p.id, occIndex, idx, 'treatmentType', event.target.value) },
+                        }, [
+                            option('', '-- Тип лечения --', !ev.treatmentType),
+                            option('surgery', treatmentTypeNames.surgery, ev.treatmentType === 'surgery'),
+                            option('radiation', treatmentTypeNames.radiation, ev.treatmentType === 'radiation'),
+                            option('chemo', treatmentTypeNames.chemo, ev.treatmentType === 'chemo'),
+                        ]),
+                    ]);
+                });
 
                 const addLabels = {
                     exam: '+ Добавить дату обследования',
@@ -2393,26 +2634,31 @@
                     treatment: '+ Добавить дату лечения'
                 };
 
-                let checklistHtml = '';
+                let checklist = null;
                 const nosology = this.nosologyData[p.nosology];
                 if (nosology) {
                     if (stageKey === 'exam') {
-                        checklistHtml = this.renderChecklist(p, occIndex, nosology.checklistRequired, nosology.checklistOptional);
+                        checklist = this.renderChecklist(p, occIndex, nosology.checklistRequired, nosology.checklistOptional);
                     } else if (stageKey === 'appointment' && (nosology.checklistRequiredStage2 || nosology.checklistOptionalStage2)) {
-                        checklistHtml = this.renderChecklist(p, occIndex, nosology.checklistRequiredStage2, nosology.checklistOptionalStage2);
+                        checklist = this.renderChecklist(p, occIndex, nosology.checklistRequiredStage2, nosology.checklistOptionalStage2);
                     }
                 }
 
-                return `
-                    ${checklistHtml}
-                    <div class="section-label">Плановые даты (${schedulableLabels[stageKey]})</div>
-                    ${deadlineBox}
-                    ${warnings}
-                    ${rows}
-                    <button type="button" class="btn" style="background:var(--surface-alt); color:var(--text-primary); margin-bottom:15px;" onclick="app.addEvent('${p.id}', ${occIndex})">${addLabels[stageKey]}</button>
-                    <div class="section-label">Примечание к этапу</div>
-                    <textarea class="form-textarea" placeholder="Свободный комментарий по этому этапу..." onchange="app.updateOccurrenceNote('${p.id}', ${occIndex}, this.value)">${this.escapeHtml(occ.note || '')}</textarea>
-                `;
+                return frag([
+                    checklist,
+                    el('div', { class: 'section-label', text: `Плановые даты (${schedulableLabels[stageKey]})` }),
+                    deadlineBox,
+                    warnings,
+                    rows,
+                    el('button', {
+                        type: 'button', class: 'btn',
+                        style: 'background:var(--surface-alt); color:var(--text-primary); margin-bottom:15px;',
+                        text: addLabels[stageKey],
+                        on: { click: () => this.addEvent(p.id, occIndex) },
+                    }),
+                    el('div', { class: 'section-label', text: 'Примечание к этапу' }),
+                    this.occurrenceNoteTextarea(p, occIndex, occ.note),
+                ]);
             },
 
             render() {
@@ -2473,6 +2719,44 @@
                 app.closeImportReviewModal();
             }
             importReviewModalMouseDownOnBackdrop = false;
+        });
+
+        // Wiring for the static shell. These replace the inline on*= attributes
+        // the markup used to carry, so the CSP can forbid inline script entirely.
+        const bindClick = (id, handler) => {
+            const node = document.getElementById(id);
+            if (node) node.addEventListener('click', handler);
+        };
+
+        bindClick('themeToggle', () => app.toggleTheme());
+        bindClick('logoutBtn', () => app.logout());
+        bindClick('openExportBtn', () => app.openExportModal());
+        bindClick('triggerImportBtn', () => app.triggerImport());
+        bindClick('openAddBtn', () => app.openAddModal());
+        bindClick('priorityResetBtn', () => app.filterByPriority('all'));
+        bindClick('stageResetBtn', () => app.filterByStage('all'));
+        bindClick('deadlineResetBtn', () => app.filterByDeadline('all'));
+        bindClick('headsResetBtn', () => app.filterByHead('all'));
+        bindClick('closeAddBtn', () => app.closeAddModal());
+        bindClick('exportSelectAllBtn', () => app.exportSelectAll());
+        bindClick('exportSelectNoneBtn', () => app.exportSelectNone());
+        bindClick('closeExportBtn', () => app.closeExportModal());
+        bindClick('confirmExportBtn', () => app.confirmExport());
+        bindClick('closeImportReviewBtn', () => app.closeImportReviewModal());
+        bindClick('confirmImportCommitBtn', () => app.confirmImportCommit());
+
+        document.getElementById('searchInput').addEventListener('input', (e) => app.search(e.target.value));
+        document.getElementById('sortOrderSelect').addEventListener('change', (e) => app.setSortOrder(e.target.value));
+        document.getElementById('importFileInput').addEventListener('change', (e) => app.handleImportFile(e.target));
+        document.getElementById('diagnosisLocalization').addEventListener('change', () => app.onLocalizationChange());
+        document.getElementById('stage').addEventListener('change', () => app.updateStageFields());
+        document.getElementById('exportSearchInput').addEventListener('input', (e) => app.renderExportPatientList(e.target.value));
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key !== 'Escape') return;
+            if (document.getElementById('importReviewModal').classList.contains('show')) app.closeImportReviewModal();
+            else if (document.getElementById('exportModal').classList.contains('show')) app.closeExportModal();
+            else if (document.getElementById('addModal').classList.contains('show')) app.closeAddModal();
         });
 
         app.init();

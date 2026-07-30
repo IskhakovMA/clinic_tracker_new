@@ -2,8 +2,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import store
-from ..deps import get_db, require_csrf, require_session
+from .. import audit, store
+from ..deps import current_actor, get_db, require_csrf, require_session
 from ..models import (
     ChecklistItemIn,
     EventFieldUpdateIn,
@@ -27,8 +27,13 @@ def list_patients(conn: sqlite3.Connection = Depends(get_db)):
 
 
 @router.post("", dependencies=[Depends(require_csrf)], status_code=status.HTTP_201_CREATED)
-def create_patient(body: PatientCreateIn, conn: sqlite3.Connection = Depends(get_db)):
+def create_patient(
+    body: PatientCreateIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    actor: str | None = Depends(current_actor),
+):
     pid = store.create_patient(conn, body)
+    audit.record(conn, audit.PATIENT_CREATED, actor=actor, patient_id=pid)
     return store.patient_to_dict(conn, pid)
 
 
@@ -41,31 +46,52 @@ def get_patient(patient_id: str, conn: sqlite3.Connection = Depends(get_db)):
 
 
 @router.patch("/{patient_id}", dependencies=[Depends(require_csrf)])
-def update_patient_field(patient_id: str, body: PatientFieldUpdateIn, conn: sqlite3.Connection = Depends(get_db)):
+def update_patient_field(
+    patient_id: str,
+    body: PatientFieldUpdateIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    actor: str | None = Depends(current_actor),
+):
     try:
         ok = store.update_patient_field(conn, patient_id, body.field, body.value)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
         _not_found()
+    # Field *name* only — never the value, which is patient data.
+    audit.record(conn, audit.PATIENT_UPDATED, actor=actor, patient_id=patient_id, detail=f"field={body.field}")
     return store.patient_to_dict(conn, patient_id)
 
 
 @router.delete("/{patient_id}", dependencies=[Depends(require_csrf)])
-def delete_patient(patient_id: str, conn: sqlite3.Connection = Depends(get_db)):
+def delete_patient(
+    patient_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    actor: str | None = Depends(current_actor),
+):
     if not store.delete_patient(conn, patient_id):
         _not_found()
+    audit.record(conn, audit.PATIENT_DELETED, actor=actor, patient_id=patient_id)
     return {"deleted": True}
 
 
 @router.post("/{patient_id}/stage", dependencies=[Depends(require_csrf)])
-def change_stage(patient_id: str, body: StageChangeIn, conn: sqlite3.Connection = Depends(get_db)):
+def change_stage(
+    patient_id: str,
+    body: StageChangeIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    actor: str | None = Depends(current_actor),
+):
     ok = store.change_stage(conn, patient_id, body.newStage, body.lastEventUpdate)
     if not ok:
         p = store.patient_to_dict(conn, patient_id)
         if p is None:
             _not_found()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stage unchanged")
+    audit.record(
+        conn, audit.PATIENT_UPDATED, actor=actor, patient_id=patient_id,
+        detail=f"stage={body.newStage}",
+    )
     return store.patient_to_dict(conn, patient_id)
 
 

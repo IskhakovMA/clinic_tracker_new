@@ -6,8 +6,8 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import importexport
-from ..deps import get_db, require_csrf, require_session
+from .. import audit, importexport
+from ..deps import current_actor, get_db, require_csrf, require_session
 from ..models import ImportCommitRequest, ImportPreviewRequest
 
 router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"], dependencies=[Depends(require_session)])
@@ -30,7 +30,11 @@ def migrate_preview(body: ImportPreviewRequest, conn: sqlite3.Connection = Depen
 
 
 @router.post("/commit", dependencies=[Depends(require_csrf)])
-def migrate_commit(body: ImportCommitRequest, conn: sqlite3.Connection = Depends(get_db)):
+def migrate_commit(
+    body: ImportCommitRequest,
+    conn: sqlite3.Connection = Depends(get_db),
+    actor: str | None = Depends(current_actor),
+):
     if _patient_count(conn) > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -43,4 +47,5 @@ def migrate_commit(body: ImportCommitRequest, conn: sqlite3.Connection = Depends
     if document is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"errors": errors})
     result = importexport.commit_import(conn, document, "add")
+    audit.record(conn, audit.MIGRATION_COMMITTED, actor=actor, detail=f"added={result['added']}")
     return result

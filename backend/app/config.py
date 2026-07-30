@@ -25,6 +25,31 @@ SESSION_TTL_SECONDS = int(os.environ.get("CLINIC_SESSION_TTL_SECONDS", str(8 * 6
 SESSION_COOKIE_NAME = "clinic_session"
 CSRF_COOKIE_NAME = "clinic_csrf"
 
+BUSY_TIMEOUT_MS = int(os.environ.get("CLINIC_BUSY_TIMEOUT_MS", "5000"))
+
+# Audit retention: events older than this are removed by
+# `python -m backend.cli audit-prune`. Nothing deletes them automatically.
+AUDIT_RETENTION_DAYS = int(os.environ.get("CLINIC_AUDIT_RETENTION_DAYS", "365"))
+AUDIT_PAGE_LIMIT_MAX = 200
+
+MIN_PASSWORD_LENGTH = 8
+WEAK_PASSWORDS = frozenset(
+    {
+        "password",
+        "пароль",
+        "12345678",
+        "123456789",
+        "1234567890",
+        "qwertyui",
+        "qwerty123",
+        "clinic123",
+        "admin123",
+        "adminadmin",
+        "changeme",
+        "letmein1",
+    }
+)
+
 LOGIN_MAX_ATTEMPTS = 5
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_BASE_BACKOFF_SECONDS = 1.0

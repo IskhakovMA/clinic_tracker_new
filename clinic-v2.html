@@ -1023,13 +1023,13 @@
                     <div class="crumb"><b>Пациенты</b></div>
                 </div>
                 <div class="top-actions">
-                    <button class="theme-toggle" id="themeToggle" onclick="app.toggleTheme()" title="Сменить тему">Тёмная тема</button>
+                    <button class="theme-toggle" id="themeToggle" title="Сменить тему">Тёмная тема</button>
                     <div class="who">
                         <div class="user-info">
                             <div class="user-name" id="userName">-</div>
                             <div class="user-role" id="userRole">-</div>
                         </div>
-                        <button class="btn-logout" onclick="app.logout()">Выход</button>
+                        <button class="btn-logout" id="logoutBtn">Выход</button>
                     </div>
                 </div>
             </div>
@@ -1040,9 +1040,9 @@
                     <p>Путь от первичного приёма до завершения лечения</p>
                 </div>
                 <div class="pagehead-actions">
-                    <button class="btn-toolbar" onclick="app.openExportModal()">Экспорт</button>
-                    <button class="btn-toolbar" onclick="app.triggerImport()">Импорт</button>
-                    <button class="btn-toolbar btn-toolbar-primary" onclick="app.openAddModal()">+ Добавить пациента</button>
+                    <button class="btn-toolbar" id="openExportBtn">Экспорт</button>
+                    <button class="btn-toolbar" id="triggerImportBtn">Импорт</button>
+                    <button class="btn-toolbar btn-toolbar-primary" id="openAddBtn">+ Добавить пациента</button>
                 </div>
             </div>
 
@@ -1055,25 +1055,25 @@
                 <div class="stats-bar-label">Приоритет</div>
                 <div class="stats-bar-row">
                     <div class="priority-bar" id="priorityBar"></div>
-                    <button type="button" class="stats-bar-reset" id="priorityResetBtn" onclick="app.filterByPriority('all')">Все</button>
+                    <button type="button" class="stats-bar-reset" id="priorityResetBtn">Все</button>
                 </div>
 
                 <div class="stats-bar-label">Этапы</div>
                 <div class="stats-bar-row">
                     <div class="stage-funnel" id="stageFunnel"></div>
-                    <button type="button" class="stats-bar-reset" id="stageResetBtn" onclick="app.filterByStage('all')">Все</button>
+                    <button type="button" class="stats-bar-reset" id="stageResetBtn">Все</button>
                 </div>
 
                 <div class="stats-bar-label">Срок до ближайшего этапа</div>
                 <div class="stats-bar-row">
                     <div class="deadline-funnel" id="deadlineFunnel"></div>
-                    <button type="button" class="stats-bar-reset" id="deadlineResetBtn" onclick="app.filterByDeadline('all')">Все</button>
+                    <button type="button" class="stats-bar-reset" id="deadlineResetBtn">Все</button>
                 </div>
 
                 <div class="stats-bar-label">Заведующий</div>
                 <div class="stats-bar-row">
                     <div class="heads-funnel" id="headsFunnel"></div>
-                    <button type="button" class="stats-bar-reset" id="headsResetBtn" onclick="app.filterByHead('all')">Все</button>
+                    <button type="button" class="stats-bar-reset" id="headsResetBtn">Все</button>
                 </div>
             </div>
 
@@ -1082,16 +1082,16 @@
                     <div class="toolbar">
                         <div class="search">
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-                            <input type="text" id="searchInput" class="search-input" placeholder="Поиск по ФИО..." oninput="app.search(this.value)">
+                            <input type="text" id="searchInput" class="search-input" placeholder="Поиск по ФИО...">
                         </div>
-                        <select id="sortOrderSelect" class="select" onchange="app.setSortOrder(this.value)">
+                        <select id="sortOrderSelect" class="select">
                             <option value="">Сортировка: по умолчанию</option>
                             <option value="newest">Сначала новые (по добавлению)</option>
                             <option value="oldest">Сначала старые (по добавлению)</option>
                             <option value="updated-newest">Сначала недавно обновлённые</option>
                             <option value="updated-oldest">Сначала давно обновлённые</option>
                         </select>
-                        <input type="file" id="importFileInput" accept="application/json,.json" style="display:none" onchange="app.handleImportFile(this)">
+                        <input type="file" id="importFileInput" accept="application/json,.json" style="display:none">
                     </div>
 
                     <div class="patients-list" id="patientsList"></div>
@@ -1126,7 +1126,7 @@
 
                 <div class="modal-form-group">
                     <label class="modal-form-label">Локализация *</label>
-                    <select class="modal-form-select" id="diagnosisLocalization" onchange="app.onLocalizationChange()">
+                    <select class="modal-form-select" id="diagnosisLocalization">
                         <option value="">-- Выберите локализацию --</option>
                         <option value="lip_oral_pharynx">Губа, полость рта и глотка</option>
                         <option value="esophagus_stomach_intestine">Пищевод, желудок и кишечник</option>
@@ -1195,7 +1195,7 @@
 
                 <div class="modal-form-group">
                     <label class="modal-form-label">Этап прохождения *</label>
-                    <select class="modal-form-select" id="stage" required onchange="app.updateStageFields()">
+                    <select class="modal-form-select" id="stage" required>
                         <option value="">-- Выберите этап --</option>
                         <option value="primary-appointment">Первичный прием</option>
                         <option value="appointment">Пациент записан на прием</option>
@@ -1304,7 +1304,7 @@
                 </div>
 
                 <div class="modal-buttons">
-                    <button type="button" class="modal-btn modal-btn-secondary" onclick="app.closeAddModal()">Отмена</button>
+                    <button type="button" class="modal-btn modal-btn-secondary" id="closeAddBtn">Отмена</button>
                     <button type="submit" class="modal-btn modal-btn-primary">Добавить пациента</button>
                 </div>
             </form>
@@ -1316,23 +1316,23 @@
         <div class="modal-content">
             <div class="modal-header">Экспорт пациентов</div>
 
-            <input type="text" class="modal-form-input" id="exportSearchInput" placeholder="Поиск по ФИО пациента или заведующего..." oninput="app.renderExportPatientList(this.value)" style="margin-bottom:12px;">
+            <input type="text" class="modal-form-input" id="exportSearchInput" placeholder="Поиск по ФИО пациента или заведующего..." style="margin-bottom:12px;">
 
             <div id="exportHeadsFilter" style="display:flex; flex-wrap:wrap; gap:6px; margin-bottom:15px;"></div>
 
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; gap:10px; flex-wrap:wrap;">
                 <div style="font-size:13px; color:var(--text-secondary);">Выбрано: <strong id="exportSelectedCount">0</strong> из <span id="exportTotalCount">0</span></div>
                 <div style="display:flex; gap:8px;">
-                    <button type="button" class="filter-btn" onclick="app.exportSelectAll()">Выбрать все</button>
-                    <button type="button" class="filter-btn" onclick="app.exportSelectNone()">Снять все</button>
+                    <button type="button" class="filter-btn" id="exportSelectAllBtn">Выбрать все</button>
+                    <button type="button" class="filter-btn" id="exportSelectNoneBtn">Снять все</button>
                 </div>
             </div>
 
             <div id="exportPatientList" style="display:flex; flex-direction:column; gap:4px; max-height:400px; overflow-y:auto; border:1px solid var(--border-color); border-radius:8px; padding:8px;"></div>
 
             <div class="modal-buttons">
-                <button type="button" class="modal-btn modal-btn-secondary" onclick="app.closeExportModal()">Отмена</button>
-                <button type="button" class="modal-btn modal-btn-primary" onclick="app.confirmExport()">Скачать выбранных</button>
+                <button type="button" class="modal-btn modal-btn-secondary" id="closeExportBtn">Отмена</button>
+                <button type="button" class="modal-btn modal-btn-primary" id="confirmExportBtn">Скачать выбранных</button>
             </div>
         </div>
     </div>
@@ -1350,8 +1350,8 @@
                 </select>
             </div>
             <div class="modal-buttons">
-                <button type="button" class="modal-btn modal-btn-secondary" onclick="app.closeImportReviewModal()">Отмена</button>
-                <button type="button" class="modal-btn modal-btn-primary" onclick="app.confirmImportCommit()">Импортировать</button>
+                <button type="button" class="modal-btn modal-btn-secondary" id="closeImportReviewBtn">Отмена</button>
+                <button type="button" class="modal-btn modal-btn-primary" id="confirmImportCommitBtn">Импортировать</button>
             </div>
         </div>
     </div>

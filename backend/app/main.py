@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import config, security
 from .db import get_connection, init_db
-from .routes import auth, importexport, migrate, patients
+from .routes import audit_log, auth, importexport, migrate, patients
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -29,8 +29,8 @@ FRONTEND_JS = PROJECT_ROOT / "clinic-v2.js"
 CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
-    "script-src-attr 'unsafe-inline'; "  # narrow, documented exception — see SECURITY_AUDIT.md
-    "style-src 'self' 'unsafe-inline'; "
+    "script-src-attr 'none'; "  # no inline event-handler attributes anywhere in the frontend
+    "style-src 'self' 'unsafe-inline'; "  # inline style= attributes remain — see SECURITY_AUDIT.md
     "img-src 'self' data:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
@@ -90,6 +90,7 @@ app.include_router(auth.router)
 app.include_router(patients.router)
 app.include_router(importexport.router)
 app.include_router(migrate.router)
+app.include_router(audit_log.router)
 
 
 @app.get("/")

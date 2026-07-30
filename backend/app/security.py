@@ -37,7 +37,23 @@ def get_password_hash(conn: sqlite3.Connection) -> str | None:
     return row["password_hash"] if row else None
 
 
-def set_password(conn: sqlite3.Connection, plain: str) -> None:
+class WeakPasswordError(ValueError):
+    """Password rejected by policy — message is safe to show the operator."""
+
+
+def validate_password_strength(plain: str) -> None:
+    if len(plain) < config.MIN_PASSWORD_LENGTH:
+        raise WeakPasswordError(
+            f"Пароль должен быть не короче {config.MIN_PASSWORD_LENGTH} символов."
+        )
+    if plain.strip().lower() in config.WEAK_PASSWORDS:
+        raise WeakPasswordError("Этот пароль слишком очевидный, выберите другой.")
+
+
+def set_password(conn: sqlite3.Connection, plain: str, *, revoke_sessions: bool = True) -> None:
+    """Replace the stored Argon2id hash. By default every active session is
+    invalidated, so a password change also logs out anyone already inside."""
+    validate_password_strength(plain)
     password_hash = hash_password(plain)
     with conn:
         conn.execute(
@@ -48,21 +64,39 @@ def set_password(conn: sqlite3.Connection, plain: str) -> None:
             """,
             (password_hash, now_iso()),
         )
+        if revoke_sessions:
+            conn.execute("DELETE FROM sessions")
 
 
 def ensure_bootstrap_password(conn: sqlite3.Connection) -> None:
     """On first run, if no password hash exists yet, seed one from the
     CLINIC_ADMIN_PASSWORD env var if present. Never overwrites an existing
-    hash. Purely a convenience for first boot — `cli.py set-password` is the
-    documented way to set/rotate it."""
+    hash, and never falls back to a built-in default — with no env var and no
+    stored hash the app starts with login impossible (fail-closed).
+    `cli.py set-password` is the documented way to set/rotate it."""
     if get_password_hash(conn) is not None:
         return
     if config.BOOTSTRAP_PASSWORD:
-        set_password(conn, config.BOOTSTRAP_PASSWORD)
+        try:
+            set_password(conn, config.BOOTSTRAP_PASSWORD, revoke_sessions=False)
+        except WeakPasswordError:
+            # Refuse to bootstrap a weak password rather than silently
+            # accepting it; login stays impossible until set-password is run.
+            pass
 
 
-def _hash_token(token: str) -> str:
+def hash_token(token: str) -> str:
+    """SHA-256 of a raw session token — this is what is stored and logged."""
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+_hash_token = hash_token  # internal alias kept for readability below
+
+
+def revoke_all_sessions(conn: sqlite3.Connection) -> int:
+    with conn:
+        cur = conn.execute("DELETE FROM sessions")
+        return cur.rowcount
 
 
 def create_session(conn: sqlite3.Connection) -> tuple[str, str, datetime]:
