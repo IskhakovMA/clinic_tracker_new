@@ -1,7 +1,7 @@
 """Full integration smoke: the entire operator workflow in one scenario."""
 import json
 
-from .conftest import TEST_PASSWORD, make_patient_payload
+from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload
 
 
 def test_full_scenario(client):
@@ -15,8 +15,9 @@ def test_full_scenario(client):
     assert "normalizedPassword" not in js
     assert "admin:" not in js  # the old hardcoded users object
 
-    # 2. Login
-    r = client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    # 2. Login (персональная учётная запись Разработчика)
+    create_account(DEV_USERNAME)
+    r = login(client, DEV_USERNAME)
     assert r.status_code == 200
     csrf = {"X-CSRF-Token": client.cookies.get("clinic_csrf")}
 

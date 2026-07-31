@@ -1,6 +1,6 @@
 import json
 
-from .conftest import TEST_PASSWORD, make_patient_payload
+from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload
 
 SENSITIVE_MARKERS = [
     TEST_PASSWORD,
@@ -28,8 +28,9 @@ def test_login_success_is_recorded(auth_client):
 
 
 def test_failed_login_is_recorded(client):
-    client.post("/api/auth/login", json={"password": "wrong"})
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME, "wrong-password")
+    login(client, DEV_USERNAME)
     events = client.get("/api/audit").json()["events"]
     types = [e["event_type"] for e in events]
     assert "login_failure" in types
@@ -39,20 +40,21 @@ def test_failed_login_is_recorded(client):
 
 
 def test_rate_limit_is_recorded(client):
+    create_account(DEV_USERNAME)
     for _ in range(6):
-        client.post("/api/auth/login", json={"password": "wrong"})
+        login(client, DEV_USERNAME, "wrong-password")
     # log in properly on a different rate key is not possible in-process, so read
     # the audit rows straight from the DB via a fresh session after the window
     from backend.app import security
     security._failed_attempts.clear()
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    login(client, DEV_USERNAME)
     types = [e["event_type"] for e in client.get("/api/audit").json()["events"]]
     assert "login_rate_limited" in types
 
 
 def test_logout_is_recorded(auth_client):
     auth_client.post("/api/auth/logout")
-    auth_client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    login(auth_client, DEV_USERNAME)
     types = [e["event_type"] for e in auth_client.get("/api/audit").json()["events"]]
     assert "logout" in types
 
@@ -112,16 +114,16 @@ def test_migration_recorded(auth_client):
 
 
 def test_password_change_recorded_and_has_no_secret(auth_client):
-    from backend.app import audit, db, security
-    conn = db.get_connection()
-    security.set_password(conn, "brand-new-password-9")
-    audit.record(conn, audit.PASSWORD_CHANGED, detail="via=test sessions_revoked=all")
-
-    # session was revoked by the password change, so log back in to read the log
-    auth_client.post("/api/auth/login", json={"password": "brand-new-password-9"})
+    r = auth_client.post(
+        "/api/auth/change-password",
+        json={"currentPassword": TEST_PASSWORD, "newPassword": "brand-new-password-9"},
+        headers=auth_client.csrf,
+    )
+    assert r.status_code == 200
     text = _audit_text(auth_client)
     assert "password_changed" in text
     assert "brand-new-password-9" not in text
+    assert TEST_PASSWORD not in text
 
 
 def test_backup_and_restore_recorded(auth_client, tmp_path):

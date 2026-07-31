@@ -5,8 +5,9 @@ from .conftest import make_patient_payload
 
 def test_empty_db_boots_and_serves(client):
     # login + empty list on a brand new database
-    from .conftest import TEST_PASSWORD
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    from .conftest import DEV_USERNAME, create_account, login
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
     assert client.get("/api/patients").json() == []
 
 
@@ -33,7 +34,7 @@ def test_foreign_keys_cascade(auth_client, tmp_path):
 
 def test_schema_version_row_present(auth_client, tmp_path):
     conn = sqlite3.connect(str(tmp_path / "clinic.db"))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 1
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 2
     conn.close()
 
 

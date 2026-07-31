@@ -1,20 +1,24 @@
 """Session lifecycle guarantees beyond the basic login/logout in test_auth."""
-from .conftest import TEST_PASSWORD, make_patient_payload
+from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, get_conn, login
 
 
-def test_password_change_invalidates_all_sessions(auth_client):
-    from backend.app import db, security
+def test_password_reset_invalidates_all_sessions(auth_client):
+    """Сброс пароля Разработчиком завершает все сессии пользователя."""
+    from backend.app import users
     assert auth_client.get("/api/patients").status_code == 200
 
-    security.set_password(db.get_connection(), "another-strong-password")
+    conn = get_conn()
+    row = users.get_user_by_username(conn, DEV_USERNAME)
+    users.reset_password(conn, row["id"], "another-strong-password", must_change_password=False)
+    users.terminate_sessions(conn, row["id"])
 
     assert auth_client.get("/api/patients").status_code == 401
     assert auth_client.get("/api/auth/me").json() == {"authenticated": False}
     # old password no longer works, new one does
-    assert auth_client.post("/api/auth/login", json={"password": TEST_PASSWORD}).status_code == 401
+    assert login(auth_client, DEV_USERNAME, TEST_PASSWORD).status_code == 401
     from backend.app import security as sec
     sec._failed_attempts.clear()
-    assert auth_client.post("/api/auth/login", json={"password": "another-strong-password"}).status_code == 200
+    assert login(auth_client, DEV_USERNAME, "another-strong-password").status_code == 200
 
 
 def test_weak_password_rejected_by_policy():
@@ -29,12 +33,16 @@ def test_weak_password_rejected_by_policy():
 def test_no_session_fixation_attacker_supplied_cookie(client):
     """A cookie value the server never issued must not become a valid session,
     and logging in must not adopt a pre-set session id."""
+    create_account(DEV_USERNAME)
     forged = "attacker-chosen-session-value"
     assert client.get("/api/patients", cookies={"clinic_session": forged}).status_code == 401
 
-    login = client.post("/api/auth/login", json={"password": TEST_PASSWORD},
-                        cookies={"clinic_session": forged})
-    issued = login.cookies["clinic_session"]
+    login_resp = client.post(
+        "/api/auth/login",
+        json={"username": DEV_USERNAME, "password": TEST_PASSWORD},
+        cookies={"clinic_session": forged},
+    )
+    issued = login_resp.cookies["clinic_session"]
     assert issued != forged, "login must mint a fresh session id, not reuse the supplied one"
 
     # The forged value is still worthless after a successful login elsewhere.
@@ -60,11 +68,14 @@ def test_presenting_an_expired_session_deletes_its_row(client, monkeypatch):
     """
     from backend.app import config, db
 
+    create_account(DEV_USERNAME)
     monkeypatch.setattr(config, "SESSION_TTL_SECONDS", -1)
-    login = client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    login_resp = client.post(
+        "/api/auth/login", json={"username": DEV_USERNAME, "password": TEST_PASSWORD}
+    )
     # Read the token off the raw header: an already-expired cookie is dropped
     # by the client's jar before it can be read back.
-    set_cookies = [v for k, v in login.headers.multi_items() if k.lower() == "set-cookie"]
+    set_cookies = [v for k, v in login_resp.headers.multi_items() if k.lower() == "set-cookie"]
     expired_token = next(
         v.split("clinic_session=", 1)[1].split(";", 1)[0]
         for v in set_cookies if v.startswith("clinic_session=")
@@ -80,8 +91,9 @@ def test_presenting_an_expired_session_deletes_its_row(client, monkeypatch):
 
 def test_purge_expired_sessions_helper(client, monkeypatch):
     from backend.app import config, db, security
+    create_account(DEV_USERNAME)
     monkeypatch.setattr(config, "SESSION_TTL_SECONDS", -1)
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    login(client, DEV_USERNAME)
 
     conn = db.get_connection()
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] >= 1
@@ -91,14 +103,15 @@ def test_purge_expired_sessions_helper(client, monkeypatch):
 
 def test_login_purges_expired_sessions(client, monkeypatch):
     from backend.app import config, db
+    create_account(DEV_USERNAME)
     monkeypatch.setattr(config, "SESSION_TTL_SECONDS", -1)
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    login(client, DEV_USERNAME)
     conn = db.get_connection()
 
     monkeypatch.setattr(config, "SESSION_TTL_SECONDS", 3600)
     from backend.app import security
     security._failed_attempts.clear()
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    login(client, DEV_USERNAME)
     # only the fresh session remains
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 

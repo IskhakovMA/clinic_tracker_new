@@ -91,7 +91,9 @@ def test_admin_command_not_shown_to_user():
 
 def test_admin_command_still_documented_in_readme():
     readme = README.read_text(encoding="utf-8")
-    assert "python -m backend.cli set-password" in readme
+    # set-password ушёл вместе с общим паролем; bootstrap-команда документирована
+    assert "python -m backend.cli create-developer" in readme
+    assert "set-password" not in readme
 
 
 def test_docs_use_new_terminology():
