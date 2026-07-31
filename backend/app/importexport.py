@@ -12,7 +12,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
-from . import config, store
+from . import config, policy, store, users
 from .db import now_iso, transaction
 from .models import ImportDocument, ImportHistoryEntry, ImportPatientIn
 
@@ -41,7 +41,7 @@ def parse_import_structure(raw: str) -> dict:
         raise ImportStructureError("Unrecognized root structure: expected an array or an object with 'patients'")
 
     schema_version = doc.get("schemaVersion", 0)
-    if schema_version not in (0, config.SCHEMA_VERSION):
+    if schema_version not in config.IMPORT_ACCEPTED_SCHEMA_VERSIONS:
         raise ImportStructureError(f"Unsupported schema version: {schema_version}")
 
     if len(doc["patients"]) > config.MAX_IMPORT_PATIENTS:
@@ -81,6 +81,49 @@ def validate_import(raw: str) -> tuple[Optional[ImportDocument], list[dict]]:
     return document, []
 
 
+def resolve_import_doctor(
+    conn: sqlite3.Connection, p: ImportPatientIn, actor: "policy.CurrentUser"
+) -> tuple[Optional[str], Optional[str]]:
+    """(doctor_user_id, error) для импортируемой записи с учётом scope актора.
+
+    ID врача из файла никогда не принимается на веру: он проверяется по БД и
+    по области видимости актора. Текстовые ФИО не сопоставляются автоматически —
+    запись без валидного ID у Разработчика остаётся unresolved, у остальных
+    отклоняется."""
+    requested = p.treatingDoctorUserId
+    if actor.scope_strategy == policy.SCOPE_BY_TREATING_DOCTOR:
+        # Врач импортирует только с закреплением за собой.
+        if requested and requested != actor.id:
+            return None, "Врач может импортировать пациентов только с закреплением за собой."
+        return actor.id, None
+    if actor.scope_strategy == policy.SCOPE_BY_DEPARTMENT:
+        if not requested:
+            return None, "Каждой записи нужен лечащий врач из вашего отделения (treatingDoctorUserId)."
+        if not users.doctor_in_departments(conn, requested, list(actor.department_ids)):
+            return None, "Лечащий врач записи не относится к отделениям, которыми вы управляете."
+        return requested, None
+    if actor.scope_strategy == policy.SCOPE_GLOBAL:
+        if not requested:
+            return None, None  # unresolved — очередь ручного сопоставления
+        doctor = users.get_user(conn, requested)
+        if doctor is None or doctor["role_id"] != "doctor":
+            # Неизвестный или чужой ID не переносится молча — остаётся unresolved.
+            return None, None
+        return requested, None
+    return None, "Ваша роль не позволяет импортировать данные."
+
+
+def scope_errors(
+    conn: sqlite3.Connection, document: ImportDocument, actor: "policy.CurrentUser"
+) -> list[dict]:
+    errors = []
+    for i, p in enumerate(document.patients):
+        _, err = resolve_import_doctor(conn, p, actor)
+        if err is not None:
+            errors.append({"index": i, "field": "treatingDoctorUserId", "message": err})
+    return errors[:200]
+
+
 def preview_report(conn: sqlite3.Connection, document: ImportDocument) -> dict:
     existing_ids = {r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()}
     matches = sum(1 for p in document.patients if p.id and p.id in existing_ids)
@@ -91,13 +134,22 @@ def preview_report(conn: sqlite3.Connection, document: ImportDocument) -> dict:
     }
 
 
-def _insert_full_patient(conn: sqlite3.Connection, p: ImportPatientIn, patient_id: str) -> None:
+def _insert_full_patient(
+    conn: sqlite3.Connection, p: ImportPatientIn, patient_id: str,
+    treating_doctor_user_id: Optional[str] = None,
+) -> None:
     now = now_iso()
     arrival = p.arrival or now
+    doctor_row = None
+    if treating_doctor_user_id:
+        doctor_row = conn.execute(
+            "SELECT full_name FROM users WHERE id = ?", (treating_doctor_user_id,)
+        ).fetchone()
     conn.execute(
         """INSERT INTO patients (id, name, age, priority, stage, phone, complaint, diagnosis,
-                                  nosology, disease_stage, arrival, doctor, head, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                  nosology, disease_stage, arrival, doctor, head, created_at,
+                                  updated_at, treating_doctor_user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             patient_id,
             p.name,
@@ -110,10 +162,11 @@ def _insert_full_patient(conn: sqlite3.Connection, p: ImportPatientIn, patient_i
             p.nosology,
             p.diseaseStage,
             arrival,
-            p.doctor,
+            doctor_row["full_name"] if doctor_row else p.doctor,
             p.head,
             now,
             p.updatedAt or now,
+            treating_doctor_user_id,
         ),
     )
     history = p.history or [ImportHistoryEntry(stage=p.stage, enteredAt=arrival, events=[], checklist={}, note="")]
@@ -137,9 +190,25 @@ def _insert_full_patient(conn: sqlite3.Connection, p: ImportPatientIn, patient_i
         )
 
 
-def commit_import(conn: sqlite3.Connection, document: ImportDocument, mode: str) -> dict:
+def commit_import(
+    conn: sqlite3.Connection, document: ImportDocument, mode: str,
+    actor: "policy.CurrentUser",
+) -> dict:
+    """Импорт от имени актора. Права на режим проверяет policy.can_import
+    (update/replace — только Разработчик); закрепление каждого пациента за
+    врачом проходит resolve_import_doctor и не может выйти за scope актора."""
     if mode not in ("add", "update", "replace"):
         raise ValueError("unknown import mode")
+    if not policy.can_import(actor, mode):
+        raise PermissionError("import mode not allowed for this role")
+
+    resolved: list[Optional[str]] = []
+    for p in document.patients:
+        doctor_id, err = resolve_import_doctor(conn, p, actor)
+        if err is not None:
+            # Проверено ещё в preview; здесь — жёсткая страховка.
+            raise PermissionError("import assignment outside actor scope")
+        resolved.append(doctor_id)
 
     existing_ids = {r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()}
     added = updated = skipped = 0
@@ -147,20 +216,20 @@ def commit_import(conn: sqlite3.Connection, document: ImportDocument, mode: str)
     with transaction(conn):
         if mode == "replace":
             conn.execute("DELETE FROM patients")  # cascades to history/events/future_plans
-            for p in document.patients:
-                _insert_full_patient(conn, p, store.new_id())
+            for p, doctor_id in zip(document.patients, resolved):
+                _insert_full_patient(conn, p, store.new_id(), doctor_id)
                 added += 1
         elif mode == "update":
-            for p in document.patients:
+            for p, doctor_id in zip(document.patients, resolved):
                 if p.id and p.id in existing_ids:
                     conn.execute("DELETE FROM patients WHERE id = ?", (p.id,))
-                    _insert_full_patient(conn, p, p.id)
+                    _insert_full_patient(conn, p, p.id, doctor_id)
                     updated += 1
                 else:
                     skipped += 1
         else:  # add
-            for p in document.patients:
-                _insert_full_patient(conn, p, store.new_id())
+            for p, doctor_id in zip(document.patients, resolved):
+                _insert_full_patient(conn, p, store.new_id(), doctor_id)
                 added += 1
 
     return {"added": added, "updated": updated, "skipped": skipped}

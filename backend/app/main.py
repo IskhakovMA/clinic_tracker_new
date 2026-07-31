@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import config, security
 from .db import get_connection, init_db
-from .routes import audit_log, auth, importexport, migrate, patients
+from .routes import audit_log, auth, importexport, migrate, patients, staff, structure
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -47,7 +47,6 @@ CSP = (
 async def lifespan(_app: FastAPI):
     conn = get_connection()
     init_db(conn)
-    security.ensure_bootstrap_password(conn)
     security.purge_expired_sessions(conn)
     logger.info(
         "clinic-tracker backend starting on %s:%s (https=%s debug=%s)",
@@ -94,6 +93,8 @@ app.include_router(patients.router)
 app.include_router(importexport.router)
 app.include_router(migrate.router)
 app.include_router(audit_log.router)
+app.include_router(staff.router)
+app.include_router(structure.router)
 
 
 # Единственная точка входа приложения. Устаревшие страницы прежних версий

@@ -6,11 +6,11 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from .. import audit, importexport
-from ..deps import current_actor, get_db, require_csrf, require_session
+from .. import audit, importexport, policy
+from ..deps import get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
 
-router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"], dependencies=[Depends(require_session)])
+router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"])
 
 
 def _patient_count(conn: sqlite3.Connection) -> int:
@@ -18,7 +18,13 @@ def _patient_count(conn: sqlite3.Connection) -> int:
 
 
 @router.post("/preview")
-def migrate_preview(body: ImportPreviewRequest, conn: sqlite3.Connection = Depends(get_db)):
+def migrate_preview(
+    body: ImportPreviewRequest,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    if not policy.can_import(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     try:
         document, errors = importexport.validate_import(body.raw)
     except importexport.ImportStructureError as e:
@@ -33,8 +39,10 @@ def migrate_preview(body: ImportPreviewRequest, conn: sqlite3.Connection = Depen
 def migrate_commit(
     body: ImportCommitRequest,
     conn: sqlite3.Connection = Depends(get_db),
-    actor: str | None = Depends(current_actor),
+    user: policy.CurrentUser = Depends(require_active_password),
 ):
+    if not policy.can_import(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     if _patient_count(conn) > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -46,6 +54,11 @@ def migrate_commit(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     if document is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"errors": errors})
-    result = importexport.commit_import(conn, document, "add")
-    audit.record(conn, audit.MIGRATION_COMMITTED, actor=actor, detail=f"added={result['added']}")
+    scope_errors = importexport.scope_errors(conn, document, user)
+    if scope_errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail={"errors": scope_errors})
+    result = importexport.commit_import(conn, document, "add", user)
+    audit.record(conn, audit.MIGRATION_COMMITTED, detail=f"added={result['added']}",
+                 **audit.actor_ctx(user))
     return result
