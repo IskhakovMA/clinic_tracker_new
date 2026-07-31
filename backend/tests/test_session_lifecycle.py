@@ -35,19 +35,20 @@ def test_no_session_fixation_attacker_supplied_cookie(client):
     and logging in must not adopt a pre-set session id."""
     create_account(DEV_USERNAME)
     forged = "attacker-chosen-session-value"
-    assert client.get("/api/patients", cookies={"clinic_session": forged}).status_code == 401
+    client.cookies.set("clinic_session", forged)
+    assert client.get("/api/patients").status_code == 401
 
     login_resp = client.post(
         "/api/auth/login",
         json={"username": DEV_USERNAME, "password": TEST_PASSWORD},
-        cookies={"clinic_session": forged},
     )
     issued = login_resp.cookies["clinic_session"]
     assert issued != forged, "login must mint a fresh session id, not reuse the supplied one"
 
     # The forged value is still worthless after a successful login elsewhere.
     client.cookies.clear()
-    assert client.get("/api/patients", cookies={"clinic_session": forged}).status_code == 401
+    client.cookies.set("clinic_session", forged)
+    assert client.get("/api/patients").status_code == 401
 
 
 def test_logout_clears_cookies_client_side(auth_client):
@@ -62,9 +63,10 @@ def test_logout_clears_cookies_client_side(auth_client):
 def test_presenting_an_expired_session_deletes_its_row(client, monkeypatch):
     """Validating an expired token rejects it *and* drops the stale row.
 
-    The cookie is passed explicitly per-request: a real client discards a
-    cookie whose Max-Age has already elapsed, so the jar would never send it
-    and this cleanup path would go untested.
+    The cookie value is copied from the raw header and placed back into the
+    test client's jar: a real client discards a cookie whose Max-Age has
+    already elapsed, so the original jar would never send it and this cleanup
+    path would go untested.
     """
     from backend.app import config, db
 
@@ -84,7 +86,8 @@ def test_presenting_an_expired_session_deletes_its_row(client, monkeypatch):
     conn = db.get_connection()
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
-    r = client.get("/api/patients", cookies={"clinic_session": expired_token})
+    client.cookies.set("clinic_session", expired_token)
+    r = client.get("/api/patients")
     assert r.status_code == 401
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
 
