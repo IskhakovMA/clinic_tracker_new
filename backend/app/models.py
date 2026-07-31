@@ -119,6 +119,8 @@ class PatientCreateIn(BaseModel):
     priority: Priority
     stage: Stage
     diagnosis: str = Field(..., min_length=1, max_length=500)
+    # В UI — «Профиль клиентского пути»; legacy-имя `nosology` сохранено намеренно
+    # для совместимости с существующей БД и форматом импорта/экспорта (см. README).
     nosology: str = Field("", max_length=100)
     diseaseStage: str = Field("", max_length=10)
     doctor: str = Field("", max_length=200)
@@ -253,6 +255,8 @@ class ImportPatientIn(BaseModel):
     phone: str = Field("", max_length=50)
     complaint: str = Field("", max_length=5000)
     diagnosis: str = Field("", max_length=500)
+    # legacy-имя `nosology` (UI: «Профиль клиентского пути») — часть формата
+    # импорта/экспорта, менять нельзя без миграции формата (см. README).
     nosology: str = Field("", max_length=100)
     diseaseStage: str = Field("", max_length=10)
     arrival: Optional[str] = Field(None, max_length=40)
