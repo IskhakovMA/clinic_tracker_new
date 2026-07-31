@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark light">
+    <title>Система планирования — маршрут лечения</title>
+    <link rel="icon" href="/static/logo.png">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ЛОГИН -->
+<div class="login" id="loginScreen">
+    <form class="login__box" id="loginForm">
+        <img class="login__logo" src="/static/logo.png" alt="" width="56" height="56">
+        <h1 class="login__title">Система планирования</h1>
+        <p class="login__subtitle">Планирование маршрута лечения и контроль этапов</p>
+
+        <p class="alert alert--danger is-hidden" id="loginError" role="alert"></p>
+
+        <div class="field">
+            <label class="field__label" for="password">Пароль</label>
+            <input class="input" type="password" id="password" required autofocus autocomplete="current-password">
+        </div>
+
+        <button type="submit" class="btn btn--primary btn--block btn--lg" id="loginSubmit">Войти</button>
+
+        <p class="login__hint">Для получения доступа обратитесь к администратору системы.</p>
+    </form>
+</div>
+
+<!-- ПРИЛОЖЕНИЕ -->
+<div class="app is-hidden" id="appScreen">
+
+    <button type="button" class="scrim" id="sidebarScrim" hidden aria-label="Закрыть меню"></button>
+
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar__brand">
+            <img class="sidebar__logo" src="/static/logo.png" alt="" width="28" height="28">
+            <span class="sidebar__name">Система планирования</span>
+            <span class="badge badge--muted">v2</span>
+        </div>
+
+        <nav class="nav" aria-label="Основная навигация">
+            <button type="button" class="nav__item is-active" data-view="patients" aria-current="page">Пациенты</button>
+            <button type="button" class="nav__item" data-view="calendar">Календарь</button>
+            <button type="button" class="nav__item" data-view="checklists">Чек-листы</button>
+            <button type="button" class="nav__item" data-view="plans">Будущие планы</button>
+            <button type="button" class="nav__item" data-view="data">Импорт / Экспорт</button>
+            <button type="button" class="nav__item" data-view="audit">Журнал аудита</button>
+            <button type="button" class="nav__item" data-view="settings">Настройки</button>
+        </nav>
+
+        <div class="sidebar__footer">
+            <div class="who">
+                <span class="who__role">Локальный сеанс</span>
+                <span class="who__status" id="sessionStatus">Сессия активна</span>
+            </div>
+            <button type="button" class="btn btn--ghost btn--sm" id="logoutBtn">Выйти</button>
+        </div>
+    </aside>
+
+    <div class="main">
+        <header class="topbar">
+            <button type="button" class="btn btn--icon topbar__menu" id="sidebarToggle" aria-label="Меню" aria-expanded="false" aria-controls="sidebar">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <span class="topbar__brand">Планирование</span>
+            <div class="topbar__spacer"></div>
+            <span class="chip chip--neutral" title="Приложение работает локально, данные не покидают этот компьютер">Локальный режим</span>
+            <button type="button" class="btn btn--ghost btn--sm" id="themeToggle" aria-pressed="false">Светлая тема</button>
+        </header>
+
+        <main class="content" id="content">
+
+            <!-- СПИСОК ПАЦИЕНТОВ -->
+            <section class="view" id="view-patients">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Пациенты</h1>
+                        <p class="pagehead__subtitle">Список всех пациентов клиники</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <!-- На узком экране импорт и экспорт прячутся под одну кнопку «Данные» -->
+                        <button type="button" class="btn btn--ghost only-wide" id="triggerImportBtn">
+                            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
+                            Импорт
+                        </button>
+                        <button type="button" class="btn btn--ghost only-wide" id="openExportBtn">
+                            <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M4 21h16"/></svg>
+                            Экспорт
+                        </button>
+                        <button type="button" class="btn btn--ghost only-narrow" id="openDataSheetBtn">Данные</button>
+                        <button type="button" class="btn btn--primary" id="openAddBtn">Новый пациент</button>
+                    </div>
+                </div>
+
+                <div class="toolbar">
+                    <div class="search">
+                        <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                        <label class="visually-hidden" for="searchInput">Поиск пациентов</label>
+                        <input class="input search__input" type="search" id="searchInput" placeholder="Поиск по ФИО, диагнозу, врачу…">
+                    </div>
+                    <button type="button" class="btn btn--ghost only-narrow" id="openFiltersSheetBtn" aria-expanded="false">
+                        <span id="filtersBtnLabel">Фильтры</span>
+                    </button>
+                    <div class="toolbar__filters" id="toolbarFilters">
+                        <label class="visually-hidden" for="filterStage">Фильтр по этапу</label>
+                        <select class="select" id="filterStage"></select>
+                        <label class="visually-hidden" for="filterHead">Фильтр по заведующему</label>
+                        <select class="select" id="filterHead"></select>
+                        <label class="visually-hidden" for="filterDeadline">Фильтр по сроку</label>
+                        <select class="select" id="filterDeadline"></select>
+                        <label class="visually-hidden" for="sortOrderSelect">Сортировка</label>
+                        <select class="select" id="sortOrderSelect"></select>
+                    </div>
+                </div>
+
+                <div class="stats" id="statsRow"></div>
+
+                <div class="panel">
+                    <div class="table-wrap">
+                        <table class="table" id="patientsTable">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Пациент</th>
+                                    <th scope="col">Этап лечения</th>
+                                    <th scope="col">Последняя активность</th>
+                                    <th scope="col">Заведующий</th>
+                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                </tr>
+                            </thead>
+                            <tbody id="patientsBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="empty is-hidden" id="patientsEmpty"></div>
+                </div>
+            </section>
+
+            <!-- КАРТОЧКА ПАЦИЕНТА -->
+            <section class="view is-hidden" id="view-patient">
+                <nav class="crumbs" aria-label="Навигация">
+                    <button type="button" class="crumbs__back" id="backToList">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+                        <span>Пациенты</span>
+                    </button>
+                    <span class="crumbs__sep" aria-hidden="true">/</span>
+                    <span class="crumbs__current" id="crumbPatientName"></span>
+                </nav>
+
+                <div class="patient-layout">
+                    <aside class="patient-side" id="patientSide"></aside>
+
+                    <div class="patient-body">
+                        <div class="tabs" role="tablist" id="patientTabs"></div>
+                        <div class="tabpanels" id="patientPanels"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ВСПОМОГАТЕЛЬНЫЕ РАЗДЕЛЫ -->
+            <section class="view is-hidden" id="view-calendar">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Календарь</h1>
+                        <p class="pagehead__subtitle">Ближайшие плановые события по всем пациентам</p>
+                    </div>
+                </div>
+                <div class="panel" id="calendarPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-checklists">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Чек-листы</h1>
+                        <p class="pagehead__subtitle">Готовность обследований у пациентов на этапе обследования</p>
+                    </div>
+                </div>
+                <div class="panel" id="checklistsPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-plans">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Будущие планы</h1>
+                        <p class="pagehead__subtitle">Предварительно намеченные даты следующих этапов</p>
+                    </div>
+                </div>
+                <div class="panel" id="plansPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-data">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Импорт и экспорт</h1>
+                        <p class="pagehead__subtitle">Перенос данных между копиями приложения</p>
+                    </div>
+                </div>
+                <div class="cards-2">
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Импорт</h2>
+                        <p class="panel__text">
+                            Файл проверяется на сервере до записи: структура, версия схемы, типы и длины полей,
+                            даты, дубликаты идентификаторов. Сначала показывается предпросмотр, запись выполняется
+                            одной транзакцией только после подтверждения.
+                        </p>
+                        <button type="button" class="btn btn--primary" id="dataImportBtn">Выбрать файл для импорта</button>
+                    </div>
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Экспорт</h2>
+                        <p class="panel__text">
+                            Выгрузка содержит медицинские данные в открытом виде. Храните и передавайте файл так же
+                            осторожно, как медицинскую карту.
+                        </p>
+                        <button type="button" class="btn btn--primary" id="dataExportBtn">Выбрать пациентов для экспорта</button>
+                    </div>
+                </div>
+                <div class="panel panel--pad" id="migrationPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-audit">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Журнал аудита</h1>
+                        <p class="pagehead__subtitle">Обезличенные записи о действиях: без ФИО, диагнозов и паролей</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="auditRefreshBtn">Обновить</button>
+                    </div>
+                </div>
+                <div class="panel" id="auditPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-settings">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Настройки</h1>
+                        <p class="pagehead__subtitle">Оформление и сведения о локальной установке</p>
+                    </div>
+                </div>
+                <div class="cards-2">
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Оформление</h2>
+                        <div class="field">
+                            <label class="field__label" for="themeSelect">Тема интерфейса</label>
+                            <select class="select" id="themeSelect">
+                                <option value="dark">Тёмная</option>
+                                <option value="light">Светлая</option>
+                            </select>
+                            <p class="field__hint">Выбор темы сохраняется в этом браузере. Медицинские данные в браузере не хранятся.</p>
+                        </div>
+                    </div>
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Установка</h2>
+                        <dl class="deflist" id="settingsInfo"></dl>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+</div>
+
+<input type="file" id="importFileInput" accept="application/json,.json" class="is-hidden">
+
+<!-- МОДАЛКА: НОВЫЙ ПАЦИЕНТ -->
+<div class="modal" id="addModal" role="dialog" aria-modal="true" aria-labelledby="addModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="addModalTitle">Новый пациент</h2>
+            <button type="button" class="btn btn--icon" id="closeAddIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+
+        <form class="modal__body form" id="addForm">
+            <p class="alert alert--danger is-hidden" id="addFormError" role="alert"></p>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Личные данные</legend>
+                <div class="field">
+                    <label class="field__label" for="fio">ФИО пациента <span class="req">*</span></label>
+                    <input class="input" type="text" id="fio" required autocomplete="off">
+                </div>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="age">Возраст</label>
+                        <input class="input" type="number" id="age" min="0" max="150">
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="phone">Телефон</label>
+                        <input class="input" type="tel" id="phone" placeholder="+7 (999) 123-45-67">
+                    </div>
+                </div>
+            </fieldset>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Медицинская информация</legend>
+                <div class="field">
+                    <label class="field__label" for="diagnosisLocalization">Локализация <span class="req">*</span></label>
+                    <select class="select" id="diagnosisLocalization"></select>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="diagnosis">Диагноз (МКБ-10) <span class="req">*</span></label>
+                    <select class="select" id="diagnosis" required disabled></select>
+                </div>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="nosology">Профиль клиентского пути</label>
+                        <select class="select" id="nosology"></select>
+                        <p class="field__hint">Определяет регламентные сроки и чек-лист обследований.</p>
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="diseaseStage">Стадия заболевания</label>
+                        <select class="select" id="diseaseStage">
+                            <option value="">Не указана</option>
+                            <option value="I">I</option>
+                            <option value="II">II</option>
+                            <option value="III">III</option>
+                            <option value="IV">IV</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="complaint">Жалобы и симптомы</label>
+                    <textarea class="textarea" id="complaint" rows="4"></textarea>
+                </div>
+            </fieldset>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Этап и ответственные</legend>
+                <div class="field">
+                    <label class="field__label" for="stage">Текущий этап <span class="req">*</span></label>
+                    <select class="select" id="stage" required></select>
+                </div>
+
+                <div class="field is-hidden" id="primaryAppointmentGroup">
+                    <label class="field__label" for="primaryAppointmentDate">Дата фактического первичного приёма <span class="req">*</span></label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="primaryAppointmentDate">
+                        <input class="input" type="time" id="primaryAppointmentTime" aria-label="Время первичного приёма">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="examGroup">
+                    <label class="field__label" for="examDate">Плановая дата обследования</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="examDate">
+                        <input class="input" type="time" id="examTime" aria-label="Время обследования">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="appointmentGroup">
+                    <label class="field__label" for="appointmentDate">Плановая дата приёма</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="appointmentDate">
+                        <input class="input" type="time" id="appointmentTime" aria-label="Время приёма">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="consultGroup">
+                    <label class="field__label" for="consultDate">Плановая дата онкоконсилиума</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="consultDate">
+                        <input class="input" type="time" id="consultTime" aria-label="Время онкоконсилиума">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="treatmentGroup">
+                    <label class="field__label" for="treatmentType">Тип лечения</label>
+                    <select class="select" id="treatmentType">
+                        <option value="">Не указан</option>
+                        <option value="surgery">Хирургическое лечение</option>
+                        <option value="radiation">Лучевая терапия</option>
+                        <option value="chemo">Химиотерапия</option>
+                    </select>
+                    <label class="field__label field__label--spaced" for="treatmentDate">Плановая дата лечения</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="treatmentDate">
+                        <input class="input" type="time" id="treatmentTime" aria-label="Время лечения">
+                    </div>
+                </div>
+
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="priority">Приоритет</label>
+                        <select class="select" id="priority" required>
+                            <option value="normal">Обычный</option>
+                            <option value="high">Высокий</option>
+                            <option value="urgent">Срочно</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="doctor">Лечащий врач</label>
+                        <input class="input" type="text" id="doctor">
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="head">Заведующий <span class="req">*</span></label>
+                    <select class="select" id="head" required></select>
+                </div>
+            </fieldset>
+        </form>
+
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="closeAddBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="addForm" id="submitAddBtn">Добавить пациента</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ЭКСПОРТ -->
+<div class="modal" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="exportModalTitle">Экспорт пациентов</h2>
+            <button type="button" class="btn btn--icon" id="closeExportIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body">
+            <p class="alert alert--warning">
+                Выгруженный файл содержит медицинские данные в открытом виде — ФИО, диагнозы, контакты.
+            </p>
+            <div class="field">
+                <label class="visually-hidden" for="exportSearchInput">Поиск по списку</label>
+                <input class="input" type="search" id="exportSearchInput" placeholder="Поиск по ФИО пациента или заведующего…">
+            </div>
+            <div class="chips" id="exportHeadsFilter"></div>
+            <div class="modal__toolbar">
+                <span class="muted">Выбрано: <strong id="exportSelectedCount">0</strong> из <span id="exportTotalCount">0</span></span>
+                <span class="modal__toolbar-actions">
+                    <button type="button" class="btn btn--ghost btn--sm" id="exportSelectAllBtn">Выбрать всех</button>
+                    <button type="button" class="btn btn--ghost btn--sm" id="exportSelectNoneBtn">Снять выбор</button>
+                </span>
+            </div>
+            <div class="picklist" id="exportPatientList"></div>
+        </div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="closeExportBtn">Отмена</button>
+            <button type="button" class="btn btn--primary" id="confirmExportBtn">Скачать файл</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ПОДТВЕРЖДЕНИЕ ИМПОРТА -->
+<div class="modal" id="importReviewModal" role="dialog" aria-modal="true" aria-labelledby="importModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="importModalTitle">Импорт: проверка файла</h2>
+            <button type="button" class="btn btn--icon" id="closeImportIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body">
+            <div class="summary" id="importReviewSummary"></div>
+            <div class="field">
+                <label class="field__label" for="importModeSelect">Режим импорта</label>
+                <select class="select" id="importModeSelect">
+                    <option value="add">Добавить как новые записи</option>
+                    <option value="update">Обновить совпадающие по идентификатору</option>
+                    <option value="replace">Полностью заменить все данные</option>
+                </select>
+                <p class="field__hint" id="importModeHint"></p>
+            </div>
+        </div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="closeImportReviewBtn">Отмена</button>
+            <button type="button" class="btn btn--primary" id="confirmImportCommitBtn">Импортировать</button>
+        </div>
+    </div>
+</div>
+
+<!-- ПАНЕЛЬ «ДАННЫЕ» (мобильная) -->
+<div class="modal modal--sheet" id="dataSheet" role="dialog" aria-modal="true" aria-labelledby="dataSheetTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="dataSheetTitle">Данные</h2>
+            <button type="button" class="btn btn--icon" id="closeDataSheetBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body">
+            <button type="button" class="sheet-item" id="sheetImportBtn">
+                <span class="sheet-item__title">Импортировать</span>
+                <span class="sheet-item__hint">Загрузить пациентов из файла с проверкой и подтверждением</span>
+            </button>
+            <button type="button" class="sheet-item" id="sheetExportBtn">
+                <span class="sheet-item__title">Экспортировать</span>
+                <span class="sheet-item__hint">Выгрузить выбранных пациентов в файл</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ПАНЕЛЬ ФИЛЬТРОВ (мобильная) -->
+<div class="modal modal--sheet" id="filtersSheet" role="dialog" aria-modal="true" aria-labelledby="filtersSheetTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="filtersSheetTitle">Фильтры и сортировка</h2>
+            <button type="button" class="btn btn--icon" id="closeFiltersSheetBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body" id="filtersSheetBody"></div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="sheetResetFiltersBtn">Сбросить</button>
+            <button type="button" class="btn btn--primary" id="applyFiltersSheetBtn">Показать</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ПОДТВЕРЖДЕНИЕ ДЕЙСТВИЯ -->
+<div class="modal modal--sm" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="confirmTitle"></h2>
+        </div>
+        <div class="modal__body">
+            <p class="confirm__text" id="confirmText"></p>
+        </div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="confirmCancelBtn">Отмена</button>
+            <button type="button" class="btn btn--danger" id="confirmOkBtn">Подтвердить</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ВВОД ЗНАЧЕНИЯ -->
+<div class="modal modal--sm" id="promptModal" role="dialog" aria-modal="true" aria-labelledby="promptTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="promptTitle"></h2>
+        </div>
+        <form class="modal__body" id="promptForm">
+            <p class="confirm__text" id="promptText"></p>
+            <div class="field">
+                <label class="field__label" for="promptDate">Дата</label>
+                <input class="input" type="date" id="promptDate">
+            </div>
+            <div class="field">
+                <label class="field__label" for="promptTime">Время</label>
+                <input class="input" type="time" id="promptTime">
+            </div>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="promptCancelBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="promptForm" id="promptOkBtn">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
