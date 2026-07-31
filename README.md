@@ -1,4 +1,4 @@
-# Clinic Tracker
+# Система планирования
 
 Трекер маршрута онкопациентов (первичный приём → обследование → консилиум → лечение) для МКНЦ.
 Backend — FastAPI + SQLite, frontend — статические файлы, которые отдаёт тот же сервер.
@@ -82,7 +82,7 @@ python -m backend.cli purge-sessions      # удалить истёкшие се
 ## Тесты и проверки
 
 ```bash
-python -m pytest backend/tests -q      # 134 теста: auth, CRUD, CSRF, импорт/экспорт, XSS, CSP, аудит, сессии, backup/restore, smoke
+python -m pytest backend/tests -q      # 155 тестов: auth, CRUD, CSRF, импорт/экспорт, XSS, CSP, аудит, сессии, backup/restore, smoke
 pip-audit -r backend/requirements.txt  # проверка зависимостей на известные уязвимости
 node --check static/app.js             # синтаксис фронтенда (если установлен Node.js)
 ```

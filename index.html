@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark light">
-    <title>Clinic Tracker — управление онкопациентами</title>
+    <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
     <link rel="stylesheet" href="/static/styles.css">
 </head>
@@ -14,8 +14,8 @@
 <div class="login" id="loginScreen">
     <form class="login__box" id="loginForm">
         <img class="login__logo" src="/static/logo.png" alt="" width="56" height="56">
-        <h1 class="login__title">Clinic Tracker</h1>
-        <p class="login__subtitle">Система управления онкопациентами</p>
+        <h1 class="login__title">Система планирования</h1>
+        <p class="login__subtitle">Планирование маршрута лечения и контроль этапов</p>
 
         <p class="alert alert--danger is-hidden" id="loginError" role="alert"></p>
 
@@ -26,10 +26,7 @@
 
         <button type="submit" class="btn btn--primary btn--block btn--lg" id="loginSubmit">Войти</button>
 
-        <p class="login__hint">
-            Пароль задаёт администратор на сервере командой
-            <code>python -m backend.cli set-password</code>
-        </p>
+        <p class="login__hint">Для получения доступа обратитесь к администратору системы.</p>
     </form>
 </div>
 
@@ -41,7 +38,7 @@
     <aside class="sidebar" id="sidebar">
         <div class="sidebar__brand">
             <img class="sidebar__logo" src="/static/logo.png" alt="" width="28" height="28">
-            <span class="sidebar__name">Clinic Tracker</span>
+            <span class="sidebar__name">Система планирования</span>
             <span class="badge badge--muted">v2</span>
         </div>
 
@@ -69,7 +66,7 @@
             <button type="button" class="btn btn--icon topbar__menu" id="sidebarToggle" aria-label="Меню" aria-expanded="false" aria-controls="sidebar">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
             </button>
-            <span class="topbar__brand">Clinic Tracker</span>
+            <span class="topbar__brand">Планирование</span>
             <div class="topbar__spacer"></div>
             <span class="chip chip--neutral" title="Приложение работает локально, данные не покидают этот компьютер">Локальный режим</span>
             <button type="button" class="btn btn--ghost btn--sm" id="themeToggle" aria-pressed="false">Светлая тема</button>
@@ -85,14 +82,16 @@
                         <p class="pagehead__subtitle">Список всех пациентов клиники</p>
                     </div>
                     <div class="pagehead__actions">
-                        <button type="button" class="btn btn--ghost" id="triggerImportBtn">
+                        <!-- На узком экране импорт и экспорт прячутся под одну кнопку «Данные» -->
+                        <button type="button" class="btn btn--ghost only-wide" id="triggerImportBtn">
                             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
                             Импорт
                         </button>
-                        <button type="button" class="btn btn--ghost" id="openExportBtn">
+                        <button type="button" class="btn btn--ghost only-wide" id="openExportBtn">
                             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M4 21h16"/></svg>
                             Экспорт
                         </button>
+                        <button type="button" class="btn btn--ghost only-narrow" id="openDataSheetBtn">Данные</button>
                         <button type="button" class="btn btn--primary" id="openAddBtn">Новый пациент</button>
                     </div>
                 </div>
@@ -103,14 +102,19 @@
                         <label class="visually-hidden" for="searchInput">Поиск пациентов</label>
                         <input class="input search__input" type="search" id="searchInput" placeholder="Поиск по ФИО, диагнозу, врачу…">
                     </div>
-                    <label class="visually-hidden" for="filterStage">Фильтр по этапу</label>
-                    <select class="select" id="filterStage"></select>
-                    <label class="visually-hidden" for="filterHead">Фильтр по заведующему</label>
-                    <select class="select" id="filterHead"></select>
-                    <label class="visually-hidden" for="filterDeadline">Фильтр по сроку</label>
-                    <select class="select" id="filterDeadline"></select>
-                    <label class="visually-hidden" for="sortOrderSelect">Сортировка</label>
-                    <select class="select" id="sortOrderSelect"></select>
+                    <button type="button" class="btn btn--ghost only-narrow" id="openFiltersSheetBtn" aria-expanded="false">
+                        <span id="filtersBtnLabel">Фильтры</span>
+                    </button>
+                    <div class="toolbar__filters" id="toolbarFilters">
+                        <label class="visually-hidden" for="filterStage">Фильтр по этапу</label>
+                        <select class="select" id="filterStage"></select>
+                        <label class="visually-hidden" for="filterHead">Фильтр по заведующему</label>
+                        <select class="select" id="filterHead"></select>
+                        <label class="visually-hidden" for="filterDeadline">Фильтр по сроку</label>
+                        <select class="select" id="filterDeadline"></select>
+                        <label class="visually-hidden" for="sortOrderSelect">Сортировка</label>
+                        <select class="select" id="sortOrderSelect"></select>
+                    </div>
                 </div>
 
                 <div class="stats" id="statsRow"></div>
@@ -303,7 +307,7 @@
                 </div>
                 <div class="grid-2">
                     <div class="field">
-                        <label class="field__label" for="nosology">Нозология</label>
+                        <label class="field__label" for="nosology">Профиль клиентского пути</label>
                         <select class="select" id="nosology"></select>
                         <p class="field__hint">Определяет регламентные сроки и чек-лист обследований.</p>
                     </div>
@@ -460,6 +464,45 @@
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="closeImportReviewBtn">Отмена</button>
             <button type="button" class="btn btn--primary" id="confirmImportCommitBtn">Импортировать</button>
+        </div>
+    </div>
+</div>
+
+<!-- ПАНЕЛЬ «ДАННЫЕ» (мобильная) -->
+<div class="modal modal--sheet" id="dataSheet" role="dialog" aria-modal="true" aria-labelledby="dataSheetTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="dataSheetTitle">Данные</h2>
+            <button type="button" class="btn btn--icon" id="closeDataSheetBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body">
+            <button type="button" class="sheet-item" id="sheetImportBtn">
+                <span class="sheet-item__title">Импортировать</span>
+                <span class="sheet-item__hint">Загрузить пациентов из файла с проверкой и подтверждением</span>
+            </button>
+            <button type="button" class="sheet-item" id="sheetExportBtn">
+                <span class="sheet-item__title">Экспортировать</span>
+                <span class="sheet-item__hint">Выгрузить выбранных пациентов в файл</span>
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ПАНЕЛЬ ФИЛЬТРОВ (мобильная) -->
+<div class="modal modal--sheet" id="filtersSheet" role="dialog" aria-modal="true" aria-labelledby="filtersSheetTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="filtersSheetTitle">Фильтры и сортировка</h2>
+            <button type="button" class="btn btn--icon" id="closeFiltersSheetBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body" id="filtersSheetBody"></div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="sheetResetFiltersBtn">Сбросить</button>
+            <button type="button" class="btn btn--primary" id="applyFiltersSheetBtn">Показать</button>
         </div>
     </div>
 </div>

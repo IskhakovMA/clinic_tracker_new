@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Clinic Tracker — фронтенд.
+   Система планирования — фронтенд.
 
    Правила, которые нельзя нарушать (закреплены тестами backend/tests/test_frontend_csp.py):
      • разметка только через DOM API — никакой сборки HTML из строк;
@@ -1264,7 +1264,10 @@ const app = {
         document.documentElement.setAttribute('data-theme', theme);
         const toggle = $('themeToggle');
         if (toggle) {
+            // Надпись называет результат нажатия, а доступное имя — само действие.
+            const target = theme === 'dark' ? 'светлую' : 'тёмную';
             toggle.textContent = theme === 'dark' ? 'Светлая тема' : 'Тёмная тема';
+            toggle.setAttribute('aria-label', `Переключить на ${target} тему`);
             toggle.setAttribute('aria-pressed', theme === 'light' ? 'true' : 'false');
         }
         const select = $('themeSelect');
@@ -1632,7 +1635,7 @@ const app = {
         lines.push(`Пациент: ${p.name}, ${p.age} лет.`);
         lines.push(`Диагноз (МКБ-10): ${p.diagnosis || 'не указан'}.`);
         if (p.nosology && this.nosologyData[p.nosology]) {
-            lines.push(`Нозология: ${this.nosologyData[p.nosology].label}${p.diseaseStage ? ', стадия ' + p.diseaseStage : ''}.`);
+            lines.push(`Профиль клиентского пути: ${this.nosologyData[p.nosology].label}${p.diseaseStage ? ', стадия ' + p.diseaseStage : ''}.`);
         }
         lines.push(`Приоритет: ${this.PRIORITY_LABELS[p.priority] || p.priority}.`);
         lines.push(`Заведующий: ${p.head || 'не указан'}.`);
@@ -1682,9 +1685,9 @@ const app = {
         const text = this.generateSummary(p);
         try {
             await navigator.clipboard.writeText(text);
-            ui.toast('Саммари скопировано в буфер обмена.', 'good');
+            ui.toast('Сводка скопирована в буфер обмена.', 'good');
         } catch (e) {
-            ui.toast('Не удалось скопировать. Текст доступен во вкладке «Обзор».', 'warning');
+            ui.toast('Не удалось скопировать. Текст сводки доступен во вкладке «Обзор».', 'warning');
         }
     },
 
@@ -1761,8 +1764,50 @@ const app = {
         ]));
     },
 
+    /** Счётчик у мобильной кнопки «Фильтры»: сколько условий сейчас активно. */
+    activeFilterCount() {
+        return [this.stageFilter, this.headFilter, this.deadlineFilter].filter(Boolean).length;
+    },
+
+    updateFiltersButton() {
+        const label = $('filtersBtnLabel');
+        if (!label) return;
+        const count = this.activeFilterCount();
+        label.textContent = count ? `Фильтры · ${count}` : 'Фильтры';
+        const button = $('openFiltersSheetBtn');
+        button.setAttribute('aria-label', count
+            ? `Фильтры и сортировка, активных фильтров: ${count}`
+            : 'Фильтры и сортировка');
+    },
+
+    /** Панели-листы переиспользуют те же select-элементы, а не копию:
+        обработчики и значения остаются едиными для обеих раскладок. */
+    openFiltersSheet() {
+        $('filtersSheetBody').append($('toolbarFilters'));
+        $('openFiltersSheetBtn').setAttribute('aria-expanded', 'true');
+        ui.openModal('filtersSheet');
+    },
+
+    closeFiltersSheet() {
+        ui.closeModal('filtersSheet');
+        $('openFiltersSheetBtn').setAttribute('aria-expanded', 'false');
+        const toolbar = document.querySelector('#view-patients .toolbar');
+        toolbar.append($('toolbarFilters'));
+    },
+
+    resetFilters() {
+        this.stageFilter = null;
+        this.headFilter = null;
+        this.deadlineFilter = null;
+        $('filterStage').value = '';
+        $('filterHead').value = '';
+        $('filterDeadline').value = '';
+        this.renderPatients();
+    },
+
     renderPatients() {
         this.renderStats();
+        this.updateFiltersButton();
         const filtered = this.getFiltered();
         const body = $('patientsBody');
         const empty = $('patientsEmpty');
@@ -1878,7 +1923,7 @@ const app = {
                         on: { click: () => this.advanceToStage(p.id, nextNode.stage, this.stageNames[nextNode.stage]) },
                     }) : null,
                     el('button', {
-                        type: 'button', class: 'btn btn--ghost', text: 'Скопировать саммари',
+                        type: 'button', class: 'btn btn--ghost', text: 'Скопировать сводку',
                         on: { click: () => this.copySummary(p.id) },
                     }),
                     el('button', {
@@ -1951,7 +1996,7 @@ const app = {
                 this.checklistSummaryCard(p),
                 this.futurePlansCard(p),
                 el('div', { class: 'panel panel--pad' }, [
-                    el('h2', { class: 'section-title', text: 'Саммари для отчётности' }),
+                    el('h2', { class: 'section-title', text: 'Сводка для отчётности' }),
                     el('div', { class: 'summary', text: this.generateSummary(p) }),
                 ]),
             ]),
@@ -2160,7 +2205,7 @@ const app = {
                 el('legend', { class: 'fieldset__legend', text: 'Медицинская информация' }),
                 this.field('Диагноз (МКБ-10)', this.patientInput(p, 'diagnosis', 'text', p.diagnosis)),
                 el('div', { class: 'grid-2' }, [
-                    this.field('Нозология', this.patientSelect(p, 'nosology', [
+                    this.field('Профиль клиентского пути', this.patientSelect(p, 'nosology', [
                         option('', 'Не указана', !p.nosology),
                         ...Object.keys(this.nosologyData).map(key => option(key, this.nosologyData[key].label, p.nosology === key)),
                     ]), 'Определяет регламентные сроки и чек-лист.'),
@@ -2410,7 +2455,7 @@ const app = {
         const nosology = this.nosologyData[p.nosology];
 
         if (!occ || !nosology) {
-            return el('div', { class: 'panel' }, el('div', { class: 'empty', text: 'Чек-лист доступен после указания нозологии пациента.' }));
+            return el('div', { class: 'panel' }, el('div', { class: 'empty', text: 'Чек-лист доступен после указания профиля клиентского пути.' }));
         }
 
         const isExam = occ.stage === 'exam';
@@ -3240,6 +3285,22 @@ const app = {
         on('diagnosisLocalization', 'change', () => this.onLocalizationChange());
         on('stage', 'change', () => this.updateStageFields());
 
+        // Мобильные панели-листы: «Данные» и «Фильтры»
+        on('openDataSheetBtn', 'click', () => ui.openModal('dataSheet'));
+        on('closeDataSheetBtn', 'click', () => ui.closeModal('dataSheet'));
+        on('sheetImportBtn', 'click', () => {
+            ui.closeModal('dataSheet');
+            this.triggerImport();
+        });
+        on('sheetExportBtn', 'click', () => {
+            ui.closeModal('dataSheet');
+            this.openExportModal();
+        });
+        on('openFiltersSheetBtn', 'click', () => this.openFiltersSheet());
+        on('closeFiltersSheetBtn', 'click', () => this.closeFiltersSheet());
+        on('applyFiltersSheetBtn', 'click', () => this.closeFiltersSheet());
+        on('sheetResetFiltersBtn', 'click', () => this.resetFilters());
+
         // Экспорт
         on('openExportBtn', 'click', () => this.openExportModal());
         on('dataExportBtn', 'click', () => this.openExportModal());
@@ -3304,6 +3365,11 @@ const app = {
         }
         if (id === 'importReviewModal') {
             this.closeImportReviewModal();
+            return;
+        }
+        if (id === 'filtersSheet') {
+            // Селекты нужно вернуть в тулбар, иначе они останутся в скрытой панели.
+            this.closeFiltersSheet();
             return;
         }
         ui.closeModal(id);
