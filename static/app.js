@@ -230,6 +230,38 @@ const ui = {
         });
     },
 
+    /** Замена window.prompt для одиночного текстового значения. Promise<string|null>. */
+    textPrompt({ title, label, value = '' }) {
+        return new Promise(resolve => {
+            $('textPromptTitle').textContent = title;
+            $('textPromptLabel').textContent = label;
+            $('textPromptInput').value = value;
+
+            const form = $('textPromptForm');
+            const finish = (result) => {
+                form.removeEventListener('submit', onSubmit);
+                $('textPromptCancelBtn').removeEventListener('click', onCancel);
+                this.closeModal('textPromptModal');
+                resolve(result);
+            };
+            const onSubmit = (event) => {
+                event.preventDefault();
+                const trimmed = $('textPromptInput').value.trim();
+                if (!trimmed) {
+                    $('textPromptInput').focus();
+                    return;
+                }
+                finish(trimmed);
+            };
+            const onCancel = () => finish(null);
+
+            form.addEventListener('submit', onSubmit);
+            $('textPromptCancelBtn').addEventListener('click', onCancel);
+            this.pendingTextPromptCancel = onCancel;
+            this.openModal('textPromptModal');
+        });
+    },
+
     toast(message, kind = 'info') {
         const node = el('div', { class: `toast toast--${kind}`, text: message });
         $('toasts').append(node);
@@ -244,6 +276,10 @@ const ui = {
 const app = {
     patients: [],
     activityByPatient: {},
+    user: null,          // профиль из /api/auth/me; серверные права первичны
+    doctors: [],         // врачи, доступные для назначения лечащим
+    staffUsers: [],
+    departments: [],
     currentView: 'patients',
     currentPatientId: null,
     currentTab: 'overview',
@@ -1163,25 +1199,111 @@ const app = {
 
     /* ---------------------------------------------------------------- Запуск */
 
+    /** Подсказка интерфейсу; сервер проверяет каждое действие заново. */
+    can(permission) {
+        return !!(this.user && this.user.permissions && this.user.permissions[permission]);
+    },
+
+    isReadOnly() {
+        return this.can('readOnly');
+    },
+
     async init() {
         this.applyTheme(localStorage.getItem('theme') || 'dark');
         this.bindStaticControls();
         try {
             const me = await apiGetJson('/api/auth/me');
-            if (me && me.authenticated) await this.enterApp();
+            if (me && me.authenticated) {
+                this.user = me.user;
+                if (this.user.mustChangePassword) this.showForcePasswordForm();
+                else await this.enterApp();
+            }
         } catch (e) {
             // Бэкенд недоступен — остаёмся на экране входа.
         }
     },
 
+    showForcePasswordForm() {
+        $('loginScreen').classList.remove('is-hidden');
+        $('appScreen').classList.add('is-hidden');
+        $('loginForm').classList.add('is-hidden');
+        $('forcePasswordForm').classList.remove('is-hidden');
+        $('forceCurrentPassword').focus();
+    },
+
     async enterApp() {
         $('loginScreen').classList.add('is-hidden');
         $('appScreen').classList.remove('is-hidden');
+        this.applyRoleUI();
         await this.loadPatients();
         await this.loadActivity();
+        await this.loadDoctors();
         this.fillStaticSelects();
         this.showView('patients');
-        this.maybeOfferLegacyMigration();
+        if (this.can('importData')) this.maybeOfferLegacyMigration();
+    },
+
+    /** Скрыть недоступные разделы и действия по правам роли. Скрытие кнопок —
+     *  только удобство: backend отклоняет запрещённые запросы в любом случае. */
+    applyRoleUI() {
+        const u = this.user || { fullName: '', roleLabel: '', departments: [], permissions: {} };
+        $('profileName').textContent = u.fullName || '';
+        $('profileRole').textContent = u.roleLabel || '';
+        const depts = u.departments || [];
+        const deptsEl = $('profileDepartments');
+        const toggle = $('profileDeptsToggle');
+        const list = $('profileDeptsList');
+        list.classList.add('is-hidden');
+        toggle.setAttribute('aria-expanded', 'false');
+        if (depts.length === 0) {
+            deptsEl.textContent = '';
+            toggle.classList.add('is-hidden');
+        } else if (depts.length === 1) {
+            deptsEl.textContent = depts[0].name;
+            toggle.classList.add('is-hidden');
+        } else {
+            // Компактно: «2 подразделения» с раскрытием полного списка
+            deptsEl.textContent = '';
+            toggle.textContent = `${depts.length} ${this.pluralize(depts.length, 'подразделение', 'подразделения', 'подразделений')}`;
+            toggle.classList.remove('is-hidden');
+            list.replaceChildren(frag(depts.map(d => el('li', { text: d.name }))));
+        }
+
+        const navVisibility = {
+            data: this.can('importData') || this.can('exportData'),
+            staff: this.can('manageUsers'),
+            structure: this.can('manageDepartments'),
+            audit: this.can('viewAudit'),
+        };
+        for (const item of document.querySelectorAll('.nav__item')) {
+            const view = item.dataset.view;
+            if (view in navVisibility) item.classList.toggle('is-hidden', !navVisibility[view]);
+        }
+
+        $('readOnlyChip').classList.toggle('is-hidden', !this.isReadOnly());
+        $('openAddBtn').classList.toggle('is-hidden', !this.can('createPatients'));
+        $('triggerImportBtn').classList.toggle('is-hidden', !this.can('importData'));
+        $('openExportBtn').classList.toggle('is-hidden', !this.can('exportData'));
+        $('openDataSheetBtn').classList.toggle(
+            'is-hidden', !(this.can('importData') || this.can('exportData')));
+    },
+
+    pluralize(n, one, few, many) {
+        const mod10 = n % 10, mod100 = n % 100;
+        if (mod10 === 1 && mod100 !== 11) return one;
+        if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+        return many;
+    },
+
+    async loadDoctors() {
+        this.doctors = [];
+        if (!this.can('createPatients') || this.user.roleId === 'doctor') return;
+        try {
+            const data = await apiGetJson('/api/users/doctors');
+            this.doctors = data.doctors || [];
+        } catch (e) {
+            // Селект просто останется пустым; создание отклонит сервер.
+        }
     },
 
     /* --------------------------------------------------------------- Данные */
@@ -1248,6 +1370,8 @@ const app = {
         if (view === 'audit') this.renderAudit();
         if (view === 'settings') this.renderSettings();
         if (view === 'data') this.renderMigrationPanel();
+        if (view === 'staff') this.renderStaff();
+        if (view === 'structure') this.renderStructure();
         window.scrollTo(0, 0);
     },
 
@@ -1282,8 +1406,20 @@ const app = {
 
     /* ------------------------------------------------------------ Авторизация */
 
-    async login(password) {
-        await apiPost('/api/auth/login', { password });
+    async login(username, password) {
+        const result = await apiPost('/api/auth/login', { username, password });
+        this.user = result.user;
+        if (this.user.mustChangePassword) this.showForcePasswordForm();
+        else await this.enterApp();
+    },
+
+    async submitForcedPasswordChange(currentPassword, newPassword) {
+        await apiPost('/api/auth/change-password',
+            { currentPassword, newPassword });
+        const me = await apiGetJson('/api/auth/me');
+        this.user = me.user;
+        $('forcePasswordForm').classList.add('is-hidden');
+        $('loginForm').classList.remove('is-hidden');
         await this.enterApp();
     },
 
@@ -1740,6 +1876,37 @@ const app = {
             option('', 'Выберите заведующего', true),
             ...this.HEAD_OPTIONS.map(h => option(h, h)),
         ]));
+
+        this.fillDoctorSelect();
+    },
+
+    /** Селект «Лечащий врач» в форме создания зависит от роли:
+     *  врач — всегда сам (фиксировано); заведующий — врачи его отделений;
+     *  Разработчик — любой активный врач или «не сопоставлен». */
+    fillDoctorSelect() {
+        const select = $('doctor');
+        const hint = $('doctorHint');
+        if (!select) return;
+        if (this.user && this.user.roleId === 'doctor') {
+            select.replaceChildren(option(this.user.id, this.user.fullName, true));
+            select.disabled = true;
+            hint.textContent = 'Пациент закрепляется за вами. Выбрать другого врача нельзя.';
+            hint.classList.remove('is-hidden');
+            return;
+        }
+        select.disabled = false;
+        const options = [];
+        if (this.can('changeTreatingDoctor')) {
+            options.push(option('', '— Не сопоставлен (назначить позже) —', true));
+            hint.textContent = 'Пациент без врача попадёт в список «Несопоставленные лечащие врачи».';
+            hint.classList.remove('is-hidden');
+        } else {
+            options.push(option('', 'Выберите врача отделения', true));
+            hint.textContent = 'Доступны только врачи отделений, которыми вы управляете.';
+            hint.classList.remove('is-hidden');
+        }
+        options.push(...this.doctors.map(d => option(d.id, d.fullName)));
+        select.replaceChildren(frag(options));
     },
 
     renderStats() {
@@ -1805,9 +1972,32 @@ const app = {
         this.renderPatients();
     },
 
+    /** Счётчик несопоставленных пациентов для Разработчика: баннер в списке
+     *  с переходом к экрану сопоставления («Структура»). */
+    async updateUnresolvedBanner() {
+        const banner = $('unresolvedBanner');
+        if (!banner) return;
+        if (!this.can('changeTreatingDoctor')) {
+            banner.classList.add('is-hidden');
+            return;
+        }
+        // Считаем из уже загруженного scope-списка (Разработчик видит всех),
+        // чтобы не делать лишний запрос при каждом рендере.
+        const count = this.patients.filter(p => !p.treatingDoctorUserId).length;
+        if (!count) {
+            banner.classList.add('is-hidden');
+            return;
+        }
+        $('unresolvedBannerText').textContent =
+            `Пациентов без сопоставленного лечащего врача: ${count}. `
+            + 'Они не видны врачам и заведующим отделений.';
+        banner.classList.remove('is-hidden');
+    },
+
     renderPatients() {
         this.renderStats();
         this.updateFiltersButton();
+        this.updateUnresolvedBanner();
         const filtered = this.getFiltered();
         const body = $('patientsBody');
         const empty = $('patientsEmpty');
@@ -1816,7 +2006,9 @@ const app = {
             body.replaceChildren();
             empty.classList.remove('is-hidden');
             empty.textContent = this.patients.length === 0
-                ? 'Пациентов пока нет. Нажмите «Новый пациент», чтобы добавить первого.'
+                ? (this.can('createPatients')
+                    ? 'Пациентов пока нет. Нажмите «Новый пациент», чтобы добавить первого.'
+                    : 'В вашей области видимости пока нет пациентов.')
                 : 'По выбранным условиям никого не найдено. Измените фильтры или поиск.';
             return;
         }
@@ -1870,6 +2062,19 @@ const app = {
         this.renderPatientSide(p);
         this.renderTabs(p);
         this.renderTabPanel(p);
+        this.applyReadOnlyToPatientView();
+    },
+
+    /** Read-only роли: формы изменения не открываются. Backend всё равно
+     *  отклонит запись — это только согласование интерфейса с правами. */
+    applyReadOnlyToPatientView() {
+        if (!this.isReadOnly()) return;
+        for (const node of $('patientPanels').querySelectorAll('input, select, textarea')) {
+            node.disabled = true;
+        }
+        for (const node of $('patientPanels').querySelectorAll('button')) {
+            node.classList.add('is-hidden');
+        }
     },
 
     statusChip(p) {
@@ -1906,8 +2111,19 @@ const app = {
 
                 el('div', { class: 'pcard__block' }, [
                     el('div', { class: 'pcard__label', text: 'Ответственные' }),
-                    el('div', { class: 'pcard__value', text: p.doctor || 'Врач не указан' }),
+                    el('div', {
+                        class: 'pcard__value',
+                        text: p.treatingDoctorName || p.doctor || 'Врач не указан',
+                    }),
+                    !p.treatingDoctorUserId ? el('div', {
+                        class: 'pcard__sub',
+                        text: 'Учётная запись врача не сопоставлена',
+                    }) : null,
                     el('div', { class: 'pcard__sub', text: p.head ? `Заведующий: ${p.head}` : 'Заведующий не указан' }),
+                    this.can('changeTreatingDoctor') ? el('button', {
+                        type: 'button', class: 'btn btn--ghost btn--sm', text: 'Сменить лечащего врача',
+                        on: { click: () => this.openDoctorModal(p.id) },
+                    }) : null,
                 ]),
 
                 el('div', { class: 'pcard__block' }, [
@@ -1917,7 +2133,7 @@ const app = {
                 ]),
 
                 el('div', { class: 'pcard__actions' }, [
-                    nextNode ? el('button', {
+                    (nextNode && this.can('editPatients')) ? el('button', {
                         type: 'button', class: 'btn btn--primary',
                         text: `Перевести: ${this.stageNames[nextNode.stage]}`,
                         on: { click: () => this.advanceToStage(p.id, nextNode.stage, this.stageNames[nextNode.stage]) },
@@ -1926,10 +2142,10 @@ const app = {
                         type: 'button', class: 'btn btn--ghost', text: 'Скопировать сводку',
                         on: { click: () => this.copySummary(p.id) },
                     }),
-                    el('button', {
+                    this.can('deletePatients') ? el('button', {
                         type: 'button', class: 'btn btn--quiet', text: 'Удалить пациента',
                         on: { click: () => this.deletePatient(p.id) },
-                    }),
+                    }) : null,
                 ]),
             ]),
         ]));
@@ -1960,6 +2176,7 @@ const app = {
                     this.currentTab = tab.key;
                     this.renderTabs();
                     this.renderTabPanel(this.getPatient(this.currentPatientId));
+                    this.applyReadOnlyToPatientView();
                 },
             },
         }))));
@@ -2223,7 +2440,14 @@ const app = {
                         option('high', 'Высокий', p.priority === 'high'),
                         option('normal', 'Обычный', p.priority === 'normal'),
                     ])),
-                    this.field('Лечащий врач', this.patientInput(p, 'doctor', 'text', p.doctor)),
+                    // Лечащий врач меняется только Разработчиком через отдельный
+                    // диалог с подтверждением — свободный текст здесь недоступен.
+                    this.field('Лечащий врач', el('input', {
+                        class: 'input', type: 'text',
+                        value: p.treatingDoctorName || p.doctor || '',
+                        disabled: 'disabled',
+                        'aria-label': 'Лечащий врач (изменяется Разработчиком)',
+                    })),
                 ]),
                 this.field('Заведующий', this.patientSelect(p, 'head',
                     this.HEAD_OPTIONS.map(h => option(h, h, p.head === h)))),
@@ -2662,6 +2886,13 @@ const app = {
                 export: 'Экспорт', migration_committed: 'Перенос локальных данных',
                 backup_created: 'Создана резервная копия', restore_performed: 'Восстановление из копии',
                 db_integrity_failed: 'Ошибка целостности базы',
+                user_created: 'Создан сотрудник', user_updated: 'Изменён сотрудник',
+                role_changed: 'Изменена роль', user_blocked: 'Сотрудник заблокирован',
+                user_deactivated: 'Сотрудник деактивирован', user_restored: 'Сотрудник восстановлен',
+                password_reset: 'Сброс пароля', sessions_terminated: 'Завершены сессии',
+                department_created: 'Создано отделение', department_updated: 'Изменено отделение',
+                head_assigned: 'Назначен заведующий', membership_changed: 'Изменён состав отделения',
+                treating_doctor_changed: 'Смена лечащего врача', access_denied: 'Отказ в доступе',
             };
             panel.replaceChildren(frag(data.events.map(event => el('div', { class: 'list-row' }, [
                 el('div', { class: 'list-row__main' }, [
@@ -2677,11 +2908,13 @@ const app = {
     },
 
     renderSettings() {
+        const u = this.user || {};
         $('settingsInfo').replaceChildren(frag([
+            el('dt', { text: 'Учётная запись' }), el('dd', { text: u.fullName ? `${u.fullName} (${u.roleLabel})` : '—' }),
             el('dt', { text: 'Режим' }), el('dd', { text: 'Локальный, только 127.0.0.1' }),
             el('dt', { text: 'Хранилище' }), el('dd', { text: 'SQLite на сервере' }),
             el('dt', { text: 'В браузере' }), el('dd', { text: 'только выбранная тема оформления' }),
-            el('dt', { text: 'Смена пароля' }), el('dd', {}, el('code', { text: 'python -m backend.cli set-password' })),
+            el('dt', { text: 'Первый Разработчик' }), el('dd', {}, el('code', { text: 'python -m backend.cli create-developer' })),
             el('dt', { text: 'Резервная копия' }), el('dd', {}, el('code', { text: 'python -m backend.cli backup' })),
         ]));
     },
@@ -2942,6 +3175,11 @@ const app = {
             return this.showFormError('Для первичного приёма укажите фактическую дату — это обязательное поле.');
         }
 
+        const doctorSelect = $('doctor');
+        const doctorUserId = doctorSelect.value || null;
+        const doctorLabel = doctorSelect.selectedOptions.length
+            ? (doctorUserId ? doctorSelect.selectedOptions[0].textContent : '')
+            : '';
         const payload = {
             name: fio,
             age: parseInt($('age').value, 10) || 0,
@@ -2951,7 +3189,8 @@ const app = {
             diagnosis,
             nosology: $('nosology').value,
             diseaseStage: $('diseaseStage').value,
-            doctor: $('doctor').value,
+            doctor: doctorLabel,
+            treatingDoctorUserId: doctorUserId,
             head,
             complaint: $('complaint').value,
             events: this.buildEventsFromForm(stage),
@@ -2967,6 +3206,542 @@ const app = {
             this.openPatient(created.id);
         } catch (e) {
             this.showFormError('Не удалось создать пациента: ' + e.message);
+        }
+    },
+
+    /* ================================================= СМЕНА ЛЕЧАЩЕГО ВРАЧА */
+
+    async openDoctorModal(patientId) {
+        const p = this.getPatient(patientId);
+        if (!p) return;
+        this.doctorModalPatientId = patientId;
+        $('doctorModalCurrent').textContent =
+            `Текущий врач: ${p.treatingDoctorName || p.doctor || 'не сопоставлен'}. Пациент: ${p.name}.`;
+        let doctors = [];
+        try {
+            doctors = (await apiGetJson('/api/users/doctors')).doctors || [];
+        } catch (e) {
+            ui.toast('Не удалось загрузить список врачей: ' + e.message, 'danger');
+            return;
+        }
+        $('doctorModalSelect').replaceChildren(frag([
+            option('', '— Не сопоставлен —', !p.treatingDoctorUserId),
+            ...doctors.map(d => option(d.id, d.fullName, d.id === p.treatingDoctorUserId)),
+        ]));
+        this.updateDoctorModalDept();
+        ui.openModal('doctorModal');
+    },
+
+    async updateDoctorModalDept() {
+        const userId = $('doctorModalSelect').value;
+        const hint = $('doctorModalDept');
+        if (!userId) {
+            hint.textContent = 'Пациент попадёт в список «Несопоставленные лечащие врачи».';
+            return;
+        }
+        try {
+            const data = await apiGetJson('/api/departments');
+            const names = data.departments
+                .filter(d => d.doctors.some(doc => doc.id === userId))
+                .map(d => d.name);
+            hint.textContent = names.length
+                ? `Отделение врача: ${names.join(', ')}`
+                : 'Врач не состоит ни в одном отделении — заведующие его пациентов не увидят.';
+        } catch (e) {
+            hint.textContent = '';
+        }
+    },
+
+    async submitDoctorChange(event) {
+        event.preventDefault();
+        const patientId = this.doctorModalPatientId;
+        const userId = $('doctorModalSelect').value || null;
+        try {
+            const updated = await apiPut(`/api/patients/${patientId}/treating-doctor`, { userId });
+            this.replacePatientInCache(updated);
+            ui.closeModal('doctorModal');
+            ui.toast('Лечащий врач изменён. Область доступа обновлена.', 'good');
+            this.refreshCurrent();
+        } catch (e) {
+            ui.toast('Не удалось сменить врача: ' + e.message, 'danger');
+        }
+    },
+
+    /* ======================================================== РАЗДЕЛ «СОТРУДНИКИ» */
+
+    ROLE_LABELS: {
+        developer: 'Разработчик',
+        deputy_chief_oncology: 'Заместитель главного врача по онкологии',
+        caop_head: 'Заведующий ЦАОП',
+        department_head: 'Заведующий отделением',
+        doctor: 'Врач',
+    },
+    STATUS_LABELS: { active: 'Активен', blocked: 'Заблокирован', deactivated: 'Деактивирован' },
+
+    staffFilters: { query: '', role: '', department: '', status: '' },
+
+    async loadStructureData() {
+        const data = await apiGetJson('/api/departments');
+        this.departments = data.departments || [];
+        this.doctorsWithoutDepartment = data.doctorsWithoutDepartment || [];
+    },
+
+    async renderStaff() {
+        if (!this.can('manageUsers')) return;
+        try {
+            await this.loadStructureData();
+            const params = new URLSearchParams();
+            if (this.staffFilters.query) params.set('query', this.staffFilters.query);
+            if (this.staffFilters.role) params.set('role', this.staffFilters.role);
+            if (this.staffFilters.department) params.set('department', this.staffFilters.department);
+            if (this.staffFilters.status) params.set('status', this.staffFilters.status);
+            const qs = params.toString();
+            this.staffUsers = (await apiGetJson('/api/users' + (qs ? `?${qs}` : ''))).users;
+        } catch (e) {
+            $('staffEmpty').classList.remove('is-hidden');
+            $('staffEmpty').textContent = 'Не удалось загрузить сотрудников: ' + e.message;
+            return;
+        }
+        this.fillStaffFilterSelects();
+        const body = $('staffBody');
+        const empty = $('staffEmpty');
+        if (!this.staffUsers.length) {
+            body.replaceChildren();
+            empty.classList.remove('is-hidden');
+            empty.textContent = 'Сотрудники не найдены. Измените фильтры или создайте учётную запись.';
+            return;
+        }
+        empty.classList.add('is-hidden');
+        body.replaceChildren(frag(this.staffUsers.map(u => this.staffRow(u))));
+    },
+
+    fillStaffFilterSelects() {
+        const roleSel = $('staffRoleFilter');
+        if (!roleSel.options.length) {
+            roleSel.replaceChildren(frag([
+                option('', 'Все роли', true),
+                ...Object.entries(this.ROLE_LABELS).map(([id, label]) => option(id, label)),
+            ]));
+            $('staffStatusFilter').replaceChildren(frag([
+                option('', 'Все статусы', true),
+                ...Object.entries(this.STATUS_LABELS).map(([id, label]) => option(id, label)),
+            ]));
+        }
+        const deptSel = $('staffDeptFilter');
+        const current = this.staffFilters.department;
+        deptSel.replaceChildren(frag([
+            option('', 'Все отделения', !current),
+            ...this.departments.map(d => option(d.id, d.name, d.id === current)),
+        ]));
+    },
+
+    staffRow(u) {
+        const deptNames = (u.departments || []).map(d => d.name).join(', ') || '—';
+        const statusChipClass = { active: 'chip--good', blocked: 'chip--danger', deactivated: 'chip--neutral' }[u.status] || 'chip--neutral';
+        const actionBtn = (label, handler) => el('button', {
+            type: 'button', class: 'btn btn--ghost btn--sm', text: label, on: { click: handler },
+        });
+        const actions = [actionBtn('Изменить', () => this.openStaffModal(u))];
+        if (u.status === 'active') {
+            actions.push(actionBtn('Блокировать', () => this.setStaffStatus(u, 'blocked')));
+            actions.push(actionBtn('Деактивировать', () => this.setStaffStatus(u, 'deactivated')));
+        } else {
+            actions.push(actionBtn('Восстановить', () => this.setStaffStatus(u, 'active')));
+        }
+        actions.push(actionBtn('Сброс пароля', () => this.resetStaffPassword(u)));
+        actions.push(actionBtn('Завершить сессии', () => this.terminateStaffSessions(u)));
+        return el('tr', {}, [
+            el('td', {}, el('div', { class: 'person__name', text: u.fullName })),
+            el('td', {}, el('code', { text: u.username })),
+            el('td', { text: u.roleLabel }),
+            el('td', { text: deptNames }),
+            el('td', {}, el('span', { class: `chip ${statusChipClass}`, text: this.STATUS_LABELS[u.status] || u.status })),
+            el('td', { class: 'cell-when', text: u.lastLoginAt ? this.formatDateTime(u.lastLoginAt) : '—' }),
+            el('td', { class: 'cell-actions' }, actions),
+        ]);
+    },
+
+    openStaffModal(existing) {
+        this.staffModalUserId = existing ? existing.id : null;
+        $('staffModalTitle').textContent = existing ? 'Изменить сотрудника' : 'Новый сотрудник';
+        $('staffForm').reset();
+        $('staffFormError').classList.add('is-hidden');
+        $('staffRole').replaceChildren(frag(
+            Object.entries(this.ROLE_LABELS).map(([id, label]) =>
+                option(id, label, existing ? existing.roleId === id : id === 'doctor')),
+        ));
+        const selectedDepts = new Set((existing ? existing.departments : []).map(d => d.id));
+        $('staffDepartments').replaceChildren(frag(
+            this.departments
+                .filter(d => d.status === 'active' || selectedDepts.has(d.id))
+                .map(d => option(d.id, d.name, selectedDepts.has(d.id))),
+        ));
+        if (existing) {
+            $('staffFullName').value = existing.fullName;
+            $('staffUsername').value = existing.username;
+            $('staffUsername').disabled = true;   // логин неизменяем
+            $('staffPasswordField').classList.add('is-hidden');
+            $('staffMustChangeField').classList.add('is-hidden');
+        } else {
+            $('staffUsername').disabled = false;
+            $('staffPasswordField').classList.remove('is-hidden');
+            $('staffMustChangeField').classList.remove('is-hidden');
+            $('staffMustChange').checked = true;
+        }
+        ui.openModal('staffModal');
+    },
+
+    async submitStaffForm(event) {
+        event.preventDefault();
+        const errorBox = $('staffFormError');
+        errorBox.classList.add('is-hidden');
+        const departmentIds = [...$('staffDepartments').selectedOptions].map(o => o.value);
+        try {
+            if (this.staffModalUserId) {
+                await apiPatch(`/api/users/${this.staffModalUserId}`, {
+                    fullName: $('staffFullName').value,
+                    roleId: $('staffRole').value,
+                    departmentIds,
+                });
+                ui.toast('Данные сотрудника обновлены.', 'good');
+            } else {
+                if (!$('staffPassword').value) {
+                    errorBox.textContent = 'Задайте временный пароль (не короче 8 символов).';
+                    errorBox.classList.remove('is-hidden');
+                    return;
+                }
+                await apiPost('/api/users', {
+                    username: $('staffUsername').value.trim(),
+                    fullName: $('staffFullName').value,
+                    roleId: $('staffRole').value,
+                    password: $('staffPassword').value,
+                    mustChangePassword: $('staffMustChange').checked,
+                    departmentIds,
+                });
+                ui.toast('Учётная запись создана.', 'good');
+            }
+            // Пароль не задерживается в DOM дольше необходимого
+            $('staffPassword').value = '';
+            ui.closeModal('staffModal');
+            this.renderStaff();
+        } catch (e) {
+            errorBox.textContent = e.message;
+            errorBox.classList.remove('is-hidden');
+        }
+    },
+
+    async setStaffStatus(u, status) {
+        const texts = {
+            blocked: `Заблокировать «${u.fullName}»? Все активные сессии будут завершены, вход станет невозможен.`,
+            deactivated: `Деактивировать «${u.fullName}»? Учётная запись сохранится, но вход станет невозможен.`,
+            active: `Восстановить доступ для «${u.fullName}»?`,
+        };
+        const confirmed = await ui.confirm({
+            title: 'Изменить статус сотрудника?',
+            text: texts[status],
+            okLabel: 'Подтвердить',
+            danger: status !== 'active',
+        });
+        if (!confirmed) return;
+        try {
+            await apiPatch(`/api/users/${u.id}`, { status });
+            ui.toast('Статус обновлён.', 'good');
+            this.renderStaff();
+        } catch (e) {
+            ui.toast('Не удалось изменить статус: ' + e.message, 'danger');
+        }
+    },
+
+    generateTempPassword() {
+        const alphabet = 'abcdefghjkmnpqrstuvwxyzABCDEFGHJKMNPQRSTUVWXYZ23456789';
+        const bytes = new Uint32Array(14);
+        crypto.getRandomValues(bytes);
+        return [...bytes].map(b => alphabet[b % alphabet.length]).join('');
+    },
+
+    async resetStaffPassword(u) {
+        // Временный пароль показывается ровно один раз — в этом подтверждении.
+        const tempPassword = this.generateTempPassword();
+        const confirmed = await ui.confirm({
+            title: 'Сбросить пароль?',
+            text: `Новый временный пароль для «${u.fullName}»: ${tempPassword}\n`
+                + 'Запишите его сейчас — он показывается только один раз. '
+                + 'Все сессии сотрудника будут завершены, при входе потребуется смена пароля.',
+            okLabel: 'Сбросить',
+        });
+        if (!confirmed) return;
+        try {
+            await apiPost(`/api/users/${u.id}/reset-password`,
+                { newPassword: tempPassword, mustChangePassword: true });
+            ui.toast('Пароль сброшен. Сессии сотрудника завершены.', 'good');
+        } catch (e) {
+            ui.toast('Не удалось сбросить пароль: ' + e.message, 'danger');
+        }
+    },
+
+    async terminateStaffSessions(u) {
+        const confirmed = await ui.confirm({
+            title: 'Завершить сессии?',
+            text: `Все активные сессии «${u.fullName}» будут завершены немедленно.`,
+            okLabel: 'Завершить',
+        });
+        if (!confirmed) return;
+        try {
+            const r = await apiPost(`/api/users/${u.id}/terminate-sessions`);
+            ui.toast(`Завершено сессий: ${r.terminated}.`, 'good');
+        } catch (e) {
+            ui.toast('Не удалось завершить сессии: ' + e.message, 'danger');
+        }
+    },
+
+    /* ======================================================== РАЗДЕЛ «СТРУКТУРА» */
+
+    async renderStructure() {
+        if (!this.can('manageDepartments')) return;
+        const panel = $('structurePanel');
+        panel.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
+        let headUsers = [];
+        let doctorUsers = [];
+        try {
+            await this.loadStructureData();
+            const all = (await apiGetJson('/api/users')).users;
+            headUsers = all.filter(u => u.roleId === 'department_head' && u.status === 'active');
+            doctorUsers = all.filter(u => u.roleId === 'doctor' && u.status === 'active');
+        } catch (e) {
+            panel.replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить структуру: ' + e.message }));
+            return;
+        }
+
+        const nodes = [el('h2', { class: 'panel__title', text: 'Отделения' })];
+        if (!this.departments.length) {
+            nodes.push(el('p', { class: 'panel__text', text: 'Отделений пока нет. Создайте первое — «Новое отделение».' }));
+        }
+        nodes.push(...this.departments.map(d => this.departmentCard(d, headUsers, doctorUsers)));
+
+        if (this.doctorsWithoutDepartment.length) {
+            nodes.push(el('h2', { class: 'panel__title', text: 'Врачи без отделения' }));
+            nodes.push(el('ul', { class: 'dept__doctors' },
+                this.doctorsWithoutDepartment.map(d => el('li', { text: d.fullName }))));
+        }
+        panel.replaceChildren(frag(nodes));
+        this.renderUnresolvedPanel();
+    },
+
+    departmentCard(d, headUsers, doctorUsers) {
+        const memberIds = new Set(d.doctors.map(doc => doc.id));
+        const addable = doctorUsers.filter(u => !memberIds.has(u.id));
+        const headSelect = el('select', { class: 'select', 'aria-label': `Заведующий: ${d.name}` }, [
+            option('', d.heads.length ? '— Снять заведующего —' : 'Выберите заведующего', !d.heads.length),
+            ...headUsers.map(h => option(h.id, h.fullName, d.heads.some(x => x.id === h.id))),
+        ]);
+        const addDoctorSelect = el('select', { class: 'select', 'aria-label': `Добавить врача: ${d.name}` }, [
+            option('', 'Выберите врача', true),
+            ...addable.map(u => option(u.id, u.fullName)),
+        ]);
+        const archived = d.status === 'archived';
+        return el('div', { class: 'dept' }, [
+            el('div', { class: 'dept__head' }, [
+                el('span', { class: 'dept__name', text: d.name }),
+                el('span', {
+                    class: `chip ${archived ? 'chip--neutral' : 'chip--good'}`,
+                    text: archived ? 'Архив' : 'Активно',
+                }),
+                el('span', { class: 'muted', text: `Врачей: ${d.doctorCount}` }),
+                !d.heads.length && !archived
+                    ? el('span', { class: 'chip chip--warning', text: 'Без заведующего' }) : null,
+                !archived ? el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Переименовать',
+                    on: { click: () => this.renameDepartment(d) },
+                }) : null,
+                !archived ? el('button', {
+                    type: 'button', class: 'btn btn--quiet btn--sm', text: 'Архивировать',
+                    on: { click: () => this.archiveDepartment(d) },
+                }) : null,
+            ]),
+            !archived ? el('div', { class: 'dept__row' }, [
+                el('span', { class: 'dept__label', text: 'Заведующий:' }),
+                headSelect,
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Назначить',
+                    on: { click: () => this.assignHead(d, headSelect.value) },
+                }),
+            ]) : el('div', { class: 'dept__row' }, [
+                el('span', { class: 'dept__label', text: 'Заведующий:' }),
+                el('span', { text: d.heads.map(h => h.fullName).join(', ') || '—' }),
+            ]),
+            el('ul', { class: 'dept__doctors' }, d.doctors.map(doc => el('li', {}, [
+                el('span', { text: doc.fullName }),
+                doc.status !== 'active'
+                    ? el('span', { class: 'chip chip--neutral', text: this.STATUS_LABELS[doc.status] || doc.status }) : null,
+                !archived ? el('button', {
+                    type: 'button', class: 'btn btn--quiet btn--sm', text: 'Убрать из отделения',
+                    on: { click: () => this.removeDoctorFromDept(d, doc) },
+                }) : null,
+            ]))),
+            !archived ? el('div', { class: 'dept__row' }, [
+                el('span', { class: 'dept__label', text: 'Добавить врача:' }),
+                addDoctorSelect,
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Добавить',
+                    on: { click: () => this.addDoctorToDept(d, addDoctorSelect.value) },
+                }),
+            ]) : null,
+        ]);
+    },
+
+    async createDepartment() {
+        const name = await ui.textPrompt({
+            title: 'Новое отделение',
+            label: 'Название отделения',
+        });
+        if (!name) return;
+        try {
+            await apiPost('/api/departments', { name });
+            ui.toast('Отделение создано.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось создать отделение: ' + e.message, 'danger');
+        }
+    },
+
+    async renameDepartment(d) {
+        const name = await ui.textPrompt({
+            title: 'Переименовать отделение',
+            label: 'Новое название',
+            value: d.name,
+        });
+        if (!name || name === d.name) return;
+        try {
+            await apiPatch(`/api/departments/${d.id}`, { name });
+            ui.toast('Отделение переименовано.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось переименовать: ' + e.message, 'danger');
+        }
+    },
+
+    async archiveDepartment(d) {
+        const confirmed = await ui.confirm({
+            title: 'Архивировать отделение?',
+            text: `«${d.name}» перестанет участвовать в области видимости заведующих. `
+                + 'Физическое удаление не выполняется: врачи, пациенты и история сохраняются.',
+            okLabel: 'Архивировать',
+        });
+        if (!confirmed) return;
+        try {
+            await apiDelete(`/api/departments/${d.id}`);
+            ui.toast('Отделение архивировано.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось архивировать: ' + e.message, 'danger');
+        }
+    },
+
+    async assignHead(d, headUserId) {
+        try {
+            if (headUserId) await apiPatch(`/api/departments/${d.id}`, { headUserId });
+            else await apiPatch(`/api/departments/${d.id}`, { clearHead: true });
+            ui.toast('Заведующий обновлён.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось назначить заведующего: ' + e.message, 'danger');
+        }
+    },
+
+    async addDoctorToDept(d, userId) {
+        if (!userId) return;
+        try {
+            await apiPost(`/api/departments/${d.id}/doctors`, { userId });
+            ui.toast('Врач добавлен в отделение.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось добавить врача: ' + e.message, 'danger');
+        }
+    },
+
+    async removeDoctorFromDept(d, doc) {
+        const confirmed = await ui.confirm({
+            title: 'Убрать врача из отделения?',
+            text: `«${doc.fullName}» больше не будет относиться к «${d.name}». `
+                + 'Пациенты врача выпадут из области видимости заведующего этого отделения.',
+            okLabel: 'Убрать',
+        });
+        if (!confirmed) return;
+        try {
+            await apiDelete(`/api/departments/${d.id}/doctors/${doc.id}`);
+            ui.toast('Связь врача с отделением удалена.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось убрать врача: ' + e.message, 'danger');
+        }
+    },
+
+    async renderUnresolvedPanel() {
+        const panel = $('unresolvedPanel');
+        let unresolved = [];
+        try {
+            unresolved = (await apiGetJson('/api/patients/unresolved')).patients;
+        } catch (e) {
+            panel.replaceChildren();
+            return;
+        }
+        if (!unresolved.length) {
+            panel.replaceChildren(frag([
+                el('h2', { class: 'panel__title', text: 'Несопоставленные лечащие врачи' }),
+                el('p', { class: 'panel__text', text: 'Все пациенты сопоставлены с учётными записями врачей.' }),
+            ]));
+            return;
+        }
+        let doctors = [];
+        try {
+            doctors = (await apiGetJson('/api/users/doctors')).doctors || [];
+        } catch (e) { /* селекты будут пустыми */ }
+        panel.replaceChildren(frag([
+            el('h2', { class: 'panel__title', text: 'Несопоставленные лечащие врачи' }),
+            el('p', {
+                class: 'panel__text',
+                text: 'Эти пациенты видны только Разработчику и глобальным read-only ролям. '
+                    + 'Сопоставьте каждому существующую учётную запись врача — автоматический выбор '
+                    + 'при неоднозначных ФИО намеренно не выполняется.',
+            }),
+            ...unresolved.map(p => {
+                const select = el('select', { class: 'select', 'aria-label': `Врач для: ${p.name}` }, [
+                    option('', 'Выберите учётную запись врача', true),
+                    ...doctors.map(d => option(d.id, d.fullName)),
+                ]);
+                return el('div', { class: 'dept__row' }, [
+                    el('span', { class: 'dept__label', text: p.name }),
+                    el('span', { class: 'muted', text: p.legacyDoctor ? `было: ${p.legacyDoctor}` : 'врач не указан' }),
+                    select,
+                    el('button', {
+                        type: 'button', class: 'btn btn--ghost btn--sm', text: 'Сопоставить',
+                        on: { click: () => this.resolveLegacyDoctor(p, select.value) },
+                    }),
+                ]);
+            }),
+        ]));
+    },
+
+    async resolveLegacyDoctor(p, userId) {
+        if (!userId) {
+            ui.toast('Выберите учётную запись врача.', 'warning');
+            return;
+        }
+        const confirmed = await ui.confirm({
+            title: 'Подтвердить сопоставление?',
+            text: `Пациент «${p.name}» будет закреплён за выбранным врачом. `
+                + 'Врач и заведующий его отделения немедленно получат доступ.',
+            okLabel: 'Сопоставить',
+            danger: false,
+        });
+        if (!confirmed) return;
+        try {
+            await apiPut(`/api/patients/${p.id}/treating-doctor`, { userId });
+            await this.loadPatients();
+            ui.toast('Пациент сопоставлен с врачом.', 'good');
+            this.renderStructure();
+        } catch (e) {
+            ui.toast('Не удалось сопоставить: ' + e.message, 'danger');
         }
     },
 
@@ -3212,20 +3987,85 @@ const app = {
             const button = $('loginSubmit');
             button.disabled = true;
             try {
-                await this.login($('password').value);
+                await this.login($('username').value, $('password').value);
+                $('password').value = '';
             } catch (err) {
                 errorBox.textContent = err.status === 429
                     ? 'Слишком много попыток входа. Подождите немного и попробуйте снова.'
-                    : err.status === 503
-                        ? 'Пароль на сервере ещё не задан. Обратитесь к администратору.'
-                        : 'Неверный пароль.';
+                    : 'Неверный логин или пароль.';
                 errorBox.classList.remove('is-hidden');
                 $('password').focus();
             } finally {
                 button.disabled = false;
             }
         });
+
+        // Обязательная смена временного пароля
+        $('forcePasswordForm').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const errorBox = $('forcePasswordError');
+            errorBox.classList.add('is-hidden');
+            const pw1 = $('forceNewPassword').value;
+            const pw2 = $('forceNewPassword2').value;
+            if (pw1 !== pw2) {
+                errorBox.textContent = 'Новые пароли не совпадают.';
+                errorBox.classList.remove('is-hidden');
+                return;
+            }
+            const button = $('forcePasswordSubmit');
+            button.disabled = true;
+            try {
+                await this.submitForcedPasswordChange($('forceCurrentPassword').value, pw1);
+                $('forceCurrentPassword').value = '';
+                $('forceNewPassword').value = '';
+                $('forceNewPassword2').value = '';
+            } catch (err) {
+                errorBox.textContent = err.status === 401
+                    ? 'Временный пароль указан неверно.'
+                    : err.message;
+                errorBox.classList.remove('is-hidden');
+            } finally {
+                button.disabled = false;
+            }
+        });
+
         on('logoutBtn', 'click', () => this.logout());
+        on('profileDeptsToggle', 'click', () => {
+            const list = $('profileDeptsList');
+            const open = list.classList.toggle('is-hidden');
+            $('profileDeptsToggle').setAttribute('aria-expanded', open ? 'false' : 'true');
+        });
+
+        // Сотрудники
+        on('openStaffCreateBtn', 'click', () => this.openStaffModal(null));
+        on('closeStaffBtn', 'click', () => ui.closeModal('staffModal'));
+        on('closeStaffIconBtn', 'click', () => ui.closeModal('staffModal'));
+        $('staffForm').addEventListener('submit', (event) => this.submitStaffForm(event));
+        on('staffSearchInput', 'input', (event) => {
+            this.staffFilters.query = event.target.value;
+            this.renderStaff();
+        });
+        on('staffRoleFilter', 'change', (event) => {
+            this.staffFilters.role = event.target.value;
+            this.renderStaff();
+        });
+        on('staffDeptFilter', 'change', (event) => {
+            this.staffFilters.department = event.target.value;
+            this.renderStaff();
+        });
+        on('staffStatusFilter', 'change', (event) => {
+            this.staffFilters.status = event.target.value;
+            this.renderStaff();
+        });
+
+        // Структура
+        on('openDeptCreateBtn', 'click', () => this.createDepartment());
+        on('unresolvedBannerBtn', 'click', () => this.showView('structure'));
+
+        // Смена лечащего врача
+        $('doctorForm').addEventListener('submit', (event) => this.submitDoctorChange(event));
+        on('doctorCancelBtn', 'click', () => ui.closeModal('doctorModal'));
+        on('doctorModalSelect', 'change', () => this.updateDoctorModalDept());
 
         // Навигация
         for (const item of document.querySelectorAll('.nav__item')) {
@@ -3361,6 +4201,10 @@ const app = {
         }
         if (id === 'promptModal' && ui.pendingPromptCancel) {
             ui.pendingPromptCancel();
+            return;
+        }
+        if (id === 'textPromptModal' && ui.pendingTextPromptCancel) {
+            ui.pendingTextPromptCancel();
             return;
         }
         if (id === 'importReviewModal') {

@@ -32,11 +32,6 @@ def verify_password(plain: str, password_hash: str) -> bool:
         return False
 
 
-def get_password_hash(conn: sqlite3.Connection) -> str | None:
-    row = conn.execute("SELECT password_hash FROM app_login WHERE id = 1").fetchone()
-    return row["password_hash"] if row else None
-
-
 class WeakPasswordError(ValueError):
     """Password rejected by policy — message is safe to show the operator."""
 
@@ -48,41 +43,6 @@ def validate_password_strength(plain: str) -> None:
         )
     if plain.strip().lower() in config.WEAK_PASSWORDS:
         raise WeakPasswordError("Этот пароль слишком очевидный, выберите другой.")
-
-
-def set_password(conn: sqlite3.Connection, plain: str, *, revoke_sessions: bool = True) -> None:
-    """Replace the stored Argon2id hash. By default every active session is
-    invalidated, so a password change also logs out anyone already inside."""
-    validate_password_strength(plain)
-    password_hash = hash_password(plain)
-    with conn:
-        conn.execute(
-            """
-            INSERT INTO app_login (id, password_hash, updated_at) VALUES (1, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET password_hash = excluded.password_hash,
-                                           updated_at = excluded.updated_at
-            """,
-            (password_hash, now_iso()),
-        )
-        if revoke_sessions:
-            conn.execute("DELETE FROM sessions")
-
-
-def ensure_bootstrap_password(conn: sqlite3.Connection) -> None:
-    """On first run, if no password hash exists yet, seed one from the
-    CLINIC_ADMIN_PASSWORD env var if present. Never overwrites an existing
-    hash, and never falls back to a built-in default — with no env var and no
-    stored hash the app starts with login impossible (fail-closed).
-    `cli.py set-password` is the documented way to set/rotate it."""
-    if get_password_hash(conn) is not None:
-        return
-    if config.BOOTSTRAP_PASSWORD:
-        try:
-            set_password(conn, config.BOOTSTRAP_PASSWORD, revoke_sessions=False)
-        except WeakPasswordError:
-            # Refuse to bootstrap a weak password rather than silently
-            # accepting it; login stays impossible until set-password is run.
-            pass
 
 
 def hash_token(token: str) -> str:
@@ -99,16 +59,19 @@ def revoke_all_sessions(conn: sqlite3.Connection) -> int:
         return cur.rowcount
 
 
-def create_session(conn: sqlite3.Connection) -> tuple[str, str, datetime]:
-    """Returns (raw_session_token, csrf_token, expires_at)."""
+def create_session(conn: sqlite3.Connection, user_id: str) -> tuple[str, str, datetime]:
+    """Returns (raw_session_token, csrf_token, expires_at). Every session
+    belongs to a concrete user account — there are no anonymous sessions."""
     raw_token = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=config.SESSION_TTL_SECONDS)
     with conn:
         conn.execute(
-            "INSERT INTO sessions (token_hash, csrf_token, created_at, last_seen_at, expires_at) VALUES (?, ?, ?, ?, ?)",
-            (_hash_token(raw_token), csrf_token, now.isoformat(), now.isoformat(), expires_at.isoformat()),
+            "INSERT INTO sessions (token_hash, csrf_token, created_at, last_seen_at, expires_at, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (_hash_token(raw_token), csrf_token, now.isoformat(), now.isoformat(),
+             expires_at.isoformat(), user_id),
         )
     return raw_token, csrf_token, expires_at
 

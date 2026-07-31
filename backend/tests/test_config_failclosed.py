@@ -5,39 +5,40 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
-def test_login_impossible_before_password_is_initialised(tmp_path, monkeypatch):
-    """No env var, no stored hash → nobody can get in, and no default exists."""
+def test_login_impossible_before_first_developer(tmp_path, monkeypatch):
+    """Нет учётных записей → войти нельзя; встроенных паролей не существует,
+    прежний общий пароль (CLINIC_ADMIN_PASSWORD) больше не действует."""
     monkeypatch.setenv("CLINIC_DATA_DIR", str(tmp_path))
-    monkeypatch.delenv("CLINIC_ADMIN_PASSWORD", raising=False)
+    monkeypatch.setenv("CLINIC_ADMIN_PASSWORD", "legacy-shared-password")
     for mod in list(sys.modules):
         if mod.startswith("backend."):
             del sys.modules[mod]
 
     from fastapi.testclient import TestClient
     from backend.app.main import app
-    from backend.app import db, security
+    from backend.app import db
 
     with TestClient(app, base_url="http://127.0.0.1") as client:
-        assert security.get_password_hash(db.get_connection()) is None
-        for attempt in ("password", "admin", "", "clinic"):
-            r = client.post("/api/auth/login", json={"password": attempt or "x"})
-            assert r.status_code == 503, f"unexpected status for {attempt!r}"
+        conn = db.get_connection()
+        assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+        for username, password in (
+            ("admin", "legacy-shared-password"),
+            ("admin", "password"),
+            ("root", "clinic123!"),
+        ):
+            r = client.post("/api/auth/login", json={"username": username, "password": password})
+            assert r.status_code == 401, f"unexpected status for {username!r}"
         assert client.get("/api/patients").status_code == 401
 
 
-def test_weak_bootstrap_password_is_not_accepted(tmp_path, monkeypatch):
-    monkeypatch.setenv("CLINIC_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("CLINIC_ADMIN_PASSWORD", "password")
-    for mod in list(sys.modules):
-        if mod.startswith("backend."):
-            del sys.modules[mod]
-
-    from fastapi.testclient import TestClient
-    from backend.app.main import app
-
-    with TestClient(app, base_url="http://127.0.0.1") as client:
-        r = client.post("/api/auth/login", json={"password": "password"})
-        assert r.status_code == 503, "a weak bootstrap password must not become usable"
+def test_shared_password_fallback_is_gone():
+    """Ни модуль security, ни auth-роут не содержат пути входа по общему
+    паролю: вход возможен только через таблицу users."""
+    from backend.app import security
+    assert not hasattr(security, "get_password_hash")
+    assert not hasattr(security, "ensure_bootstrap_password")
+    from backend.app import config
+    assert not hasattr(config, "BOOTSTRAP_PASSWORD")
 
 
 def test_no_admin_user_concept_in_backend():
@@ -74,9 +75,13 @@ def test_no_wildcard_cors_header(client):
 
 def test_traceback_not_returned_to_client(client, monkeypatch):
     from backend.app import store
-    monkeypatch.setattr(store, "list_patients", lambda conn: (_ for _ in ()).throw(RuntimeError("boom secret detail")))
-    from .conftest import TEST_PASSWORD
-    client.post("/api/auth/login", json={"password": TEST_PASSWORD})
+    monkeypatch.setattr(
+        store, "list_patients",
+        lambda conn, scope=None: (_ for _ in ()).throw(RuntimeError("boom secret detail")),
+    )
+    from .conftest import DEV_USERNAME, create_account, login
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
     r = client.get("/api/patients")
     assert r.status_code == 500
     assert "boom secret detail" not in r.text

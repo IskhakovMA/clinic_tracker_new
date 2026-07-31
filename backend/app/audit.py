@@ -49,6 +49,22 @@ BACKUP_CREATED = "backup_created"
 RESTORE_PERFORMED = "restore_performed"
 DB_INTEGRITY_FAILED = "db_integrity_failed"
 
+# RBAC / администрирование
+USER_CREATED = "user_created"
+USER_UPDATED = "user_updated"
+ROLE_CHANGED = "role_changed"
+USER_BLOCKED = "user_blocked"
+USER_DEACTIVATED = "user_deactivated"
+USER_RESTORED = "user_restored"
+PASSWORD_RESET = "password_reset"
+SESSIONS_TERMINATED = "sessions_terminated"
+DEPARTMENT_CREATED = "department_created"
+DEPARTMENT_UPDATED = "department_updated"
+HEAD_ASSIGNED = "head_assigned"
+MEMBERSHIP_CHANGED = "membership_changed"
+TREATING_DOCTOR_CHANGED = "treating_doctor_changed"
+ACCESS_DENIED = "access_denied"
+
 RESULT_OK = "ok"
 RESULT_DENIED = "denied"
 RESULT_ERROR = "error"
@@ -74,26 +90,46 @@ def record(
     patient_id: str | None = None,
     request_id: str | None = None,
     detail: str | None = None,
+    actor_user_id: str | None = None,
+    actor_role: str | None = None,
+    actor_department_id: str | None = None,
+    target_user_id: str | None = None,
+    target_department_id: str | None = None,
 ) -> None:
     """Append one audit row. `detail` must be non-sensitive metadata only
-    (counts, modes, field names) — never values of patient fields."""
+    (counts, modes, field names) — never values of patient fields.
+    RBAC-поля содержат только идентификаторы и код роли — без ФИО."""
     try:
         with conn:
             conn.execute(
-                """INSERT INTO audit_events (created_at, event_type, actor, patient_id, result, request_id, detail)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (now_iso(), event_type, actor, patient_id, result, request_id, detail),
+                """INSERT INTO audit_events (created_at, event_type, actor, patient_id, result,
+                                             request_id, detail, actor_user_id, actor_role,
+                                             actor_department_id, target_user_id, target_department_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (now_iso(), event_type, actor, patient_id, result, request_id, detail,
+                 actor_user_id, actor_role, actor_department_id, target_user_id, target_department_id),
             )
     except Exception:
         # Fail-open, and deliberately without the payload in the message.
         logger.warning("audit write failed for event_type=%s", event_type)
 
 
+def actor_ctx(user) -> dict:
+    """Kwargs для record(): контекст актора из CurrentUser (id и роль,
+    первое отделение как основное — без персональных данных)."""
+    return {
+        "actor_user_id": user.id,
+        "actor_role": user.role_id,
+        "actor_department_id": user.department_ids[0] if user.department_ids else None,
+    }
+
+
 def list_events(conn: sqlite3.Connection, limit: int = 50, offset: int = 0) -> list[dict]:
     limit = max(1, min(int(limit), config.AUDIT_PAGE_LIMIT_MAX))
     offset = max(0, int(offset))
     rows = conn.execute(
-        """SELECT id, created_at, event_type, actor, patient_id, result, request_id, detail
+        """SELECT id, created_at, event_type, actor, patient_id, result, request_id, detail,
+                  actor_user_id, actor_role, actor_department_id, target_user_id, target_department_id
            FROM audit_events ORDER BY id DESC LIMIT ? OFFSET ?""",
         (limit, offset),
     ).fetchall()

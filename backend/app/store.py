@@ -127,22 +127,48 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "updatedAt": p["updated_at"],
         "history": history,
         "futurePlans": future_plans,
+        "treatingDoctorUserId": p["treating_doctor_user_id"],
+        "treatingDoctorName": _treating_doctor_name(conn, p["treating_doctor_user_id"]),
     }
 
 
-def list_patients(conn: sqlite3.Connection) -> list[dict]:
-    ids = [r["id"] for r in conn.execute("SELECT id FROM patients ORDER BY arrival ASC").fetchall()]
+def _treating_doctor_name(conn: sqlite3.Connection, user_id: Optional[str]) -> Optional[str]:
+    if not user_id:
+        return None
+    row = conn.execute("SELECT full_name FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["full_name"] if row else None
+
+
+def list_patients(
+    conn: sqlite3.Connection, scope: Optional[tuple[str, list]] = None
+) -> list[dict]:
+    """Список пациентов; scope — SQL-условие из policy.patient_scope_filter.
+    Одна и та же фильтрация обслуживает список, поиск, статистику, календарь
+    и экспорт — обхода через другой endpoint нет."""
+    cond, params = scope if scope is not None else ("1 = 1", [])
+    ids = [
+        r["id"]
+        for r in conn.execute(
+            f"SELECT id FROM patients WHERE {cond} ORDER BY arrival ASC", params
+        ).fetchall()
+    ]
     return [patient_to_dict(conn, pid) for pid in ids]
 
 
-def create_patient(conn: sqlite3.Connection, data: PatientCreateIn) -> str:
+def create_patient(
+    conn: sqlite3.Connection, data: PatientCreateIn, treating_doctor_user_id: Optional[str] = None
+) -> str:
     pid = new_id()
     now = now_iso()
+    # Отображаемый текст врача следует за учётной записью; свободный текст
+    # остаётся только для legacy-записей без сопоставления.
+    doctor_text = _treating_doctor_name(conn, treating_doctor_user_id) or data.doctor
     with conn:
         conn.execute(
             """INSERT INTO patients (id, name, age, priority, stage, phone, complaint, diagnosis,
-                                      nosology, disease_stage, arrival, doctor, head, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      nosology, disease_stage, arrival, doctor, head, created_at,
+                                      updated_at, treating_doctor_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pid,
                 data.name,
@@ -155,10 +181,11 @@ def create_patient(conn: sqlite3.Connection, data: PatientCreateIn) -> str:
                 data.nosology,
                 data.diseaseStage,
                 now,
-                data.doctor,
+                doctor_text,
                 data.head,
                 now,
                 now,
+                treating_doctor_user_id,
             ),
         )
         entry_id = new_id()
@@ -170,6 +197,44 @@ def create_patient(conn: sqlite3.Connection, data: PatientCreateIn) -> str:
         for seq, ev in enumerate(data.events):
             insert_event(conn, entry_id, seq, ev)
     return pid
+
+
+def set_treating_doctor(
+    conn: sqlite3.Connection, patient_id: str, doctor_user_id: Optional[str]
+) -> bool:
+    """Смена лечащего врача: обновляет стабильную связь и отображаемый текст.
+    Пациент не копируется — меняется только закрепление; доступ прежнего
+    врача и его заведующего исчезает при следующем запросе."""
+    p = conn.execute("SELECT id FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    if p is None:
+        return False
+    doctor_text = _treating_doctor_name(conn, doctor_user_id)
+    with conn:
+        if doctor_text is not None:
+            conn.execute(
+                "UPDATE patients SET treating_doctor_user_id = ?, doctor = ?, updated_at = ? WHERE id = ?",
+                (doctor_user_id, doctor_text, now_iso(), patient_id),
+            )
+        else:
+            # Сопоставление снято: legacy-текст сохраняем как был.
+            conn.execute(
+                "UPDATE patients SET treating_doctor_user_id = NULL, updated_at = ? WHERE id = ?",
+                (now_iso(), patient_id),
+            )
+    return True
+
+
+def unresolved_patients(conn: sqlite3.Connection) -> list[dict]:
+    """Пациенты без сопоставленной учётной записи лечащего врача — очередь
+    ручного сопоставления для Разработчика."""
+    rows = conn.execute(
+        """SELECT id, name, doctor FROM patients
+           WHERE treating_doctor_user_id IS NULL ORDER BY name"""
+    ).fetchall()
+    return [
+        {"id": r["id"], "name": r["name"], "legacyDoctor": r["doctor"] or ""}
+        for r in rows
+    ]
 
 
 def touch_patient(conn: sqlite3.Connection, patient_id: str) -> None:
