@@ -42,7 +42,7 @@ def test_weak_bootstrap_password_is_not_accepted(tmp_path, monkeypatch):
 
 def test_no_admin_user_concept_in_backend():
     """The old client-side users table is gone; there is no per-user login."""
-    for path in (PROJECT_ROOT / "clinic-v2.js", PROJECT_ROOT / "clinic-v2.html"):
+    for path in (PROJECT_ROOT / "static" / "app.js", PROJECT_ROOT / "index.html"):
         text = path.read_text(encoding="utf-8")
         assert "doctor1" not in text
         assert "nurse1" not in text

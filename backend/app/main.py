@@ -8,7 +8,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -23,14 +23,17 @@ logging.basicConfig(
 logger = logging.getLogger("clinic")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-FRONTEND_HTML = PROJECT_ROOT / "clinic-v2.html"
-FRONTEND_JS = PROJECT_ROOT / "clinic-v2.js"
+FRONTEND_HTML = PROJECT_ROOT / "index.html"
+STATIC_DIR = PROJECT_ROOT / "static"
 
+# Никаких послаблений: ни inline-скриптов, ни inline-стилей, ни eval.
+# Весь CSS и JS грузятся отдельными файлами с собственного origin.
 CSP = (
     "default-src 'self'; "
     "script-src 'self'; "
-    "script-src-attr 'none'; "  # no inline event-handler attributes anywhere in the frontend
-    "style-src 'self' 'unsafe-inline'; "  # inline style= attributes remain — see SECURITY_AUDIT.md
+    "script-src-attr 'none'; "
+    "style-src 'self'; "
+    "style-src-attr 'none'; "
     "img-src 'self' data:; "
     "font-src 'self' data:; "
     "connect-src 'self'; "
@@ -93,16 +96,26 @@ app.include_router(migrate.router)
 app.include_router(audit_log.router)
 
 
+# Единственная точка входа приложения. Устаревшие страницы прежних версий
+# намеренно не раздаются — обращение к ним даёт 404.
 @app.get("/")
 def serve_index():
     return FileResponse(FRONTEND_HTML, media_type="text/html")
 
 
-@app.get("/clinic-v2.html")
-def serve_index_alias():
-    return FileResponse(FRONTEND_HTML, media_type="text/html")
+STATIC_FILES = {
+    "styles.css": "text/css",
+    "fonts.css": "text/css",
+    "app.js": "application/javascript",
+    "logo.png": "image/png",
+}
 
 
-@app.get("/clinic-v2.js")
-def serve_frontend_js():
-    return FileResponse(FRONTEND_JS, media_type="application/javascript")
+@app.get("/static/{filename}")
+def serve_static(filename: str):
+    """Отдаёт только явно перечисленные файлы: имя не используется для
+    построения пути к произвольному файлу на диске."""
+    media_type = STATIC_FILES.get(filename)
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(STATIC_DIR / filename, media_type=media_type)
