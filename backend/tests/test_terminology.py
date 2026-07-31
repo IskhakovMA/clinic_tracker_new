@@ -16,14 +16,16 @@ CSS = PROJECT_ROOT / "static" / "styles.css"
 README = PROJECT_ROOT / "README.md"
 DESIGN = PROJECT_ROOT / "DESIGN_SYSTEM.md"
 
+FRONTEND = (HTML, JS, CSS)
 USER_FACING = (HTML, JS)
+DOCS = (README, DESIGN, PROJECT_ROOT / "PROJECT_BRIEF.md", PROJECT_ROOT / "PROJECT_BRIEF_V2.md")
 
 PRODUCT_NAME = "Система планирования"
 PATHWAY_LABEL = "Профиль клиентского пути"
 
 
 def test_old_product_name_is_gone_from_frontend():
-    for path in USER_FACING:
+    for path in FRONTEND:
         assert "Clinic Tracker" not in path.read_text(encoding="utf-8"), path.name
 
 
@@ -100,6 +102,15 @@ def test_docs_use_new_terminology():
     for path in (README, DESIGN):
         text = path.read_text(encoding="utf-8")
         assert PRODUCT_NAME in text, f"{path.name}: нет нового названия"
+
+
+def test_docs_do_not_use_old_user_facing_labels():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "Clinic Tracker" not in text, f"{path.name}: осталось старое название продукта"
+        assert "Нозология" not in text, f"{path.name}: остался старый label"
+        assert "Скопировать саммари" not in text, f"{path.name}: осталась старая кнопка"
+        assert "Саммари для отчётности" not in text, f"{path.name}: остался старый заголовок"
 
 
 def test_theme_toggle_has_accessible_name():
