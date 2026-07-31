@@ -127,6 +127,9 @@ class PatientCreateIn(BaseModel):
     head: str = Field(..., min_length=1, max_length=200)
     complaint: str = Field("", max_length=5000)
     events: list[EventIn] = Field(default_factory=list)
+    # Стабильная связь с учётной записью врача; правила назначения — в policy.py
+    # (врач — только себя, заведующий — врача своего отделения, Разработчик — любого).
+    treatingDoctorUserId: Optional[str] = Field(None, max_length=100)
 
     @field_validator("name", "doctor", "head")
     @classmethod
@@ -188,6 +191,8 @@ class PatientOut(BaseModel):
     updatedAt: Optional[str] = None
     history: list[HistoryEntryOut] = Field(default_factory=list)
     futurePlans: dict[str, FuturePlanOut] = Field(default_factory=dict)
+    treatingDoctorUserId: Optional[str] = None
+    treatingDoctorName: Optional[str] = None
 
 
 # --- Import/export -------------------------------------------------------
@@ -265,6 +270,9 @@ class ImportPatientIn(BaseModel):
     updatedAt: Optional[str] = Field(None, max_length=40)
     history: list[ImportHistoryEntry] = Field(default_factory=list)
     futurePlans: dict[str, ImportFuturePlan] = Field(default_factory=dict)
+    # Появилось в схеме v2; старые выгрузки без этого поля остаются валидными.
+    # Значение никогда не принимается на веру — сервер проверяет его по scope актора.
+    treatingDoctorUserId: Optional[str] = Field(None, max_length=100)
 
     @field_validator(
         "phone", "complaint", "diagnosis", "nosology", "diseaseStage", "doctor", "head", mode="before"
@@ -330,4 +338,55 @@ class ImportCommitRequest(BaseModel):
 
 
 class LoginIn(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1, max_length=200)
+
+
+class ChangePasswordIn(BaseModel):
+    currentPassword: str = Field(..., min_length=1, max_length=200)
+    newPassword: str = Field(..., min_length=1, max_length=200)
+
+
+# --- RBAC: сотрудники и структура ----------------------------------------
+
+RoleId = Literal["developer", "deputy_chief_oncology", "caop_head", "department_head", "doctor"]
+
+
+class UserCreateIn(BaseModel):
+    username: str = Field(..., min_length=3, max_length=64)
+    fullName: str = Field(..., min_length=1, max_length=200)
+    roleId: RoleId
+    password: str = Field(..., min_length=1, max_length=200)
+    mustChangePassword: bool = True
+    departmentIds: list[str] = Field(default_factory=list, max_length=50)
+
+
+class UserUpdateIn(BaseModel):
+    fullName: Optional[str] = Field(None, min_length=1, max_length=200)
+    roleId: Optional[RoleId] = None
+    status: Optional[Literal["active", "blocked", "deactivated"]] = None
+    departmentIds: Optional[list[str]] = Field(None, max_length=50)
+
+
+class ResetPasswordIn(BaseModel):
+    newPassword: str = Field(..., min_length=1, max_length=200)
+    mustChangePassword: bool = True
+
+
+class DepartmentCreateIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+
+
+class DepartmentUpdateIn(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    status: Optional[Literal["active", "archived"]] = None
+    headUserId: Optional[str] = Field(None, max_length=100)
+    clearHead: bool = False
+
+
+class DepartmentDoctorIn(BaseModel):
+    userId: str = Field(..., min_length=1, max_length=100)
+
+
+class TreatingDoctorIn(BaseModel):
+    userId: Optional[str] = Field(None, max_length=100)

@@ -16,10 +16,9 @@ HTTPS = os.environ.get("CLINIC_HTTPS", "false").strip().lower() in ("1", "true",
 
 DEBUG = os.environ.get("CLINIC_DEBUG", "false").strip().lower() in ("1", "true", "yes")
 
-# Bootstrap-only: read once by `python -m backend.cli set-password` (or by
-# db.py on first run if no password hash exists yet). Never read at request
-# time and never stored anywhere in plaintext after the hash is written.
-BOOTSTRAP_PASSWORD = os.environ.get("CLINIC_ADMIN_PASSWORD")
+# Прежний общий пароль (CLINIC_ADMIN_PASSWORD + app_login) выведен из
+# эксплуатации: вход возможен только по персональной учётной записи,
+# первый Разработчик создаётся через `python -m backend.cli create-developer`.
 
 SESSION_TTL_SECONDS = int(os.environ.get("CLINIC_SESSION_TTL_SECONDS", str(8 * 60 * 60)))  # 8h idle/absolute
 SESSION_COOKIE_NAME = "clinic_session"
@@ -59,4 +58,7 @@ MAX_IMPORT_PATIENTS = 500
 MAX_EVENTS_PER_HISTORY_ENTRY = 200
 MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 
-SCHEMA_VERSION = 1
+# v2: users/roles/departments + patients.treating_doctor_user_id (RBAC)
+SCHEMA_VERSION = 2
+# Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
+IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2)
