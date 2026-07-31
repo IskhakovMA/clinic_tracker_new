@@ -20,13 +20,41 @@
         <p class="alert alert--danger is-hidden" id="loginError" role="alert"></p>
 
         <div class="field">
+            <label class="field__label" for="username">Логин</label>
+            <input class="input" type="text" id="username" required autofocus autocomplete="username">
+        </div>
+        <div class="field">
             <label class="field__label" for="password">Пароль</label>
-            <input class="input" type="password" id="password" required autofocus autocomplete="current-password">
+            <input class="input" type="password" id="password" required autocomplete="current-password">
         </div>
 
         <button type="submit" class="btn btn--primary btn--block btn--lg" id="loginSubmit">Войти</button>
 
         <p class="login__hint">Для получения доступа обратитесь к администратору системы.</p>
+    </form>
+
+    <!-- Обязательная смена временного пароля -->
+    <form class="login__box is-hidden" id="forcePasswordForm">
+        <img class="login__logo" src="/static/logo.png" alt="" width="56" height="56">
+        <h1 class="login__title">Смена временного пароля</h1>
+        <p class="login__subtitle">Задайте собственный пароль, чтобы продолжить работу</p>
+
+        <p class="alert alert--danger is-hidden" id="forcePasswordError" role="alert"></p>
+
+        <div class="field">
+            <label class="field__label" for="forceCurrentPassword">Временный пароль</label>
+            <input class="input" type="password" id="forceCurrentPassword" required autocomplete="current-password">
+        </div>
+        <div class="field">
+            <label class="field__label" for="forceNewPassword">Новый пароль</label>
+            <input class="input" type="password" id="forceNewPassword" required autocomplete="new-password" minlength="8">
+        </div>
+        <div class="field">
+            <label class="field__label" for="forceNewPassword2">Новый пароль ещё раз</label>
+            <input class="input" type="password" id="forceNewPassword2" required autocomplete="new-password" minlength="8">
+        </div>
+
+        <button type="submit" class="btn btn--primary btn--block btn--lg" id="forcePasswordSubmit">Сменить пароль</button>
     </form>
 </div>
 
@@ -48,14 +76,19 @@
             <button type="button" class="nav__item" data-view="checklists">Чек-листы</button>
             <button type="button" class="nav__item" data-view="plans">Будущие планы</button>
             <button type="button" class="nav__item" data-view="data">Импорт / Экспорт</button>
+            <button type="button" class="nav__item is-hidden" data-view="staff">Сотрудники</button>
+            <button type="button" class="nav__item is-hidden" data-view="structure">Структура</button>
             <button type="button" class="nav__item" data-view="audit">Журнал аудита</button>
             <button type="button" class="nav__item" data-view="settings">Настройки</button>
         </nav>
 
         <div class="sidebar__footer">
             <div class="who">
-                <span class="who__role">Локальный сеанс</span>
-                <span class="who__status" id="sessionStatus">Сессия активна</span>
+                <span class="who__name" id="profileName"></span>
+                <span class="who__role" id="profileRole">Локальный сеанс</span>
+                <span class="who__status" id="profileDepartments"></span>
+                <button type="button" class="who__depts-toggle is-hidden" id="profileDeptsToggle" aria-expanded="false"></button>
+                <ul class="who__depts-list is-hidden" id="profileDeptsList"></ul>
             </div>
             <button type="button" class="btn btn--ghost btn--sm" id="logoutBtn">Выйти</button>
         </div>
@@ -68,6 +101,7 @@
             </button>
             <span class="topbar__brand">Планирование</span>
             <div class="topbar__spacer"></div>
+            <span class="chip chip--neutral is-hidden" id="readOnlyChip" title="Ваша роль позволяет просматривать данные без изменения">Режим просмотра</span>
             <span class="chip chip--neutral" title="Приложение работает локально, данные не покидают этот компьютер">Локальный режим</span>
             <button type="button" class="btn btn--ghost btn--sm" id="themeToggle" aria-pressed="false">Светлая тема</button>
         </header>
@@ -217,6 +251,68 @@
                     </div>
                 </div>
                 <div class="panel panel--pad" id="migrationPanel"></div>
+            </section>
+
+            <!-- СОТРУДНИКИ (только Разработчик) -->
+            <section class="view is-hidden" id="view-staff">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Сотрудники</h1>
+                        <p class="pagehead__subtitle">Учётные записи, роли и доступ</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--primary" id="openStaffCreateBtn">Новый сотрудник</button>
+                    </div>
+                </div>
+                <div class="toolbar">
+                    <div class="search">
+                        <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                        <label class="visually-hidden" for="staffSearchInput">Поиск по ФИО и логину</label>
+                        <input class="input search__input" type="search" id="staffSearchInput" placeholder="Поиск по ФИО или логину…">
+                    </div>
+                    <div class="toolbar__filters">
+                        <label class="visually-hidden" for="staffRoleFilter">Фильтр по роли</label>
+                        <select class="select" id="staffRoleFilter"></select>
+                        <label class="visually-hidden" for="staffDeptFilter">Фильтр по отделению</label>
+                        <select class="select" id="staffDeptFilter"></select>
+                        <label class="visually-hidden" for="staffStatusFilter">Фильтр по статусу</label>
+                        <select class="select" id="staffStatusFilter"></select>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="table-wrap">
+                        <table class="table" id="staffTable">
+                            <thead>
+                                <tr>
+                                    <th scope="col">ФИО</th>
+                                    <th scope="col">Логин</th>
+                                    <th scope="col">Роль</th>
+                                    <th scope="col">Отделение</th>
+                                    <th scope="col">Статус</th>
+                                    <th scope="col">Последний вход</th>
+                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                </tr>
+                            </thead>
+                            <tbody id="staffBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="empty is-hidden" id="staffEmpty"></div>
+                </div>
+            </section>
+
+            <!-- СТРУКТУРА (только Разработчик) -->
+            <section class="view is-hidden" id="view-structure">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Структура</h1>
+                        <p class="pagehead__subtitle">Отделения, заведующие и состав врачей</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--primary" id="openDeptCreateBtn">Новое отделение</button>
+                    </div>
+                </div>
+                <div class="panel panel--pad" id="structurePanel"></div>
+                <div class="panel panel--pad" id="unresolvedPanel"></div>
             </section>
 
             <section class="view is-hidden" id="view-audit">
@@ -389,7 +485,8 @@
                     </div>
                     <div class="field">
                         <label class="field__label" for="doctor">Лечащий врач</label>
-                        <input class="input" type="text" id="doctor">
+                        <select class="select" id="doctor"></select>
+                        <p class="field__hint is-hidden" id="doctorHint"></p>
                     </div>
                 </div>
                 <div class="field">
@@ -507,6 +604,80 @@
     </div>
 </div>
 
+<!-- МОДАЛКА: СОТРУДНИК (создание/редактирование) -->
+<div class="modal" id="staffModal" role="dialog" aria-modal="true" aria-labelledby="staffModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="staffModalTitle">Новый сотрудник</h2>
+            <button type="button" class="btn btn--icon" id="closeStaffIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <form class="modal__body form" id="staffForm">
+            <p class="alert alert--danger is-hidden" id="staffFormError" role="alert"></p>
+            <div class="field">
+                <label class="field__label" for="staffFullName">ФИО <span class="req">*</span></label>
+                <input class="input" type="text" id="staffFullName" required autocomplete="off">
+            </div>
+            <div class="field">
+                <label class="field__label" for="staffUsername">Логин <span class="req">*</span></label>
+                <input class="input" type="text" id="staffUsername" required autocomplete="off"
+                       pattern="[A-Za-z0-9._\-]{3,64}">
+                <p class="field__hint">3–64 символа: латиница, цифры, точка, дефис, подчёркивание.</p>
+            </div>
+            <div class="field">
+                <label class="field__label" for="staffRole">Роль <span class="req">*</span></label>
+                <select class="select" id="staffRole" required></select>
+            </div>
+            <div class="field" id="staffDeptField">
+                <label class="field__label" for="staffDepartments">Отделения</label>
+                <select class="select" id="staffDepartments" multiple size="5"></select>
+                <p class="field__hint">Для заведующего можно выбрать несколько отделений (Cmd/Ctrl + клик).</p>
+            </div>
+            <div class="field" id="staffPasswordField">
+                <label class="field__label" for="staffPassword">Временный пароль <span class="req">*</span></label>
+                <input class="input" type="password" id="staffPassword" autocomplete="new-password" minlength="8">
+                <p class="field__hint">Показывается только сейчас; сотрудник сменит его при первом входе.</p>
+            </div>
+            <div class="field" id="staffMustChangeField">
+                <label class="checkbox">
+                    <input type="checkbox" id="staffMustChange" checked>
+                    <span>Требовать смену пароля при первом входе</span>
+                </label>
+            </div>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="closeStaffBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="staffForm" id="submitStaffBtn">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: СМЕНА ЛЕЧАЩЕГО ВРАЧА (только Разработчик) -->
+<div class="modal modal--sm" id="doctorModal" role="dialog" aria-modal="true" aria-labelledby="doctorModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="doctorModalTitle">Сменить лечащего врача</h2>
+        </div>
+        <form class="modal__body" id="doctorForm">
+            <p class="confirm__text" id="doctorModalCurrent"></p>
+            <div class="field">
+                <label class="field__label" for="doctorModalSelect">Новый лечащий врач</label>
+                <select class="select" id="doctorModalSelect"></select>
+                <p class="field__hint" id="doctorModalDept"></p>
+            </div>
+            <p class="alert alert--warning">
+                Область доступа изменится немедленно: прежний врач и его заведующий
+                потеряют доступ к пациенту, новый врач и его заведующий — получат.
+            </p>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="doctorCancelBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="doctorForm" id="doctorOkBtn">Подтвердить смену</button>
+        </div>
+    </div>
+</div>
+
 <!-- МОДАЛКА: ПОДТВЕРЖДЕНИЕ ДЕЙСТВИЯ -->
 <div class="modal modal--sm" id="confirmModal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle" hidden>
     <div class="modal__box">
@@ -543,6 +714,25 @@
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="promptCancelBtn">Отмена</button>
             <button type="submit" class="btn btn--primary" form="promptForm" id="promptOkBtn">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ВВОД ТЕКСТА -->
+<div class="modal modal--sm" id="textPromptModal" role="dialog" aria-modal="true" aria-labelledby="textPromptTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="textPromptTitle"></h2>
+        </div>
+        <form class="modal__body" id="textPromptForm">
+            <div class="field">
+                <label class="field__label" for="textPromptInput" id="textPromptLabel"></label>
+                <input class="input" type="text" id="textPromptInput" maxlength="200" autocomplete="off">
+            </div>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="textPromptCancelBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="textPromptForm" id="textPromptOkBtn">Сохранить</button>
         </div>
     </div>
 </div>
