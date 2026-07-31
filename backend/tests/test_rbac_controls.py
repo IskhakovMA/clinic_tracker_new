@@ -128,7 +128,8 @@ def _admin_calls(client, t):
             f"/api/departments/{t['dept']}/doctors", json={"userId": t["doc_target"]}, headers=csrf)),
         ("membership: remove doctor", lambda: client.delete(
             f"/api/departments/{t['dept']}/doctors/{t['doc_target']}", headers=csrf)),
-        ("unresolved: list", lambda: client.get("/api/patients/unresolved")),
+        # "unresolved: list" проверяется отдельно: read-only ролям просмотр
+        # разрешён (см. test_unresolved_list_contract), сопоставление — нет.
         ("unresolved: assign doctor", lambda: client.put(
             f"/api/patients/{t['unresolved_pid']}/treating-doctor",
             json={"userId": t["doc_target"]}, headers=csrf)),
@@ -145,6 +146,40 @@ def test_admin_endpoints_forbidden_for_non_developers(client, admin_targets, rol
         # 403 — прямой отказ; 404 — объект вне scope (унифицированный ответ,
         # существование не раскрывается). Успехов быть не должно.
         assert status in (403, 404), f"{role}: {label} -> {status}"
+
+
+def test_unresolved_list_contract(client, admin_targets):
+    """GET /api/patients/unresolved: developer и обе глобальные read-only
+    роли — 200; заведующий и врач — 403 (unresolved-пациенты им не видны)."""
+    expected = {
+        "matrix.dev": 200,
+        "matrix.deputy_chief_oncology": 200,
+        "matrix.caop_head": 200,
+        "matrix.department_head": 403,
+        "matrix.doctor": 403,
+    }
+    for username, status in expected.items():
+        login(client, username)
+        r = client.get("/api/patients/unresolved")
+        assert r.status_code == status, f"{username}: {r.status_code} != {status}"
+        if status == 200:
+            names = {p["name"] for p in r.json()["patients"]}
+            assert "Матрицын Несопоставленный" in names
+
+
+def test_unresolved_assignment_developer_only(client, admin_targets):
+    """Сопоставление unresolved-пациента разрешено только Разработчику."""
+    t = admin_targets
+    for role in NON_DEVELOPER_ROLES:
+        login(client, f"matrix.{role}")
+        r = client.put(f"/api/patients/{t['unresolved_pid']}/treating-doctor",
+                       json={"userId": t["doc_target"]}, headers=client.csrf)
+        # read-only роли видят пациента → 403; врач/заведующий не видят → 404
+        assert r.status_code in (403, 404), f"{role}: {r.status_code}"
+    login(client, "matrix.dev")
+    r = client.put(f"/api/patients/{t['unresolved_pid']}/treating-doctor",
+                   json={"userId": t["doc_target"]}, headers=client.csrf)
+    assert r.status_code == 200
 
 
 def test_admin_endpoints_allowed_for_developer(client, admin_targets):

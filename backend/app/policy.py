@@ -169,6 +169,13 @@ def can_change_treating_doctor(user: CurrentUser) -> bool:
     return user.role_id == ROLE_DEVELOPER
 
 
+def can_view_unresolved(user: CurrentUser) -> bool:
+    """Список несопоставленных пациентов: Разработчик (для сопоставления)
+    и глобальные read-only роли (чтение — они и так видят этих пациентов
+    в общем списке). Врачам и заведующим unresolved-пациенты не видны."""
+    return user.role_id == ROLE_DEVELOPER or user.scope_strategy == SCOPE_GLOBAL_READONLY
+
+
 def can_manage_users(user: CurrentUser) -> bool:
     return user.role_id == ROLE_DEVELOPER
 

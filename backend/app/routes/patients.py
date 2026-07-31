@@ -60,8 +60,10 @@ def list_unresolved(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    """Очередь ручного сопоставления legacy-врачей — только Разработчику."""
-    if not policy.can_change_treating_doctor(user):
+    """Очередь ручного сопоставления legacy-врачей. Просмотр — Разработчик
+    и глобальные read-only роли; само сопоставление — только Разработчик
+    (PUT /{id}/treating-doctor)."""
+    if not policy.can_view_unresolved(user):
         _forbidden(conn, user, "area=unresolved")
     return {"patients": store.unresolved_patients(conn)}
 
