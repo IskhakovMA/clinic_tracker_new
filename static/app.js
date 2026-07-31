@@ -1972,9 +1972,32 @@ const app = {
         this.renderPatients();
     },
 
+    /** Счётчик несопоставленных пациентов для Разработчика: баннер в списке
+     *  с переходом к экрану сопоставления («Структура»). */
+    async updateUnresolvedBanner() {
+        const banner = $('unresolvedBanner');
+        if (!banner) return;
+        if (!this.can('changeTreatingDoctor')) {
+            banner.classList.add('is-hidden');
+            return;
+        }
+        // Считаем из уже загруженного scope-списка (Разработчик видит всех),
+        // чтобы не делать лишний запрос при каждом рендере.
+        const count = this.patients.filter(p => !p.treatingDoctorUserId).length;
+        if (!count) {
+            banner.classList.add('is-hidden');
+            return;
+        }
+        $('unresolvedBannerText').textContent =
+            `Пациентов без сопоставленного лечащего врача: ${count}. `
+            + 'Они не видны врачам и заведующим отделений.';
+        banner.classList.remove('is-hidden');
+    },
+
     renderPatients() {
         this.renderStats();
         this.updateFiltersButton();
+        this.updateUnresolvedBanner();
         const filtered = this.getFiltered();
         const body = $('patientsBody');
         const empty = $('patientsEmpty');
@@ -4037,6 +4060,7 @@ const app = {
 
         // Структура
         on('openDeptCreateBtn', 'click', () => this.createDepartment());
+        on('unresolvedBannerBtn', 'click', () => this.showView('structure'));
 
         // Смена лечащего врача
         $('doctorForm').addEventListener('submit', (event) => this.submitDoctorChange(event));
