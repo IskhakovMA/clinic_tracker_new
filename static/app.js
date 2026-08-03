@@ -307,6 +307,23 @@ const app = {
             sort: 'severity',
         },
     },
+    notifications: {
+        summary: null,
+        items: [],
+        templates: [],
+        loading: false,
+        error: '',
+        filters: {
+            query: '',
+            status: '',
+            template: '',
+            dateFrom: '',
+            dateTo: '',
+            doctor: '',
+            department: '',
+            sort: 'scheduled_asc',
+        },
+    },
 
     QUALITY_SEVERITY_LABELS: {
         critical: 'Критическая ошибка',
@@ -335,6 +352,30 @@ const app = {
         overdue_event: 'Просроченное событие',
         incomplete_required_checklist: 'Незавершённый чек-лист',
         possible_duplicate: 'Возможный дубль',
+    },
+
+    NOTIFICATION_STATUS_LABELS: {
+        pending: 'Ожидает отправки',
+        processing: 'В обработке',
+        sent: 'Обработано тестовым провайдером',
+        failed: 'Ошибка',
+        cancelled: 'Отменено',
+        skipped: 'Пропущено',
+    },
+    NOTIFICATION_SOURCE_LABELS: {
+        manual: 'Ручное напоминание',
+        event: 'Плановое событие',
+    },
+    NOTIFICATION_REASON_LABELS: {
+        no_consent: 'Нет согласия',
+        invalid_phone: 'Некорректный телефон',
+        missing_phone: 'Телефон отсутствует',
+        patient_unavailable: 'Пациент недоступен',
+        template_disabled: 'Шаблон отключён',
+        provider_failed: 'Ошибка тестового провайдера',
+        retry_scheduled: 'Повтор запланирован',
+        event_inactive: 'Событие завершено или отменено',
+        event_rescheduled: 'Дата события изменена',
     },
 
     icd10Localizations: {
@@ -1414,6 +1455,7 @@ const app = {
         if (view === 'patients') this.renderPatients();
         if (view === 'calendar') this.renderCalendar();
         if (view === 'checklists') this.renderChecklistsView();
+        if (view === 'notifications') this.renderNotifications();
         if (view === 'quality') this.renderDataQuality();
         if (view === 'plans') this.renderPlansView();
         if (view === 'audit') this.renderAudit();
@@ -1928,6 +1970,19 @@ const app = {
             option('completeness', 'Ниже полнота выше'),
         ]));
 
+        $('notificationsStatusFilter').replaceChildren(frag([
+            option('', 'Любой статус', true),
+            ...Object.entries(this.NOTIFICATION_STATUS_LABELS).map(([key, label]) => option(key, label)),
+        ]));
+        $('notificationsTemplateFilter').replaceChildren(option('', 'Любой шаблон', true));
+        $('notificationsDoctorFilter').replaceChildren(option('', 'Любой лечащий врач', true));
+        $('notificationsDepartmentFilter').replaceChildren(option('', 'Любое отделение', true));
+        $('notificationsSortSelect').replaceChildren(frag([
+            option('scheduled_asc', 'Ближайшие первыми', true),
+            option('scheduled_desc', 'Поздние первыми'),
+            option('status', 'По статусу'),
+        ]));
+
         $('diagnosisLocalization').replaceChildren(frag([
             option('', 'Выберите локализацию', true),
             ...Object.keys(this.icd10Localizations).map(key => option(key, this.icd10Localizations[key].label)),
@@ -2135,6 +2190,7 @@ const app = {
         this.renderTabPanel(p);
         this.applyReadOnlyToPatientView();
         this.renderPatientQualityBlock(p.id);
+        if (this.currentTab === 'notifications') this.renderPatientNotificationsBlock(p.id);
     },
 
     /** Read-only роли: формы изменения не открываются. Backend всё равно
@@ -2225,6 +2281,7 @@ const app = {
 
     TABS: [
         { key: 'overview', label: 'Обзор' },
+        { key: 'notifications', label: 'Уведомления' },
         { key: 'data', label: 'Данные' },
         { key: 'complaints', label: 'Жалобы' },
         { key: 'events', label: 'События и даты' },
@@ -2249,6 +2306,7 @@ const app = {
                     this.renderTabs();
                     this.renderTabPanel(this.getPatient(this.currentPatientId));
                     this.applyReadOnlyToPatientView();
+                    if (tab.key === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
                 },
             },
         }))));
@@ -2258,6 +2316,7 @@ const app = {
         const panels = $('patientPanels');
         const renderers = {
             overview: () => this.tabOverview(p),
+            notifications: () => this.tabNotifications(p),
             data: () => this.tabData(p),
             complaints: () => this.tabComplaints(p),
             events: () => this.tabEvents(p),
@@ -3161,6 +3220,460 @@ const app = {
         this.currentTab = tab || 'overview';
         this.showView('patient');
         this.renderPatientView();
+    },
+
+    /* ============================================================ РЕНДЕР: УВЕДОМЛЕНИЯ */
+
+    notificationFilterCount() {
+        const f = this.notifications.filters;
+        return [f.status, f.template, f.dateFrom, f.dateTo, f.doctor, f.department].filter(Boolean).length;
+    },
+
+    updateNotificationsFiltersButton() {
+        const label = $('notificationsFiltersBtnLabel');
+        if (!label) return;
+        const count = this.notificationFilterCount();
+        label.textContent = count ? `Фильтры · ${count}` : 'Фильтры';
+        $('openNotificationsFiltersSheetBtn').setAttribute('aria-label', count
+            ? `Фильтры уведомлений, активных фильтров: ${count}`
+            : 'Фильтры уведомлений');
+    },
+
+    openNotificationsFiltersSheet() {
+        $('notificationsFiltersSheetBody').append($('notificationsToolbarFilters'));
+        $('openNotificationsFiltersSheetBtn').setAttribute('aria-expanded', 'true');
+        ui.openModal('notificationsFiltersSheet');
+    },
+
+    closeNotificationsFiltersSheet() {
+        ui.closeModal('notificationsFiltersSheet');
+        $('openNotificationsFiltersSheetBtn').setAttribute('aria-expanded', 'false');
+        const toolbar = document.querySelector('#view-notifications .toolbar');
+        toolbar.append($('notificationsToolbarFilters'));
+    },
+
+    resetNotificationsFilters() {
+        this.notifications.filters = {
+            query: '',
+            status: '',
+            template: '',
+            dateFrom: '',
+            dateTo: '',
+            doctor: '',
+            department: '',
+            sort: 'scheduled_asc',
+        };
+        $('notificationsSearchInput').value = '';
+        this.syncNotificationsFilterControls();
+        this.renderNotifications();
+    },
+
+    syncNotificationsFilterControls() {
+        const f = this.notifications.filters;
+        $('notificationsStatusFilter').value = f.status;
+        $('notificationsTemplateFilter').value = f.template;
+        $('notificationsDateFromFilter').value = f.dateFrom;
+        $('notificationsDateToFilter').value = f.dateTo;
+        $('notificationsDoctorFilter').value = f.doctor;
+        $('notificationsDepartmentFilter').value = f.department;
+        $('notificationsSortSelect').value = f.sort;
+    },
+
+    notificationParams(extra = {}) {
+        const f = Object.assign({}, this.notifications.filters, extra);
+        const params = new URLSearchParams();
+        if (f.query) params.set('search', f.query);
+        if (f.status) params.set('status', f.status);
+        if (f.template) params.set('template_code', f.template);
+        if (f.dateFrom) params.set('date_from', f.dateFrom);
+        if (f.dateTo) params.set('date_to', f.dateTo);
+        if (f.doctor) params.set('treating_doctor', f.doctor);
+        if (f.department) params.set('department', f.department);
+        params.set('sort', f.sort || 'scheduled_asc');
+        params.set('limit', '100');
+        params.set('offset', '0');
+        return params.toString();
+    },
+
+    async loadNotifications() {
+        const summary = await apiGetJson('/api/notifications/summary');
+        const templates = await apiGetJson('/api/notifications/templates');
+        const list = await apiGetJson(`/api/notifications?${this.notificationParams()}`);
+        this.notifications.summary = summary;
+        this.notifications.templates = templates.templates || [];
+        this.notifications.placeholders = templates.placeholders || [];
+        this.notifications.items = list.notifications || [];
+        this.notifications.total = list.total || 0;
+    },
+
+    async renderNotifications() {
+        this.updateNotificationsFiltersButton();
+        const body = $('notificationsBody');
+        const empty = $('notificationsEmpty');
+        body.replaceChildren();
+        empty.classList.remove('is-hidden');
+        empty.textContent = 'Загрузка…';
+        $('notificationsGenerateBtn').classList.toggle('is-hidden', !this.can('runNotificationWorker'));
+        $('notificationsProcessBtn').classList.toggle('is-hidden', !this.can('runNotificationWorker'));
+        try {
+            await this.loadNotifications();
+            $('notificationsMockBanner').classList.toggle('is-hidden', this.notifications.summary.provider !== 'mock');
+            this.renderNotificationsFiltersOptions();
+            this.renderNotificationsStats();
+            this.renderNotificationsRows();
+            this.renderNotificationTemplatesPanel();
+        } catch (e) {
+            $('notificationsStatsRow').replaceChildren();
+            $('notificationTemplatesPanel').classList.add('is-hidden');
+            empty.classList.remove('is-hidden');
+            empty.textContent = `Не удалось загрузить уведомления: ${e.message}`;
+        }
+    },
+
+    renderNotificationsFiltersOptions() {
+        const selectedTemplate = this.notifications.filters.template;
+        const selectedDoctor = this.notifications.filters.doctor;
+        const selectedDept = this.notifications.filters.department;
+        const doctors = [...new Set(this.notifications.items.map(n => n.treating_doctor_name).filter(Boolean))].sort();
+        const departments = [...new Set(this.notifications.items.flatMap(n => n.department_names || []))].sort();
+        $('notificationsTemplateFilter').replaceChildren(frag([
+            option('', 'Любой шаблон', !selectedTemplate),
+            ...this.notifications.templates.map(t => option(t.code, t.name, t.code === selectedTemplate)),
+        ]));
+        $('notificationsDoctorFilter').replaceChildren(frag([
+            option('', 'Любой лечащий врач', !selectedDoctor),
+            ...doctors.map(name => option(name, name, name === selectedDoctor)),
+        ]));
+        $('notificationsDepartmentFilter').replaceChildren(frag([
+            option('', 'Любое отделение', !selectedDept),
+            ...departments.map(name => option(name, name, name === selectedDept)),
+        ]));
+        this.syncNotificationsFilterControls();
+    },
+
+    renderNotificationsStats() {
+        const s = this.notifications.summary || {};
+        const stat = (label, value, meta) => el('div', { class: 'stat' }, [
+            el('div', { class: 'stat__label', text: label }),
+            el('div', { class: 'stat__value', text: String(value ?? 0) }),
+            el('div', { class: 'stat__meta', text: meta }),
+        ]);
+        $('notificationsStatsRow').replaceChildren(frag([
+            stat('Ожидают отправки', s.pending_count, 'очередь'),
+            stat('Отправлены', s.sent_count, 'тестовый провайдер'),
+            stat('Ошибки', s.failed_count, 'требуют проверки'),
+            stat('Отменены', s.cancelled_count, 'не будут отправлены'),
+            stat('Без согласия', s.patients_without_consent, 'пациенты в scope'),
+            stat('Некорректный телефон', s.patients_with_invalid_phone, 'проверить контакт'),
+        ]));
+    },
+
+    notificationStatusChip(status) {
+        const label = this.NOTIFICATION_STATUS_LABELS[status] || status;
+        const tone = status === 'sent' ? 'good'
+            : status === 'failed' ? 'danger'
+            : status === 'cancelled' ? 'neutral'
+            : status === 'skipped' ? 'warning'
+            : status === 'processing' ? 'info' : 'accent';
+        return el('span', { class: `chip chip--${tone}`, text: label });
+    },
+
+    notificationReasonText(item) {
+        const code = item.error_code || item.error_message_safe || '';
+        return this.NOTIFICATION_REASON_LABELS[code] || code || '—';
+    },
+
+    renderNotificationsRows() {
+        const body = $('notificationsBody');
+        const empty = $('notificationsEmpty');
+        const rows = this.notifications.items || [];
+        if (!rows.length) {
+            body.replaceChildren();
+            empty.classList.remove('is-hidden');
+            empty.textContent = this.notifications.total === 0
+                ? 'Очередь уведомлений пуста.'
+                : 'По выбранным условиям уведомления не найдены.';
+            return;
+        }
+        empty.classList.add('is-hidden');
+        body.replaceChildren(frag(rows.map(item => el('tr', {}, [
+            el('td', {}, el('div', { class: 'person' }, [
+                el('span', { class: 'avatar avatar--normal', text: this.initials(item.patient_name) }),
+                el('div', {}, [
+                    el('div', { class: 'person__name', text: item.patient_name }),
+                    el('div', { class: 'person__meta', text: item.phone_masked || 'Телефон не показан' }),
+                ]),
+            ])),
+            el('td', { class: 'cell-notification-template', text: item.template_name || item.template_code }),
+            el('td', { class: 'cell-notification-source', text: this.NOTIFICATION_SOURCE_LABELS[item.source_type] || item.source_type }),
+            el('td', { class: 'cell-notification-scheduled', text: this.formatDateTime(item.scheduled_at) }),
+            el('td', { class: 'cell-notification-status' }, this.notificationStatusChip(item.status)),
+            el('td', { class: 'cell-notification-attempts', text: `${item.attempt_count || 0}/${item.max_attempts || 0}` }),
+            el('td', { class: 'cell-notification-reason', text: this.notificationReasonText(item) }),
+            el('td', { class: 'cell-actions' }, [
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть пациента',
+                    on: { click: () => this.openPatientTab(item.patient_id, 'notifications') },
+                }),
+                item.status === 'pending' && this.can('manageNotifications') ? el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Отменить',
+                    on: { click: () => this.cancelNotification(item.id) },
+                }) : null,
+                item.status === 'failed' && this.can('runNotificationWorker') ? el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Повторить',
+                    on: { click: () => this.retryNotification(item.id) },
+                }) : null,
+            ]),
+        ]))));
+    },
+
+    renderNotificationTemplatesPanel() {
+        const panel = $('notificationTemplatesPanel');
+        if (!this.can('manageNotificationTemplates')) {
+            panel.classList.add('is-hidden');
+            panel.replaceChildren();
+            return;
+        }
+        panel.classList.remove('is-hidden');
+        const placeholders = (this.notifications.placeholders || []).map(p => `{${p}}`).join(', ');
+        panel.replaceChildren(frag([
+            el('h2', { class: 'panel__title', text: 'Системные шаблоны' }),
+            el('p', { class: 'panel__text', text: `Разрешённые переменные: ${placeholders}. Свободный текст напоминаний в MVP недоступен.` }),
+            ...this.notifications.templates.map(t => el('div', { class: 'notification-template' }, [
+                el('div', {}, [
+                    el('div', { class: 'person__name', text: t.name }),
+                    el('div', { class: 'person__meta', text: `${t.code} · версия ${t.version}` }),
+                ]),
+                el('label', { class: 'check' }, [
+                    el('input', { type: 'checkbox', id: `template-enabled-${t.code}`, checked: !!t.enabled }),
+                    el('span', { text: 'Включён' }),
+                ]),
+                el('div', { class: 'notification-template__body field' }, [
+                    el('label', { class: 'field__label', for: `template-body-${t.code}`, text: 'Текст шаблона' }),
+                    el('textarea', { class: 'textarea', id: `template-body-${t.code}`, rows: 3, text: t.body }),
+                ]),
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Сохранить шаблон',
+                    on: { click: () => this.saveNotificationTemplate(t.code) },
+                }),
+            ])),
+        ]));
+    },
+
+    tabNotifications() {
+        return el('div', { class: 'panel panel--pad', id: 'patientNotificationsBlock' }, [
+            el('h2', { class: 'section-title', text: 'Уведомления' }),
+            el('div', { class: 'empty', text: 'Загрузка…' }),
+        ]);
+    },
+
+    async renderPatientNotificationsBlock(patientId) {
+        const box = $('patientNotificationsBlock');
+        if (!box) return;
+        box.replaceChildren(frag([
+            el('h2', { class: 'section-title', text: 'Уведомления' }),
+            el('div', { class: 'empty', text: 'Загрузка…' }),
+        ]));
+        try {
+            const [data, templatesData] = await Promise.all([
+                apiGetJson(`/api/notifications/patients/${patientId}`),
+                apiGetJson('/api/notifications/templates'),
+            ]);
+            const pref = data.preference || {};
+            this.notifications.templates = templatesData.templates || [];
+            this.notifications.placeholders = templatesData.placeholders || [];
+            const templates = (templatesData.templates || []).filter(t => t.enabled);
+            const canWrite = !!data.can_write && !this.isReadOnly();
+            const consentLabel = {
+                not_recorded: 'Согласие не зафиксировано',
+                granted: 'Согласие получено',
+                revoked: 'Согласие отозвано',
+            }[pref.consent_status] || 'Согласие не зафиксировано';
+            box.replaceChildren(frag([
+                el('h2', { class: 'section-title', text: 'Уведомления' }),
+                el('p', { class: 'alert alert--info', text: 'Тестовый режим: реальные SMS не отправляются' }),
+                el('div', { class: 'summary' }, [
+                    el('div', { text: pref.sms_enabled ? 'SMS включены' : 'SMS выключены' }),
+                    el('div', { text: consentLabel }),
+                    pref.consent_recorded_at ? el('div', { text: `Дата фиксации: ${this.formatDateTime(pref.consent_recorded_at)}` }) : null,
+                    pref.consent_recorded_by_name ? el('div', { text: `Зафиксировал: ${pref.consent_recorded_by_name}` }) : null,
+                    data.upcoming ? el('div', { text: `Ближайшее уведомление: ${this.formatDateTime(data.upcoming.scheduled_at)}` }) : null,
+                ]),
+                canWrite ? this.patientNotificationActions(patientId, pref, templates) : el('p', {
+                    class: 'muted',
+                    text: 'Режим просмотра — изменение данных недоступно',
+                }),
+                el('h3', { class: 'section-title', text: 'История уведомлений' }),
+                data.notifications && data.notifications.length
+                    ? el('div', { class: 'notification-list' }, data.notifications.map(item => el('div', { class: 'notification-row' }, [
+                        el('div', {}, [
+                            el('div', { class: 'person__name', text: item.template_name || item.template_code }),
+                            el('div', { class: 'person__meta', text: `${this.formatDateTime(item.scheduled_at)} · ${this.NOTIFICATION_SOURCE_LABELS[item.source_type] || item.source_type}` }),
+                            el('div', { class: 'muted', text: this.notificationReasonText(item) }),
+                        ]),
+                        this.notificationStatusChip(item.status),
+                    ])))
+                    : el('div', { class: 'empty', text: 'Уведомления ещё не создавались.' }),
+            ]));
+            this.updatePatientNotificationPreview();
+        } catch (e) {
+            box.replaceChildren(frag([
+                el('h2', { class: 'section-title', text: 'Уведомления' }),
+                el('div', { class: 'empty', text: 'Не удалось загрузить уведомления.' }),
+            ]));
+        }
+    },
+
+    patientNotificationActions(patientId, pref, templates) {
+        const now = new Date(Date.now() + 60 * 60 * 1000);
+        const defaultDateTime = now.toISOString().slice(0, 16);
+        return el('div', {}, [
+            el('div', { class: 'pcard__actions' }, [
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Зафиксировать согласие',
+                    on: { click: () => this.savePatientNotificationPreference(patientId, true, 'granted') },
+                }),
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Отозвать согласие',
+                    disabled: pref.consent_status !== 'granted',
+                    title: pref.consent_status !== 'granted' ? 'Согласие ещё не получено' : 'Ожидающие уведомления будут отменены',
+                    on: { click: () => this.savePatientNotificationPreference(patientId, false, 'revoked') },
+                }),
+            ]),
+            el('div', { class: 'notification-form' }, [
+                el('div', { class: 'field' }, [
+                    el('label', { class: 'field__label', for: 'patientNotificationTemplate', text: 'Шаблон' }),
+                    el('select', {
+                        class: 'select',
+                        id: 'patientNotificationTemplate',
+                        on: { change: () => this.updatePatientNotificationPreview() },
+                    }, templates.length
+                        ? templates.map(t => option(t.code, t.name))
+                        : [option('', 'Нет включённых шаблонов', true)]),
+                ]),
+                el('div', { class: 'field' }, [
+                    el('label', { class: 'field__label', for: 'patientNotificationSchedule', text: 'Дата и время отправки' }),
+                    el('input', {
+                        class: 'input',
+                        type: 'datetime-local',
+                        id: 'patientNotificationSchedule',
+                        value: defaultDateTime,
+                        on: { input: () => this.updatePatientNotificationPreview() },
+                    }),
+                ]),
+                el('div', { class: 'field field--wide' }, [
+                    el('label', { class: 'field__label', for: 'patientNotificationPreview', text: 'Предварительный просмотр' }),
+                    el('textarea', { class: 'textarea', id: 'patientNotificationPreview', rows: 3, readonly: true }),
+                    el('p', { class: 'field__hint', text: 'Свободный текст недоступен: используется только утверждённый шаблон.' }),
+                ]),
+                el('button', {
+                    type: 'button', class: 'btn btn--primary', text: 'Создать напоминание',
+                    disabled: !templates.length,
+                    on: { click: () => this.createPatientNotification(patientId) },
+                }),
+            ]),
+        ]);
+    },
+
+    updatePatientNotificationPreview() {
+        const templateSelect = $('patientNotificationTemplate');
+        const scheduleInput = $('patientNotificationSchedule');
+        const preview = $('patientNotificationPreview');
+        if (!templateSelect || !scheduleInput || !preview) return;
+        const template = (this.notifications.templates || []).find(t => t.code === templateSelect.value)
+            || { body: 'Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией.' };
+        const date = scheduleInput.value ? new Date(scheduleInput.value) : null;
+        const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString('ru-RU') : 'дата';
+        const timeText = date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : 'время';
+        preview.value = template.body.replaceAll('{date}', dateText).replaceAll('{time}', timeText);
+    },
+
+    async savePatientNotificationPreference(patientId, smsEnabled, consentStatus) {
+        try {
+            await apiPut(`/api/notifications/patients/${patientId}/preferences`, {
+                smsEnabled,
+                consentStatus,
+            });
+            ui.toast(consentStatus === 'granted' ? 'Согласие зафиксировано.' : 'Согласие отозвано.', 'success');
+            this.renderPatientNotificationsBlock(patientId);
+        } catch (e) {
+            ui.toast(`Не удалось изменить согласие: ${e.message}`, 'danger');
+        }
+    },
+
+    async createPatientNotification(patientId) {
+        const templateCode = $('patientNotificationTemplate').value;
+        const scheduledValue = $('patientNotificationSchedule').value;
+        const scheduled = scheduledValue ? new Date(scheduledValue) : null;
+        if (!templateCode || !scheduled || Number.isNaN(scheduled.getTime())) {
+            ui.toast('Укажите шаблон, дату и время отправки.', 'warning');
+            return;
+        }
+        try {
+            const result = await apiPost('/api/notifications', {
+                patientId,
+                templateCode,
+                scheduledAt: scheduled.toISOString(),
+            });
+            ui.toast(result.duplicate ? 'Такое напоминание уже есть в очереди.' : 'Напоминание создано.', 'success');
+            await this.renderPatientNotificationsBlock(patientId);
+            if (this.currentView === 'notifications') this.renderNotifications();
+        } catch (e) {
+            ui.toast(`Не удалось создать напоминание: ${e.message}`, 'danger');
+        }
+    },
+
+    async cancelNotification(notificationId) {
+        try {
+            await apiPost(`/api/notifications/${notificationId}/cancel`);
+            ui.toast('Уведомление отменено.', 'success');
+            if (this.currentView === 'notifications') this.renderNotifications();
+            if (this.currentView === 'patient' && this.currentTab === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
+        } catch (e) {
+            ui.toast(`Не удалось отменить уведомление: ${e.message}`, 'danger');
+        }
+    },
+
+    async retryNotification(notificationId) {
+        try {
+            await apiPost(`/api/notifications/${notificationId}/retry`);
+            ui.toast('Повтор запланирован.', 'success');
+            this.renderNotifications();
+        } catch (e) {
+            ui.toast(`Не удалось запланировать повтор: ${e.message}`, 'danger');
+        }
+    },
+
+    async generateNotificationsDue() {
+        try {
+            const result = await apiPost('/api/notifications/generate-due');
+            ui.toast(`Сформировано: ${result.created || 0}, пропущено: ${result.skipped || 0}.`, 'success');
+            this.renderNotifications();
+        } catch (e) {
+            ui.toast(`Не удалось сформировать уведомления: ${e.message}`, 'danger');
+        }
+    },
+
+    async processNotificationsDue() {
+        try {
+            const result = await apiPost('/api/notifications/process-due?limit=100');
+            ui.toast(`Обработано тестовым провайдером: ${result.processed || 0}.`, 'success');
+            this.renderNotifications();
+        } catch (e) {
+            ui.toast(`Не удалось обработать очередь: ${e.message}`, 'danger');
+        }
+    },
+
+    async saveNotificationTemplate(code) {
+        try {
+            const body = $(`template-body-${code}`).value;
+            const enabled = $(`template-enabled-${code}`).checked;
+            await apiPut(`/api/notifications/templates/${encodeURIComponent(code)}`, { body, enabled });
+            ui.toast('Шаблон сохранён.', 'success');
+            this.renderNotifications();
+        } catch (e) {
+            ui.toast(`Не удалось сохранить шаблон: ${e.message}`, 'danger');
+        }
     },
 
     /* ==================================================== РЕНДЕР: ПРОЧИЕ РАЗДЕЛЫ */
@@ -4583,6 +5096,46 @@ const app = {
         on('closeQualityFiltersSheetBtn', 'click', () => this.closeQualityFiltersSheet());
         on('applyQualityFiltersSheetBtn', 'click', () => this.closeQualityFiltersSheet());
         on('qualityResetFiltersBtn', 'click', () => this.resetQualityFilters());
+
+        // Уведомления
+        on('notificationsSearchInput', 'input', (event) => {
+            this.notifications.filters.query = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsStatusFilter', 'change', (event) => {
+            this.notifications.filters.status = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsTemplateFilter', 'change', (event) => {
+            this.notifications.filters.template = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsDateFromFilter', 'change', (event) => {
+            this.notifications.filters.dateFrom = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsDateToFilter', 'change', (event) => {
+            this.notifications.filters.dateTo = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsDoctorFilter', 'change', (event) => {
+            this.notifications.filters.doctor = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsDepartmentFilter', 'change', (event) => {
+            this.notifications.filters.department = event.target.value;
+            this.renderNotifications();
+        });
+        on('notificationsSortSelect', 'change', (event) => {
+            this.notifications.filters.sort = event.target.value;
+            this.renderNotifications();
+        });
+        on('openNotificationsFiltersSheetBtn', 'click', () => this.openNotificationsFiltersSheet());
+        on('closeNotificationsFiltersSheetBtn', 'click', () => this.closeNotificationsFiltersSheet());
+        on('applyNotificationsFiltersSheetBtn', 'click', () => this.closeNotificationsFiltersSheet());
+        on('notificationsResetFiltersBtn', 'click', () => this.resetNotificationsFilters());
+        on('notificationsGenerateBtn', 'click', () => this.generateNotificationsDue());
+        on('notificationsProcessBtn', 'click', () => this.processNotificationsDue());
 
         // Экспорт
         on('openExportBtn', 'click', () => this.openExportModal());

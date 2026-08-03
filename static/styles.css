@@ -895,6 +895,46 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 #qualityFiltersSheetBody .select { width: 100%; min-width: 0; margin-bottom: var(--sp-4); }
 #qualityFiltersSheetBody .select:last-of-type { margin-bottom: 0; }
 
+#notificationsFiltersSheetBody .visually-hidden {
+    position: static; width: auto; height: auto;
+    margin: 0 0 var(--sp-2); overflow: visible;
+    clip: auto; white-space: normal;
+    font-size: var(--text-md); font-weight: 600; color: var(--text);
+}
+#notificationsFiltersSheetBody .toolbar__filters { display: block; }
+#notificationsFiltersSheetBody .select,
+#notificationsFiltersSheetBody .input { width: 100%; min-width: 0; margin-bottom: var(--sp-4); }
+#notificationsFiltersSheetBody .select:last-of-type,
+#notificationsFiltersSheetBody .input:last-of-type { margin-bottom: 0; }
+
+.notification-template {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-3);
+    padding: var(--sp-4) 0;
+    border-top: 1px solid var(--border);
+}
+.notification-template:first-of-type { border-top: 0; }
+.notification-template__body { grid-column: 1 / -1; }
+.notification-template .textarea { min-height: 92px; }
+.notification-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    margin-top: var(--sp-4);
+}
+.notification-form .field--wide { grid-column: 1 / -1; }
+.notification-list { display: grid; gap: var(--sp-2); margin-top: var(--sp-3); }
+.notification-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+}
+
 /* --------------------------------------------------------------------------
    15. Уведомления
    -------------------------------------------------------------------------- */
@@ -1081,6 +1121,12 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .cell-quality-score::before { content: 'Полнота: '; color: var(--text-3); }
     .cell-quality-issues::before { content: 'Проблемы: '; color: var(--text-3); }
     .cell-quality-owner::before { content: 'Ответственные: '; color: var(--text-3); }
+    .cell-notification-template::before { content: 'Шаблон: '; color: var(--text-3); }
+    .cell-notification-source::before { content: 'Источник: '; color: var(--text-3); }
+    .cell-notification-scheduled::before { content: 'Запланировано: '; color: var(--text-3); }
+    .cell-notification-status::before { content: 'Статус: '; color: var(--text-3); }
+    .cell-notification-attempts::before { content: 'Попытки: '; color: var(--text-3); }
+    .cell-notification-reason::before { content: 'Причина: '; color: var(--text-3); }
 }
 
 @media (max-width: 560px) {
@@ -1110,7 +1156,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .toolbar { gap: var(--sp-2); margin-bottom: var(--sp-4); }
     .search { flex: 1 1 auto; min-width: 0; }
     #openFiltersSheetBtn,
-    #openQualityFiltersSheetBtn { flex: 0 0 auto; }
+    #openQualityFiltersSheetBtn,
+    #openNotificationsFiltersSheetBtn { flex: 0 0 auto; }
 
     /* Компактная сетка 2×2 вместо четырёх крупных карточек */
     .stats { grid-template-columns: repeat(2, 1fr); gap: var(--sp-2); margin-bottom: var(--sp-4); }
@@ -1120,6 +1167,9 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .stat__meta { font-size: var(--text-xs); }
 
     .grid-2 { grid-template-columns: 1fr; }
+    .notification-form,
+    .notification-template,
+    .notification-row { grid-template-columns: 1fr; }
 
     .modal--sheet .modal__box { max-height: 80vh; }
 
