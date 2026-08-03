@@ -4,11 +4,16 @@ import sqlite3
 from fastapi import Depends, HTTPException, Request, status
 
 from . import audit, config, policy, security
-from .db import get_connection
+from .db import _connect, init_db
 
 
-def get_db() -> sqlite3.Connection:
-    return get_connection()
+def get_db():
+    conn = _connect(config.DB_PATH)
+    init_db(conn)
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 def require_session(request: Request, conn: sqlite3.Connection = Depends(get_db)) -> sqlite3.Row:
