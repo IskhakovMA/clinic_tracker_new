@@ -47,6 +47,8 @@ QUALITY_RULES = {
     "incomplete_required_checklist": "Обязательные пункты чек-листа не отмечены выполненными.",
     "possible_duplicate": "Найдены записи с совпадающими объяснимыми признаками.",
 }
+QUALITY_CATEGORIES = ("assignment", "checklist", "completeness", "dates", "duplicates", "format", "stage")
+QUALITY_RULE_CODES = tuple(QUALITY_RULES)
 
 # Server-side MVP configuration copied from the current checklist rules used by
 # the product. It covers required items only; optional items are not quality
@@ -480,15 +482,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                     field_name="actualDate", details={"occurrence_index": occ_index, "event_index": event_index},
                     suggested_action=_action("Проверить даты этапа", "events", can_write),
                 ))
-            if event.get("date") and planned is None:
-                issues.append(_finding(
-                    patient=patient, code="planned_date_in_past", category="dates", severity="warning",
-                    title="Плановая дата некорректна",
-                    description="Плановая дата должна быть календарной датой в формате ГГГГ-ММ-ДД.",
-                    field_name="date", details={"occurrence_index": occ_index, "event_index": event_index},
-                    suggested_action=_action("Исправить плановую дату", "events", can_write),
-                ))
-            elif planned and planned < today and not actual and not event.get("noPlan"):
+            if planned and planned < today and not actual and not event.get("noPlan"):
                 issues.append(_finding(
                     patient=patient, code="overdue_event", category="dates", severity="warning",
                     title="Плановое событие просрочено",
@@ -556,31 +550,37 @@ def _duplicate_groups(patients: list[PatientRecord]) -> list[dict]:
         "name_diagnosis": "Совпадают ФИО и диагноз",
         "name_nosology": "Совпадают ФИО и Профиль клиентского пути",
     }
-    seen = set()
-    groups = []
+    reason_order = ("phone", "name_age", "name_diagnosis", "name_nosology")
+    groups_by_ids: dict[tuple[str, ...], dict[str, Any]] = {}
     for (kind, _key), members in buckets.items():
         unique = {p.id: p for p in members}
         if len(unique) < 2:
             continue
         ids = tuple(sorted(unique))
-        signature = (kind, ids)
-        if signature in seen:
-            continue
-        seen.add(signature)
+        group = groups_by_ids.setdefault(ids, {"patients": unique, "reason_codes": set()})
+        group["patients"].update(unique)
+        group["reason_codes"].add(kind)
+
+    groups = []
+    for ids, group in groups_by_ids.items():
+        reason_codes = [code for code in reason_order if code in group["reason_codes"]]
+        reasons = [reason_labels[code] for code in reason_codes]
         patient_refs = [
             {"patient_id": p.id, "patient_name": p.name, "completeness": completeness(p)["score"]}
-            for p in sorted(unique.values(), key=lambda x: x.name)
+            for p in sorted(group["patients"].values(), key=lambda x: (x.name, x.id))
         ]
-        digest = hashlib.sha256(("|".join((kind, *ids))).encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()[:12]
         groups.append({
-            "id": f"{kind}:{digest}",
-            "reason_code": kind,
-            "reason": reason_labels[kind],
+            "id": f"duplicates:{digest}",
+            "reason_code": reason_codes[0],
+            "reason_codes": reason_codes,
+            "reason": "; ".join(reasons),
+            "reasons": reasons,
             "explanation": "Совпадение не означает, что записи являются дублями. Требуется ручная проверка.",
             "patient_ids": list(ids),
             "patients": patient_refs,
         })
-    groups.sort(key=lambda g: (g["reason"], [p["patient_name"] for p in g["patients"]]))
+    groups.sort(key=lambda g: (g["patient_ids"], g["reason_codes"]))
     return groups
 
 
@@ -616,7 +616,11 @@ def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date 
             title="Возможный дубль",
             description="Внутри доступной области видимости есть записи с совпадающими объяснимыми признаками.",
             field_name=None,
-            details={"group_ids": [g["id"] for g in groups], "reasons": sorted({g["reason"] for g in groups})},
+            details={
+                "group_ids": [g["id"] for g in groups],
+                "reason_codes": sorted({code for g in groups for code in g["reason_codes"]}),
+                "reasons": sorted({reason for g in groups for reason in g["reasons"]}),
+            },
             suggested_action=_action("Сравнить записи вручную", "data", False),
         ))
 

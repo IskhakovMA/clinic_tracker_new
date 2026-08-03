@@ -175,6 +175,8 @@ def test_data_quality_frontend_entrypoint_and_api_contract_are_present():
     assert "possible_duplicate" in js
     assert "Профиль клиентского пути" in js
     assert "'nosology'" in js
+    assert "Режим просмотра — изменение данных недоступно" in js
+    assert "action.can_write !== false" in js
 
 
 def test_data_quality_mvp_does_not_offer_automatic_duplicate_merge():

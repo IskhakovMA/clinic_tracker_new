@@ -3119,6 +3119,9 @@ const app = {
     },
 
     renderQualityFinding(patientId, issue) {
+        const action = issue.suggested_action || {};
+        const canWriteAction = action.can_write !== false;
+        const readonlyMessage = 'Режим просмотра — изменение данных недоступно';
         return el('div', { class: `quality-finding quality-finding--${issue.severity}` }, [
             el('div', { class: 'quality-finding__head' }, [
                 this.qualitySeverityChip(issue.severity),
@@ -3132,9 +3135,15 @@ const app = {
             el('button', {
                 type: 'button',
                 class: 'btn btn--ghost btn--sm',
-                text: issue.suggested_action.label || 'Открыть',
-                on: { click: () => this.followQualityAction(patientId, issue.suggested_action) },
+                text: action.label || 'Открыть',
+                disabled: !canWriteAction,
+                'aria-label': canWriteAction ? (action.label || 'Открыть') : `${action.label || 'Открыть'}: ${readonlyMessage}`,
+                title: canWriteAction ? (action.label || 'Открыть') : readonlyMessage,
+                on: { click: () => {
+                    if (canWriteAction) this.followQualityAction(patientId, action);
+                } },
             }),
+            canWriteAction ? null : el('div', { class: 'quality-finding__text', text: readonlyMessage }),
         ]);
     },
 

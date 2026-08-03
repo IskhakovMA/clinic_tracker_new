@@ -15,6 +15,22 @@ from ..services import data_quality
 
 router = APIRouter(prefix="/api/data-quality", tags=["data-quality"])
 
+QualityCategory = Literal["assignment", "checklist", "completeness", "dates", "duplicates", "format", "stage"]
+QualityCode = Literal[
+    "missing_treating_doctor",
+    "missing_required_field",
+    "missing_client_path_profile",
+    "missing_diagnosis",
+    "missing_stage",
+    "invalid_phone",
+    "actual_date_in_future",
+    "planned_date_in_past",
+    "stage_sequence_violation",
+    "overdue_event",
+    "incomplete_required_checklist",
+    "possible_duplicate",
+]
+
 
 @router.get("/summary")
 def summary(
@@ -27,8 +43,8 @@ def summary(
 @router.get("/issues")
 def issues(
     severity: Literal["critical", "warning", "info"] | None = None,
-    category: str | None = Query(None, max_length=50),
-    code: str | None = Query(None, max_length=80),
+    category: QualityCategory | None = None,
+    code: QualityCode | None = None,
     patient_id: str | None = Query(None, max_length=100),
     treating_doctor: str | None = Query(None, max_length=120),
     department: str | None = Query(None, max_length=120),
