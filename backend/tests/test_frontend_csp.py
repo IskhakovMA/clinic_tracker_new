@@ -162,6 +162,38 @@ def test_legacy_entrypoints_are_gone(client):
         assert not (PROJECT_ROOT / name).exists(), f"{name} всё ещё в проекте"
 
 
+def test_data_quality_frontend_entrypoint_and_api_contract_are_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    assert 'data-view="quality"' in html
+    assert 'id="view-quality"' in html
+    assert "Качество данных" in html
+    assert "/api/data-quality/summary" in js
+    assert "/api/data-quality/issues" in js
+    assert "/api/data-quality/patients/" in js
+    assert "Полнота регистрационной карточки" in js
+    assert "possible_duplicate" in js
+    assert "Профиль клиентского пути" in js
+    assert "'nosology'" in js
+    assert "Режим просмотра — изменение данных недоступно" in js
+    assert "action.can_write !== false" in js
+
+
+def test_data_quality_mvp_does_not_offer_automatic_duplicate_merge():
+    """MVP только показывает кандидатов и не добавляет массовое исправление."""
+    combined = "\n".join(path.read_text(encoding="utf-8") for path in (HTML, JS))
+    forbidden = (
+        "Объединить",
+        "mergeDuplicate",
+        "autoMerge",
+        "/api/data-quality/merge",
+        "/api/data-quality/delete",
+        "/api/data-quality/fix",
+    )
+    for marker in forbidden:
+        assert marker not in combined, marker
+
+
 def test_static_route_does_not_expose_arbitrary_files(client):
     """Имя файла не подставляется в путь: доступен только белый список."""
     for path in (

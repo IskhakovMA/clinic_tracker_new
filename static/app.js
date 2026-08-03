@@ -289,6 +289,53 @@ const app = {
     headFilter: null,
     deadlineFilter: null,
     sortOrder: 'updated-newest',
+    quality: {
+        summary: null,
+        issues: [],
+        patients: [],
+        duplicateGroups: [],
+        rules: {},
+        loading: false,
+        error: '',
+        filters: {
+            query: '',
+            severity: '',
+            category: '',
+            code: '',
+            doctor: '',
+            department: '',
+            sort: 'severity',
+        },
+    },
+
+    QUALITY_SEVERITY_LABELS: {
+        critical: 'Критическая ошибка',
+        warning: 'Предупреждение',
+        info: 'Информация',
+    },
+    QUALITY_CATEGORY_LABELS: {
+        completeness: 'Полнота карточки',
+        assignment: 'Ответственные',
+        format: 'Формат данных',
+        dates: 'Даты',
+        stage: 'Маршрут',
+        checklist: 'Чек-лист',
+        duplicates: 'Возможные дубли',
+    },
+    QUALITY_CODE_LABELS: {
+        missing_treating_doctor: 'Не назначен лечащий врач',
+        missing_required_field: 'Не заполнено поле',
+        missing_client_path_profile: 'Не указан профиль клиентского пути',
+        missing_diagnosis: 'Не указан диагноз',
+        missing_stage: 'Не указан текущий этап',
+        invalid_phone: 'Некорректный телефон',
+        actual_date_in_future: 'Фактическая дата в будущем',
+        planned_date_in_past: 'Плановая дата в прошлом',
+        stage_sequence_violation: 'Нарушение маршрута',
+        overdue_event: 'Просроченное событие',
+        incomplete_required_checklist: 'Незавершённый чек-лист',
+        possible_duplicate: 'Возможный дубль',
+    },
 
     icd10Localizations: {
         lip_oral_pharynx: {
@@ -1315,6 +1362,7 @@ const app = {
     /** Журнал аудита даёт человекочитаемую подпись «что изменилось» в списке. */
     async loadActivity() {
         this.activityByPatient = {};
+        if (!this.can('viewAudit')) return;
         try {
             const data = await apiGetJson('/api/audit?limit=200');
             const labels = {
@@ -1366,6 +1414,7 @@ const app = {
         if (view === 'patients') this.renderPatients();
         if (view === 'calendar') this.renderCalendar();
         if (view === 'checklists') this.renderChecklistsView();
+        if (view === 'quality') this.renderDataQuality();
         if (view === 'plans') this.renderPlansView();
         if (view === 'audit') this.renderAudit();
         if (view === 'settings') this.renderSettings();
@@ -1857,6 +1906,28 @@ const app = {
             option('name', 'По алфавиту'),
         ]));
 
+        $('qualitySeverityFilter').replaceChildren(frag([
+            option('', 'Любая серьёзность', true),
+            option('critical', 'Критические ошибки'),
+            option('warning', 'Предупреждения'),
+            option('info', 'Информация'),
+        ]));
+        $('qualityCategoryFilter').replaceChildren(frag([
+            option('', 'Любая категория', true),
+            ...Object.entries(this.QUALITY_CATEGORY_LABELS).map(([key, label]) => option(key, label)),
+        ]));
+        $('qualityCodeFilter').replaceChildren(frag([
+            option('', 'Любой тип проблемы', true),
+            ...Object.entries(this.QUALITY_CODE_LABELS).map(([key, label]) => option(key, label)),
+        ]));
+        $('qualityDoctorFilter').replaceChildren(option('', 'Любой лечащий врач', true));
+        $('qualityDepartmentFilter').replaceChildren(option('', 'Любое отделение', true));
+        $('qualitySortSelect').replaceChildren(frag([
+            option('severity', 'Сначала серьёзные', true),
+            option('issues', 'Больше проблем выше'),
+            option('completeness', 'Ниже полнота выше'),
+        ]));
+
         $('diagnosisLocalization').replaceChildren(frag([
             option('', 'Выберите локализацию', true),
             ...Object.keys(this.icd10Localizations).map(key => option(key, this.icd10Localizations[key].label)),
@@ -2063,6 +2134,7 @@ const app = {
         this.renderTabs(p);
         this.renderTabPanel(p);
         this.applyReadOnlyToPatientView();
+        this.renderPatientQualityBlock(p.id);
     },
 
     /** Read-only роли: формы изменения не открываются. Backend всё равно
@@ -2210,6 +2282,10 @@ const app = {
                 ]),
             ]),
             el('div', {}, [
+                el('div', { class: 'panel panel--pad', id: 'patientQualityBlock' }, [
+                    el('h2', { class: 'section-title', text: 'Качество данных' }),
+                    el('div', { class: 'empty', text: 'Загрузка…' }),
+                ]),
                 this.checklistSummaryCard(p),
                 this.futurePlansCard(p),
                 el('div', { class: 'panel panel--pad' }, [
@@ -2752,6 +2828,339 @@ const app = {
                 occ.note ? el('p', { class: 'alert alert--warning', text: `Заметка: ${occ.note}` }) : null,
             ]);
         }));
+    },
+
+    /* ====================================================== РЕНДЕР: КАЧЕСТВО ДАННЫХ */
+
+    qualityFilterCount() {
+        const f = this.quality.filters;
+        return [f.severity, f.category, f.code, f.doctor, f.department].filter(Boolean).length;
+    },
+
+    updateQualityFiltersButton() {
+        const label = $('qualityFiltersBtnLabel');
+        if (!label) return;
+        const count = this.qualityFilterCount();
+        label.textContent = count ? `Фильтры · ${count}` : 'Фильтры';
+        $('openQualityFiltersSheetBtn').setAttribute('aria-label', count
+            ? `Фильтры качества данных, активных фильтров: ${count}`
+            : 'Фильтры качества данных');
+    },
+
+    openQualityFiltersSheet() {
+        $('qualityFiltersSheetBody').append($('qualityToolbarFilters'));
+        $('openQualityFiltersSheetBtn').setAttribute('aria-expanded', 'true');
+        ui.openModal('qualityFiltersSheet');
+    },
+
+    closeQualityFiltersSheet() {
+        ui.closeModal('qualityFiltersSheet');
+        $('openQualityFiltersSheetBtn').setAttribute('aria-expanded', 'false');
+        const toolbar = document.querySelector('#view-quality .toolbar');
+        toolbar.append($('qualityToolbarFilters'));
+    },
+
+    resetQualityFilters() {
+        this.quality.filters = {
+            query: '',
+            severity: '',
+            category: '',
+            code: '',
+            doctor: '',
+            department: '',
+            sort: 'severity',
+        };
+        $('qualitySearchInput').value = '';
+        $('qualitySeverityFilter').value = '';
+        $('qualityCategoryFilter').value = '';
+        $('qualityCodeFilter').value = '';
+        $('qualityDoctorFilter').value = '';
+        $('qualityDepartmentFilter').value = '';
+        $('qualitySortSelect').value = 'severity';
+        this.renderDataQuality();
+    },
+
+    qualitySeverityChip(severity) {
+        const label = this.QUALITY_SEVERITY_LABELS[severity] || 'Нет проблем';
+        const tone = severity === 'critical' ? 'danger' : severity === 'warning' ? 'warning' : severity === 'info' ? 'neutral' : 'good';
+        return el('span', { class: `chip chip--${tone}`, text: label });
+    },
+
+    qualityParams() {
+        const f = this.quality.filters;
+        const params = new URLSearchParams();
+        if (f.query) params.set('search', f.query);
+        if (f.severity) params.set('severity', f.severity);
+        if (f.category) params.set('category', f.category);
+        if (f.code) params.set('code', f.code);
+        if (f.doctor) params.set('treating_doctor', f.doctor);
+        if (f.department) params.set('department', f.department);
+        if (f.sort) params.set('sort', f.sort);
+        params.set('limit', '200');
+        return params.toString();
+    },
+
+    async loadDataQuality() {
+        const query = this.qualityParams();
+        const summary = await apiGetJson('/api/data-quality/summary');
+        const issues = await apiGetJson(`/api/data-quality/issues?${query}`);
+        this.quality.summary = summary;
+        this.quality.issues = issues.issues || [];
+        this.quality.patients = issues.patients || [];
+        this.quality.duplicateGroups = issues.duplicate_groups || [];
+        this.quality.rules = issues.rules || {};
+    },
+
+    async renderDataQuality() {
+        this.updateQualityFiltersButton();
+        const body = $('qualityBody');
+        const empty = $('qualityEmpty');
+        const dupPanel = $('qualityDuplicatesPanel');
+        body.replaceChildren();
+        empty.classList.remove('is-hidden');
+        empty.textContent = 'Загрузка…';
+        dupPanel.replaceChildren();
+
+        try {
+            await this.loadDataQuality();
+            this.renderQualityFiltersOptions();
+            this.renderQualityStats();
+            this.renderQualityRows();
+            this.renderQualityDuplicates();
+        } catch (e) {
+            empty.classList.remove('is-hidden');
+            empty.textContent = `Не удалось загрузить качество данных: ${e.message}`;
+            $('qualityStatsRow').replaceChildren();
+            dupPanel.replaceChildren();
+        }
+    },
+
+    renderQualityFiltersOptions() {
+        const selectedDoctor = this.quality.filters.doctor;
+        const selectedDept = this.quality.filters.department;
+        const doctors = [...new Set(this.quality.patients.map(p => p.treating_doctor_name).filter(Boolean))].sort();
+        const departments = [...new Set(this.quality.patients.flatMap(p => p.department_names || []))].sort();
+        $('qualityDoctorFilter').replaceChildren(frag([
+            option('', 'Любой лечащий врач', !selectedDoctor),
+            ...doctors.map(name => option(name, name, name === selectedDoctor)),
+        ]));
+        $('qualityDepartmentFilter').replaceChildren(frag([
+            option('', 'Любое отделение', !selectedDept),
+            ...departments.map(name => option(name, name, name === selectedDept)),
+        ]));
+    },
+
+    renderQualityStats() {
+        const s = this.quality.summary || {};
+        const stat = (label, value, meta, filter) => {
+            const props = { class: filter ? 'stat stat--button' : 'stat' };
+            const children = [
+                el('div', { class: 'stat__label', text: label }),
+                el('div', { class: 'stat__value', text: String(value ?? 0) }),
+                el('div', { class: 'stat__meta', text: meta }),
+            ];
+            if (!filter) return el('div', props, children);
+            return el('button', {
+                type: 'button',
+                class: 'stat stat--button',
+                on: { click: () => {
+                    Object.assign(this.quality.filters, {
+                        severity: '',
+                        category: '',
+                        code: '',
+                        doctor: '',
+                        department: '',
+                        query: '',
+                    }, filter);
+                    $('qualitySearchInput').value = '';
+                    this.syncQualityFilterControls();
+                    this.renderDataQuality();
+                } },
+            }, children);
+        };
+        $('qualityStatsRow').replaceChildren(frag([
+            stat('Пациентов с проблемами', s.patients_with_issues, `${s.total_patients || 0} в scope`),
+            stat('Критические ошибки', s.critical_count, 'требуют проверки', { severity: 'critical' }),
+            stat('Предупреждения', s.warning_count, 'уточнить данные', { severity: 'warning' }),
+            stat('Возможные дубли', s.possible_duplicate_groups, 'только ручная проверка', { code: 'possible_duplicate' }),
+            stat('Средняя полнота данных', `${s.average_completeness ?? 100}%`, 'регистрационная карточка'),
+        ]));
+    },
+
+    syncQualityFilterControls() {
+        const f = this.quality.filters;
+        $('qualitySeverityFilter').value = f.severity;
+        $('qualityCategoryFilter').value = f.category;
+        $('qualityCodeFilter').value = f.code;
+        $('qualityDoctorFilter').value = f.doctor;
+        $('qualityDepartmentFilter').value = f.department;
+        $('qualitySortSelect').value = f.sort;
+    },
+
+    renderQualityRows() {
+        const rows = this.quality.patients;
+        const body = $('qualityBody');
+        const empty = $('qualityEmpty');
+        if (!rows.length) {
+            body.replaceChildren();
+            empty.classList.remove('is-hidden');
+            empty.textContent = this.quality.summary && this.quality.summary.total_issues === 0
+                ? 'По действующим правилам качества проблем не обнаружено.'
+                : 'По выбранным условиям проблем не найдено. Измените фильтры или поиск.';
+            return;
+        }
+        empty.classList.add('is-hidden');
+        body.replaceChildren(frag(rows.map(row => el('tr', {}, [
+            el('td', {}, el('div', { class: 'person' }, [
+                el('span', { class: 'avatar avatar--normal', text: this.initials(row.patient_name) }),
+                el('div', {}, [
+                    el('div', { class: 'person__name', text: row.patient_name }),
+                    el('div', { class: 'person__meta', text: row.issue_count ? `${row.issue_count} ${this.pluralize(row.issue_count, 'проблема', 'проблемы', 'проблем')}` : 'Проблем не обнаружено' }),
+                ]),
+            ])),
+            el('td', { class: 'cell-quality-score' }, [
+                el('div', { class: 'quality-score' }, [
+                    el('span', { class: 'quality-score__value', text: `${row.completeness.score}%` }),
+                    el('span', { class: 'quality-score__label', text: 'Полнота регистрационной карточки' }),
+                ]),
+                row.completeness.missing.length
+                    ? el('div', { class: 'muted', text: `Не заполнено: ${row.completeness.missing.map(m => m.label).join(', ')}` })
+                    : el('div', { class: 'muted', text: 'Все поля формулы заполнены' }),
+            ]),
+            el('td', { class: 'cell-quality-issues' }, [
+                row.max_severity ? this.qualitySeverityChip(row.max_severity) : this.qualitySeverityChip(null),
+                ...(row.top_issues || []).map(issue => el('div', { class: 'quality-issue-line' }, [
+                    el('span', { class: `severity-dot severity-dot--${issue.severity}`, text: this.QUALITY_SEVERITY_LABELS[issue.severity] || 'Информация' }),
+                    el('span', { text: issue.title }),
+                ])),
+            ]),
+            el('td', { class: 'cell-quality-owner' }, [
+                el('div', { text: row.treating_doctor_name || 'Не назначен' }),
+                row.department_names && row.department_names.length
+                    ? el('div', { class: 'muted', text: row.department_names.join(', ') })
+                    : el('div', { class: 'muted', text: 'Отделение не указано' }),
+            ]),
+            el('td', { class: 'cell-actions' }, [
+                el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть пациента',
+                    'aria-label': `Открыть карточку: ${row.patient_name}`,
+                    on: { click: () => this.openPatient(row.patient_id) },
+                }),
+            ]),
+        ]))));
+    },
+
+    renderQualityDuplicates() {
+        const panel = $('qualityDuplicatesPanel');
+        const groups = this.quality.duplicateGroups || [];
+        if (!groups.length) {
+            panel.replaceChildren(frag([
+                el('h2', { class: 'panel__title', text: 'Возможные дубли' }),
+                el('p', { class: 'panel__text', text: 'По доступным пациентам возможные дубли не найдены.' }),
+            ]));
+            return;
+        }
+        panel.replaceChildren(frag([
+            el('h2', { class: 'panel__title', text: 'Возможные дубли' }),
+            el('p', { class: 'panel__text', text: 'Совпадение не означает, что записи являются дублями. Требуется ручная проверка.' }),
+            ...groups.map(group => el('div', { class: 'duplicate-group' }, [
+                el('div', { class: 'duplicate-group__reason', text: group.reason }),
+                el('div', { class: 'duplicate-group__patients' }, group.patients.map(p => el('button', {
+                    type: 'button',
+                    class: 'sheet-item',
+                    on: { click: () => this.openPatient(p.patient_id) },
+                }, [
+                    el('span', { class: 'sheet-item__title', text: p.patient_name }),
+                    el('span', { class: 'sheet-item__hint', text: `Полнота карточки: ${p.completeness}%` }),
+                ]))),
+            ])),
+        ]));
+    },
+
+    async renderPatientQualityBlock(patientId) {
+        const box = $('patientQualityBlock');
+        if (!box) return;
+        box.replaceChildren(frag([
+            el('h2', { class: 'section-title', text: 'Качество данных' }),
+            el('div', { class: 'empty', text: 'Загрузка…' }),
+        ]));
+        try {
+            const data = await apiGetJson(`/api/data-quality/patients/${patientId}`);
+            const comp = data.patient.completeness;
+            const issues = data.issues || [];
+            const groups = data.duplicate_groups || [];
+            box.replaceChildren(frag([
+                el('h2', { class: 'section-title', text: 'Качество данных' }),
+                el('div', { class: 'quality-score quality-score--block' }, [
+                    el('span', { class: 'quality-score__value', text: `${comp.score}%` }),
+                    el('span', { class: 'quality-score__label', text: 'Полнота регистрационной карточки' }),
+                ]),
+                comp.missing.length
+                    ? el('p', { class: 'muted', text: `В формуле не заполнено: ${comp.missing.map(m => m.label).join(', ')}.` })
+                    : el('p', { class: 'muted', text: 'Все поля формулы заполнены.' }),
+                issues.length
+                    ? el('div', { class: 'quality-findings' }, issues.map(issue => this.renderQualityFinding(patientId, issue)))
+                    : el('div', { class: 'empty', text: 'По действующим правилам качества проблем не обнаружено.' }),
+                groups.length ? el('div', { class: 'quality-findings' }, [
+                    el('h3', { class: 'section-title', text: 'Возможные дубли' }),
+                    el('p', { class: 'muted', text: 'Совпадение не означает, что записи являются дублями. Требуется ручная проверка.' }),
+                    ...groups.map(group => el('div', { class: 'quality-finding' }, [
+                        el('div', { class: 'quality-finding__title', text: group.reason }),
+                        el('div', { class: 'quality-finding__text', text: group.patients.map(p => p.patient_name).join(', ') }),
+                    ])),
+                ]) : null,
+            ]));
+        } catch (e) {
+            box.replaceChildren(frag([
+                el('h2', { class: 'section-title', text: 'Качество данных' }),
+                el('div', { class: 'empty', text: 'Не удалось загрузить качество данных.' }),
+            ]));
+        }
+    },
+
+    renderQualityFinding(patientId, issue) {
+        const action = issue.suggested_action || {};
+        const canWriteAction = action.can_write !== false;
+        const readonlyMessage = 'Режим просмотра — изменение данных недоступно';
+        return el('div', { class: `quality-finding quality-finding--${issue.severity}` }, [
+            el('div', { class: 'quality-finding__head' }, [
+                this.qualitySeverityChip(issue.severity),
+                el('span', { class: 'quality-finding__category', text: this.QUALITY_CATEGORY_LABELS[issue.category] || issue.category }),
+            ]),
+            el('div', { class: 'quality-finding__title', text: issue.title }),
+            el('div', { class: 'quality-finding__text', text: issue.description }),
+            issue.details && issue.details.sample_missing
+                ? el('div', { class: 'quality-finding__text', text: `Не отмечено: ${issue.details.sample_missing.join(', ')}${issue.details.missing_count > issue.details.sample_missing.length ? '…' : ''}` })
+                : null,
+            el('button', {
+                type: 'button',
+                class: 'btn btn--ghost btn--sm',
+                text: action.label || 'Открыть',
+                disabled: !canWriteAction,
+                'aria-label': canWriteAction ? (action.label || 'Открыть') : `${action.label || 'Открыть'}: ${readonlyMessage}`,
+                title: canWriteAction ? (action.label || 'Открыть') : readonlyMessage,
+                on: { click: () => {
+                    if (canWriteAction) this.followQualityAction(patientId, action);
+                } },
+            }),
+            canWriteAction ? null : el('div', { class: 'quality-finding__text', text: readonlyMessage }),
+        ]);
+    },
+
+    followQualityAction(patientId, action) {
+        if (action && action.workflow === 'unresolved_treating_doctor' && action.tab === 'structure') {
+            this.showView('structure');
+            return;
+        }
+        const tab = action && action.tab ? action.tab : 'overview';
+        this.openPatientTab(patientId, tab);
+    },
+
+    openPatientTab(id, tab) {
+        this.currentPatientId = id;
+        this.currentTab = tab || 'overview';
+        this.showView('patient');
+        this.renderPatientView();
     },
 
     /* ==================================================== РЕНДЕР: ПРОЧИЕ РАЗДЕЛЫ */
@@ -4140,6 +4549,40 @@ const app = {
         on('closeFiltersSheetBtn', 'click', () => this.closeFiltersSheet());
         on('applyFiltersSheetBtn', 'click', () => this.closeFiltersSheet());
         on('sheetResetFiltersBtn', 'click', () => this.resetFilters());
+
+        // Качество данных
+        on('qualitySearchInput', 'input', (event) => {
+            this.quality.filters.query = event.target.value;
+            this.renderDataQuality();
+        });
+        on('qualitySeverityFilter', 'change', (event) => {
+            this.quality.filters.severity = event.target.value;
+            this.renderDataQuality();
+        });
+        on('qualityCategoryFilter', 'change', (event) => {
+            this.quality.filters.category = event.target.value;
+            this.renderDataQuality();
+        });
+        on('qualityCodeFilter', 'change', (event) => {
+            this.quality.filters.code = event.target.value;
+            this.renderDataQuality();
+        });
+        on('qualityDoctorFilter', 'change', (event) => {
+            this.quality.filters.doctor = event.target.value;
+            this.renderDataQuality();
+        });
+        on('qualityDepartmentFilter', 'change', (event) => {
+            this.quality.filters.department = event.target.value;
+            this.renderDataQuality();
+        });
+        on('qualitySortSelect', 'change', (event) => {
+            this.quality.filters.sort = event.target.value;
+            this.renderDataQuality();
+        });
+        on('openQualityFiltersSheetBtn', 'click', () => this.openQualityFiltersSheet());
+        on('closeQualityFiltersSheetBtn', 'click', () => this.closeQualityFiltersSheet());
+        on('applyQualityFiltersSheetBtn', 'click', () => this.closeQualityFiltersSheet());
+        on('qualityResetFiltersBtn', 'click', () => this.resetQualityFilters());
 
         // Экспорт
         on('openExportBtn', 'click', () => this.openExportModal());

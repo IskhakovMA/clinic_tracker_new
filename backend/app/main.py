@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import config, security
 from .db import get_connection, init_db
-from .routes import audit_log, auth, importexport, migrate, patients, staff, structure
+from .routes import audit_log, auth, data_quality, importexport, migrate, patients, staff, structure
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -93,6 +93,7 @@ app.include_router(patients.router)
 app.include_router(importexport.router)
 app.include_router(migrate.router)
 app.include_router(audit_log.router)
+app.include_router(data_quality.router)
 app.include_router(staff.router)
 app.include_router(structure.router)
 

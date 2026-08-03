@@ -74,6 +74,7 @@
             <button type="button" class="nav__item is-active" data-view="patients" aria-current="page">Пациенты</button>
             <button type="button" class="nav__item" data-view="calendar">Календарь</button>
             <button type="button" class="nav__item" data-view="checklists">Чек-листы</button>
+            <button type="button" class="nav__item" data-view="quality">Качество данных</button>
             <button type="button" class="nav__item" data-view="plans">Будущие планы</button>
             <button type="button" class="nav__item" data-view="data">Импорт / Экспорт</button>
             <button type="button" class="nav__item is-hidden" data-view="staff">Сотрудники</button>
@@ -218,6 +219,62 @@
                     </div>
                 </div>
                 <div class="panel" id="checklistsPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-quality">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Качество данных</h1>
+                        <p class="pagehead__subtitle">Проблемы, которые требуют проверки или уточнения</p>
+                    </div>
+                </div>
+
+                <div class="stats" id="qualityStatsRow"></div>
+
+                <div class="toolbar">
+                    <div class="search">
+                        <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                        <label class="visually-hidden" for="qualitySearchInput">Поиск по ФИО</label>
+                        <input class="input search__input" type="search" id="qualitySearchInput" placeholder="Поиск по ФИО…">
+                    </div>
+                    <button type="button" class="btn btn--ghost only-narrow" id="openQualityFiltersSheetBtn" aria-expanded="false">
+                        <span id="qualityFiltersBtnLabel">Фильтры</span>
+                    </button>
+                    <div class="toolbar__filters" id="qualityToolbarFilters">
+                        <label class="visually-hidden" for="qualitySeverityFilter">Серьёзность</label>
+                        <select class="select" id="qualitySeverityFilter"></select>
+                        <label class="visually-hidden" for="qualityCategoryFilter">Категория</label>
+                        <select class="select" id="qualityCategoryFilter"></select>
+                        <label class="visually-hidden" for="qualityCodeFilter">Тип проблемы</label>
+                        <select class="select" id="qualityCodeFilter"></select>
+                        <label class="visually-hidden" for="qualityDoctorFilter">Лечащий врач</label>
+                        <select class="select" id="qualityDoctorFilter"></select>
+                        <label class="visually-hidden" for="qualityDepartmentFilter">Отделение</label>
+                        <select class="select" id="qualityDepartmentFilter"></select>
+                        <label class="visually-hidden" for="qualitySortSelect">Сортировка</label>
+                        <select class="select" id="qualitySortSelect"></select>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="table-wrap">
+                        <table class="table quality-table" id="qualityTable">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Пациент</th>
+                                    <th scope="col">Полнота карточки</th>
+                                    <th scope="col">Проблемы</th>
+                                    <th scope="col">Ответственные</th>
+                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                </tr>
+                            </thead>
+                            <tbody id="qualityBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="empty is-hidden" id="qualityEmpty"></div>
+                </div>
+
+                <div class="panel panel--pad quality-duplicates" id="qualityDuplicatesPanel"></div>
             </section>
 
             <section class="view is-hidden" id="view-plans">
@@ -606,6 +663,23 @@
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="sheetResetFiltersBtn">Сбросить</button>
             <button type="button" class="btn btn--primary" id="applyFiltersSheetBtn">Показать</button>
+        </div>
+    </div>
+</div>
+
+<!-- ПАНЕЛЬ ФИЛЬТРОВ КАЧЕСТВА ДАННЫХ (мобильная) -->
+<div class="modal modal--sheet" id="qualityFiltersSheet" role="dialog" aria-modal="true" aria-labelledby="qualityFiltersSheetTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="qualityFiltersSheetTitle">Фильтры качества данных</h2>
+            <button type="button" class="btn btn--icon" id="closeQualityFiltersSheetBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body" id="qualityFiltersSheetBody"></div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="qualityResetFiltersBtn">Сбросить</button>
+            <button type="button" class="btn btn--primary" id="applyQualityFiltersSheetBtn">Показать</button>
         </div>
     </div>
 </div>
