@@ -13,6 +13,10 @@ Backend — FastAPI + SQLite, frontend — статические файлы, к
   ошибки дат, незавершённые обязательные чек-листы, несопоставленного врача и
   возможные дубли внутри доступного scope. Подробности — в
   [DATA_QUALITY.md](DATA_QUALITY.md).
+- Раздел **«Уведомления»**: отдельное согласие на SMS, очередь напоминаний,
+  безопасные системные шаблоны, ручная обработка через mock provider и
+  статусы отправки без реальных SMS. Подробности — в
+  [NOTIFICATIONS.md](NOTIFICATIONS.md).
 
 ### Файлы фронтенда
 
@@ -74,8 +78,8 @@ python -m backend.cli create-developer
 ### Миграция со старого общего входа
 
 1. Сделайте резервную копию: `python -m backend.cli backup`.
-2. Обновите код и запустите приложение — схема БД мигрирует на v2
-   автоматически (данные пациентов не изменяются, старые сессии
+2. Обновите код и запустите приложение — схема БД мигрирует на актуальную
+   версию автоматически (данные пациентов не изменяются, старые сессии
    завершаются).
 3. Создайте первого Разработчика: `python -m backend.cli create-developer`.
    Прежний общий пароль (`app_login`, `CLINIC_ADMIN_PASSWORD`) перестал
@@ -113,12 +117,15 @@ python -m backend.cli restore <file>      # восстановление с пр
 python -m backend.cli audit-tail          # последние события аудита
 python -m backend.cli audit-prune         # удалить события старше срока хранения
 python -m backend.cli purge-sessions      # удалить истёкшие сессии
+python -m backend.cli notifications-generate          # сформировать due-напоминания
+python -m backend.cli notifications-run-once          # обработать одну due-запись mock provider
+python -m backend.cli notifications-drain --limit 100 # обработать пачку due-записей
 ```
 
 ## Тесты и проверки
 
 ```bash
-python -m pytest backend/tests -q      # auth, RBAC, CRUD, CSRF, импорт/экспорт, XSS, CSP, аудит, сессии, backup/restore, качество данных, smoke
+python -m pytest backend/tests -q      # auth, RBAC, CRUD, CSRF, импорт/экспорт, XSS, CSP, аудит, сессии, backup/restore, качество данных, уведомления, smoke
 pip-audit -r backend/requirements.txt  # проверка зависимостей на известные уязвимости
 node --check static/app.js             # синтаксис фронтенда (если установлен Node.js)
 ```

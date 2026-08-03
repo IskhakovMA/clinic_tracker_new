@@ -1,4 +1,4 @@
-# Security audit — clinic-v2 (frontend + backend)
+# Security audit — Система планирования (frontend + backend)
 
 Дата последнего обновления: 2026-07-31. Документ отражает состояние **после** миграции на
 серверную архитектуру (FastAPI + SQLite) и UI/UX-редизайна (этап 4). История первого, чисто клиентского аудита
@@ -26,7 +26,8 @@
   same-origin, поэтому CORS-мидлвари нет вовсе (нечего разрешать).
 - **Слушает только 127.0.0.1** по умолчанию; debug выключен; `/api/docs` доступен только в debug.
 - **Схема БД**: `patients` / `history_entries` / `events` / `future_plans` (FK с каскадом,
-  NOT NULL, UNIQUE(seq)), `sessions`, `app_login`, `schema_version`. Чек-лист хранится
+  NOT NULL, UNIQUE(seq)), `sessions`, `schema_version`, RBAC-таблицы и таблицы уведомлений
+  `patient_notification_preferences` / `notification_templates` / `notifications`. Чек-лист хранится
   JSON-колонкой на `history_entries` — осознанная денормализация: ключи чек-листа это
   свободный текст из справочника нозологий, не реляционные сущности.
 - **Идентификаторы** — серверные UUID4. Клиентский `id` никогда не назначает идентичность:
@@ -434,3 +435,23 @@ Playwright не добавлялся; скриншоты сняты через C
 - Временный пароль при создании/сбросе показывается Разработчику один раз
   в интерфейсе; передача его сотруднику — организационная процедура вне
   системы.
+
+## Этап уведомлений: безопасный mock MVP (схема v3)
+
+- Реальные SMS не отправляются: `NOTIFICATION_PROVIDER=mock`, неизвестный provider
+  fail-closed. `MockNotificationProvider` не выполняет HTTP-запросы и не принимает
+  credentials.
+- Согласие на SMS хранится отдельно от телефона. Наличие телефона не создаёт consent.
+  Отзыв согласия отменяет только ожидающие `pending` уведомления, уже отправленная
+  техническая история не удаляется.
+- Очередь не хранит полный телефон и текст SMS; номер читается из карточки пациента
+  непосредственно перед mock-обработкой. Список API возвращает только masked phone.
+- Шаблоны approved-only, без Jinja/eval/arbitrary code; разрешены только `{date}` и
+  `{time}`. Диагноз, Профиль клиентского пути, жалобы, заметки, врач и отделение не
+  включаются в текст.
+- Все endpoints `/api/notifications*` требуют авторизацию, CSRF для write-действий,
+  RBAC и `policy.patient_scope_filter`; чужой notification/patient ID не раскрывает
+  существование объекта.
+- Audit событий уведомлений содержит только технические коды (`patient_id`,
+  `notification_id`, `template_code`, status, `error_code`, source, attempt) и не
+  содержит ФИО пациента, телефон, diagnosis, `nosology`, текст SMS или provider body.
