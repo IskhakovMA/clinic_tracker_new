@@ -58,9 +58,15 @@ MVP модуля уведомлений добавляет внутреннюю 
 
 Offset фиксированный: `NOTIFICATION_DEFAULT_REMINDER_HOURS=24`. UI настройки расписаний на этом этапе нет.
 
-Идемпотентность закреплена частичным уникальным индексом:
+Идемпотентность закреплена серверным `idempotency_key`. Ключ вычисляется backend из:
 
-`patient_id, source_type, source_id, template_code, scheduled_at` для активных статусов `pending`, `processing`, `sent`.
+- `patient_id`;
+- `source_type`;
+- `source_id`;
+- `template_code`;
+- `scheduled_at`.
+
+Frontend не передаёт этот ключ. В БД действует уникальный индекс `idx_notifications_idempotency_key`, поэтому повторная генерация не создаёт вторую запись для того же события, шаблона и времени даже после статусов `sent`, `failed`, `cancelled` или `skipped`.
 
 Если дата события изменилась, старое `pending` уведомление отменяется с причиной `event_rescheduled`, затем создаётся новое. Если событие завершено или отменено, ожидающее уведомление отменяется с причиной `event_inactive`.
 
@@ -84,7 +90,11 @@ python -m backend.cli notifications-run-once
 python -m backend.cli notifications-drain --limit 100
 ```
 
-Обработка очереди атомарно забирает due `pending` запись в короткой SQLite-транзакции, затем повторно проверяет consent, телефон, пациента и шаблон. Внешний вызов mock provider не удерживает write-транзакцию. Временная ошибка планирует retry с backoff `2 ** attempt` минут, максимум `NOTIFICATION_MAX_ATTEMPTS=3`; постоянная ошибка переводит запись в `failed`.
+Обработка очереди сначала восстанавливает stale `processing` claims, затем атомарно забирает due `pending` запись в короткой SQLite-транзакции и фиксирует `processing_started_at`. Lease задаётся `NOTIFICATION_PROCESSING_LEASE_SECONDS=300`.
+
+Свежая `processing` запись другим worker не трогается. Если lease истёк, запись возвращается в `pending` без сброса `attempt_count`; если `attempt_count >= max_attempts`, она переводится в `failed`. `sent` и `cancelled` никогда не возвращаются в `pending`.
+
+Внешний вызов mock provider выполняется после commit claim-транзакции и не удерживает SQLite write lock. Временная ошибка планирует retry с backoff `2 ** attempt` минут, максимум `NOTIFICATION_MAX_ATTEMPTS=3`; постоянная ошибка переводит запись в `failed`.
 
 ## RBAC
 
@@ -119,7 +129,7 @@ Frontend скрывает недоступные действия только �
 - `idx_notifications_patient`
 - `idx_notifications_source`
 - `idx_notifications_scheduled`
-- `idx_notifications_idempotency_active`
+- `idx_notifications_idempotency_key`
 
 Миграция v2 → v3 идемпотентна и совместима с `check-db`, backup/restore, импортом и экспортом. Экспорт теперь имеет `schemaVersion: 3`, импорт принимает версии `0`, `1`, `2`, `3`.
 

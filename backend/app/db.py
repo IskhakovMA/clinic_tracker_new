@@ -1,4 +1,5 @@
 """SQLite storage layer: connection handling, schema init, migrations."""
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -173,10 +174,12 @@ CREATE TABLE IF NOT EXISTS notifications (
     source_type TEXT NOT NULL CHECK (source_type IN ('manual', 'event')),
     source_id TEXT NOT NULL,
     scheduled_at TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'cancelled', 'skipped')),
     attempt_count INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
     next_attempt_at TEXT,
+    processing_started_at TEXT,
     provider_message_id TEXT,
     provider_status TEXT,
     error_code TEXT,
@@ -212,6 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_notifications_status_due ON notifications(status,
 CREATE INDEX IF NOT EXISTS idx_notifications_patient ON notifications(patient_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_source ON notifications(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_scheduled ON notifications(scheduled_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notifications(idempotency_key);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_active
     ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
     WHERE status IN ('pending', 'processing', 'sent');
@@ -323,6 +327,42 @@ def _seed_notification_templates(conn: sqlite3.Connection) -> None:
         )
 
 
+def _notification_idempotency_key(
+    patient_id: str, source_type: str, source_id: str, template_code: str, scheduled_at: str
+) -> str:
+    raw = "\x1f".join((patient_id, source_type, source_id, template_code, scheduled_at))
+    return "notif_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _ensure_notification_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "notifications")
+    if not columns:
+        return
+    if "idempotency_key" not in columns:
+        conn.execute("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT")
+    if "processing_started_at" not in columns:
+        conn.execute("ALTER TABLE notifications ADD COLUMN processing_started_at TEXT")
+    rows = conn.execute(
+        """SELECT id, patient_id, source_type, source_id, template_code, scheduled_at
+           FROM notifications
+           WHERE idempotency_key IS NULL OR idempotency_key = ''"""
+    ).fetchall()
+    used = {
+        row["idempotency_key"]
+        for row in conn.execute(
+            "SELECT idempotency_key FROM notifications WHERE idempotency_key IS NOT NULL AND idempotency_key != ''"
+        ).fetchall()
+    }
+    for row in rows:
+        key = _notification_idempotency_key(
+            row["patient_id"], row["source_type"], row["source_id"], row["template_code"], row["scheduled_at"]
+        )
+        if key in used:
+            key = f"{key}:legacy:{row['id']}"
+        used.add(key)
+        conn.execute("UPDATE notifications SET idempotency_key = ? WHERE id = ?", (key, row["id"]))
+
+
 def migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     """v1 → v2: RBAC-таблицы и связи. Безопасна для повторного запуска.
 
@@ -351,6 +391,7 @@ def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     permission to send SMS.
     """
     conn.executescript(SCHEMA_SQL)
+    _ensure_notification_schema(conn)
     _seed_notification_templates(conn)
 
 
@@ -364,6 +405,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     with conn:
         conn.executescript(SCHEMA_SQL)   # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
+        _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
         _seed_notification_templates(conn)

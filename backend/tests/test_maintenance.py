@@ -147,5 +147,6 @@ def test_indexes_exist(auth_client):
         "idx_audit_created",
         "idx_notifications_status_due",
         "idx_notifications_patient",
+        "idx_notifications_idempotency_key",
     ):
         assert expected in names, f"missing index {expected}"

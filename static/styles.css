@@ -353,6 +353,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .alert--info { background: var(--info-soft); border-color: var(--info); color: var(--info); }
 
 .panel {
+    min-width: 0;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
@@ -495,7 +496,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .topbar__brand { display: none; font-weight: 700; }
 .topbar__spacer { flex: 1; }
 
-.content { padding: var(--sp-6); max-width: 1400px; width: 100%; }
+.content { padding: var(--sp-6); max-width: 1400px; width: 100%; min-width: 0; }
+.view { min-width: 0; }
 
 .scrim {
     display: none;
@@ -518,8 +520,9 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .pagehead__subtitle { color: var(--text-2); font-size: var(--text-md); margin-top: var(--sp-1); }
 .pagehead__actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 
-.toolbar { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-5); flex-wrap: wrap; }
+.toolbar { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-5); flex-wrap: wrap; min-width: 0; }
 .toolbar .select { width: auto; min-width: 150px; flex: 0 1 auto; }
+.toolbar .input { min-width: 0; }
 /* display:contents — обёртка не влияет на раскладку тулбара на десктопе */
 .toolbar__filters { display: contents; }
 
@@ -562,7 +565,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
    10. Таблица пациентов
    -------------------------------------------------------------------------- */
 
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; max-width: 100%; min-width: 0; }
 
 .table { width: 100%; border-collapse: collapse; font-size: var(--text-md); }
 
@@ -1074,6 +1077,28 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
        можно не заметить. */
     .tabs { flex-wrap: wrap; overflow-x: visible; }
     .tab { flex: 0 1 auto; }
+}
+
+@media (max-width: 1100px) {
+    .notification-table thead { display: none; }
+    .notification-table,
+    .notification-table tbody,
+    .notification-table tr,
+    .notification-table td { display: block; width: 100%; }
+    .notification-table tr {
+        padding: var(--sp-4) var(--sp-5);
+        border-bottom: 1px solid var(--border);
+    }
+    .notification-table td { padding: 0; border: 0; }
+    .notification-table td + td { margin-top: var(--sp-3); }
+    .notification-table .cell-actions { text-align: left; }
+    .notification-table .cell-actions .btn { width: 100%; }
+    .cell-notification-template::before { content: 'Шаблон: '; color: var(--text-3); }
+    .cell-notification-source::before { content: 'Источник: '; color: var(--text-3); }
+    .cell-notification-scheduled::before { content: 'Запланировано: '; color: var(--text-3); }
+    .cell-notification-status::before { content: 'Статус: '; color: var(--text-3); }
+    .cell-notification-attempts::before { content: 'Попытки: '; color: var(--text-3); }
+    .cell-notification-reason::before { content: 'Причина: '; color: var(--text-3); }
 }
 
 @media (max-width: 1024px) {

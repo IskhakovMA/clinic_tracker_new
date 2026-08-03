@@ -7,6 +7,7 @@ stored in the queue or audit log.
 from __future__ import annotations
 
 import re
+import hashlib
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
@@ -61,6 +62,13 @@ def event_dt(date_value: str | None, time_value: str | None) -> datetime | None:
 
 def safe_detail(**parts) -> str:
     return " ".join(f"{key}={value}" for key, value in parts.items() if value not in (None, ""))
+
+
+def notification_idempotency_key(
+    patient_id: str, source_type: str, source_id: str, template_code: str, scheduled_at: str
+) -> str:
+    raw = "\x1f".join((patient_id, source_type, source_id, template_code, scheduled_at))
+    return "notif_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def ensure_known_provider() -> None:
@@ -401,27 +409,28 @@ def create_notification(
         return None, reason
     now = now_iso()
     nid = store.new_id()
+    scheduled_iso = scheduled.isoformat()
+    idempotency_key = notification_idempotency_key(
+        patient_id, source_type, source_id, template_code, scheduled_iso
+    )
     try:
         with conn:
             conn.execute(
                 """INSERT INTO notifications
                    (id, patient_id, channel, template_id, template_code, template_version,
-                    source_type, source_id, scheduled_at, status, attempt_count, max_attempts,
+                    source_type, source_id, scheduled_at, idempotency_key, status, attempt_count, max_attempts,
                     next_attempt_at, created_by_user_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
                 (
                     nid, patient_id, template["channel"], template["id"], template["code"], template["version"],
-                    source_type, source_id, scheduled.isoformat(), config.NOTIFICATION_MAX_ATTEMPTS,
-                    scheduled.isoformat(), created_by_user_id, now, now,
+                    source_type, source_id, scheduled_iso, idempotency_key, config.NOTIFICATION_MAX_ATTEMPTS,
+                    scheduled_iso, created_by_user_id, now, now,
                 ),
             )
     except sqlite3.IntegrityError:
         row = conn.execute(
-            """SELECT * FROM notifications
-               WHERE patient_id = ? AND source_type = ? AND source_id = ?
-                 AND template_code = ? AND scheduled_at = ?
-                 AND status IN ('pending', 'processing', 'sent')""",
-            (patient_id, source_type, source_id, template_code, scheduled.isoformat()),
+            "SELECT * FROM notifications WHERE idempotency_key = ?",
+            (idempotency_key,),
         ).fetchone()
         return (dict(row) if row else None), "duplicate"
     if audit_user is not None:
@@ -468,7 +477,8 @@ def cancel_notification(conn: sqlite3.Connection, *, notification_id: str, user:
     with conn:
         cur = conn.execute(
             """UPDATE notifications
-               SET status = 'cancelled', cancelled_at = ?, cancelled_by_user_id = ?, updated_at = ?
+               SET status = 'cancelled', processing_started_at = NULL,
+                   cancelled_at = ?, cancelled_by_user_id = ?, updated_at = ?
                WHERE id = ? AND status = 'pending'""",
             (now, user.id, now, notification_id),
         )
@@ -493,7 +503,8 @@ def retry_notification(conn: sqlite3.Connection, *, notification_id: str, user: 
         conn.execute(
             """UPDATE notifications
                SET status = 'pending', next_attempt_at = ?, error_code = NULL,
-                   error_message_safe = NULL, provider_status = NULL, updated_at = ?
+                   error_message_safe = NULL, provider_status = NULL,
+                   processing_started_at = NULL, updated_at = ?
                WHERE id = ?""",
             (now, now, notification_id),
         )
@@ -574,7 +585,9 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
 
 
 def claim_next(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict | None:
-    due = (now or utcnow()).isoformat()
+    now_dt = now or utcnow()
+    due = now_dt.isoformat()
+    claim_started_at = now_dt.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
@@ -588,14 +601,59 @@ def claim_next(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict
             return None
         cur = conn.execute(
             """UPDATE notifications
-               SET status = 'processing', updated_at = ?
+               SET status = 'processing', processing_started_at = ?, updated_at = ?
                WHERE id = ? AND status = 'pending'""",
-            (now_iso(), row["id"]),
+            (claim_started_at, claim_started_at, row["id"]),
         )
         conn.commit()
         if cur.rowcount != 1:
             return None
         return get_notification_raw(conn, row["id"])
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def restore_stale_processing(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict:
+    now_dt = now or utcnow()
+    threshold = (now_dt - timedelta(seconds=config.NOTIFICATION_PROCESSING_LEASE_SECONDS)).isoformat()
+    now_text = now_dt.isoformat()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        stale = conn.execute(
+            """SELECT id, attempt_count, max_attempts
+               FROM notifications
+               WHERE status = 'processing'
+                 AND (processing_started_at IS NULL OR processing_started_at <= ?)
+               ORDER BY processing_started_at ASC, id ASC""",
+            (threshold,),
+        ).fetchall()
+        restored = failed = 0
+        for row in stale:
+            if int(row["attempt_count"]) >= int(row["max_attempts"]):
+                cur = conn.execute(
+                    """UPDATE notifications
+                       SET status = 'failed', processing_started_at = NULL, next_attempt_at = NULL,
+                           error_code = 'processing_lease_expired', error_message_safe = 'processing_lease_expired',
+                           updated_at = ?
+                       WHERE id = ? AND status = 'processing'
+                         AND (processing_started_at IS NULL OR processing_started_at <= ?)""",
+                    (now_text, row["id"], threshold),
+                )
+                failed += cur.rowcount
+            else:
+                cur = conn.execute(
+                    """UPDATE notifications
+                       SET status = 'pending', processing_started_at = NULL, next_attempt_at = ?,
+                           error_code = 'processing_lease_expired', error_message_safe = 'processing_lease_expired',
+                           updated_at = ?
+                       WHERE id = ? AND status = 'processing'
+                         AND (processing_started_at IS NULL OR processing_started_at <= ?)""",
+                    (now_text, now_text, row["id"], threshold),
+                )
+                restored += cur.rowcount
+        conn.commit()
+        return {"restored": restored, "failed": failed}
     except Exception:
         conn.rollback()
         raise
@@ -607,7 +665,7 @@ def mark_skipped(conn: sqlite3.Connection, row: dict, reason: str) -> None:
         conn.execute(
             """UPDATE notifications
                SET status = 'skipped', error_code = ?, error_message_safe = ?,
-                   provider_status = NULL, updated_at = ?
+                   provider_status = NULL, processing_started_at = NULL, updated_at = ?
                WHERE id = ?""",
             (reason, reason, now, row["id"]),
         )
@@ -657,7 +715,7 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
             conn.execute(
                 """UPDATE notifications
                    SET status = 'sent', attempt_count = ?, provider_message_id = ?,
-                       provider_status = ?, sent_at = ?, updated_at = ?
+                       provider_status = ?, processing_started_at = NULL, sent_at = ?, updated_at = ?
                    WHERE id = ?""",
                 (attempts, result.provider_message_id, result.provider_status, now, now, row["id"]),
             )
@@ -676,7 +734,8 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
             conn.execute(
                 """UPDATE notifications
                    SET status = 'pending', attempt_count = ?, next_attempt_at = ?,
-                       provider_status = ?, error_code = ?, error_message_safe = ?, updated_at = ?
+                       provider_status = ?, error_code = ?, error_message_safe = ?,
+                       processing_started_at = NULL, updated_at = ?
                    WHERE id = ?""",
                 (attempts, next_attempt, result.provider_status, result.error_code, result.error_code, now, row["id"]),
             )
@@ -686,7 +745,7 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
         conn.execute(
             """UPDATE notifications
                SET status = 'failed', attempt_count = ?, provider_status = ?,
-                   error_code = ?, error_message_safe = ?, updated_at = ?
+                   error_code = ?, error_message_safe = ?, processing_started_at = NULL, updated_at = ?
                WHERE id = ?""",
             (attempts, result.provider_status, result.error_code, result.error_code, now, row["id"]),
         )
@@ -701,6 +760,7 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
 
 def process_due(conn: sqlite3.Connection, *, limit: int = 100, provider: NotificationProvider | None = None) -> dict:
     limit = max(1, min(int(limit), config.NOTIFICATION_BATCH_LIMIT_MAX))
+    recovery = restore_stale_processing(conn)
     processed = sent = failed = skipped = retry_scheduled = 0
     for _ in range(limit):
         result = process_one(conn, provider=provider)
@@ -721,4 +781,6 @@ def process_due(conn: sqlite3.Connection, *, limit: int = 100, provider: Notific
         "failed": failed,
         "skipped": skipped,
         "retry_scheduled": retry_scheduled,
+        "restored": recovery["restored"],
+        "recovery_failed": recovery["failed"],
     }

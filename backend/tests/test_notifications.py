@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import inspect
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -64,7 +66,13 @@ def test_v2_like_database_migrates_to_v3_notifications_tables(auth_client):
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert {"notifications", "notification_templates", "patient_notification_preferences"} <= tables
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(notifications)").fetchall()}
+    assert {"idempotency_key", "processing_started_at"} <= columns
+    indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
+    assert "idx_notifications_idempotency_key" in indexes
     assert conn.execute("SELECT COUNT(*) FROM notification_templates").fetchone()[0] >= 3
+    db.init_db(conn)
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
     report = maintenance.check_database(Path(conn.execute("PRAGMA database_list").fetchone()["file"]))
     assert report["ok"] is True, report["problems"]
 
@@ -137,6 +145,78 @@ def test_automatic_generation_is_idempotent_and_reschedules(auth_client):
     assert statuses == ["cancelled", "pending"]
 
 
+def test_generation_idempotent_after_sent_cancelled_and_failed(auth_client):
+    from backend.app.notifications.mock_provider import MockNotificationProvider
+    from backend.app.services import notifications
+
+    conn = get_conn()
+
+    sent_pid = _create_patient_direct(name="Sent Event", events=[{"date": "2099-03-01", "time": "10:00"}])
+    _grant(auth_client, sent_pid)
+    assert auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()["created"] == 1
+    _due_all(conn)
+    notifications.process_due(conn, limit=1, provider=MockNotificationProvider("success"))
+    sent_again = auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()
+    assert sent_again["created"] == 0
+    assert sent_again["duplicates"] >= 1
+    assert conn.execute("SELECT COUNT(*) FROM notifications WHERE patient_id = ?", (sent_pid,)).fetchone()[0] == 1
+
+    cancelled_pid = _create_patient_direct(name="Cancelled Event", events=[{"date": "2099-03-02", "time": "10:00"}])
+    _grant(auth_client, cancelled_pid)
+    assert auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()["created"] >= 1
+    cancelled_id = conn.execute("SELECT id FROM notifications WHERE patient_id = ?", (cancelled_pid,)).fetchone()["id"]
+    assert auth_client.post(f"/api/notifications/{cancelled_id}/cancel", headers=auth_client.csrf).status_code == 200
+    cancelled_again = auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()
+    assert cancelled_again["created"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM notifications WHERE patient_id = ?", (cancelled_pid,)).fetchone()[0] == 1
+
+    failed_pid = _create_patient_direct(name="Failed Event", events=[{"date": "2099-03-03", "time": "10:00"}])
+    _grant(auth_client, failed_pid)
+    assert auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()["created"] >= 1
+    _due_all(conn)
+    notifications.process_due(conn, limit=1, provider=MockNotificationProvider("permanent_failure"))
+    failed_again = auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()
+    assert failed_again["created"] == 0
+    assert conn.execute("SELECT COUNT(*) FROM notifications WHERE patient_id = ?", (failed_pid,)).fetchone()[0] == 1
+
+
+def test_generation_repeated_runs_and_parallel_create_share_business_key(auth_client):
+    from backend.app.services import notifications
+
+    pid = _create_patient_direct(events=[{"date": "2099-04-01", "time": "10:00"}])
+    _grant(auth_client, pid)
+    results = [auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json() for _ in range(10)]
+    assert results[0]["created"] == 1
+    assert sum(r["created"] for r in results) == 1
+    assert get_conn().execute("SELECT COUNT(*) FROM notifications WHERE patient_id = ?", (pid,)).fetchone()[0] == 1
+
+    scheduled = _now_plus(10)
+    first, first_reason = notifications.create_notification(
+        get_conn(),
+        patient_id=pid,
+        template_code="custom_reminder",
+        scheduled_at=scheduled,
+        source_type="manual",
+        source_id="parallel",
+        created_by_user_id=None,
+    )
+    second, second_reason = notifications.create_notification(
+        get_conn(),
+        patient_id=pid,
+        template_code="custom_reminder",
+        scheduled_at=scheduled,
+        source_type="manual",
+        source_id="parallel",
+        created_by_user_id=None,
+    )
+    assert first is not None
+    assert first_reason is None
+    assert second_reason == "duplicate"
+    assert second["id"] == first["id"]
+    key = first["idempotency_key"]
+    assert get_conn().execute("SELECT COUNT(*) FROM notifications WHERE idempotency_key = ?", (key,)).fetchone()[0] == 1
+
+
 def test_generation_skips_finished_cancelled_invalid_phone_no_consent_and_disabled_template(auth_client):
     _create_patient_direct(name="Нет Согласия", events=[{"date": "2099-02-01", "time": "09:00"}])
     invalid = _create_patient_direct(name="Плохой Телефон", phone="not-a-phone", events=[{"date": "2099-02-01", "time": "09:00"}])
@@ -198,6 +278,82 @@ def test_worker_success_failures_retry_and_cancelled_not_sent(auth_client):
     assert conn.execute("SELECT status FROM notifications WHERE id = ?", (pending_id,)).fetchone()["status"] == "cancelled"
 
 
+def test_processing_lease_recovery_and_provider_call_outside_write_transaction(auth_client):
+    from backend.app.notifications.mock_provider import MockNotificationProvider
+    from backend.app.services import notifications
+
+    class CountingProvider(MockNotificationProvider):
+        def __init__(self):
+            super().__init__("success")
+            self.calls = 0
+
+        def send(self, notification_context):
+            assert not get_conn().in_transaction
+            self.calls += 1
+            return super().send(notification_context)
+
+    pid = _create_patient_direct()
+    _grant(auth_client, pid)
+    assert _manual(auth_client, pid).status_code == 201
+    conn = get_conn()
+    _due_all(conn)
+
+    claimed = notifications.claim_next(conn)
+    assert claimed is not None
+    fresh = notifications.process_due(conn, limit=10, provider=CountingProvider())
+    assert fresh["restored"] == 0
+    assert fresh["processed"] == 0
+    assert conn.execute("SELECT status FROM notifications WHERE id = ?", (claimed["id"],)).fetchone()["status"] == "processing"
+
+    old = _now_minus(1)
+    with conn:
+        conn.execute("UPDATE notifications SET processing_started_at = ? WHERE id = ?", (old, claimed["id"]))
+    provider = CountingProvider()
+    recovered = notifications.process_due(conn, limit=10, provider=provider)
+    assert recovered["restored"] == 1
+    assert recovered["processed"] == 1
+    assert provider.calls == 1
+    assert conn.execute("SELECT status FROM notifications WHERE id = ?", (claimed["id"],)).fetchone()["status"] == "sent"
+    again = notifications.process_due(conn, limit=10, provider=provider)
+    assert again["processed"] == 0
+    assert provider.calls == 1
+
+
+def test_processing_recovery_respects_max_attempts_and_terminal_statuses(auth_client):
+    from backend.app.services import notifications
+
+    pid = _create_patient_direct()
+    _grant(auth_client, pid)
+    assert _manual(auth_client, pid, _now_plus(1)).status_code == 201
+    assert _manual(auth_client, pid, _now_plus(2)).status_code == 201
+    assert _manual(auth_client, pid, _now_plus(3)).status_code == 201
+    conn = get_conn()
+    ids = [r["id"] for r in conn.execute("SELECT id FROM notifications ORDER BY scheduled_at").fetchall()]
+    old = _now_minus(1)
+    with conn:
+        conn.execute(
+            "UPDATE notifications SET status = 'processing', processing_started_at = ?, attempt_count = max_attempts WHERE id = ?",
+            (old, ids[0]),
+        )
+        conn.execute(
+            "UPDATE notifications SET status = 'sent', processing_started_at = ? WHERE id = ?",
+            (old, ids[1]),
+        )
+        conn.execute(
+            "UPDATE notifications SET status = 'cancelled', processing_started_at = ? WHERE id = ?",
+            (old, ids[2]),
+        )
+    result = notifications.restore_stale_processing(conn)
+    assert result == {"restored": 0, "failed": 1}
+    statuses = {
+        r["id"]: r["status"]
+        for r in conn.execute("SELECT id, status FROM notifications WHERE id IN (?, ?, ?)", ids).fetchall()
+    }
+    assert statuses[ids[0]] == "failed"
+    assert statuses[ids[1]] == "sent"
+    assert statuses[ids[2]] == "cancelled"
+
+
 def test_worker_rechecks_revoked_consent_and_unknown_provider_fails_closed(auth_client, monkeypatch):
     from backend.app.services import notifications
 
@@ -218,6 +374,34 @@ def test_worker_rechecks_revoked_consent_and_unknown_provider_fails_closed(auth_
     monkeypatch.setattr("backend.app.config.NOTIFICATION_PROVIDER", "real_sms")
     with pytest.raises(RuntimeError):
         notifications.generate_due_reminders(conn)
+
+
+def test_mock_provider_fail_closed_no_network_and_no_phi_in_logs(auth_client, monkeypatch, capsys, caplog):
+    from backend.app.notifications.mock_provider import MockNotificationProvider
+    from backend.app.services import notifications
+    import backend.app.notifications.mock_provider as mock_provider
+
+    source = inspect.getsource(mock_provider)
+    for forbidden in ("requests", "urllib", "http.client", "socket", "aiohttp"):
+        assert forbidden not in source
+
+    pid = _create_patient_direct(phone="+7 (999) 777-66-55")
+    _grant(auth_client, pid)
+    assert _manual(auth_client, pid).status_code == 201
+    conn = get_conn()
+    _due_all(conn)
+    with caplog.at_level(logging.INFO):
+        notifications.process_due(conn, limit=1, provider=MockNotificationProvider("success"))
+    captured = capsys.readouterr()
+    logs = "\n".join(record.getMessage() for record in caplog.records)
+    for forbidden in ("999", "777-66-55", "Напоминаем о запланированном"):
+        assert forbidden not in captured.out
+        assert forbidden not in captured.err
+        assert forbidden not in logs
+
+    monkeypatch.setattr("backend.app.config.NOTIFICATION_PROVIDER", "sms_real")
+    with pytest.raises(RuntimeError):
+        notifications.process_due(conn, limit=1)
 
 
 def test_notifications_api_filters_pagination_and_scope(client):
@@ -297,7 +481,8 @@ def test_notification_audit_excludes_phi(auth_client):
     audit_text = json.dumps(auth_client.get("/api/audit?limit=200").json(), ensure_ascii=False)
     for forbidden in (
         "Фамилия Секретная",
-        "999",
+        "+7 (999) 444-55-66",
+        "9994445566",
         "444-55-66",
         "C34.1",
         "lung34",
@@ -351,6 +536,8 @@ def test_notifications_smoke_1000_patients_5000_notifications(auth_client):
         rows = []
         for i in range(5000):
             pid = patient_ids[i % len(patient_ids)]
+            scheduled = _now_minus(1)
+            source_id = f"manual-{i}"
             rows.append((
                 f"smoke-{i}",
                 pid,
@@ -359,8 +546,9 @@ def test_notifications_smoke_1000_patients_5000_notifications(auth_client):
                 template["code"],
                 template["version"],
                 "manual",
-                f"manual-{i}",
-                _now_minus(1),
+                source_id,
+                scheduled,
+                notifications.notification_idempotency_key(pid, "manual", source_id, template["code"], scheduled),
                 "pending",
                 0,
                 3,
@@ -372,9 +560,9 @@ def test_notifications_smoke_1000_patients_5000_notifications(auth_client):
         conn.executemany(
             """INSERT INTO notifications
                (id, patient_id, channel, template_id, template_code, template_version, source_type, source_id,
-                scheduled_at, status, attempt_count, max_attempts, next_attempt_at, created_by_user_id,
+                scheduled_at, idempotency_key, status, attempt_count, max_attempts, next_attempt_at, created_by_user_id,
                 created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
 
@@ -385,3 +573,4 @@ def test_notifications_smoke_1000_patients_5000_notifications(auth_client):
     assert page.status_code == 200
     assert len(page.json()["notifications"]) == 200
     assert batch["processed"] == 25
+    assert batch["restored"] == 0
