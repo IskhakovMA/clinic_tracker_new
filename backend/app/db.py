@@ -1,4 +1,5 @@
 """SQLite storage layer: connection handling, schema init, migrations."""
+import hashlib
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -140,6 +141,57 @@ CREATE TABLE IF NOT EXISTS audit_events (
     target_department_id TEXT
 );
 
+CREATE TABLE IF NOT EXISTS patient_notification_preferences (
+    patient_id TEXT PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+    sms_enabled INTEGER NOT NULL DEFAULT 0 CHECK (sms_enabled IN (0, 1)),
+    consent_status TEXT NOT NULL DEFAULT 'not_recorded'
+        CHECK (consent_status IN ('not_recorded', 'granted', 'revoked')),
+    consent_recorded_at TEXT,
+    consent_recorded_by_user_id TEXT REFERENCES users(id),
+    consent_revoked_at TEXT,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notification_templates (
+    id TEXT PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('sms')),
+    body TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    version INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    channel TEXT NOT NULL CHECK (channel IN ('sms')),
+    template_id TEXT REFERENCES notification_templates(id),
+    template_code TEXT NOT NULL,
+    template_version INTEGER NOT NULL,
+    source_type TEXT NOT NULL CHECK (source_type IN ('manual', 'event')),
+    source_id TEXT NOT NULL,
+    scheduled_at TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'cancelled', 'skipped')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    next_attempt_at TEXT,
+    processing_started_at TEXT,
+    provider_message_id TEXT,
+    provider_status TEXT,
+    error_code TEXT,
+    error_message_safe TEXT,
+    created_by_user_id TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    sent_at TEXT,
+    cancelled_at TEXT,
+    cancelled_by_user_id TEXT REFERENCES users(id)
+);
+
 """
 
 # Индексы создаются после миграции: часть из них ссылается на колонки,
@@ -157,6 +209,16 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_patients_treating_doctor ON patients(treating_doctor_user_id);
 CREATE INDEX IF NOT EXISTS idx_user_departments_dept ON user_departments(department_id);
 CREATE INDEX IF NOT EXISTS idx_department_heads_dept ON department_heads(department_id);
+CREATE INDEX IF NOT EXISTS idx_notification_preferences_status ON patient_notification_preferences(consent_status, sms_enabled);
+CREATE INDEX IF NOT EXISTS idx_notification_templates_code ON notification_templates(code);
+CREATE INDEX IF NOT EXISTS idx_notifications_status_due ON notifications(status, next_attempt_at, scheduled_at);
+CREATE INDEX IF NOT EXISTS idx_notifications_patient ON notifications(patient_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_source ON notifications(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_scheduled ON notifications(scheduled_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notifications(idempotency_key);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_active
+    ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
+    WHERE status IN ('pending', 'processing', 'sent');
 """
 
 # Роли — справочник, а не бизнес-конфигурация: наполняется всегда.
@@ -185,6 +247,30 @@ REQUIRED_TABLES = (
     "events",
     "future_plans",
     "audit_events",
+    "patient_notification_preferences",
+    "notification_templates",
+    "notifications",
+)
+
+NOTIFICATION_TEMPLATE_SEED = (
+    (
+        "appointment_reminder",
+        "Напоминание о посещении",
+        "sms",
+        "Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией.",
+    ),
+    (
+        "examination_reminder",
+        "Напоминание о посещении",
+        "sms",
+        "Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией.",
+    ),
+    (
+        "custom_reminder",
+        "Ручное напоминание",
+        "sms",
+        "Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией.",
+    ),
 )
 
 
@@ -230,6 +316,53 @@ def _seed_roles(conn: sqlite3.Connection) -> None:
     )
 
 
+def _seed_notification_templates(conn: sqlite3.Connection) -> None:
+    now = now_iso()
+    for code, name, channel, body in NOTIFICATION_TEMPLATE_SEED:
+        conn.execute(
+            """INSERT OR IGNORE INTO notification_templates
+               (id, code, name, channel, body, enabled, version, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)""",
+            (f"tpl_{code}", code, name, channel, body, now, now),
+        )
+
+
+def _notification_idempotency_key(
+    patient_id: str, source_type: str, source_id: str, template_code: str, scheduled_at: str
+) -> str:
+    raw = "\x1f".join((patient_id, source_type, source_id, template_code, scheduled_at))
+    return "notif_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _ensure_notification_schema(conn: sqlite3.Connection) -> None:
+    columns = _table_columns(conn, "notifications")
+    if not columns:
+        return
+    if "idempotency_key" not in columns:
+        conn.execute("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT")
+    if "processing_started_at" not in columns:
+        conn.execute("ALTER TABLE notifications ADD COLUMN processing_started_at TEXT")
+    rows = conn.execute(
+        """SELECT id, patient_id, source_type, source_id, template_code, scheduled_at
+           FROM notifications
+           WHERE idempotency_key IS NULL OR idempotency_key = ''"""
+    ).fetchall()
+    used = {
+        row["idempotency_key"]
+        for row in conn.execute(
+            "SELECT idempotency_key FROM notifications WHERE idempotency_key IS NOT NULL AND idempotency_key != ''"
+        ).fetchall()
+    }
+    for row in rows:
+        key = _notification_idempotency_key(
+            row["patient_id"], row["source_type"], row["source_id"], row["template_code"], row["scheduled_at"]
+        )
+        if key in used:
+            key = f"{key}:legacy:{row['id']}"
+        used.add(key)
+        conn.execute("UPDATE notifications SET idempotency_key = ? WHERE id = ?", (key, row["id"]))
+
+
 def migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     """v1 → v2: RBAC-таблицы и связи. Безопасна для повторного запуска.
 
@@ -250,6 +383,18 @@ def migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM sessions WHERE user_id IS NULL")
 
 
+def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    """v2 → v3: notification preferences, safe templates and queue.
+
+    Patient records, users, departments and audit rows are not modified. Consent
+    starts as `not_recorded`; phone presence is deliberately not interpreted as
+    permission to send SMS.
+    """
+    conn.executescript(SCHEMA_SQL)
+    _ensure_notification_schema(conn)
+    _seed_notification_templates(conn)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -260,12 +405,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     with conn:
         conn.executescript(SCHEMA_SQL)   # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
+        _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
+        _seed_notification_templates(conn)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
         if row is None:
             conn.execute("INSERT INTO schema_version (version) VALUES (?)", (config.SCHEMA_VERSION,))
         elif row["version"] == 1:
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 2:
+            migrate_v2_to_v3(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
 
 

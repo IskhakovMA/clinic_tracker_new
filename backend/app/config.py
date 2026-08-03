@@ -58,7 +58,14 @@ MAX_IMPORT_PATIENTS = 500
 MAX_EVENTS_PER_HISTORY_ENTRY = 200
 MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 
-# v2: users/roles/departments + patients.treating_doctor_user_id (RBAC)
-SCHEMA_VERSION = 2
+# v3: notification preferences, templates and queue.
+SCHEMA_VERSION = 3
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
-IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2)
+IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2, 3)
+
+NOTIFICATION_PROVIDER = os.environ.get("NOTIFICATION_PROVIDER", "mock").strip().lower()
+NOTIFICATION_DEFAULT_REMINDER_HOURS = int(os.environ.get("NOTIFICATION_DEFAULT_REMINDER_HOURS", "24"))
+NOTIFICATION_MAX_ATTEMPTS = int(os.environ.get("NOTIFICATION_MAX_ATTEMPTS", "3"))
+NOTIFICATION_BATCH_LIMIT_MAX = 200
+NOTIFICATION_MOCK_MODE = os.environ.get("NOTIFICATION_MOCK_MODE", "success").strip().lower()
+NOTIFICATION_PROCESSING_LEASE_SECONDS = int(os.environ.get("NOTIFICATION_PROCESSING_LEASE_SECONDS", "300"))

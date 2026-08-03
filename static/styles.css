@@ -353,6 +353,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .alert--info { background: var(--info-soft); border-color: var(--info); color: var(--info); }
 
 .panel {
+    min-width: 0;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
@@ -495,7 +496,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .topbar__brand { display: none; font-weight: 700; }
 .topbar__spacer { flex: 1; }
 
-.content { padding: var(--sp-6); max-width: 1400px; width: 100%; }
+.content { padding: var(--sp-6); max-width: 1400px; width: 100%; min-width: 0; }
+.view { min-width: 0; }
 
 .scrim {
     display: none;
@@ -518,8 +520,9 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .pagehead__subtitle { color: var(--text-2); font-size: var(--text-md); margin-top: var(--sp-1); }
 .pagehead__actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
 
-.toolbar { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-5); flex-wrap: wrap; }
+.toolbar { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-5); flex-wrap: wrap; min-width: 0; }
 .toolbar .select { width: auto; min-width: 150px; flex: 0 1 auto; }
+.toolbar .input { min-width: 0; }
 /* display:contents — обёртка не влияет на раскладку тулбара на десктопе */
 .toolbar__filters { display: contents; }
 
@@ -562,7 +565,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
    10. Таблица пациентов
    -------------------------------------------------------------------------- */
 
-.table-wrap { overflow-x: auto; }
+.table-wrap { overflow-x: auto; max-width: 100%; min-width: 0; }
 
 .table { width: 100%; border-collapse: collapse; font-size: var(--text-md); }
 
@@ -895,6 +898,46 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 #qualityFiltersSheetBody .select { width: 100%; min-width: 0; margin-bottom: var(--sp-4); }
 #qualityFiltersSheetBody .select:last-of-type { margin-bottom: 0; }
 
+#notificationsFiltersSheetBody .visually-hidden {
+    position: static; width: auto; height: auto;
+    margin: 0 0 var(--sp-2); overflow: visible;
+    clip: auto; white-space: normal;
+    font-size: var(--text-md); font-weight: 600; color: var(--text);
+}
+#notificationsFiltersSheetBody .toolbar__filters { display: block; }
+#notificationsFiltersSheetBody .select,
+#notificationsFiltersSheetBody .input { width: 100%; min-width: 0; margin-bottom: var(--sp-4); }
+#notificationsFiltersSheetBody .select:last-of-type,
+#notificationsFiltersSheetBody .input:last-of-type { margin-bottom: 0; }
+
+.notification-template {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-3);
+    padding: var(--sp-4) 0;
+    border-top: 1px solid var(--border);
+}
+.notification-template:first-of-type { border-top: 0; }
+.notification-template__body { grid-column: 1 / -1; }
+.notification-template .textarea { min-height: 92px; }
+.notification-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--sp-3);
+    margin-top: var(--sp-4);
+}
+.notification-form .field--wide { grid-column: 1 / -1; }
+.notification-list { display: grid; gap: var(--sp-2); margin-top: var(--sp-3); }
+.notification-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+}
+
 /* --------------------------------------------------------------------------
    15. Уведомления
    -------------------------------------------------------------------------- */
@@ -1036,6 +1079,28 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .tab { flex: 0 1 auto; }
 }
 
+@media (max-width: 1100px) {
+    .notification-table thead { display: none; }
+    .notification-table,
+    .notification-table tbody,
+    .notification-table tr,
+    .notification-table td { display: block; width: 100%; }
+    .notification-table tr {
+        padding: var(--sp-4) var(--sp-5);
+        border-bottom: 1px solid var(--border);
+    }
+    .notification-table td { padding: 0; border: 0; }
+    .notification-table td + td { margin-top: var(--sp-3); }
+    .notification-table .cell-actions { text-align: left; }
+    .notification-table .cell-actions .btn { width: 100%; }
+    .cell-notification-template::before { content: 'Шаблон: '; color: var(--text-3); }
+    .cell-notification-source::before { content: 'Источник: '; color: var(--text-3); }
+    .cell-notification-scheduled::before { content: 'Запланировано: '; color: var(--text-3); }
+    .cell-notification-status::before { content: 'Статус: '; color: var(--text-3); }
+    .cell-notification-attempts::before { content: 'Попытки: '; color: var(--text-3); }
+    .cell-notification-reason::before { content: 'Причина: '; color: var(--text-3); }
+}
+
 @media (max-width: 1024px) {
     .stats { grid-template-columns: repeat(2, 1fr); }
     .patient-layout { grid-template-columns: 1fr; }
@@ -1081,6 +1146,12 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .cell-quality-score::before { content: 'Полнота: '; color: var(--text-3); }
     .cell-quality-issues::before { content: 'Проблемы: '; color: var(--text-3); }
     .cell-quality-owner::before { content: 'Ответственные: '; color: var(--text-3); }
+    .cell-notification-template::before { content: 'Шаблон: '; color: var(--text-3); }
+    .cell-notification-source::before { content: 'Источник: '; color: var(--text-3); }
+    .cell-notification-scheduled::before { content: 'Запланировано: '; color: var(--text-3); }
+    .cell-notification-status::before { content: 'Статус: '; color: var(--text-3); }
+    .cell-notification-attempts::before { content: 'Попытки: '; color: var(--text-3); }
+    .cell-notification-reason::before { content: 'Причина: '; color: var(--text-3); }
 }
 
 @media (max-width: 560px) {
@@ -1110,7 +1181,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .toolbar { gap: var(--sp-2); margin-bottom: var(--sp-4); }
     .search { flex: 1 1 auto; min-width: 0; }
     #openFiltersSheetBtn,
-    #openQualityFiltersSheetBtn { flex: 0 0 auto; }
+    #openQualityFiltersSheetBtn,
+    #openNotificationsFiltersSheetBtn { flex: 0 0 auto; }
 
     /* Компактная сетка 2×2 вместо четырёх крупных карточек */
     .stats { grid-template-columns: repeat(2, 1fr); gap: var(--sp-2); margin-bottom: var(--sp-4); }
@@ -1120,6 +1192,9 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .stat__meta { font-size: var(--text-xs); }
 
     .grid-2 { grid-template-columns: 1fr; }
+    .notification-form,
+    .notification-template,
+    .notification-row { grid-template-columns: 1fr; }
 
     .modal--sheet .modal__box { max-height: 80vh; }
 

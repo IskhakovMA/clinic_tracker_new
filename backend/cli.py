@@ -8,6 +8,9 @@
     python -m backend.cli audit-tail [--limit N]
     python -m backend.cli audit-prune [--days N]
     python -m backend.cli purge-sessions
+    python -m backend.cli notifications-generate
+    python -m backend.cli notifications-run-once
+    python -m backend.cli notifications-drain [--limit N]
 
 Nothing here prints patient data, passwords or session tokens.
 Пароли запрашиваются только скрытым вводом (getpass) — никогда аргументом
@@ -20,6 +23,7 @@ import sys
 from pathlib import Path
 
 from .app import audit, config, db, maintenance, security, users
+from .app.services import notifications
 
 
 def cmd_create_developer(_args: argparse.Namespace) -> int:
@@ -277,6 +281,51 @@ def cmd_purge_sessions(_args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_notifications_generate(_args: argparse.Namespace) -> int:
+    conn = db.get_connection()
+    try:
+        result = notifications.generate_due_reminders(conn)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(
+        "Генерация уведомлений: "
+        f"created={result['created']} skipped={result['skipped']} "
+        f"cancelled={result['cancelled']} duplicates={result['duplicates']}"
+    )
+    return 0
+
+
+def cmd_notifications_run_once(_args: argparse.Namespace) -> int:
+    conn = db.get_connection()
+    try:
+        result = notifications.process_due(conn, limit=1)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(
+        "Обработка очереди: "
+        f"processed={result['processed']} sent={result['sent']} failed={result['failed']} "
+        f"skipped={result['skipped']} retry_scheduled={result['retry_scheduled']}"
+    )
+    return 0
+
+
+def cmd_notifications_drain(args: argparse.Namespace) -> int:
+    conn = db.get_connection()
+    try:
+        result = notifications.process_due(conn, limit=args.limit)
+    except RuntimeError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print(
+        "Обработка очереди: "
+        f"processed={result['processed']} sent={result['sent']} failed={result['failed']} "
+        f"skipped={result['skipped']} retry_scheduled={result['retry_scheduled']}"
+    )
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m backend.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -305,6 +354,10 @@ def main() -> int:
     p_prune.add_argument("--days", type=int, default=None, help="Срок хранения в днях")
 
     sub.add_parser("purge-sessions", help="Удалить истёкшие сессии")
+    sub.add_parser("notifications-generate", help="Сформировать pending-напоминания из плановых событий")
+    sub.add_parser("notifications-run-once", help="Обработать одно due-уведомление тестовым provider")
+    p_notifications_drain = sub.add_parser("notifications-drain", help="Обработать batch due-уведомлений")
+    p_notifications_drain.add_argument("--limit", type=int, default=100, help="Сколько записей обработать (максимум 200)")
 
     args = parser.parse_args()
     handlers = {
@@ -316,6 +369,9 @@ def main() -> int:
         "audit-tail": cmd_audit_tail,
         "audit-prune": cmd_audit_prune,
         "purge-sessions": cmd_purge_sessions,
+        "notifications-generate": cmd_notifications_generate,
+        "notifications-run-once": cmd_notifications_run_once,
+        "notifications-drain": cmd_notifications_drain,
     }
     return handlers[args.command](args)
 

@@ -188,6 +188,14 @@ def can_view_audit(user: CurrentUser) -> bool:
     return user.role_id == ROLE_DEVELOPER
 
 
+def can_run_notification_worker(user: CurrentUser) -> bool:
+    return user.role_id == ROLE_DEVELOPER
+
+
+def can_manage_notification_templates(user: CurrentUser) -> bool:
+    return user.role_id == ROLE_DEVELOPER
+
+
 def can_import(user: CurrentUser, mode: str = "add") -> bool:
     if user.role_id == ROLE_DEVELOPER:
         return True
@@ -222,4 +230,7 @@ def permissions_payload(user: CurrentUser) -> dict:
         "viewAudit": can_view_audit(user),
         "importData": can_import(user),
         "exportData": can_export(user),
+        "manageNotifications": _writes_allowed(user),
+        "runNotificationWorker": can_run_notification_worker(user),
+        "manageNotificationTemplates": can_manage_notification_templates(user),
     }

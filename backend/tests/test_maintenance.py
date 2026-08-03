@@ -12,7 +12,7 @@ def test_check_db_passes_on_live_database(auth_client, tmp_path):
     assert report["integrity_check"] == ["ok"]
     assert report["foreign_key_violations"] == 0
     assert report["missing_tables"] == []
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
 
 
 def test_check_db_reports_missing_file(tmp_path):
@@ -139,5 +139,14 @@ def test_indexes_exist(auth_client):
     from backend.app import db
     conn = db.get_connection()
     names = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
-    for expected in ("idx_history_patient", "idx_events_history", "idx_patients_head", "idx_sessions_expires", "idx_audit_created"):
+    for expected in (
+        "idx_history_patient",
+        "idx_events_history",
+        "idx_patients_head",
+        "idx_sessions_expires",
+        "idx_audit_created",
+        "idx_notifications_status_due",
+        "idx_notifications_patient",
+        "idx_notifications_idempotency_key",
+    ):
         assert expected in names, f"missing index {expected}"
