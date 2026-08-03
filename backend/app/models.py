@@ -337,6 +337,30 @@ class ImportCommitRequest(BaseModel):
     mode: ImportMode
 
 
+# --- Notifications ------------------------------------------------------
+
+NotificationStatus = Literal["pending", "processing", "sent", "failed", "cancelled", "skipped"]
+NotificationChannel = Literal["sms"]
+NotificationSourceType = Literal["manual", "event"]
+ConsentStatus = Literal["not_recorded", "granted", "revoked"]
+
+
+class NotificationPreferenceIn(BaseModel):
+    smsEnabled: bool
+    consentStatus: ConsentStatus
+
+
+class NotificationCreateIn(BaseModel):
+    patientId: str = Field(..., min_length=1, max_length=100)
+    templateCode: str = Field(..., min_length=1, max_length=80)
+    scheduledAt: str = Field(..., min_length=1, max_length=40)
+
+
+class NotificationTemplateUpdateIn(BaseModel):
+    body: Optional[str] = Field(None, min_length=1, max_length=500)
+    enabled: Optional[bool] = None
+
+
 class LoginIn(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1, max_length=200)

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import re
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -17,6 +16,8 @@ from typing import Any
 
 from .. import policy
 from ..models import STAGES
+from ..phone import normalize_phone as _normalize_phone
+from ..phone import phone_is_valid
 
 SEVERITIES = ("critical", "warning", "info")
 SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
@@ -153,26 +154,6 @@ def _safe_date(value: str | None) -> date | None:
         return date.fromisoformat(str(value)[:10])
     except ValueError:
         return None
-
-
-def _normalize_phone(value: str) -> str:
-    raw = (value or "").strip()
-    if not raw:
-        return ""
-    digits = re.sub(r"\D", "", raw)
-    if len(digits) == 11 and digits.startswith("8"):
-        digits = "7" + digits[1:]
-    return digits
-
-
-def phone_is_valid(value: str) -> bool:
-    raw = (value or "").strip()
-    if not raw:
-        return True
-    if re.search(r"[A-Za-zА-Яа-я]", raw):
-        return False
-    digits = _normalize_phone(raw)
-    return 10 <= len(digits) <= 15
 
 
 def _normalize_name(value: str) -> str:

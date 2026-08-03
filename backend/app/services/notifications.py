@@ -1,0 +1,724 @@
+"""Notification preferences, queue generation and worker logic.
+
+The MVP is intentionally network-free: the only provider is MockProvider. SMS
+texts are rendered from approved templates at processing time and are not
+stored in the queue or audit log.
+"""
+from __future__ import annotations
+
+import re
+import sqlite3
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Iterable
+
+from .. import audit, config, policy, store
+from ..db import now_iso
+from ..notifications.mock_provider import provider_from_config
+from ..notifications.provider import NotificationContext, NotificationProvider
+from ..phone import masked_phone, normalize_phone, phone_sendable
+
+CONSENT_STATUSES = ("not_recorded", "granted", "revoked")
+QUEUE_STATUSES = ("pending", "processing", "sent", "failed", "cancelled", "skipped")
+SKIP_REASONS = ("no_consent", "invalid_phone", "missing_phone", "patient_unavailable", "template_disabled")
+ALLOWED_PLACEHOLDERS = frozenset({"date", "time"})
+SAFE_TEMPLATE_BODY = "Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией."
+MANUAL_SOURCE_ID = "manual"
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_dt(value: str) -> datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def event_dt(date_value: str | None, time_value: str | None) -> datetime | None:
+    if not date_value:
+        return None
+    try:
+        day = date.fromisoformat(str(date_value)[:10])
+    except ValueError:
+        return None
+    time_text = (time_value or "09:00")[:5] or "09:00"
+    try:
+        hour, minute = [int(x) for x in time_text.split(":", 1)]
+    except (ValueError, TypeError):
+        hour, minute = 9, 0
+    return datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc)
+
+
+def safe_detail(**parts) -> str:
+    return " ".join(f"{key}={value}" for key, value in parts.items() if value not in (None, ""))
+
+
+def ensure_known_provider() -> None:
+    if config.NOTIFICATION_PROVIDER != "mock":
+        raise RuntimeError("unknown notification provider")
+
+
+def template_placeholders(body: str) -> set[str]:
+    return set(re.findall(r"{([a-zA-Z_][a-zA-Z0-9_]*)}", body or ""))
+
+
+def validate_template_body(body: str) -> str:
+    body = " ".join((body or "").strip().split())
+    if not body:
+        raise ValueError("template body is required")
+    if len(body) > 500:
+        raise ValueError("template body too long")
+    unknown = template_placeholders(body) - ALLOWED_PLACEHOLDERS
+    if unknown:
+        raise ValueError("template contains unsupported placeholders")
+    return body
+
+
+def render_template(body: str, *, scheduled_at: str) -> str:
+    scheduled = parse_dt(scheduled_at)
+    if scheduled is None:
+        raise ValueError("invalid scheduled_at")
+    values = {
+        "date": scheduled.date().isoformat(),
+        "time": scheduled.strftime("%H:%M"),
+    }
+    return validate_template_body(body).format(**values)
+
+
+def get_preference(conn: sqlite3.Connection, patient_id: str) -> dict:
+    row = conn.execute(
+        """SELECT p.*, u.full_name AS consent_recorded_by_name
+           FROM patient_notification_preferences p
+           LEFT JOIN users u ON u.id = p.consent_recorded_by_user_id
+           WHERE p.patient_id = ?""",
+        (patient_id,),
+    ).fetchone()
+    if row is None:
+        return {
+            "patient_id": patient_id,
+            "sms_enabled": False,
+            "consent_status": "not_recorded",
+            "consent_recorded_at": None,
+            "consent_recorded_by_user_id": None,
+            "consent_recorded_by_name": None,
+            "consent_revoked_at": None,
+            "updated_at": None,
+        }
+    data = dict(row)
+    data["sms_enabled"] = bool(data["sms_enabled"])
+    return data
+
+
+def set_preference(
+    conn: sqlite3.Connection,
+    *,
+    patient_id: str,
+    sms_enabled: bool,
+    consent_status: str,
+    user: policy.CurrentUser,
+) -> dict:
+    if consent_status not in CONSENT_STATUSES:
+        raise ValueError("unknown consent status")
+    now = now_iso()
+    old = get_preference(conn, patient_id)
+    recorded_at = now if consent_status == "granted" else old["consent_recorded_at"]
+    recorded_by = user.id if consent_status == "granted" else old["consent_recorded_by_user_id"]
+    revoked_at = now if consent_status == "revoked" else None
+    with conn:
+        conn.execute(
+            """INSERT INTO patient_notification_preferences
+               (patient_id, sms_enabled, consent_status, consent_recorded_at,
+                consent_recorded_by_user_id, consent_revoked_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(patient_id) DO UPDATE SET
+                   sms_enabled = excluded.sms_enabled,
+                   consent_status = excluded.consent_status,
+                   consent_recorded_at = excluded.consent_recorded_at,
+                   consent_recorded_by_user_id = excluded.consent_recorded_by_user_id,
+                   consent_revoked_at = excluded.consent_revoked_at,
+                   updated_at = excluded.updated_at""",
+            (patient_id, int(bool(sms_enabled)), consent_status, recorded_at, recorded_by, revoked_at, now),
+        )
+        if consent_status == "revoked":
+            conn.execute(
+                """UPDATE notifications
+                   SET status = 'cancelled', cancelled_at = ?, cancelled_by_user_id = ?,
+                       error_code = 'no_consent', updated_at = ?
+                   WHERE patient_id = ? AND status = 'pending'""",
+                (now, user.id, now, patient_id),
+            )
+    event = audit.NOTIFICATION_CONSENT_REVOKED if consent_status == "revoked" else audit.NOTIFICATION_CONSENT_GRANTED
+    audit.record(conn, event, patient_id=patient_id, detail="channel=sms", **audit.actor_ctx(user))
+    return get_preference(conn, patient_id)
+
+
+def can_queue_for_patient(conn: sqlite3.Connection, patient_id: str) -> tuple[bool, str]:
+    pref = get_preference(conn, patient_id)
+    if pref["consent_status"] != "granted" or not pref["sms_enabled"]:
+        return False, "no_consent"
+    patient = conn.execute("SELECT phone FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    if patient is None:
+        return False, "patient_unavailable"
+    return phone_sendable(patient["phone"])
+
+
+def get_template(conn: sqlite3.Connection, code: str) -> dict | None:
+    row = conn.execute("SELECT * FROM notification_templates WHERE code = ?", (code,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_templates(conn: sqlite3.Connection, *, include_disabled: bool = False) -> list[dict]:
+    where = "" if include_disabled else "WHERE enabled = 1"
+    rows = conn.execute(
+        f"""SELECT id, code, name, channel, body, enabled, version, created_at, updated_at
+            FROM notification_templates {where} ORDER BY code"""
+    ).fetchall()
+    return [
+        {**dict(row), "enabled": bool(row["enabled"]), "placeholders": sorted(ALLOWED_PLACEHOLDERS)}
+        for row in rows
+    ]
+
+
+def update_template(
+    conn: sqlite3.Connection,
+    *,
+    code: str,
+    body: str | None = None,
+    enabled: bool | None = None,
+    user: policy.CurrentUser,
+) -> dict:
+    current = get_template(conn, code)
+    if current is None:
+        raise KeyError("template not found")
+    next_body = validate_template_body(body) if body is not None else current["body"]
+    next_enabled = int(bool(enabled)) if enabled is not None else int(current["enabled"])
+    next_version = int(current["version"]) + (1 if next_body != current["body"] else 0)
+    now = now_iso()
+    with conn:
+        conn.execute(
+            """UPDATE notification_templates
+               SET body = ?, enabled = ?, version = ?, updated_at = ? WHERE code = ?""",
+            (next_body, next_enabled, next_version, now, code),
+        )
+    audit.record(
+        conn,
+        audit.NOTIFICATION_TEMPLATE_UPDATED,
+        detail=safe_detail(template_code=code, status="enabled" if next_enabled else "disabled"),
+        **audit.actor_ctx(user),
+    )
+    return get_template(conn, code) or {}
+
+
+def notification_row_to_dict(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "patient_id": row["patient_id"],
+        "patient_name": row["patient_name"],
+        "treating_doctor_name": row["treating_doctor_name"] or row["doctor"] or "Не назначен",
+        "department_names": [x for x in (row["department_names"] or "").split(",") if x],
+        "phone_masked": masked_phone(row["phone"]),
+        "channel": row["channel"],
+        "template_code": row["template_code"],
+        "template_name": row["template_name"] or row["template_code"],
+        "template_version": row["template_version"],
+        "source_type": row["source_type"],
+        "source_id": row["source_id"],
+        "scheduled_at": row["scheduled_at"],
+        "status": row["status"],
+        "attempt_count": row["attempt_count"],
+        "max_attempts": row["max_attempts"],
+        "next_attempt_at": row["next_attempt_at"],
+        "provider_status": row["provider_status"],
+        "error_code": row["error_code"],
+        "error_message_safe": row["error_message_safe"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "sent_at": row["sent_at"],
+        "cancelled_at": row["cancelled_at"],
+    }
+
+
+def scoped_notifications_base(user: policy.CurrentUser) -> tuple[str, list[Any]]:
+    cond, params = policy.patient_scope_filter(user)
+    return cond, params
+
+
+def list_notifications(
+    conn: sqlite3.Connection,
+    user: policy.CurrentUser,
+    *,
+    status: str | None = None,
+    channel: str | None = None,
+    patient_id: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    template_code: str | None = None,
+    source_type: str | None = None,
+    search: str | None = None,
+    treating_doctor: str | None = None,
+    department: str | None = None,
+    sort: str = "scheduled_desc",
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    cond, params = scoped_notifications_base(user)
+    where = [cond]
+    values: list[Any] = list(params)
+    if status:
+        where.append("notifications.status = ?")
+        values.append(status)
+    if channel:
+        where.append("notifications.channel = ?")
+        values.append(channel)
+    if patient_id:
+        where.append("notifications.patient_id = ?")
+        values.append(patient_id)
+    if date_from:
+        where.append("notifications.scheduled_at >= ?")
+        values.append(date_from)
+    if date_to:
+        where.append("notifications.scheduled_at <= ?")
+        values.append(date_to)
+    if template_code:
+        where.append("notifications.template_code = ?")
+        values.append(template_code)
+    if source_type:
+        where.append("notifications.source_type = ?")
+        values.append(source_type)
+    if search:
+        where.append("patients.name LIKE ?")
+        values.append(f"%{search}%")
+    if treating_doctor:
+        where.append("COALESCE(u.full_name, patients.doctor, '') LIKE ?")
+        values.append(f"%{treating_doctor}%")
+    if department:
+        where.append("EXISTS (SELECT 1 FROM user_departments ud2 JOIN departments d2 ON d2.id = ud2.department_id AND d2.status = 'active' WHERE ud2.user_id = patients.treating_doctor_user_id AND d2.name = ?)")
+        values.append(department)
+    where_sql = " AND ".join(f"({x})" for x in where)
+    order = {
+        "scheduled_asc": "notifications.scheduled_at ASC, notifications.id ASC",
+        "status": "notifications.status ASC, notifications.scheduled_at ASC, notifications.id ASC",
+    }.get(sort, "notifications.scheduled_at DESC, notifications.id DESC")
+    join_sql = """FROM notifications
+        JOIN patients ON patients.id = notifications.patient_id
+        LEFT JOIN users u ON u.id = patients.treating_doctor_user_id
+        LEFT JOIN user_departments ud ON ud.user_id = patients.treating_doctor_user_id
+        LEFT JOIN departments d ON d.id = ud.department_id AND d.status = 'active'
+        LEFT JOIN notification_templates t ON t.code = notifications.template_code"""
+    total = conn.execute(f"SELECT COUNT(DISTINCT notifications.id) AS c {join_sql} WHERE {where_sql}", values).fetchone()["c"]
+    rows = conn.execute(
+        f"""SELECT notifications.*, patients.name AS patient_name, patients.phone, patients.doctor,
+                   u.full_name AS treating_doctor_name, t.name AS template_name,
+                   GROUP_CONCAT(DISTINCT d.name) AS department_names
+            {join_sql}
+            WHERE {where_sql}
+            GROUP BY notifications.id
+            ORDER BY {order}
+            LIMIT ? OFFSET ?""",
+        [*values, limit, offset],
+    ).fetchall()
+    return {
+        "notifications": [notification_row_to_dict(row) for row in rows],
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
+    cond, params = policy.patient_scope_filter(user)
+    counts = {status: 0 for status in QUEUE_STATUSES}
+    rows = conn.execute(
+        f"""SELECT notifications.status, COUNT(*) AS c
+            FROM notifications JOIN patients ON patients.id = notifications.patient_id
+            WHERE {cond} GROUP BY notifications.status""",
+        params,
+    ).fetchall()
+    for row in rows:
+        counts[row["status"]] = row["c"]
+    today = utcnow().date().isoformat()
+    due_today = conn.execute(
+        f"""SELECT COUNT(*) AS c FROM notifications JOIN patients ON patients.id = notifications.patient_id
+            WHERE {cond} AND notifications.status = 'pending'
+              AND substr(notifications.scheduled_at, 1, 10) = ?""",
+        [*params, today],
+    ).fetchone()["c"]
+    no_consent = conn.execute(
+        f"""SELECT COUNT(*) AS c
+            FROM patients LEFT JOIN patient_notification_preferences pref ON pref.patient_id = patients.id
+            WHERE {cond} AND COALESCE(pref.consent_status, 'not_recorded') != 'granted'""",
+        params,
+    ).fetchone()["c"]
+    invalid = 0
+    for row in conn.execute(f"SELECT phone FROM patients WHERE {cond}", params).fetchall():
+        ok, reason = phone_sendable(row["phone"])
+        if not ok and reason == "invalid_phone":
+            invalid += 1
+    return {
+        "pending_count": counts["pending"],
+        "sent_count": counts["sent"],
+        "failed_count": counts["failed"],
+        "cancelled_count": counts["cancelled"],
+        "skipped_count": counts["skipped"],
+        "due_today": due_today,
+        "patients_without_consent": no_consent,
+        "patients_with_invalid_phone": invalid,
+        "provider": config.NOTIFICATION_PROVIDER,
+        "mock_mode": config.NOTIFICATION_MOCK_MODE,
+    }
+
+
+def create_notification(
+    conn: sqlite3.Connection,
+    *,
+    patient_id: str,
+    template_code: str,
+    scheduled_at: str,
+    source_type: str,
+    source_id: str,
+    created_by_user_id: str | None,
+    audit_user: policy.CurrentUser | None = None,
+) -> tuple[dict | None, str | None]:
+    ensure_known_provider()
+    scheduled = parse_dt(scheduled_at)
+    if scheduled is None:
+        raise ValueError("scheduled_at must be ISO datetime")
+    template = get_template(conn, template_code)
+    if template is None or not template["enabled"]:
+        return None, "template_disabled"
+    ok, reason = can_queue_for_patient(conn, patient_id)
+    if not ok:
+        return None, reason
+    now = now_iso()
+    nid = store.new_id()
+    try:
+        with conn:
+            conn.execute(
+                """INSERT INTO notifications
+                   (id, patient_id, channel, template_id, template_code, template_version,
+                    source_type, source_id, scheduled_at, status, attempt_count, max_attempts,
+                    next_attempt_at, created_by_user_id, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                (
+                    nid, patient_id, template["channel"], template["id"], template["code"], template["version"],
+                    source_type, source_id, scheduled.isoformat(), config.NOTIFICATION_MAX_ATTEMPTS,
+                    scheduled.isoformat(), created_by_user_id, now, now,
+                ),
+            )
+    except sqlite3.IntegrityError:
+        row = conn.execute(
+            """SELECT * FROM notifications
+               WHERE patient_id = ? AND source_type = ? AND source_id = ?
+                 AND template_code = ? AND scheduled_at = ?
+                 AND status IN ('pending', 'processing', 'sent')""",
+            (patient_id, source_type, source_id, template_code, scheduled.isoformat()),
+        ).fetchone()
+        return (dict(row) if row else None), "duplicate"
+    if audit_user is not None:
+        audit.record(
+            conn,
+            audit.NOTIFICATION_CREATED,
+            patient_id=patient_id,
+            detail=safe_detail(notification_id=nid, template_code=template_code, status="pending", source_type=source_type),
+            **audit.actor_ctx(audit_user),
+        )
+    return get_notification_raw(conn, nid), None
+
+
+def get_notification_raw(conn: sqlite3.Connection, notification_id: str) -> dict | None:
+    row = conn.execute("SELECT * FROM notifications WHERE id = ?", (notification_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_notification_scoped(conn: sqlite3.Connection, user: policy.CurrentUser, notification_id: str) -> dict | None:
+    # Avoid using the public list result for lookup across all rows.
+    cond, params = policy.patient_scope_filter(user)
+    row = conn.execute(
+        f"""SELECT notifications.*, patients.name AS patient_name, patients.phone, patients.doctor,
+                   u.full_name AS treating_doctor_name, t.name AS template_name,
+                   GROUP_CONCAT(DISTINCT d.name) AS department_names
+            FROM notifications
+            JOIN patients ON patients.id = notifications.patient_id
+            LEFT JOIN users u ON u.id = patients.treating_doctor_user_id
+            LEFT JOIN user_departments ud ON ud.user_id = patients.treating_doctor_user_id
+            LEFT JOIN departments d ON d.id = ud.department_id AND d.status = 'active'
+            LEFT JOIN notification_templates t ON t.code = notifications.template_code
+            WHERE notifications.id = ? AND {cond}
+            GROUP BY notifications.id""",
+        [notification_id, *params],
+    ).fetchone()
+    return notification_row_to_dict(row) if row else None
+
+
+def cancel_notification(conn: sqlite3.Connection, *, notification_id: str, user: policy.CurrentUser) -> bool:
+    row = get_notification_raw(conn, notification_id)
+    if row is None:
+        return False
+    now = now_iso()
+    with conn:
+        cur = conn.execute(
+            """UPDATE notifications
+               SET status = 'cancelled', cancelled_at = ?, cancelled_by_user_id = ?, updated_at = ?
+               WHERE id = ? AND status = 'pending'""",
+            (now, user.id, now, notification_id),
+        )
+    if cur.rowcount:
+        audit.record(
+            conn,
+            audit.NOTIFICATION_CANCELLED,
+            patient_id=row["patient_id"],
+            detail=safe_detail(notification_id=notification_id, template_code=row["template_code"], status="cancelled", source_type=row["source_type"]),
+            **audit.actor_ctx(user),
+        )
+        return True
+    return False
+
+
+def retry_notification(conn: sqlite3.Connection, *, notification_id: str, user: policy.CurrentUser) -> bool:
+    row = get_notification_raw(conn, notification_id)
+    if row is None or row["status"] != "failed":
+        return False
+    now = now_iso()
+    with conn:
+        conn.execute(
+            """UPDATE notifications
+               SET status = 'pending', next_attempt_at = ?, error_code = NULL,
+                   error_message_safe = NULL, provider_status = NULL, updated_at = ?
+               WHERE id = ?""",
+            (now, now, notification_id),
+        )
+    audit.record(
+        conn,
+        audit.NOTIFICATION_RETRY_REQUESTED,
+        patient_id=row["patient_id"],
+        detail=safe_detail(notification_id=notification_id, template_code=row["template_code"], status="pending", source_type=row["source_type"], attempt_count=row["attempt_count"]),
+        **audit.actor_ctx(user),
+    )
+    return True
+
+
+def planned_events(conn: sqlite3.Connection, user: policy.CurrentUser | None = None) -> list[sqlite3.Row]:
+    if user is None:
+        cond, params = "1 = 1", []
+    else:
+        cond, params = policy.patient_scope_filter(user)
+    return conn.execute(
+        f"""SELECT patients.id AS patient_id, patients.stage AS patient_stage,
+                   events.id AS event_id, events.date, events.time, events.actual_date, events.no_plan
+            FROM events
+            JOIN history_entries h ON h.id = events.history_entry_id
+            JOIN patients ON patients.id = h.patient_id
+            WHERE {cond}
+            ORDER BY patients.id, events.id""",
+        params,
+    ).fetchall()
+
+
+def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | None = None) -> dict:
+    ensure_known_provider()
+    created = skipped = cancelled = duplicates = 0
+    for row in planned_events(conn, user):
+        if row["actual_date"] or row["no_plan"] or row["patient_stage"] == "completed":
+            with conn:
+                cur = conn.execute(
+                    """UPDATE notifications
+                       SET status = 'cancelled', cancelled_at = ?, updated_at = ?, error_code = 'event_inactive'
+                       WHERE patient_id = ? AND source_type = 'event' AND source_id = ?
+                         AND status = 'pending'""",
+                    (now_iso(), now_iso(), row["patient_id"], row["event_id"]),
+                )
+                cancelled += cur.rowcount
+            continue
+        event_at = event_dt(row["date"], row["time"])
+        if event_at is None:
+            skipped += 1
+            continue
+        scheduled = event_at - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
+        template_code = "appointment_reminder"
+        with conn:
+            cur = conn.execute(
+                """UPDATE notifications
+                   SET status = 'cancelled', cancelled_at = ?, updated_at = ?, error_code = 'event_rescheduled'
+                   WHERE patient_id = ? AND source_type = 'event' AND source_id = ?
+                     AND template_code = ? AND scheduled_at != ? AND status = 'pending'""",
+                (now_iso(), now_iso(), row["patient_id"], row["event_id"], template_code, scheduled.isoformat()),
+            )
+            cancelled += cur.rowcount
+        notification, reason = create_notification(
+            conn,
+            patient_id=row["patient_id"],
+            template_code=template_code,
+            scheduled_at=scheduled.isoformat(),
+            source_type="event",
+            source_id=row["event_id"],
+            created_by_user_id=user.id if user else None,
+            audit_user=user,
+        )
+        if reason == "duplicate":
+            duplicates += 1
+        elif reason:
+            skipped += 1
+        elif notification:
+            created += 1
+    return {"created": created, "skipped": skipped, "cancelled": cancelled, "duplicates": duplicates}
+
+
+def claim_next(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict | None:
+    due = (now or utcnow()).isoformat()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT * FROM notifications
+               WHERE status = 'pending' AND next_attempt_at <= ?
+               ORDER BY scheduled_at ASC, id ASC LIMIT 1""",
+            (due,),
+        ).fetchone()
+        if row is None:
+            conn.commit()
+            return None
+        cur = conn.execute(
+            """UPDATE notifications
+               SET status = 'processing', updated_at = ?
+               WHERE id = ? AND status = 'pending'""",
+            (now_iso(), row["id"]),
+        )
+        conn.commit()
+        if cur.rowcount != 1:
+            return None
+        return get_notification_raw(conn, row["id"])
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def mark_skipped(conn: sqlite3.Connection, row: dict, reason: str) -> None:
+    now = now_iso()
+    with conn:
+        conn.execute(
+            """UPDATE notifications
+               SET status = 'skipped', error_code = ?, error_message_safe = ?,
+                   provider_status = NULL, updated_at = ?
+               WHERE id = ?""",
+            (reason, reason, now, row["id"]),
+        )
+    audit.record(
+        conn,
+        audit.NOTIFICATION_SKIPPED,
+        patient_id=row["patient_id"],
+        detail=safe_detail(notification_id=row["id"], template_code=row["template_code"], status="skipped", error_code=reason, source_type=row["source_type"], attempt_count=row["attempt_count"]),
+    )
+
+
+def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None = None) -> dict | None:
+    ensure_known_provider()
+    row = claim_next(conn)
+    if row is None:
+        return None
+    audit.record(
+        conn,
+        audit.NOTIFICATION_PROCESSING_STARTED,
+        patient_id=row["patient_id"],
+        detail=safe_detail(notification_id=row["id"], template_code=row["template_code"], status="processing", source_type=row["source_type"], attempt_count=row["attempt_count"]),
+    )
+    ok, reason = can_queue_for_patient(conn, row["patient_id"])
+    if not ok:
+        mark_skipped(conn, row, reason)
+        return {"id": row["id"], "status": "skipped", "error_code": reason}
+    patient = conn.execute("SELECT phone FROM patients WHERE id = ?", (row["patient_id"],)).fetchone()
+    template = get_template(conn, row["template_code"])
+    if patient is None:
+        mark_skipped(conn, row, "patient_unavailable")
+        return {"id": row["id"], "status": "skipped", "error_code": "patient_unavailable"}
+    if template is None or not template["enabled"]:
+        mark_skipped(conn, row, "template_disabled")
+        return {"id": row["id"], "status": "skipped", "error_code": "template_disabled"}
+    body = render_template(template["body"], scheduled_at=row["scheduled_at"])
+    provider = provider or provider_from_config()
+    result = provider.send(NotificationContext(
+        notification_id=row["id"],
+        channel=row["channel"],
+        recipient=normalize_phone(patient["phone"]),
+        body=body,
+    ))
+    now = now_iso()
+    attempts = int(row["attempt_count"]) + 1
+    if result.success:
+        with conn:
+            conn.execute(
+                """UPDATE notifications
+                   SET status = 'sent', attempt_count = ?, provider_message_id = ?,
+                       provider_status = ?, sent_at = ?, updated_at = ?
+                   WHERE id = ?""",
+                (attempts, result.provider_message_id, result.provider_status, now, now, row["id"]),
+            )
+        audit.record(
+            conn,
+            audit.NOTIFICATION_SENT,
+            patient_id=row["patient_id"],
+            detail=safe_detail(notification_id=row["id"], template_code=row["template_code"], status="sent", source_type=row["source_type"], attempt_count=attempts),
+        )
+        return {"id": row["id"], "status": "sent"}
+
+    if result.temporary and attempts < int(row["max_attempts"]):
+        backoff = 2 ** attempts
+        next_attempt = (utcnow() + timedelta(minutes=backoff)).isoformat()
+        with conn:
+            conn.execute(
+                """UPDATE notifications
+                   SET status = 'pending', attempt_count = ?, next_attempt_at = ?,
+                       provider_status = ?, error_code = ?, error_message_safe = ?, updated_at = ?
+                   WHERE id = ?""",
+                (attempts, next_attempt, result.provider_status, result.error_code, result.error_code, now, row["id"]),
+            )
+        return {"id": row["id"], "status": "pending", "error_code": result.error_code}
+
+    with conn:
+        conn.execute(
+            """UPDATE notifications
+               SET status = 'failed', attempt_count = ?, provider_status = ?,
+                   error_code = ?, error_message_safe = ?, updated_at = ?
+               WHERE id = ?""",
+            (attempts, result.provider_status, result.error_code, result.error_code, now, row["id"]),
+        )
+    audit.record(
+        conn,
+        audit.NOTIFICATION_FAILED,
+        patient_id=row["patient_id"],
+        detail=safe_detail(notification_id=row["id"], template_code=row["template_code"], status="failed", error_code=result.error_code, source_type=row["source_type"], attempt_count=attempts),
+    )
+    return {"id": row["id"], "status": "failed", "error_code": result.error_code}
+
+
+def process_due(conn: sqlite3.Connection, *, limit: int = 100, provider: NotificationProvider | None = None) -> dict:
+    limit = max(1, min(int(limit), config.NOTIFICATION_BATCH_LIMIT_MAX))
+    processed = sent = failed = skipped = retry_scheduled = 0
+    for _ in range(limit):
+        result = process_one(conn, provider=provider)
+        if result is None:
+            break
+        processed += 1
+        if result["status"] == "sent":
+            sent += 1
+        elif result["status"] == "failed":
+            failed += 1
+        elif result["status"] == "skipped":
+            skipped += 1
+        elif result["status"] == "pending":
+            retry_scheduled += 1
+    return {
+        "processed": processed,
+        "sent": sent,
+        "failed": failed,
+        "skipped": skipped,
+        "retry_scheduled": retry_scheduled,
+    }
