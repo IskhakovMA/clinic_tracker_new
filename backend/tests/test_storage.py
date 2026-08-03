@@ -34,7 +34,7 @@ def test_foreign_keys_cascade(auth_client, tmp_path):
 
 def test_schema_version_row_present(auth_client, tmp_path):
     conn = sqlite3.connect(str(tmp_path / "clinic.db"))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 2
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 3
     conn.close()
 
 
