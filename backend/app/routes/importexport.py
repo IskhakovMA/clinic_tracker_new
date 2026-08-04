@@ -29,24 +29,16 @@ def import_preview(
 ):
     if not policy.can_import(user):
         _deny(conn, user, "action=import")
-    ctx = audit.actor_ctx(user)
     try:
         document, errors = importexport.validate_import(body.raw)
     except importexport.ImportStructureError as e:
-        audit.record(conn, audit.IMPORT_PREVIEW, result=audit.RESULT_DENIED,
-                     detail="structure_rejected", **ctx)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     if document is None:
-        audit.record(conn, audit.IMPORT_PREVIEW, result=audit.RESULT_DENIED,
-                     detail=f"invalid_records={len(errors)}", **ctx)
         return {"valid": False, "errors": errors}
     scope_errors = importexport.scope_errors(conn, document, user)
     if scope_errors:
-        audit.record(conn, audit.IMPORT_PREVIEW, result=audit.RESULT_DENIED,
-                     detail=f"scope_rejected={len(scope_errors)}", **ctx)
         return {"valid": False, "errors": scope_errors}
     report = importexport.preview_report(conn, document)
-    audit.record(conn, audit.IMPORT_PREVIEW, detail=f"records={report['totalRecords']}", **ctx)
     return {"valid": True, "errors": [], **report}
 
 

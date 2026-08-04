@@ -70,11 +70,12 @@ FastAPI route decorators found: 63.
 
 Write route decorators found: 35.
 
-Routes with explicit `Depends(require_csrf)`: 31.
+Routes with explicit `Depends(require_csrf)`: 32.
 
-The four non-GET routes without explicit CSRF are login, logout, import preview,
-and migration preview. Login and preview endpoints are not ordinary authenticated
-mutations. Logout is recorded as finding `SEC-2026-002`.
+The three non-GET routes without explicit CSRF are login, import preview, and
+migration preview. Login creates a session from credentials. Preview endpoints
+are authenticated validators and do not mutate SQLite, sessions, files,
+notifications, or import/migration state.
 
 Conditional OpenAPI route: `/openapi.json` is present and returned 200 in
 `DEBUG=false`; finding `SEC-2026-001`.
@@ -82,8 +83,7 @@ Conditional OpenAPI route: `/openapi.json` is present and returned 200 in
 Post-audit hardening update: `fix/application-security-hardening` increases
 explicit CSRF-protected write routes to 32/35 by protecting logout. The three
 remaining POST routes without CSRF are login, import preview and migration
-preview, each documented as N/A for cookie-authenticated stored-data mutation.
-`/openapi.json` is now disabled outside debug.
+preview, each documented as N/A. `/openapi.json` is now disabled outside debug.
 
 ### Endpoint Matrix
 
@@ -207,8 +207,9 @@ handling, and no doctor ranking are covered by tests and source review.
 
 Rate limiting audit: PARTIAL. Login has a real in-memory limiter; selected
 heavy/search endpoints now have bounded in-memory limits with 429 and
-`Retry-After`. Multi-process production still needs persistent or reverse-proxy
-throttling.
+`Retry-After`. Buckets are pruned, capped, thread-locked, and do not use PHI.
+Login username subjects are hashed. Proxy spoofing headers are ignored. Multi-
+process production still needs persistent or reverse-proxy throttling.
 
 Dependency audit: PASS/PARTIAL. `pip-audit` found no known vulnerabilities.
 Dependencies are pinned in `requirements.txt`, and a pinned `dependency-audit`

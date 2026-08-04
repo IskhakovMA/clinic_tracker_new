@@ -154,8 +154,10 @@ Residual risk: Medium until deployment controls exist.
 
 Application hardening status: PARTIAL in
 `fix/application-security-hardening`; selected heavy/search endpoints now have
-bounded in-memory rate limits, but persistent or reverse-proxy throttling
-remains required for multi-process production.
+bounded, pruned, thread-locked in-memory rate limits with `Retry-After`.
+Username subjects are hashed and proxy spoofing headers are ignored, but
+persistent or reverse-proxy throttling remains required for multi-process
+production.
 
 ## SEC-2026-004: Repository lacks visible CI workflows and branch protection baseline
 

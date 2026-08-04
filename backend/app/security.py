@@ -9,6 +9,7 @@ server-side session rather than being purely stateless).
 import hashlib
 import secrets
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -90,8 +91,6 @@ def validate_session(conn: sqlite3.Connection, raw_token: str | None) -> sqlite3
         with conn:
             conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
         return None
-    with conn:
-        conn.execute("UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?", (now_iso(), token_hash))
     return row
 
 
@@ -113,29 +112,70 @@ def purge_expired_sessions(conn: sqlite3.Connection) -> None:
 
 _failed_attempts: dict[str, list[float]] = {}
 _request_attempts: dict[str, list[float]] = {}
+_rate_limit_lock = threading.RLock()
+
+
+def rate_limit_subject(value: str) -> str:
+    """Opaque stable bucket suffix for user-controlled rate-limit subjects."""
+    return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()
+
+
+def _prune_buckets(
+    buckets: dict[str, list[float]],
+    *,
+    now: float,
+    window_seconds: int,
+    max_buckets: int,
+) -> None:
+    window_start = now - window_seconds
+    for key in list(buckets.keys()):
+        recent = [t for t in buckets[key] if t >= window_start]
+        if recent:
+            buckets[key] = recent
+        else:
+            buckets.pop(key, None)
+    if len(buckets) <= max_buckets:
+        return
+    ordered = sorted(buckets.items(), key=lambda item: item[1][-1] if item[1] else 0.0)
+    for key, _ in ordered[:len(buckets) - max_buckets]:
+        buckets.pop(key, None)
 
 
 def check_rate_limit(key: str = "global") -> float:
     """Returns seconds to wait before the next attempt is allowed (0 if OK now)."""
-    now = time.monotonic()
-    window_start = now - config.LOGIN_WINDOW_SECONDS
-    attempts = [t for t in _failed_attempts.get(key, []) if t >= window_start]
-    _failed_attempts[key] = attempts
-    if len(attempts) < config.LOGIN_MAX_ATTEMPTS:
-        return 0.0
-    backoff = config.LOGIN_BASE_BACKOFF_SECONDS * (2 ** (len(attempts) - config.LOGIN_MAX_ATTEMPTS))
-    last_attempt = attempts[-1]
-    wait_until = last_attempt + backoff
-    remaining = wait_until - now
-    return max(0.0, remaining)
+    with _rate_limit_lock:
+        now = time.monotonic()
+        _prune_buckets(
+            _failed_attempts,
+            now=now,
+            window_seconds=config.LOGIN_WINDOW_SECONDS,
+            max_buckets=config.LOGIN_RATE_LIMIT_MAX_BUCKETS,
+        )
+        attempts = _failed_attempts.get(key, [])
+        if len(attempts) < config.LOGIN_MAX_ATTEMPTS:
+            return 0.0
+        backoff = config.LOGIN_BASE_BACKOFF_SECONDS * (2 ** (len(attempts) - config.LOGIN_MAX_ATTEMPTS))
+        last_attempt = attempts[-1]
+        wait_until = last_attempt + backoff
+        remaining = wait_until - now
+        return max(0.0, remaining)
 
 
 def record_failed_attempt(key: str = "global") -> None:
-    _failed_attempts.setdefault(key, []).append(time.monotonic())
+    with _rate_limit_lock:
+        now = time.monotonic()
+        _prune_buckets(
+            _failed_attempts,
+            now=now,
+            window_seconds=config.LOGIN_WINDOW_SECONDS,
+            max_buckets=config.LOGIN_RATE_LIMIT_MAX_BUCKETS,
+        )
+        _failed_attempts.setdefault(key, []).append(now)
 
 
 def reset_attempts(key: str = "global") -> None:
-    _failed_attempts.pop(key, None)
+    with _rate_limit_lock:
+        _failed_attempts.pop(key, None)
 
 
 def check_request_rate_limit(key: str, max_requests: int, window_seconds: int) -> float:
@@ -144,14 +184,26 @@ def check_request_rate_limit(key: str, max_requests: int, window_seconds: int) -
     It is intentionally in-memory and per-process; deployment-level/persistent
     throttling remains an operational control from SEC-2026-003.
     """
-    now = time.monotonic()
-    window_start = now - window_seconds
-    attempts = [t for t in _request_attempts.get(key, []) if t >= window_start]
-    _request_attempts[key] = attempts
-    if len(attempts) < max_requests:
-        attempts.append(now)
-        return 0.0
-    return max(0.0, window_seconds - (now - attempts[0]))
+    with _rate_limit_lock:
+        now = time.monotonic()
+        _prune_buckets(
+            _request_attempts,
+            now=now,
+            window_seconds=window_seconds,
+            max_buckets=config.REQUEST_RATE_LIMIT_MAX_BUCKETS,
+        )
+        attempts = _request_attempts.setdefault(key, [])
+        if len(attempts) < max_requests:
+            attempts.append(now)
+            if len(_request_attempts) > config.REQUEST_RATE_LIMIT_MAX_BUCKETS:
+                _prune_buckets(
+                    _request_attempts,
+                    now=now,
+                    window_seconds=window_seconds,
+                    max_buckets=config.REQUEST_RATE_LIMIT_MAX_BUCKETS,
+                )
+            return 0.0
+        return max(0.0, window_seconds - (now - attempts[0]))
 
 
 def revoke_session_hash(conn: sqlite3.Connection, token_hash: str | None) -> None:

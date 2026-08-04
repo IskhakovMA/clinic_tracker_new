@@ -24,10 +24,13 @@ def client(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
     from backend.app.main import app
-    from backend.app import security
+    from backend.app import config, security
 
-    security._failed_attempts.clear()
-    security._request_attempts.clear()
+    with security._rate_limit_lock:
+        security._failed_attempts.clear()
+        security._request_attempts.clear()
+    monkeypatch.setattr(config, "LOGIN_RATE_LIMIT_MAX_BUCKETS", 1_000)
+    monkeypatch.setattr(config, "REQUEST_RATE_LIMIT_MAX_BUCKETS", 1_000)
 
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
         yield c

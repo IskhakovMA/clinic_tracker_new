@@ -60,6 +60,8 @@ heavy endpoints; document trusted proxy behavior.
 Application Security Hardening status: PARTIAL. Authenticated heavy/search
 endpoints now have bounded in-memory 429/`Retry-After` controls. This does not
 replace deployment-level or persistent throttling for multi-process production.
+Buckets are capped/pruned, protected by an in-process lock, and avoid PHI.
+Trusted proxy parsing is not implemented; proxy IP headers are ignored.
 
 Regression tests: 429/Retry-After tests for login, analytics export, import,
 data quality, notification worker trigger, and staff search.

@@ -20,7 +20,7 @@
 "GET /api/users/doctors","Session","Selectable scope","N/A","Doctor list scoped","Doctor names","No","No","None","PASS"
 "GET /api/departments","Session","Developer only","N/A","N/A","Staff structure","No","Denied attempts","None","PASS"
 "POST/PATCH/DELETE /api/departments*","Session","Developer only","Required","N/A","Staff structure","Yes","department/membership events","None","PASS"
-"POST /api/import/preview","Session","can_import","N/A preview-only","Assignment scope checked","Validation errors only","No commit","import_preview","Import size bound + per-session limiter","PASS"
+"POST /api/import/preview","Session","can_import","N/A preview-only","Assignment scope checked","Validation errors only","No commit","No","Import size bound + per-session limiter","PASS"
 "POST /api/import/commit","Session","can_import mode/scope","Required","Assignment scope checked","Imported PHI","Yes","import_committed counts","Import size bound + per-session limiter","PASS"
 "GET /api/export","Session","can_export","N/A","Scope filters selected ids","Scoped PHI JSON","No DB write","export count","None","PASS"
 "POST /api/migrate/localstorage/preview","Session","Developer/empty migration policy","N/A preview-only","N/A","Preview counts/errors","No commit","migration/import preview","Import size bound + per-session limiter","PASS"
