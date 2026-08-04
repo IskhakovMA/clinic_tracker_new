@@ -1,0 +1,7 @@
+* @applehooked-cmd
+
+.github/workflows/ @applehooked-cmd
+.github/dependabot.yml @applehooked-cmd
+SECURITY.md @applehooked-cmd
+SECURITY_BASELINE_AUDIT.md @applehooked-cmd
+SECURITY_FINDINGS.md @applehooked-cmd
