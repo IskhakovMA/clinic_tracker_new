@@ -1,0 +1,110 @@
+# Security Remediation Plan
+
+No production code fixes are included in this audit branch.
+
+## P0 - Critical
+
+No Critical findings were confirmed.
+
+## P1 - High
+
+### SEC-2026-004: Repository lacks visible CI workflows and branch protection baseline
+
+Expected change: Add branch protection for `main`, required PR reviews,
+required status checks, no routine admin bypass, and CI workflows for pytest,
+pip-audit, JS syntax/CSP checks, SAST, and secret scanning.
+
+Regression tests: GitHub checks must appear on every PR and block merge on
+failure.
+
+Migration risk: None to application data.
+
+Deployment risk: Medium operational risk because stricter repository controls
+can block emergency changes until workflows are stable.
+
+Recommended PR: `chore/github-security-baseline`.
+
+## P2 - Medium
+
+### SEC-2026-001: OpenAPI schema remains exposed when debug docs are disabled
+
+Expected change: Disable `openapi_url` outside debug or gate it by developer
+auth.
+
+Regression tests: `/api/docs`, `/redoc`, and `/openapi.json` return 404 when
+`CLINIC_DEBUG=false`.
+
+Migration risk: None.
+
+Deployment risk: Low.
+
+Recommended PR: `fix/production-openapi-policy`.
+
+### SEC-2026-003: Rate limiting is login-focused and per-process only
+
+Expected change: Add persistent or reverse-proxy-backed throttling for login and
+heavy endpoints; document trusted proxy behavior.
+
+Regression tests: 429/Retry-After tests for login, analytics export, import,
+data quality, notification worker trigger, and staff search.
+
+Migration risk: Possible new table/cache if implemented in SQLite.
+
+Deployment risk: Medium because limits can affect operators.
+
+Recommended PR: `feat/abuse-controls`.
+
+### SEC-2026-006: PHI at rest relies on filesystem and disk controls
+
+Expected change: Formalize encrypted disk/backups for pilot. If backups leave
+the host, add encrypted backup packaging and key handling.
+
+Regression tests: Backup permission tests, backup encryption verification if
+implemented.
+
+Migration risk: Medium if database encryption is introduced.
+
+Deployment risk: Medium due key management.
+
+Recommended PR: `chore/encrypted-backup-policy`.
+
+## P3 - Low/Hardening
+
+### SEC-2026-002: Logout endpoint is state-changing but does not require CSRF
+
+Expected change: Add CSRF dependency to logout or explicitly document acceptable
+logout-CSRF behavior.
+
+Regression tests: Logout without CSRF returns 403 if fixed.
+
+Migration risk: None.
+
+Deployment risk: Low; frontend already can send CSRF.
+
+Recommended PR: `fix/logout-csrf`.
+
+### SEC-2026-005: Request schemas generally ignore unknown JSON fields
+
+Expected change: Add `extra="forbid"` to request/import Pydantic models.
+
+Regression tests: Unknown privilege/audit/provider fields return 422 across
+representative endpoints.
+
+Migration risk: Low to medium; clients that send stale fields will fail.
+
+Deployment risk: Low after frontend verification.
+
+Recommended PR: `fix/strict-request-schemas`.
+
+### SEC-2026-007: GitHub Advanced Security and vulnerability-alert settings were not verifiable
+
+Expected change: Repository owner verifies and documents Dependabot alerts,
+dependency graph, secret scanning, push protection, and code scanning.
+
+Regression tests: Read-only GitHub API checks or captured repository settings.
+
+Migration risk: None.
+
+Deployment risk: None.
+
+Recommended PR: `docs/github-security-settings`.

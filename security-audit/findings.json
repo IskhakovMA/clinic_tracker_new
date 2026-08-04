@@ -1,0 +1,93 @@
+[
+  {
+    "id": "SEC-2026-001",
+    "title": "OpenAPI schema remains exposed when debug docs are disabled",
+    "severity": "Medium",
+    "confidence": "High",
+    "affected_component": "FastAPI application metadata",
+    "affected_endpoints": ["GET /openapi.json"],
+    "cwe": "CWE-200",
+    "owasp": "Security Misconfiguration",
+    "source_skill": "skills/conducting-api-security-testing/SKILL.md",
+    "status": "confirmed",
+    "remediation": "Disable openapi_url outside debug or require developer auth."
+  },
+  {
+    "id": "SEC-2026-002",
+    "title": "Logout endpoint is state-changing but does not require CSRF",
+    "severity": "Low",
+    "confidence": "High",
+    "affected_component": "Authentication/session lifecycle",
+    "affected_endpoints": ["POST /api/auth/logout"],
+    "cwe": "CWE-352",
+    "owasp": "Broken Access Control",
+    "source_skill": "skills/conducting-api-security-testing/SKILL.md",
+    "status": "confirmed",
+    "remediation": "Require CSRF on logout or document accepted logout-CSRF behavior."
+  },
+  {
+    "id": "SEC-2026-003",
+    "title": "Rate limiting is login-focused and per-process only",
+    "severity": "Medium",
+    "confidence": "High",
+    "affected_component": "Abuse controls",
+    "affected_endpoints": ["POST /api/auth/login", "bulk/heavy authenticated endpoints"],
+    "cwe": "CWE-770",
+    "owasp": "API4:2023 Unrestricted Resource Consumption",
+    "source_skill": "skills/implementing-api-rate-limiting-and-throttling/SKILL.md",
+    "status": "confirmed",
+    "remediation": "Add persistent or deployment-level throttling for login and heavy endpoints."
+  },
+  {
+    "id": "SEC-2026-004",
+    "title": "Repository lacks visible CI workflows and branch protection baseline",
+    "severity": "High",
+    "confidence": "Medium",
+    "affected_component": "GitHub repository governance",
+    "affected_endpoints": ["main branch", "GitHub Actions"],
+    "cwe": "CWE-693",
+    "owasp": "CI/CD Security Misconfiguration",
+    "source_skill": "skills/securing-github-actions-workflows/SKILL.md",
+    "status": "confirmed",
+    "remediation": "Add protected main, required reviews/checks, CI, SAST, SCA, and secret scanning."
+  },
+  {
+    "id": "SEC-2026-005",
+    "title": "Request schemas generally ignore unknown JSON fields",
+    "severity": "Low",
+    "confidence": "Medium",
+    "affected_component": "Pydantic request validation",
+    "affected_endpoints": ["JSON request endpoints"],
+    "cwe": "CWE-915",
+    "owasp": "Mass Assignment",
+    "source_skill": "skills/implementing-api-schema-validation-security/SKILL.md",
+    "status": "confirmed",
+    "remediation": "Use strict Pydantic models with extra='forbid'."
+  },
+  {
+    "id": "SEC-2026-006",
+    "title": "PHI at rest relies on filesystem and disk controls, not application encryption",
+    "severity": "Medium",
+    "confidence": "High",
+    "affected_component": "SQLite database and backups",
+    "affected_endpoints": ["backend/data/clinic.db", "backend/data/backups/*.db"],
+    "cwe": "CWE-311",
+    "owasp": "Cryptographic Failures",
+    "source_skill": "skills/conducting-api-security-testing/SKILL.md",
+    "status": "confirmed",
+    "remediation": "Enforce disk encryption and consider encrypted backup packaging/key management."
+  },
+  {
+    "id": "SEC-2026-007",
+    "title": "GitHub Advanced Security and vulnerability-alert settings were not verifiable",
+    "severity": "Informational",
+    "confidence": "Medium",
+    "affected_component": "GitHub repository security visibility",
+    "affected_endpoints": ["GitHub security settings"],
+    "cwe": null,
+    "owasp": "N/A",
+    "source_skill": "skills/implementing-github-advanced-security-for-code-scanning/SKILL.md",
+    "status": "not_verified",
+    "remediation": "Repository owner should verify Dependabot alerts, dependency graph, secret scanning, push protection, and code scanning."
+  }
+]
