@@ -7,7 +7,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from .. import audit, importexport, policy
-from ..deps import get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
 
 router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"])
@@ -17,7 +17,7 @@ def _patient_count(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) AS c FROM patients").fetchone()["c"]
 
 
-@router.post("/preview")
+@router.post("/preview", dependencies=[Depends(abuse_rate_limit("migration_preview", 20))])
 def migrate_preview(
     body: ImportPreviewRequest,
     conn: sqlite3.Connection = Depends(get_db),
@@ -35,7 +35,7 @@ def migrate_preview(
     return {"valid": True, "errors": [], "serverHasData": _patient_count(conn) > 0, **report}
 
 
-@router.post("/commit", dependencies=[Depends(require_csrf)])
+@router.post("/commit", dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("migration_commit", 10))])
 def migrate_commit(
     body: ImportCommitRequest,
     conn: sqlite3.Connection = Depends(get_db),

@@ -70,14 +70,20 @@ FastAPI route decorators found: 63.
 
 Write route decorators found: 35.
 
-Routes with explicit `Depends(require_csrf)`: 31.
+Routes with explicit `Depends(require_csrf)`: 32.
 
-The four non-GET routes without explicit CSRF are login, logout, import preview,
-and migration preview. Login and preview endpoints are not ordinary authenticated
-mutations. Logout is recorded as finding `SEC-2026-002`.
+The three non-GET routes without explicit CSRF are login, import preview, and
+migration preview. Login creates a session from credentials. Preview endpoints
+are authenticated validators and do not mutate SQLite, sessions, files,
+notifications, or import/migration state.
 
 Conditional OpenAPI route: `/openapi.json` is present and returned 200 in
 `DEBUG=false`; finding `SEC-2026-001`.
+
+Post-audit hardening update: `fix/application-security-hardening` increases
+explicit CSRF-protected write routes to 32/35 by protecting logout. The three
+remaining POST routes without CSRF are login, import preview and migration
+preview, each documented as N/A. `/openapi.json` is now disabled outside debug.
 
 ### Endpoint Matrix
 
@@ -90,7 +96,7 @@ Summary by area:
 |---|---|---|---|---|
 | Static `/`, `/static/{filename}` | Public | Allowlisted files | N/A | PASS |
 | Auth login/me | Login public, me session-aware | User status checked | Login N/A | PASS |
-| Auth logout | Session cookie optional | Revokes own session | Missing | PARTIAL |
+| Auth logout | Session required | Revokes current validated session | Required | PASS |
 | Password change | Session | Own account | Required | PASS |
 | Patient CRUD/history/plans | Required | Patient scope and write policy | Required on writes | PASS |
 | Unresolved patients | Required | Developer/global read-only view; developer assignment | Required on assignment | PASS |
@@ -140,8 +146,9 @@ login creates a fresh session; password reset/role/status changes terminate
 sessions; expiration and purge exist. Idle and absolute timeout are effectively
 the same configured TTL, and HTTPS deployment controls are environmental.
 
-CSRF audit: PARTIAL. Most authenticated writes require `x-csrf-token` matching
-the server-side session. Logout lacks CSRF.
+CSRF audit: PASS after application hardening. Authenticated writes require
+`x-csrf-token` matching the server-side session, including logout. Login and
+preview-only import/migration routes are documented as CSRF N/A.
 
 RBAC audit: PASS. Developer, global read-only roles, department head, and doctor
 rules are centralized in `policy.py` and covered by `test_rbac_matrix.py`,
@@ -154,9 +161,10 @@ patient and notification IDs use 404/empty-list contracts.
 BFLA audit: PASS. Staff, department, audit, template update, retry, and worker
 trigger operations are developer-only.
 
-Mass assignment audit: PARTIAL. Server-authoritative fields are not assigned
-from client data, but unknown JSON fields are generally ignored instead of
-rejected.
+Mass assignment audit: PASS after application hardening. Request/import models
+reject unknown JSON fields. Explicit read-only export fields are accepted only
+for import/export roundtrip compatibility and are ignored for authoritative
+writes.
 
 Injection audit: PASS/PARTIAL. SQL uses parameterized queries and allowlisted
 sort/order literals in reviewed paths. No URL fetch/XML parsing was found, so
@@ -197,8 +205,11 @@ Analytics audit: PASS. Scope before aggregation/pagination/details/export,
 CSV injection protection, no phone/SMS body/medical fields by default, timezone
 handling, and no doctor ranking are covered by tests and source review.
 
-Rate limiting audit: PARTIAL. Login has a real in-memory limiter; heavy
-authenticated endpoints do not have comparable throttling.
+Rate limiting audit: PARTIAL. Login has a real in-memory limiter; selected
+heavy/search endpoints now have bounded in-memory limits with 429 and
+`Retry-After`. Buckets are pruned, capped, thread-locked, and do not use PHI.
+Login username subjects are hashed. Proxy spoofing headers are ignored. Multi-
+process production still needs persistent or reverse-proxy throttling.
 
 Dependency audit: PASS/PARTIAL. `pip-audit` found no known vulnerabilities.
 Dependencies are pinned in `requirements.txt`, and a pinned `dependency-audit`
@@ -232,11 +243,12 @@ Top risks:
 
 1. GitHub CI baseline is added, but branch protection and required checks are
 not applied yet.
-2. `/openapi.json` exposed outside debug.
-3. Heavy endpoints lack broad rate limiting.
+2. Heavy endpoint throttling is still per-process and not persistent.
+3. Production OpenAPI exposure is fixed, but debug mode intentionally exposes
+the schema for local development.
 4. App-level DB/backup encryption absent.
-5. Unknown JSON fields are ignored by default.
-6. Logout lacks CSRF.
+5. Backup/database encryption remains separate work.
+6. Strict request schemas and logout CSRF are covered by regression tests.
 7. GitHub Advanced Security settings not verified.
 8. SAST/secret scanners unavailable locally.
 9. Production controls rely on operator deployment checklist.

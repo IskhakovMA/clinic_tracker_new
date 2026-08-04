@@ -130,6 +130,26 @@ pip-audit -r backend/requirements.txt  # проверка зависимосте
 node --check static/app.js             # синтаксис фронтенда (если установлен Node.js)
 ```
 
+## Application Security Hardening
+
+- Production defaults disable `/api/docs`, `/redoc` and `/openapi.json`;
+  API schema is available only when `CLINIC_DEBUG=true`.
+- All state-changing cookie-authenticated HTTP endpoints require a session-bound
+  CSRF token. Login and import/migration preview are explicitly treated as
+  non-CSRF cases because they do not mutate stored clinical data. Preview
+  endpoints do not write SQLite audit rows, update sessions, create files,
+  create notifications, or run the actual import/migration commit.
+- Pydantic request schemas reject unknown JSON fields. Import still accepts
+  explicitly documented read-only export fields needed for v3 roundtrip
+  compatibility, but server-side IDs, timestamps, audit actors and assignment
+  decisions remain authoritative.
+- Login, analytics export, import/migration, data-quality, notification worker
+  and staff search endpoints have bounded in-memory abuse controls. These are
+  pruned on access, capped, and protected by an in-process lock. Login bucket
+  subjects hash normalized usernames and ignore proxy-supplied IP headers. These
+  controls are not a replacement for reverse-proxy or persistent rate limiting
+  in a multi-process production deployment.
+
 ## Данные, защита каталога и резервное копирование
 
 - **База**: `backend/data/clinic.db` (SQLite, исключена из Git и не раздаётся по HTTP).

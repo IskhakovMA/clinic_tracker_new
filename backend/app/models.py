@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import date as date_type
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 PRIORITIES = ("urgent", "high", "normal")
 STAGES = (
@@ -32,6 +32,10 @@ Stage = Literal[
 ]
 
 
+class StrictRequestModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
 def _normalize_text(v: Optional[str]) -> Optional[str]:
     if v is None:
         return None
@@ -46,7 +50,7 @@ def _normalize_multiline(v: Optional[str]) -> Optional[str]:
     return "\n".join(lines)
 
 
-class EventIn(BaseModel):
+class EventIn(StrictRequestModel):
     date: Optional[str] = Field(None, max_length=10)
     time: Optional[str] = Field(None, max_length=5)
     treatmentType: Optional[str] = Field(None, max_length=20)
@@ -54,6 +58,9 @@ class EventIn(BaseModel):
     actualTime: Optional[str] = Field(None, max_length=5)
     matchedPlan: Optional[bool] = None
     noPlan: Optional[bool] = False
+    # Present in v3 export; accepted for roundtrip compatibility and ignored
+    # on write because event timestamps are server-authoritative.
+    setAt: Optional[str] = Field(None, max_length=40)
 
     @field_validator("date", "actualDate")
     @classmethod
@@ -76,12 +83,12 @@ class EventIn(BaseModel):
         return v
 
 
-class StageChangeIn(BaseModel):
+class StageChangeIn(StrictRequestModel):
     newStage: Stage
     lastEventUpdate: Optional[EventIn] = None
 
 
-class NoteIn(BaseModel):
+class NoteIn(StrictRequestModel):
     note: str = Field("", max_length=5000)
 
     @field_validator("note")
@@ -90,29 +97,29 @@ class NoteIn(BaseModel):
         return _normalize_multiline(v)
 
 
-class ChecklistItemIn(BaseModel):
+class ChecklistItemIn(StrictRequestModel):
     item: str = Field(..., min_length=1, max_length=200)
     checked: bool
 
 
-class EventFieldUpdateIn(BaseModel):
+class EventFieldUpdateIn(StrictRequestModel):
     field: Literal["date", "time", "treatmentType", "actualDate", "actualTime"]
     value: str = Field("", max_length=20)
 
 
-class FuturePlanIn(BaseModel):
+class FuturePlanIn(StrictRequestModel):
     field: Literal["date", "time", "treatmentType"]
     value: str = Field("", max_length=20)
 
 
-class PatientFieldUpdateIn(BaseModel):
+class PatientFieldUpdateIn(StrictRequestModel):
     field: Literal[
         "name", "age", "phone", "diagnosis", "nosology", "diseaseStage", "priority", "doctor", "head", "complaint"
     ]
     value: str | int
 
 
-class PatientCreateIn(BaseModel):
+class PatientCreateIn(StrictRequestModel):
     name: str = Field(..., min_length=1, max_length=200)
     age: int = Field(0, ge=0, le=150)
     phone: str = Field("", max_length=50)
@@ -208,7 +215,7 @@ def _reject_dangerous_keys(d: dict) -> None:
         raise ValueError("payload contains disallowed keys")
 
 
-class ImportHistoryEntry(BaseModel):
+class ImportHistoryEntry(StrictRequestModel):
     stage: str
     enteredAt: str = Field(..., max_length=40)
     events: list[EventIn] = Field(default_factory=list)
@@ -241,13 +248,13 @@ class ImportHistoryEntry(BaseModel):
         return v
 
 
-class ImportFuturePlan(BaseModel):
+class ImportFuturePlan(StrictRequestModel):
     date: str = Field("", max_length=20)
     time: str = Field("", max_length=20)
     treatmentType: str = Field("", max_length=20)
 
 
-class ImportPatientIn(BaseModel):
+class ImportPatientIn(StrictRequestModel):
     """Mirrors PatientOut shape but every field is independently validated;
     a client-sent `id` is only ever used to *match* an existing server
     record in `update` mode — it is never trusted to assign a new identity."""
@@ -269,10 +276,15 @@ class ImportPatientIn(BaseModel):
     head: str = Field("", max_length=200)
     updatedAt: Optional[str] = Field(None, max_length=40)
     history: list[ImportHistoryEntry] = Field(default_factory=list)
+    # Legacy localStorage/create-payload shape kept events at the patient root.
+    # It is a known compatibility field, not an open-ended extra.
+    events: list[EventIn] = Field(default_factory=list)
     futurePlans: dict[str, ImportFuturePlan] = Field(default_factory=dict)
     # Появилось в схеме v2; старые выгрузки без этого поля остаются валидными.
     # Значение никогда не принимается на веру — сервер проверяет его по scope актора.
     treatingDoctorUserId: Optional[str] = Field(None, max_length=100)
+    # Present in v3 export for display only; import never trusts it for assignment.
+    treatingDoctorName: Optional[str] = Field(None, max_length=200)
 
     @field_validator(
         "phone", "complaint", "diagnosis", "nosology", "diseaseStage", "doctor", "head", mode="before"
@@ -316,8 +328,9 @@ class ImportPatientIn(BaseModel):
         return v
 
 
-class ImportDocument(BaseModel):
+class ImportDocument(StrictRequestModel):
     schemaVersion: int = 0
+    generatedAt: Optional[str] = Field(None, max_length=40)
     patients: list[ImportPatientIn]
 
     @field_validator("patients")
@@ -328,11 +341,11 @@ class ImportDocument(BaseModel):
         return v
 
 
-class ImportPreviewRequest(BaseModel):
+class ImportPreviewRequest(StrictRequestModel):
     raw: str = Field(..., max_length=6_000_000)  # ~5MB text + margin
 
 
-class ImportCommitRequest(BaseModel):
+class ImportCommitRequest(StrictRequestModel):
     raw: str = Field(..., max_length=6_000_000)
     mode: ImportMode
 
@@ -345,28 +358,28 @@ NotificationSourceType = Literal["manual", "event"]
 ConsentStatus = Literal["not_recorded", "granted", "revoked"]
 
 
-class NotificationPreferenceIn(BaseModel):
+class NotificationPreferenceIn(StrictRequestModel):
     smsEnabled: bool
     consentStatus: ConsentStatus
 
 
-class NotificationCreateIn(BaseModel):
+class NotificationCreateIn(StrictRequestModel):
     patientId: str = Field(..., min_length=1, max_length=100)
     templateCode: str = Field(..., min_length=1, max_length=80)
     scheduledAt: str = Field(..., min_length=1, max_length=40)
 
 
-class NotificationTemplateUpdateIn(BaseModel):
+class NotificationTemplateUpdateIn(StrictRequestModel):
     body: Optional[str] = Field(None, min_length=1, max_length=500)
     enabled: Optional[bool] = None
 
 
-class LoginIn(BaseModel):
+class LoginIn(StrictRequestModel):
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1, max_length=200)
 
 
-class ChangePasswordIn(BaseModel):
+class ChangePasswordIn(StrictRequestModel):
     currentPassword: str = Field(..., min_length=1, max_length=200)
     newPassword: str = Field(..., min_length=1, max_length=200)
 
@@ -376,7 +389,7 @@ class ChangePasswordIn(BaseModel):
 RoleId = Literal["developer", "deputy_chief_oncology", "caop_head", "department_head", "doctor"]
 
 
-class UserCreateIn(BaseModel):
+class UserCreateIn(StrictRequestModel):
     username: str = Field(..., min_length=3, max_length=64)
     fullName: str = Field(..., min_length=1, max_length=200)
     roleId: RoleId
@@ -385,32 +398,32 @@ class UserCreateIn(BaseModel):
     departmentIds: list[str] = Field(default_factory=list, max_length=50)
 
 
-class UserUpdateIn(BaseModel):
+class UserUpdateIn(StrictRequestModel):
     fullName: Optional[str] = Field(None, min_length=1, max_length=200)
     roleId: Optional[RoleId] = None
     status: Optional[Literal["active", "blocked", "deactivated"]] = None
     departmentIds: Optional[list[str]] = Field(None, max_length=50)
 
 
-class ResetPasswordIn(BaseModel):
+class ResetPasswordIn(StrictRequestModel):
     newPassword: str = Field(..., min_length=1, max_length=200)
     mustChangePassword: bool = True
 
 
-class DepartmentCreateIn(BaseModel):
+class DepartmentCreateIn(StrictRequestModel):
     name: str = Field(..., min_length=1, max_length=200)
 
 
-class DepartmentUpdateIn(BaseModel):
+class DepartmentUpdateIn(StrictRequestModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     status: Optional[Literal["active", "archived"]] = None
     headUserId: Optional[str] = Field(None, max_length=100)
     clearHead: bool = False
 
 
-class DepartmentDoctorIn(BaseModel):
+class DepartmentDoctorIn(StrictRequestModel):
     userId: str = Field(..., min_length=1, max_length=100)
 
 
-class TreatingDoctorIn(BaseModel):
+class TreatingDoctorIn(StrictRequestModel):
     userId: Optional[str] = Field(None, max_length=100)

@@ -5,7 +5,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, policy, security, users
-from ..deps import get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ResetPasswordIn, UserCreateIn, UserUpdateIn
 
 router = APIRouter(prefix="/api/users", tags=["staff"])
@@ -29,7 +29,7 @@ def _user_or_404(conn: sqlite3.Connection, user_id: str) -> sqlite3.Row:
     return row
 
 
-@router.get("")
+@router.get("", dependencies=[Depends(abuse_rate_limit("staff_search", 60))])
 def list_users(
     query: str | None = Query(None, max_length=200),
     role: str | None = Query(None, max_length=64),
@@ -59,7 +59,7 @@ def list_users(
     return {"users": [users.user_to_dict(conn, r) for r in rows]}
 
 
-@router.get("/doctors")
+@router.get("/doctors", dependencies=[Depends(abuse_rate_limit("staff_doctors", 60))])
 def list_selectable_doctors(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
@@ -179,4 +179,3 @@ def terminate_user_sessions(
     audit.record(conn, audit.SESSIONS_TERMINATED, detail=f"count={count}",
                  target_user_id=user_id, **audit.actor_ctx(admin))
     return {"terminated": count}
-

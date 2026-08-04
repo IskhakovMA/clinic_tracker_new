@@ -54,6 +54,10 @@ Data sensitivity: API structure only.
 
 Residual risk: Low after disabling production schema exposure.
 
+Application hardening status: REMEDIATED in
+`fix/application-security-hardening`; `/openapi.json` is disabled when
+`CLINIC_DEBUG=false`.
+
 ## SEC-2026-002: Logout endpoint is state-changing but does not require CSRF
 
 Severity: Low
@@ -96,6 +100,10 @@ Exploitability: Low.
 Data sensitivity: No direct PHI exposure.
 
 Residual risk: Very low after CSRF enforcement.
+
+Application hardening status: REMEDIATED in
+`fix/application-security-hardening`; logout now requires an active session and
+matching session-bound CSRF token.
 
 ## SEC-2026-003: Rate limiting is login-focused and per-process only
 
@@ -143,6 +151,13 @@ Exploitability: Medium in exposed deployments, lower on VPN/local deployments.
 Data sensitivity: Availability of clinical workflow.
 
 Residual risk: Medium until deployment controls exist.
+
+Application hardening status: PARTIAL in
+`fix/application-security-hardening`; selected heavy/search endpoints now have
+bounded, pruned, thread-locked in-memory rate limits with `Retry-After`.
+Username subjects are hashed and proxy spoofing headers are ignored, but
+persistent or reverse-proxy throttling remains required for multi-process
+production.
 
 ## SEC-2026-004: Repository lacks visible CI workflows and branch protection baseline
 
@@ -251,6 +266,10 @@ Data sensitivity: Depends on future field additions.
 
 Residual risk: Low after strict schemas.
 
+Application hardening status: REMEDIATED in
+`fix/application-security-hardening`; request/import models reject unknown JSON
+fields, with explicit compatibility fields for v3 import/export roundtrip.
+
 ## SEC-2026-006: PHI at rest relies on filesystem and disk controls, not application encryption
 
 Severity: Medium
@@ -300,6 +319,10 @@ Data sensitivity: High, includes medical and contact data.
 Residual risk: Medium under single-host encrypted-disk deployment, higher if
 backups leave the host unencrypted.
 
+Application hardening status: OUT OF SCOPE for
+`fix/application-security-hardening`; backup/database encryption is intentionally
+separate.
+
 ## SEC-2026-007: GitHub Advanced Security and vulnerability-alert settings were not verifiable
 
 Severity: Informational
@@ -327,3 +350,6 @@ secret scanning, push protection, and code scanning in GitHub settings.
 
 Regression test recommendation: Document screenshots/settings export or automate
 read-only checks with a token that can read security settings.
+
+Application hardening status: OUT OF SCOPE for
+`fix/application-security-hardening`; no GitHub settings are changed here.

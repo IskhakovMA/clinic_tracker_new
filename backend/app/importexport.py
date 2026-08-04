@@ -169,7 +169,7 @@ def _insert_full_patient(
             treating_doctor_user_id,
         ),
     )
-    history = p.history or [ImportHistoryEntry(stage=p.stage, enteredAt=arrival, events=[], checklist={}, note="")]
+    history = p.history or [ImportHistoryEntry(stage=p.stage, enteredAt=arrival, events=p.events, checklist={}, note="")]
     for seq, h in enumerate(history):
         entry_id = store.new_id()
         conn.execute(

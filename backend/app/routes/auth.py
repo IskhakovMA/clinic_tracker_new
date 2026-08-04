@@ -53,7 +53,8 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     client_host = request.client.host if request.client else "unknown"
     # Ключ включает и хост, и логин: перебор одного логина не блокирует
     # вход остальных сотрудников, а перебор со сменой логина ограничен хостом.
-    rate_key = f"{client_host}:{body.username.strip().lower()}"
+    subject = security.rate_limit_subject(body.username)
+    rate_key = f"{client_host}:{subject}"
     request_id = audit.new_request_id()
 
     wait = security.check_rate_limit(rate_key) or security.check_rate_limit(client_host)
@@ -96,10 +97,13 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
 
 
 @router.post("/logout")
-def logout(request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
-    token = request.cookies.get(config.SESSION_COOKIE_NAME)
-    actor = audit.actor_from_token_hash(security.hash_token(token)) if token else None
-    security.revoke_session(conn, token)
+def logout(
+    response: Response,
+    session: sqlite3.Row = Depends(require_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    actor = audit.actor_from_token_hash(session["token_hash"])
+    security.revoke_session_hash(conn, session["token_hash"])
     _clear_auth_cookies(response)
     audit.record(conn, audit.LOGOUT, actor=actor)
     return {"authenticated": False}

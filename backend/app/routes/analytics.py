@@ -13,7 +13,7 @@ from fastapi.responses import Response
 from .. import audit, policy
 from ..analytics import schemas, service
 from ..analytics.filters import AnalyticsFilters, analytics_filters
-from ..deps import get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -103,7 +103,7 @@ def details(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-@router.post("/export", dependencies=[Depends(require_csrf)])
+@router.post("/export", dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("analytics_export", 20))])
 def export(
     body: schemas.AnalyticsExportIn,
     filters: AnalyticsFilters = Depends(analytics_filters),

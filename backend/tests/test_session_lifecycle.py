@@ -52,7 +52,7 @@ def test_no_session_fixation_attacker_supplied_cookie(client):
 
 
 def test_logout_clears_cookies_client_side(auth_client):
-    r = auth_client.post("/api/auth/logout")
+    r = auth_client.post("/api/auth/logout", headers=auth_client.csrf)
     set_cookie = ", ".join(v for k, v in r.headers.multi_items() if k.lower() == "set-cookie")
     assert "clinic_session=" in set_cookie
     assert "clinic_csrf=" in set_cookie

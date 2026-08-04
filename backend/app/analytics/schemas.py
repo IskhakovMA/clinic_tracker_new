@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AnalyticsMeta(BaseModel):
@@ -154,5 +154,7 @@ class DetailsOut(BaseModel):
 
 
 class AnalyticsExportIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     reportType: Literal["summary", "stages", "workload", "data_quality", "checklists", "notifications"] = "summary"
     detailLevel: Literal["aggregate", "details"] = "aggregate"

@@ -53,7 +53,7 @@ def test_rate_limit_is_recorded(client):
 
 
 def test_logout_is_recorded(auth_client):
-    auth_client.post("/api/auth/logout")
+    auth_client.post("/api/auth/logout", headers=auth_client.csrf)
     login(auth_client, DEV_USERNAME)
     types = [e["event_type"] for e in auth_client.get("/api/audit").json()["events"]]
     assert "logout" in types
@@ -91,7 +91,6 @@ def test_import_and_export_recorded_with_counts_only(auth_client):
 
     events = auth_client.get("/api/audit").json()["events"]
     types = [e["event_type"] for e in events]
-    assert "import_preview" in types
     assert "import_committed" in types
     assert "export" in types
     commit = next(e for e in events if e["event_type"] == "import_committed")
@@ -100,9 +99,9 @@ def test_import_and_export_recorded_with_counts_only(auth_client):
 
 
 def test_rejected_import_recorded_as_denied(auth_client):
-    auth_client.post("/api/import/preview", json={"raw": "{not json"})
+    auth_client.post("/api/import/commit", json={"raw": "{not json", "mode": "add"}, headers=auth_client.csrf)
     events = auth_client.get("/api/audit").json()["events"]
-    denied = [e for e in events if e["event_type"] == "import_preview" and e["result"] == "denied"]
+    denied = [e for e in events if e["event_type"] == "import_committed" and e["result"] == "denied"]
     assert denied
 
 
