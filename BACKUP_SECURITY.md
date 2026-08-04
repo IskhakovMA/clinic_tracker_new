@@ -49,14 +49,17 @@ The active key is read at runtime from exactly one source:
 The key is never accepted as a positional CLI argument or `--key` option. This
 prevents accidental disclosure through shell history and process listings.
 
-Generate a key:
+Create a key file:
 
 ```bash
-python -m backend.cli backup-keygen > /secure/offline/location/clinic-backup.key
-chmod 600 /secure/offline/location/clinic-backup.key
+python -m backend.cli backup-keygen /secure/offline/location/clinic-backup.key \
+  --key-id clinic-backup-2026-08
 export CLINIC_BACKUP_KEY_FILE=/secure/offline/location/clinic-backup.key
-export CLINIC_BACKUP_KEY_ID=clinic-backup-2026-08
 ```
+
+`backup-keygen` writes the key directly to a new file with owner-only
+permissions. It does not print the key to stdout or stderr, does not accept a
+`--key` value, and refuses an existing file or symlink.
 
 Store the key separately from `clinic.db`, WAL/SHM files, and backup files. Keep
 an offline copy controlled by at least two authorized operators. Loss of the key
@@ -78,7 +81,7 @@ this JSON in Git or near the backup files.
 
 ## Create
 
-`python -m backend.cli backup [--dest PATH] [--overwrite]`:
+`python -m backend.cli backup [--dest PATH]`:
 
 1. Fails closed when no valid key is configured.
 2. Rejects unsafe output paths, symlinks, `..`, static directory outputs, and
@@ -87,15 +90,23 @@ this JSON in Git or near the backup files.
 4. Uses the SQLite backup API to create a consistent plaintext snapshot.
 5. Runs SQLite integrity, FK, required table, and schema checks.
 6. Encrypts the snapshot into Clinic Backup Format v1.
-7. Writes encrypted output to a temporary file, fsyncs it, then atomically
-   renames it to the requested path.
+7. Writes encrypted output to an exclusive temporary file, fsyncs it, then
+   publishes it with create-if-absent semantics in the same directory.
 8. Applies restrictive permissions: directories best-effort `0700`, files
    best-effort `0600`.
 9. Removes temporary plaintext and temporary ciphertext on success and failure.
 10. Records an audit event with operation, format version, and `key_id` only.
 
 The final backup is not a SQLite file and must not start with `SQLite format 3`.
-Existing files are not overwritten unless `--overwrite` is explicit.
+Existing files are never overwritten by the backup command. Choose a new
+filename.
+
+The parser rejects unsupported magic, unsupported version, unsupported
+algorithm, duplicate header keys, extra or missing header fields, malformed
+timestamps, invalid nonce length, excessive `key_id`, oversized header, and
+oversized backup files before decrypting. Because the Python AES-GCM API works
+on bytes, encrypted backup size is bounded by `CLINIC_BACKUP_MAX_BYTES`
+(default: 1 GiB) before ciphertext is read for decryption.
 
 Physical secure deletion of temporary plaintext cannot be guaranteed on SSDs,
 journaling filesystems, snapshots, crash dumps, or swap. Production deployments
@@ -123,24 +134,38 @@ plaintext content, or PHI.
 
 ## Restore
 
-`python -m backend.cli restore FILE [--yes]`:
+`python -m backend.cli restore FILE --confirm-offline [--yes]`:
 
 1. Rejects symlink, path traversal, non-file, plaintext SQLite, unknown format,
    unknown algorithm, unknown version, unknown key id, wrong key, tampering, and
    truncation.
-2. Decrypts only after successful AEAD authentication.
-3. Writes decrypted data to a private temporary file.
-4. Validates SQLite integrity, FK, required tables, and schema version.
-5. Leaves the live DB unchanged until all checks pass.
-6. Creates an encrypted recovery copy of the current DB.
-7. Writes the restored DB to a staging file with the SQLite backup API.
-8. Atomically replaces `clinic.db`.
-9. Removes stale WAL/SHM sidecars after replacement.
-10. Cleans temporary files and records a no-PHI audit event.
+2. Requires explicit offline maintenance confirmation and attempts to obtain an
+   exclusive SQLite lock on the live DB. If the app, worker, or another writer
+   holds the DB, restore fails closed.
+3. Performs a WAL checkpoint before replacement and removes stale WAL/SHM
+   sidecars only after exclusive access checks.
+4. Decrypts only after successful AEAD authentication.
+5. Writes decrypted data to a private temporary file.
+6. Validates SQLite integrity, FK, required tables, and schema version.
+7. Leaves the live DB unchanged until all checks pass.
+8. Creates an encrypted recovery copy of the current DB.
+9. Writes the restored DB to a staging file with the SQLite backup API.
+10. Atomically replaces `clinic.db`.
+11. Removes stale WAL/SHM sidecars after replacement.
+12. Cleans temporary files and records a no-PHI audit event.
 
 If any step fails before replacement, the original DB remains in place. If a
 replacement fails, the staging file is removed and the recovery copy remains
 available for manual rollback.
+
+Operational restore sequence:
+
+1. Stop the FastAPI process.
+2. Stop notification worker/manual worker commands.
+3. Create and verify a fresh encrypted backup of the current DB if possible.
+4. Run restore with `--confirm-offline`.
+5. Run `python -m backend.cli check-db`.
+6. Start the application only after checks pass.
 
 ## Legacy Plaintext Backups
 

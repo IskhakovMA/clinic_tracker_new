@@ -196,8 +196,9 @@ rest relies on deployment.
 
 Backup/restore audit: PASS/PARTIAL. SQLite backup API, encrypted Clinic Backup
 Format v1, AES-256-GCM authentication, validation, atomic replace, recovery
-copy, and permission restriction exist. Live SQLite/WAL/SHM encryption remains a
-deployment requirement rather than an application-level control.
+copy, offline exclusive-lock restore, WAL/SHM cleanup, parser size bounds, and
+permission restriction exist. Live SQLite/WAL/SHM encryption remains a deployment
+requirement rather than an application-level control.
 
 Notification audit: PASS. Consent, phone validation, template allowlist,
 idempotency, retry/lease recovery, MockProvider no network, developer worker,

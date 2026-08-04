@@ -80,12 +80,14 @@ the host, add encrypted backup packaging and key handling.
 
 Backup Security status: PARTIAL. `fix/backup-security` implements encrypted
 portable backups, key validation, AEAD verification, path hardening, restore
-recovery, and regression tests. Live SQLite/WAL/SHM encryption remains an
-operational deployment control.
+recovery, offline exclusive-lock restore, WAL/SHM cleanup, parser size bounds,
+and regression tests. Live SQLite/WAL/SHM encryption remains an operational
+deployment control.
 
 Regression tests: Backup permission tests, backup encryption verification,
 wrong-key/tamper/truncation rejection, path safety, failed restore preservation,
-and CLI create/inspect/verify/restore.
+nonce uniqueness, keyring conflicts, active-lock rejection, bounds parsing,
+WAL/SHM restore, and CLI create/inspect/verify/restore/keygen.
 
 Migration risk: Low for encrypted backups because SQLite schema remains v3.
 Medium if future database encryption is introduced.

@@ -296,16 +296,18 @@ Prerequisites: Local filesystem access, backup file disclosure, or compromised
 host account.
 
 Evidence: `backend/app/maintenance.py` creates encrypted Clinic Backup Format
-v1 files using AES-256-GCM and validates AEAD, SQLite integrity, FK, and schema
-before restore. `BACKUP_SECURITY.md` documents key management and states that
-live DB encryption is not implemented.
+v1 files using AES-256-GCM, bounds/parses the container before decrypting, and
+validates AEAD, SQLite integrity, FK, schema, offline exclusive access, and
+WAL/SHM handling before restore. `BACKUP_SECURITY.md` documents key management
+and states that live DB encryption is not implemented.
 
 Impact: If host filesystem controls fail, patient data may be readable from DB,
 WAL/SHM, or backups.
 
 Existing controls: DB/backups excluded from Git and static serving; encrypted
 backup container; backup validation; wrong-key/tamper/truncation rejection;
-restricted file permissions; README/deployment requirement for disk encryption.
+restricted file permissions; keygen without key disclosure; README/deployment
+requirement for disk encryption.
 
 Remediation: For pilot, enforce full-disk encryption operationally. Portable
 backup encryption is implemented; SQLCipher/application-level DB encryption

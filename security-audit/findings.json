@@ -75,7 +75,7 @@
     "owasp": "Cryptographic Failures",
     "source_skill": "skills/conducting-api-security-testing/SKILL.md",
     "status": "partial",
-    "remediation": "Encrypted backup packaging and key validation are implemented in fix/backup-security. Enforce disk or volume encryption for live SQLite, WAL/SHM, swap, crash dumps, and snapshots; SQLCipher/application-level DB encryption remains separate."
+    "remediation": "Encrypted backup packaging, key-file generation without disclosure, key validation, parser bounds, offline exclusive-lock restore, recovery copy, and WAL/SHM cleanup are implemented in fix/backup-security. Enforce disk or volume encryption for live SQLite, WAL/SHM, swap, crash dumps, and snapshots; SQLCipher/application-level DB encryption remains separate."
   },
   {
     "id": "SEC-2026-007",
