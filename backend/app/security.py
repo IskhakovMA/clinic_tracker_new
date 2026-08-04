@@ -112,6 +112,7 @@ def purge_expired_sessions(conn: sqlite3.Connection) -> None:
 # process serving one operator at a time (documented limitation).
 
 _failed_attempts: dict[str, list[float]] = {}
+_request_attempts: dict[str, list[float]] = {}
 
 
 def check_rate_limit(key: str = "global") -> float:
@@ -135,3 +136,26 @@ def record_failed_attempt(key: str = "global") -> None:
 
 def reset_attempts(key: str = "global") -> None:
     _failed_attempts.pop(key, None)
+
+
+def check_request_rate_limit(key: str, max_requests: int, window_seconds: int) -> float:
+    """Generic bounded request limiter for authenticated expensive endpoints.
+
+    It is intentionally in-memory and per-process; deployment-level/persistent
+    throttling remains an operational control from SEC-2026-003.
+    """
+    now = time.monotonic()
+    window_start = now - window_seconds
+    attempts = [t for t in _request_attempts.get(key, []) if t >= window_start]
+    _request_attempts[key] = attempts
+    if len(attempts) < max_requests:
+        attempts.append(now)
+        return 0.0
+    return max(0.0, window_seconds - (now - attempts[0]))
+
+
+def revoke_session_hash(conn: sqlite3.Connection, token_hash: str | None) -> None:
+    if not token_hash:
+        return
+    with conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))

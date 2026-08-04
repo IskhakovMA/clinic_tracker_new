@@ -27,6 +27,7 @@ def client(tmp_path, monkeypatch):
     from backend.app import security
 
     security._failed_attempts.clear()
+    security._request_attempts.clear()
 
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
         yield c

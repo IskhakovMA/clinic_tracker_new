@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import policy
-from ..deps import get_db, require_active_password
+from ..deps import abuse_rate_limit, get_db, require_active_password
 from ..services import data_quality
 
 router = APIRouter(prefix="/api/data-quality", tags=["data-quality"])
@@ -32,7 +32,7 @@ QualityCode = Literal[
 ]
 
 
-@router.get("/summary")
+@router.get("/summary", dependencies=[Depends(abuse_rate_limit("data_quality_summary", 60))])
 def summary(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
@@ -40,7 +40,7 @@ def summary(
     return data_quality.evaluate(conn, user)["summary"]
 
 
-@router.get("/issues")
+@router.get("/issues", dependencies=[Depends(abuse_rate_limit("data_quality_issues", 60))])
 def issues(
     severity: Literal["critical", "warning", "info"] | None = None,
     category: QualityCategory | None = None,
@@ -83,7 +83,7 @@ def issues(
     )
 
 
-@router.get("/patients/{patient_id}")
+@router.get("/patients/{patient_id}", dependencies=[Depends(abuse_rate_limit("data_quality_patient", 120))])
 def patient_quality(
     patient_id: str,
     conn: sqlite3.Connection = Depends(get_db),

@@ -59,7 +59,7 @@ def test_me_reflects_session_state(client):
 
 def test_logout_invalidates_session(auth_client):
     old_session = auth_client.cookies.get("clinic_session")
-    r = auth_client.post("/api/auth/logout")
+    r = auth_client.post("/api/auth/logout", headers=auth_client.csrf)
     assert r.status_code == 200
     # Re-presenting the old cookie must not work
     auth_client.cookies.set("clinic_session", old_session)

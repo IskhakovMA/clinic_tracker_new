@@ -60,6 +60,7 @@ def test_debug_off_by_default():
 def test_docs_and_openapi_hidden_without_debug(client):
     assert client.get("/api/docs").status_code == 404
     assert client.get("/redoc").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
 
 
 def test_no_cors_middleware_installed():

@@ -51,7 +51,7 @@ def test_full_scenario(client):
     assert r.json()["added"] == 1
 
     # 10. Logout
-    assert client.post("/api/auth/logout").status_code == 200
+    assert client.post("/api/auth/logout", headers=csrf).status_code == 200
 
     # 11. API is closed after logout
     assert client.get("/api/patients").status_code == 401

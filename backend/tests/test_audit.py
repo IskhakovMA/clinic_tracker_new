@@ -53,7 +53,7 @@ def test_rate_limit_is_recorded(client):
 
 
 def test_logout_is_recorded(auth_client):
-    auth_client.post("/api/auth/logout")
+    auth_client.post("/api/auth/logout", headers=auth_client.csrf)
     login(auth_client, DEV_USERNAME)
     types = [e["event_type"] for e in auth_client.get("/api/audit").json()["events"]]
     assert "logout" in types

@@ -30,8 +30,7 @@ def test_client_cannot_choose_id(auth_client):
     payload = make_patient_payload()
     payload["id"] = "attacker-chosen-id"
     r = auth_client.post("/api/patients", json=payload, headers=auth_client.csrf)
-    assert r.status_code == 201
-    assert r.json()["id"] != "attacker-chosen-id"
+    assert r.status_code == 422
 
 
 def test_validation_rejects_bad_types_and_lengths(auth_client):

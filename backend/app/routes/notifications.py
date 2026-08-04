@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, policy
-from ..deps import get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import NotificationCreateIn, NotificationPreferenceIn, NotificationTemplateUpdateIn
 from ..services import notifications
 
@@ -238,7 +238,7 @@ def retry(
     return {"retry": True}
 
 
-@router.post("/generate-due", dependencies=[Depends(require_csrf)])
+@router.post("/generate-due", dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("notifications_generate_due", 30))])
 def generate_due(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
@@ -247,7 +247,7 @@ def generate_due(
     return notifications.generate_due_reminders(conn, user)
 
 
-@router.post("/process-due", dependencies=[Depends(require_csrf)])
+@router.post("/process-due", dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("notifications_process_due", 30))])
 def process_due(
     limit: int = Query(100, ge=1, le=200),
     conn: sqlite3.Connection = Depends(get_db),

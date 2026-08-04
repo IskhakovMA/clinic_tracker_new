@@ -9,8 +9,8 @@
     "cwe": "CWE-200",
     "owasp": "Security Misconfiguration",
     "source_skill": "skills/conducting-api-security-testing/SKILL.md",
-    "status": "confirmed",
-    "remediation": "Disable openapi_url outside debug or require developer auth."
+    "status": "remediated",
+    "remediation": "Disable openapi_url outside debug or require developer auth. Fixed in fix/application-security-hardening by disabling openapi_url when CLINIC_DEBUG=false."
   },
   {
     "id": "SEC-2026-002",
@@ -22,8 +22,8 @@
     "cwe": "CWE-352",
     "owasp": "Broken Access Control",
     "source_skill": "skills/conducting-api-security-testing/SKILL.md",
-    "status": "confirmed",
-    "remediation": "Require CSRF on logout or document accepted logout-CSRF behavior."
+    "status": "remediated",
+    "remediation": "Require CSRF on logout or document accepted logout-CSRF behavior. Fixed in fix/application-security-hardening by requiring an active session and session-bound CSRF token before logout."
   },
   {
     "id": "SEC-2026-003",
@@ -35,8 +35,8 @@
     "cwe": "CWE-770",
     "owasp": "API4:2023 Unrestricted Resource Consumption",
     "source_skill": "skills/implementing-api-rate-limiting-and-throttling/SKILL.md",
-    "status": "confirmed",
-    "remediation": "Add persistent or deployment-level throttling for login and heavy endpoints."
+    "status": "partial",
+    "remediation": "Add persistent or deployment-level throttling for login and heavy endpoints. fix/application-security-hardening adds bounded in-memory controls for selected heavy/search endpoints; persistent/deployment throttling remains future work."
   },
   {
     "id": "SEC-2026-004",
@@ -61,8 +61,8 @@
     "cwe": "CWE-915",
     "owasp": "Mass Assignment",
     "source_skill": "skills/implementing-api-schema-validation-security/SKILL.md",
-    "status": "confirmed",
-    "remediation": "Use strict Pydantic models with extra='forbid'."
+    "status": "remediated",
+    "remediation": "Use strict Pydantic models with extra='forbid'. Fixed in fix/application-security-hardening for production request schemas, with explicit import/export compatibility fields."
   },
   {
     "id": "SEC-2026-006",

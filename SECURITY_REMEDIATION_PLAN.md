@@ -1,6 +1,9 @@
 # Security Remediation Plan
 
-No production code fixes are included in this audit branch.
+This document tracks the audit findings and the remediation stage that owns
+each item. The Application Security Hardening stage addresses only
+application-level controls; backup encryption and GitHub repository settings
+remain separate work.
 
 ## P0 - Critical
 
@@ -37,6 +40,9 @@ post-merge repository settings step.
 Expected change: Disable `openapi_url` outside debug or gate it by developer
 auth.
 
+Application Security Hardening status: REMEDIATED. `openapi_url` is disabled
+when `CLINIC_DEBUG=false`.
+
 Regression tests: `/api/docs`, `/redoc`, and `/openapi.json` return 404 when
 `CLINIC_DEBUG=false`.
 
@@ -44,12 +50,16 @@ Migration risk: None.
 
 Deployment risk: Low.
 
-Recommended PR: `fix/production-openapi-policy`.
+Recommended PR: `fix/application-security-hardening`.
 
 ### SEC-2026-003: Rate limiting is login-focused and per-process only
 
 Expected change: Add persistent or reverse-proxy-backed throttling for login and
 heavy endpoints; document trusted proxy behavior.
+
+Application Security Hardening status: PARTIAL. Authenticated heavy/search
+endpoints now have bounded in-memory 429/`Retry-After` controls. This does not
+replace deployment-level or persistent throttling for multi-process production.
 
 Regression tests: 429/Retry-After tests for login, analytics export, import,
 data quality, notification worker trigger, and staff search.
@@ -58,12 +68,16 @@ Migration risk: Possible new table/cache if implemented in SQLite.
 
 Deployment risk: Medium because limits can affect operators.
 
-Recommended PR: `feat/abuse-controls`.
+Recommended PR: `fix/application-security-hardening` for application bounds;
+persistent/deployment limiter remains a later operational hardening item.
 
 ### SEC-2026-006: PHI at rest relies on filesystem and disk controls
 
 Expected change: Formalize encrypted disk/backups for pilot. If backups leave
 the host, add encrypted backup packaging and key handling.
+
+Application Security Hardening status: OUT OF SCOPE. Backup/database encryption
+is intentionally not included in this PR.
 
 Regression tests: Backup permission tests, backup encryption verification if
 implemented.
@@ -81,17 +95,26 @@ Recommended PR: `chore/encrypted-backup-policy`.
 Expected change: Add CSRF dependency to logout or explicitly document acceptable
 logout-CSRF behavior.
 
+Application Security Hardening status: REMEDIATED. Logout requires an active
+session and matching session-bound CSRF token before revoking the session and
+clearing session/CSRF cookies.
+
 Regression tests: Logout without CSRF returns 403 if fixed.
 
 Migration risk: None.
 
 Deployment risk: Low; frontend already can send CSRF.
 
-Recommended PR: `fix/logout-csrf`.
+Recommended PR: `fix/application-security-hardening`.
 
 ### SEC-2026-005: Request schemas generally ignore unknown JSON fields
 
 Expected change: Add `extra="forbid"` to request/import Pydantic models.
+
+Application Security Hardening status: REMEDIATED. Production request schemas
+now reject unknown JSON fields with strict Pydantic models. Known read-only
+export fields remain explicitly accepted for import/export roundtrip
+compatibility and are ignored for server-authoritative writes.
 
 Regression tests: Unknown privilege/audit/provider fields return 422 across
 representative endpoints.
@@ -100,12 +123,15 @@ Migration risk: Low to medium; clients that send stale fields will fail.
 
 Deployment risk: Low after frontend verification.
 
-Recommended PR: `fix/strict-request-schemas`.
+Recommended PR: `fix/application-security-hardening`.
 
 ### SEC-2026-007: GitHub Advanced Security and vulnerability-alert settings were not verifiable
 
 Expected change: Repository owner verifies and documents Dependabot alerts,
 dependency graph, secret scanning, push protection, and code scanning.
+
+Application Security Hardening status: OUT OF SCOPE. No GitHub settings are
+changed in this PR.
 
 Regression tests: Read-only GitHub API checks or captured repository settings.
 

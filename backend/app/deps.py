@@ -60,7 +60,30 @@ def current_actor(session: sqlite3.Row = Depends(require_session)) -> str | None
     return audit.actor_from_token_hash(session["token_hash"])
 
 
-def require_csrf(request: Request, session: sqlite3.Row = Depends(require_session)) -> None:
+def require_csrf(request: Request, session: sqlite3.Row = Depends(require_session)) -> sqlite3.Row:
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("origin")
+        referer = request.headers.get("referer")
+        current_origin = f"{request.url.scheme}://{request.headers.get('host', '')}"
+        if origin and origin != current_origin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request rejected")
+        if referer and not referer.startswith(current_origin + "/"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request rejected")
     header_token = request.headers.get("x-csrf-token")
     if not header_token or header_token != session["csrf_token"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token missing or invalid")
+    return session
+
+
+def abuse_rate_limit(name: str, max_requests: int, window_seconds: int = 60):
+    def dependency(request: Request, user: policy.CurrentUser = Depends(require_active_password)) -> None:
+        client_host = request.client.host if request.client else "unknown"
+        key = f"{name}:{user.id}:{client_host}"
+        wait = security.check_request_rate_limit(key, max_requests, window_seconds)
+        if wait > 0:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many requests. Please wait before trying again.",
+                headers={"Retry-After": str(int(wait) + 1)},
+            )
+    return dependency

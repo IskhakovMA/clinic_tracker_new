@@ -96,10 +96,13 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
 
 
 @router.post("/logout")
-def logout(request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
-    token = request.cookies.get(config.SESSION_COOKIE_NAME)
-    actor = audit.actor_from_token_hash(security.hash_token(token)) if token else None
-    security.revoke_session(conn, token)
+def logout(
+    response: Response,
+    session: sqlite3.Row = Depends(require_csrf),
+    conn: sqlite3.Connection = Depends(get_db),
+):
+    actor = audit.actor_from_token_hash(session["token_hash"])
+    security.revoke_session_hash(conn, session["token_hash"])
     _clear_auth_cookies(response)
     audit.record(conn, audit.LOGOUT, actor=actor)
     return {"authenticated": False}
