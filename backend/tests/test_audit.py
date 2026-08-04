@@ -125,10 +125,13 @@ def test_password_change_recorded_and_has_no_secret(auth_client):
     assert TEST_PASSWORD not in text
 
 
-def test_backup_and_restore_recorded(auth_client, tmp_path):
+def test_backup_and_restore_recorded(auth_client, tmp_path, monkeypatch):
     from backend.app import audit, db, maintenance
+    monkeypatch.setenv("CLINIC_BACKUP_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "audit-test-key")
     conn = db.get_connection()
-    dest = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "manual_backup.db")
+    dest = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "manual_backup.cbk")
+    assert maintenance.looks_like_encrypted_backup(dest)
     audit.record(conn, audit.BACKUP_CREATED, detail="via=test")
     maintenance.validate_backup(dest)
     audit.record(conn, audit.RESTORE_PERFORMED, detail="via=test")
