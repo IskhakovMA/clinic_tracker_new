@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import csv
+import io
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from typing import Any
@@ -312,6 +314,12 @@ def _overdue_state(conn: sqlite3.Connection, user: policy.CurrentUser, filters: 
     by_department = Counter()
     items = []
     for issue in issue_rows:
+        planned_date = (issue.get("details") or {}).get("planned_date") or ""
+        planned_day = _safe_date(planned_date)
+        if filters.date_from and (planned_day is None or planned_day < filters.date_from):
+            continue
+        if filters.date_to and (planned_day is None or planned_day > filters.date_to):
+            continue
         patient = patient_map[issue["patient_id"]]
         days = int((issue.get("details") or {}).get("days_overdue") or 0)
         bucket, bucket_label = overdue_bucket(days)
@@ -323,7 +331,7 @@ def _overdue_state(conn: sqlite3.Connection, user: policy.CurrentUser, filters: 
         items.append({
             **patient,
             "event_type": "Плановое событие",
-            "planned_date": "",
+            "planned_date": planned_date,
             "days_overdue": days,
         })
     items.sort(key=lambda x: (-x["days_overdue"], x["patient_name"], x["patient_id"]))
@@ -339,7 +347,10 @@ def overdue(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
     state = _overdue_state(conn, user, filters)
     items = state["items"]
     return {
-        "meta": _computed_meta(user, filters, {"overdue_event": data_quality.QUALITY_RULES["overdue_event"]}),
+        "meta": _computed_meta(user, filters, {
+            "overdue_event": data_quality.QUALITY_RULES["overdue_event"],
+            "period": "За выбранный период по planned_date; без date_from/date_to возвращаются текущие просрочки.",
+        }),
         "total": len(items),
         "buckets": [{"code": k[0], "label": k[1], "count": v} for k, v in sorted(state["by_bucket"].items())],
         "by_doctor": [{"doctor_name": k, "count": v} for k, v in sorted(state["by_doctor"].items())],
@@ -441,6 +452,7 @@ def workload(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyt
         bucket = buckets.setdefault(doctor, {
             "doctor_user_id": row["treating_doctor_user_id"],
             "doctor_name": doctor,
+            "department_ids": [x for x in (row["department_ids"] or "").split(",") if x],
             "department_names": [x for x in (row["department_names"] or "").split(",") if x],
             "active_patients": 0,
             "overdue_patients": 0,
@@ -726,3 +738,120 @@ def export(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analytic
         "sections": selected,
         "rows": rows,
     }
+
+
+CSV_REPORT_TYPES = {"summary", "stages", "workload", "data_quality", "checklists", "notifications"}
+CSV_DETAIL_LEVELS = {"aggregate", "details"}
+CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
+
+
+def csv_safe_cell(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    stripped = value.lstrip(" \t\r\n\v\f")
+    if stripped.startswith(CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
+def csv_filename(report_type: str, *, now: datetime | None = None) -> str:
+    safe_type = report_type if report_type in CSV_REPORT_TYPES else "summary"
+    stamp = (now or datetime.now(app_timezone())).strftime("%Y%m%d_%H%M%S")
+    return f"analytics_{safe_type}_{stamp}.csv"
+
+
+def export_csv(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters, *, report_type: str, detail_level: str) -> dict:
+    if report_type not in CSV_REPORT_TYPES:
+        raise ValueError("unknown report_type")
+    if detail_level not in CSV_DETAIL_LEVELS:
+        raise ValueError("unknown detail_level")
+    rows = _csv_rows(conn, user, filters, report_type=report_type, detail_level=detail_level)
+    output = io.StringIO()
+    output.write("\ufeff")
+    writer = csv.DictWriter(output, fieldnames=_csv_headers(report_type, detail_level), extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: csv_safe_cell(value) for key, value in row.items()})
+    return {
+        "content": output.getvalue().encode("utf-8"),
+        "filename": csv_filename(report_type),
+        "row_count": len(rows),
+        "content_type": "text/csv; charset=utf-8",
+    }
+
+
+def _csv_headers(report_type: str, detail_level: str) -> list[str]:
+    if report_type == "summary":
+        return ["metric", "label", "value", "kind", "definition"]
+    if report_type == "stages":
+        return ["stage", "stage_label", "count", "percent", "overdue_patients", "quality_patients"]
+    if report_type == "workload":
+        return ["doctor_name", "department_names", "active_patients", "overdue_patients", "incomplete_required_checklists", "critical_quality_issues", "pending_notifications", "failed_notifications"]
+    if report_type == "data_quality":
+        return ["severity", "code", "label", "count"]
+    if report_type == "checklists":
+        return ["scope", "label", "total_required_items", "completed_required_items", "incomplete_required_items", "completion_percent", "status"]
+    if report_type == "notifications":
+        return ["status", "label", "count"]
+    return ["metric", "value"]
+
+
+def _csv_rows(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters, *, report_type: str, detail_level: str) -> list[dict]:
+    if report_type == "summary":
+        return [
+            {"metric": card["code"], "label": card["label"], "value": card["value"], "kind": card["kind"], "definition": card["definition"]}
+            for card in summary(conn, user, filters)["cards"]
+        ]
+    if report_type == "stages":
+        return stages(conn, user, filters)["rows"]
+    if report_type == "workload":
+        return [
+            {**row, "department_names": ", ".join(row.get("department_names") or [])}
+            for row in workload(conn, user, filters)["rows"]
+        ]
+    if report_type == "data_quality":
+        dq = data_quality_state(conn, user, filters)
+        rows = [
+            {"severity": row["severity"], "label": row["severity"], "count": row["count"]}
+            for row in dq["by_severity"]
+        ]
+        if detail_level == "details":
+            rows.extend({"code": row["code"], "label": row["code"], "count": row["count"]} for row in dq["by_code"])
+        return rows
+    if report_type == "checklists":
+        data = checklists(conn, user, filters)
+        rows = [{
+            "scope": "total",
+            "label": data["status"],
+            "total_required_items": data["total_required_items"],
+            "completed_required_items": data["completed_required_items"],
+            "incomplete_required_items": data["incomplete_required_items"],
+            "completion_percent": data["completion_percent"],
+            "status": data["status"],
+        }]
+        if detail_level == "details":
+            rows.extend({
+                "scope": "stage",
+                "label": row["stage_label"],
+                "total_required_items": row["total_required_items"],
+                "completed_required_items": row["completed_required_items"],
+                "incomplete_required_items": row["incomplete_required_items"],
+                "completion_percent": row["completion_percent"],
+                "status": "computed" if row["total_required_items"] else "Нет обязательных пунктов",
+            } for row in data["by_stage"])
+        return rows
+    if report_type == "notifications":
+        data = notifications_state(conn, user, filters)
+        labels = {
+            "pending": "Ожидает отправки",
+            "processing": "В обработке",
+            "sent": "Обработано тестовым провайдером",
+            "failed": "Ошибка",
+            "cancelled": "Отменено",
+            "skipped": "Пропущено",
+        }
+        return [
+            {"status": status, "label": labels.get(status, status), "count": count}
+            for status, count in data["status_counts"].items()
+        ]
+    return []

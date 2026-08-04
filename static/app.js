@@ -338,6 +338,8 @@ const app = {
             dateTo: '',
             stage: '',
             nosology: '',
+            doctor: '',
+            department: '',
         },
     },
 
@@ -2008,6 +2010,8 @@ const app = {
             option('', 'Любой профиль клиентского пути', true),
             ...Object.keys(this.nosologyData).map(key => option(key, this.nosologyData[key].label)),
         ]));
+        $('analyticsDoctorFilter').replaceChildren(option('', 'Любой лечащий врач', true));
+        $('analyticsDepartmentFilter').replaceChildren(option('', 'Любое отделение', true));
 
         $('diagnosisLocalization').replaceChildren(frag([
             option('', 'Выберите локализацию', true),
@@ -3495,6 +3499,8 @@ const app = {
         if (f.dateTo) params.set('date_to', f.dateTo);
         if (f.stage) params.set('stage', f.stage);
         if (f.nosology) params.set('nosology', f.nosology);
+        if (f.doctor) params.set('doctor_user_id', f.doctor);
+        if (f.department) params.set('department_id', f.department);
         params.set('limit', '50');
         params.set('offset', '0');
         return params.toString();
@@ -3541,6 +3547,7 @@ const app = {
         $('analyticsDetailsPanel').replaceChildren();
         try {
             await this.loadAnalytics();
+            this.renderAnalyticsFilterOptions();
             this.renderAnalyticsSummary();
             this.renderAnalyticsStages();
             this.renderAnalyticsQuality();
@@ -3551,6 +3558,45 @@ const app = {
         } catch (e) {
             $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить аналитику: ${e.message}` }));
         }
+    },
+
+    renderAnalyticsFilterOptions() {
+        const selectedDoctor = this.analytics.filters.doctor;
+        const selectedDepartment = this.analytics.filters.department;
+        const workloadRows = (this.analytics.workload && this.analytics.workload.rows) || [];
+        const doctors = workloadRows
+            .filter(row => row.doctor_user_id)
+            .map(row => ({ id: row.doctor_user_id, name: row.doctor_name }))
+            .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        const departments = [];
+        const seenDepartments = new Set();
+        workloadRows.forEach(row => {
+            (row.department_ids || []).forEach((id, index) => {
+                if (!id || seenDepartments.has(id)) return;
+                seenDepartments.add(id);
+                departments.push({ id, name: (row.department_names || [])[index] || id });
+            });
+        });
+        departments.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        $('analyticsDoctorFilter').replaceChildren(frag([
+            option('', 'Любой лечащий врач', !selectedDoctor),
+            ...doctors.map(d => option(d.id, d.name, d.id === selectedDoctor)),
+        ]));
+        $('analyticsDepartmentFilter').replaceChildren(frag([
+            option('', 'Любое отделение', !selectedDepartment),
+            ...departments.map(d => option(d.id, d.name, d.id === selectedDepartment)),
+        ]));
+    },
+
+    resetAnalyticsFilters() {
+        this.analytics.filters = { dateFrom: '', dateTo: '', stage: '', nosology: '', doctor: '', department: '' };
+        $('analyticsDateFrom').value = '';
+        $('analyticsDateTo').value = '';
+        $('analyticsStageFilter').value = '';
+        $('analyticsNosologyFilter').value = '';
+        $('analyticsDoctorFilter').value = '';
+        $('analyticsDepartmentFilter').value = '';
+        this.renderAnalytics();
     },
 
     renderAnalyticsSummary() {
@@ -3700,6 +3746,28 @@ const app = {
                 }) : null,
             ]))) : el('div', { class: 'empty', text: 'По выбранным условиям записей нет.' }),
         ]));
+    },
+
+    async exportAnalyticsCsv() {
+        try {
+            const params = this.analyticsParams();
+            const response = await apiFetch(`/api/analytics/export?${params}`, {
+                method: 'POST',
+                body: JSON.stringify({ reportType: 'summary', detailLevel: 'aggregate' }),
+            });
+            const blob = await response.blob();
+            const disposition = response.headers.get('content-disposition') || '';
+            const match = disposition.match(/filename=\"([^\"]+)\"/);
+            const filename = match ? match[1] : 'analytics_summary.csv';
+            const link = el('a', { href: URL.createObjectURL(blob), download: filename });
+            document.body.append(link);
+            link.click();
+            URL.revokeObjectURL(link.href);
+            link.remove();
+            ui.toast('CSV отчёт сформирован.', 'good');
+        } catch (e) {
+            ui.toast(`Не удалось сформировать CSV: ${e.message}`, 'warning');
+        }
     },
 
     tabNotifications() {
@@ -5381,6 +5449,7 @@ const app = {
 
         // Аналитика
         on('analyticsRefreshBtn', 'click', () => this.renderAnalytics());
+        on('analyticsExportBtn', 'click', () => this.exportAnalyticsCsv());
         on('analyticsDateFrom', 'change', (event) => {
             this.analytics.filters.dateFrom = event.target.value;
             this.renderAnalytics();
@@ -5397,6 +5466,15 @@ const app = {
             this.analytics.filters.nosology = event.target.value;
             this.renderAnalytics();
         });
+        on('analyticsDoctorFilter', 'change', (event) => {
+            this.analytics.filters.doctor = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsDepartmentFilter', 'change', (event) => {
+            this.analytics.filters.department = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsResetFiltersBtn', 'click', () => this.resetAnalyticsFilters());
 
         // Экспорт
         on('openExportBtn', 'click', () => this.openExportModal());

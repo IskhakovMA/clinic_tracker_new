@@ -8,8 +8,9 @@ from __future__ import annotations
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 
-from .. import policy
+from .. import audit, policy
 from ..analytics import schemas, service
 from ..analytics.filters import AnalyticsFilters, analytics_filters
 from ..deps import get_db, require_active_password, require_csrf
@@ -102,11 +103,36 @@ def details(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 
 
-@router.post("/export", response_model=schemas.AnalyticsExportOut, dependencies=[Depends(require_csrf)])
+@router.post("/export", dependencies=[Depends(require_csrf)])
 def export(
     body: schemas.AnalyticsExportIn,
     filters: AnalyticsFilters = Depends(analytics_filters),
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    return service.export(conn, user, filters, sections=body.sections)
+    try:
+        result = service.export_csv(
+            conn,
+            user,
+            filters,
+            report_type=body.reportType,
+            detail_level=body.detailLevel,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    audit.record(
+        conn,
+        audit.ANALYTICS_REPORT_EXPORTED,
+        detail=(
+            f"report_type={body.reportType} detail_level={body.detailLevel} "
+            f"row_count={result['row_count']} format=csv "
+            f"department_id={filters.department_id or ''} doctor_user_id={filters.doctor_user_id or ''} "
+            f"stage={filters.stage or ''}"
+        ),
+        **audit.actor_ctx(user),
+    )
+    return Response(
+        content=result["content"],
+        media_type=result["content_type"],
+        headers={"Content-Disposition": f'attachment; filename="{result["filename"]}"'},
+    )

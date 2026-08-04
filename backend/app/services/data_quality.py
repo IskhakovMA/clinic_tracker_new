@@ -468,7 +468,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                     patient=patient, code="overdue_event", category="dates", severity="warning",
                     title="Плановое событие просрочено",
                     description="Плановая дата прошла, но фактическое выполнение не отмечено.",
-                    field_name="date", details={"occurrence_index": occ_index, "event_index": event_index, "days_overdue": (today - planned).days},
+                    field_name="date", details={"occurrence_index": occ_index, "event_index": event_index, "planned_date": planned.isoformat(), "days_overdue": (today - planned).days},
                     suggested_action=_action("Отметить факт или актуализировать план", "events", can_write),
                 ))
 

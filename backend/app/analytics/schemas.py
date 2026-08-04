@@ -93,6 +93,7 @@ class StageDurationOut(BaseModel):
 class WorkloadRow(BaseModel):
     doctor_user_id: str | None = None
     doctor_name: str
+    department_ids: list[str] = Field(default_factory=list)
     department_names: list[str] = Field(default_factory=list)
     active_patients: int
     overdue_patients: int
@@ -152,12 +153,6 @@ class DetailsOut(BaseModel):
     items: list[dict[str, Any]]
 
 
-class AnalyticsExportOut(BaseModel):
-    meta: AnalyticsMeta
-    format: str
-    sections: list[str]
-    rows: list[dict[str, Any]]
-
-
 class AnalyticsExportIn(BaseModel):
-    sections: list[str] = Field(default_factory=list, max_length=20)
+    reportType: Literal["summary", "stages", "workload", "data_quality", "checklists", "notifications"] = "summary"
+    detailLevel: Literal["aggregate", "details"] = "aggregate"

@@ -78,6 +78,9 @@ NOTIFICATION_SKIPPED = "notification_skipped"
 NOTIFICATION_TEMPLATE_CREATED = "notification_template_created"
 NOTIFICATION_TEMPLATE_UPDATED = "notification_template_updated"
 
+# Analytics
+ANALYTICS_REPORT_EXPORTED = "analytics_report_exported"
+
 RESULT_OK = "ok"
 RESULT_DENIED = "denied"
 RESULT_ERROR = "error"
