@@ -60,7 +60,7 @@ JavaScript syntax fallback:
 ```javascript
 var fsSecAudit = await import('node:fs');
 var vmSecAudit = await import('node:vm');
-var secAuditPath = '/Users/maksutishakov/Documents/clinic_tracker_new/static/app.js';
+var secAuditPath = 'static/app.js';
 new vmSecAudit.Script(fsSecAudit.readFileSync(secAuditPath, 'utf8'), { filename: secAuditPath });
 ```
 
