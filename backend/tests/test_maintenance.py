@@ -1,3 +1,6 @@
+import base64
+import json
+import os
 import sqlite3
 import stat
 import subprocess
@@ -75,8 +78,8 @@ def test_backup_refuses_to_overwrite_without_flag(auth_client, tmp_path):
     maintenance.backup_database(tmp_path / "clinic.db", dest)
     with pytest.raises(maintenance.MaintenanceError):
         maintenance.backup_database(tmp_path / "clinic.db", dest)
-    # with the flag it succeeds
-    maintenance.backup_database(tmp_path / "clinic.db", dest, overwrite=True)
+    with pytest.raises(maintenance.MaintenanceError, match="Перезапись"):
+        maintenance.backup_database(tmp_path / "clinic.db", dest, overwrite=True)
 
 
 def test_restore_round_trip_preserves_data(auth_client, tmp_path):
@@ -91,7 +94,7 @@ def test_restore_round_trip_preserves_data(auth_client, tmp_path):
     assert len(auth_client.get("/api/patients").json()) == 2
 
     db.reset_singleton_for_tests()
-    result = maintenance.restore_database(backup, db_path)
+    result = maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert result["patient_count"] == 1
     assert result["pre_restore_backup"] is not None
 
@@ -106,7 +109,7 @@ def test_restore_rejects_non_sqlite_file(auth_client, tmp_path):
     bad = tmp_path / "notadb.db"
     bad.write_text("plain text, definitely not sqlite")
     with pytest.raises(maintenance.MaintenanceError, match="encrypted backup"):
-        maintenance.restore_database(bad, tmp_path / "clinic.db")
+        maintenance.restore_database(bad, tmp_path / "clinic.db", confirm_offline=True)
 
 
 def test_restore_rejects_incompatible_schema_version(auth_client, tmp_path):
@@ -120,7 +123,7 @@ def test_restore_rejects_incompatible_schema_version(auth_client, tmp_path):
     backup = _encrypt_plaintext_for_test(maintenance, plaintext, tmp_path / "oldversion.cbk")
 
     with pytest.raises(maintenance.MaintenanceError, match="отклонена"):
-        maintenance.restore_database(backup, tmp_path / "clinic.db")
+        maintenance.restore_database(backup, tmp_path / "clinic.db", confirm_offline=True)
 
 
 def test_rejected_restore_leaves_live_db_untouched(auth_client, tmp_path):
@@ -131,7 +134,7 @@ def test_rejected_restore_leaves_live_db_untouched(auth_client, tmp_path):
     bad = tmp_path / "corrupt.db"
     bad.write_text("garbage")
     with pytest.raises(maintenance.MaintenanceError):
-        maintenance.restore_database(bad, db_path)
+        maintenance.restore_database(bad, db_path, confirm_offline=True)
 
     conn = sqlite3.connect(str(db_path))
     names = [row[0] for row in conn.execute("SELECT name FROM patients").fetchall()]
@@ -148,12 +151,16 @@ def _read_container(path):
 
 
 def _replace_header(path, mutator):
-    import json
     raw, header_start, header_end = _read_container(path)
     header = json.loads(raw[header_start:header_end].decode("utf-8"))
     mutator(header)
     new_header = json.dumps(header, sort_keys=True, separators=(",", ":")).encode("utf-8")
     path.write_bytes(raw[:4] + len(new_header).to_bytes(4, "big") + new_header + raw[header_end:])
+
+
+def _header(path):
+    raw, header_start, header_end = _read_container(path)
+    return json.loads(raw[header_start:header_end].decode("utf-8"))
 
 
 def _encrypt_plaintext_for_test(maintenance, plaintext, dest):
@@ -236,6 +243,46 @@ def test_backup_fails_closed_without_key(auth_client, tmp_path, monkeypatch):
     assert not (tmp_path / "no-key.cbk").exists()
 
 
+def test_backup_keygen_creates_key_file_without_printing_key(tmp_path):
+    env = {**os_environ_without_clinic(), "PYTHONPATH": str(PROJECT_ROOT)}
+    key_file = tmp_path / "keys" / "clinic-backup.key"
+    run = subprocess.run(
+        [sys.executable, "-m", "backend.cli", "backup-keygen", str(key_file), "--key-id", "generated-key"],
+        cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+    )
+    assert run.returncode == 0, run.stderr
+    raw_key = key_file.read_text(encoding="utf-8").strip()
+    assert len(base64.urlsafe_b64decode(raw_key + "=" * (-len(raw_key) % 4))) == 32
+    assert raw_key not in run.stdout
+    assert raw_key not in run.stderr
+    assert "generated-key" in run.stdout
+    assert stat.S_IMODE(key_file.stat().st_mode) & 0o077 == 0
+    assert stat.S_IMODE(key_file.parent.stat().st_mode) & 0o077 == 0
+
+    second = tmp_path / "keys" / "second.key"
+    subprocess.run(
+        [sys.executable, "-m", "backend.cli", "backup-keygen", str(second)],
+        cwd=PROJECT_ROOT, env=env, text=True, capture_output=True, check=True,
+    )
+    assert second.read_text(encoding="utf-8") != key_file.read_text(encoding="utf-8")
+
+    existing = subprocess.run(
+        [sys.executable, "-m", "backend.cli", "backup-keygen", str(key_file)],
+        cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+    )
+    assert existing.returncode == 1
+    assert raw_key not in existing.stdout + existing.stderr
+
+    symlink = tmp_path / "keys" / "link.key"
+    symlink.symlink_to(tmp_path / "keys" / "target.key")
+    linked = subprocess.run(
+        [sys.executable, "-m", "backend.cli", "backup-keygen", str(symlink)],
+        cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+    )
+    assert linked.returncode == 1
+    assert "symlink" in linked.stderr
+
+
 def test_key_not_present_in_backup_error_or_audit(auth_client, tmp_path):
     from backend.app import db, maintenance
     backup = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "snapshot.cbk")
@@ -246,6 +293,27 @@ def test_key_not_present_in_backup_error_or_audit(auth_client, tmp_path):
         assert TEST_BACKUP_KEY not in str(exc)
     rows = db.get_connection().execute("SELECT detail FROM audit_events").fetchall()
     assert all(TEST_BACKUP_KEY not in (row["detail"] or "") for row in rows)
+
+
+def test_keyring_rejects_conflicting_and_invalid_key_ids(auth_client, tmp_path, monkeypatch):
+    from backend.app import maintenance
+    other_key = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+    monkeypatch.setenv("CLINIC_BACKUP_DECRYPT_KEYS", json.dumps({"test-key": other_key}))
+    with pytest.raises(maintenance.MaintenanceError, match="конфликтующий key_id"):
+        maintenance.verify_backup(maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "conflict.cbk"))
+
+    monkeypatch.setenv("CLINIC_BACKUP_DECRYPT_KEYS", '{"old":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","old":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"}')
+    with pytest.raises(maintenance.MaintenanceError, match="JSON"):
+        maintenance._load_keyring()
+
+    monkeypatch.delenv("CLINIC_BACKUP_DECRYPT_KEYS", raising=False)
+    monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "")
+    with pytest.raises(maintenance.MaintenanceError, match="пустым"):
+        maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "empty-key-id.cbk")
+
+    monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "bad/key")
+    with pytest.raises(maintenance.MaintenanceError, match="символы"):
+        maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "bad-key-id.cbk")
 
 
 def test_backup_permissions_and_cleanup_after_success(auth_client, tmp_path):
@@ -287,6 +355,11 @@ def test_symlink_path_traversal_static_and_overwrite_rejected(auth_client, tmp_p
     dest = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "exists.cbk")
     with pytest.raises(maintenance.MaintenanceError, match="существует"):
         maintenance.backup_database(tmp_path / "clinic.db", dest)
+    before = dest.read_bytes()
+    with pytest.raises(maintenance.MaintenanceError, match="Перезапись"):
+        maintenance.backup_database(tmp_path / "clinic.db", dest, overwrite=True)
+    assert dest.read_bytes() == before
+    assert not list(tmp_path.glob(".*.tmp"))
 
 
 def test_symlink_input_rejected(auth_client, tmp_path):
@@ -304,10 +377,41 @@ def test_failed_restore_cleans_temp_and_preserves_original(auth_client, tmp_path
     backup = maintenance.backup_database(db_path, tmp_path / "snapshot.cbk")
     _replace_header(backup, lambda h: h.__setitem__("schema_version", 99))
     with pytest.raises(maintenance.MaintenanceError):
-        maintenance.restore_database(backup, db_path)
+        maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert maintenance.check_database(db_path)["ok"] is True
     assert not list(tmp_path.glob("clinic-restore-*"))
     assert not list(tmp_path.glob("*.restore-tmp"))
+
+
+def test_restore_rejects_without_offline_confirmation(auth_client, tmp_path):
+    from backend.app import maintenance
+    backup = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "offline-required.cbk")
+    with pytest.raises(maintenance.MaintenanceError, match="offline"):
+        maintenance.restore_database(backup, tmp_path / "clinic.db")
+
+
+def test_restore_rejects_active_database_lock_and_preserves_live_db(auth_client, tmp_path):
+    from backend.app import db, maintenance
+    db_path = tmp_path / "clinic.db"
+    auth_client.post("/api/patients", json=make_patient_payload(name="До блокировки"), headers=auth_client.csrf)
+    backup = maintenance.backup_database(db_path, tmp_path / "before-lock.cbk")
+    db.reset_singleton_for_tests()
+
+    blocker = sqlite3.connect(str(db_path), timeout=0.1)
+    blocker.execute("BEGIN IMMEDIATE")
+    blocker.execute("UPDATE schema_version SET version = version")
+    try:
+        with pytest.raises(maintenance.MaintenanceError, match="занята|остановлено"):
+            maintenance.restore_database(backup, db_path, confirm_offline=True)
+    finally:
+        blocker.rollback()
+        blocker.close()
+
+    report = maintenance.check_database(db_path)
+    assert report["ok"] is True
+    assert not list(tmp_path.glob("clinic-restore-*"))
+    assert not list(tmp_path.glob("*.restore-tmp"))
+    assert not list((tmp_path / "backups").glob("pre_restore_*.cbk")) if (tmp_path / "backups").exists() else True
 
 
 def test_encrypted_non_sqlite_and_fk_violation_rejected(auth_client, tmp_path):
@@ -353,11 +457,128 @@ def test_successful_restore_creates_encrypted_recovery_and_removes_wal_shm(auth_
     backup = maintenance.backup_database(db_path, tmp_path / "snapshot.cbk")
     auth_client.post("/api/patients", json=make_patient_payload(name="После"), headers=auth_client.csrf)
     db.reset_singleton_for_tests()
-    result = maintenance.restore_database(backup, db_path)
+    result = maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert result["pre_restore_backup"].endswith(".cbk")
     assert maintenance.looks_like_encrypted_backup(result["pre_restore_backup"])
     assert not (tmp_path / "clinic.db-wal").exists()
     assert not (tmp_path / "clinic.db-shm").exists()
+    assert maintenance.verify_backup(result["pre_restore_backup"])["authenticated"] is True
+
+
+def test_restore_handles_wal_shm_without_applying_stale_pages(auth_client, tmp_path):
+    from backend.app import db, maintenance
+    db_path = tmp_path / "clinic.db"
+    conn = db.get_connection()
+    conn.execute("PRAGMA journal_mode=WAL")
+    auth_client.post("/api/patients", json=make_patient_payload(name="Снимок"), headers=auth_client.csrf)
+    backup = maintenance.backup_database(db_path, tmp_path / "wal-snapshot.cbk")
+    auth_client.post("/api/patients", json=make_patient_payload(name="Не должен вернуться"), headers=auth_client.csrf)
+    assert (tmp_path / "clinic.db-wal").exists()
+    db.reset_singleton_for_tests()
+
+    maintenance.restore_database(backup, db_path, confirm_offline=True)
+    assert not (tmp_path / "clinic.db-wal").exists()
+    assert not (tmp_path / "clinic.db-shm").exists()
+    restored = sqlite3.connect(str(db_path))
+    names = [row[0] for row in restored.execute("SELECT name FROM patients ORDER BY name").fetchall()]
+    assert names == ["Снимок"]
+    assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert restored.execute("PRAGMA foreign_key_check").fetchall() == []
+    restored.close()
+
+
+def test_failed_final_replace_keeps_live_db_and_verified_recovery(auth_client, tmp_path, monkeypatch):
+    from backend.app import db, maintenance
+    db_path = tmp_path / "clinic.db"
+    auth_client.post("/api/patients", json=make_patient_payload(name="До сбоя"), headers=auth_client.csrf)
+    backup = maintenance.backup_database(db_path, tmp_path / "snapshot.cbk")
+    auth_client.post("/api/patients", json=make_patient_payload(name="После сбоя"), headers=auth_client.csrf)
+    db.reset_singleton_for_tests()
+
+    def fail_replace(_src, _dst):
+        raise OSError("forced replace failure")
+
+    monkeypatch.setattr(maintenance.os, "replace", fail_replace)
+    with pytest.raises(maintenance.MaintenanceError, match="заменить"):
+        maintenance.restore_database(backup, db_path, confirm_offline=True)
+
+    recovery_files = list((tmp_path / "backups").glob("pre_restore_*.cbk"))
+    assert len(recovery_files) == 1
+    assert maintenance.verify_backup(recovery_files[0])["authenticated"] is True
+    live = sqlite3.connect(str(db_path))
+    names = [row[0] for row in live.execute("SELECT name FROM patients ORDER BY name").fetchall()]
+    live.close()
+    assert names == ["До сбоя", "После сбоя"]
+    assert not list(tmp_path.glob("clinic-restore-*"))
+    assert not list(tmp_path.glob("*.restore-tmp"))
+
+
+def test_container_bounds_and_strict_header(auth_client, tmp_path, monkeypatch):
+    from backend.app import maintenance
+    backup = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "bounds.cbk")
+
+    huge_header = tmp_path / "huge-header.cbk"
+    huge_header.write_bytes(maintenance.MAGIC + (maintenance.MAX_HEADER_BYTES + 1).to_bytes(4, "big"))
+    with pytest.raises(maintenance.MaintenanceError, match="header"):
+        maintenance.inspect_backup(huge_header)
+
+    mismatch = tmp_path / "mismatch.cbk"
+    mismatch.write_bytes(backup.read_bytes() + b"x")
+    with pytest.raises(maintenance.MaintenanceError, match="усечён|повреждён"):
+        maintenance.verify_backup(mismatch)
+
+    duplicate = tmp_path / "duplicate.cbk"
+    raw, header_start, header_end = _read_container(backup)
+    header_text = raw[header_start:header_end].decode("utf-8")
+    duplicate_header = header_text[:-1] + ',"key_id":"dup"}'
+    duplicate.write_bytes(raw[:4] + len(duplicate_header).to_bytes(4, "big") + duplicate_header.encode("utf-8") + raw[header_end:])
+    with pytest.raises(maintenance.MaintenanceError, match="Header"):
+        maintenance.verify_backup(duplicate)
+
+    extra = tmp_path / "extra.cbk"
+    extra.write_bytes(backup.read_bytes())
+    _replace_header(extra, lambda h: h.__setitem__("extra", "nope"))
+    with pytest.raises(maintenance.MaintenanceError, match="Header"):
+        maintenance.verify_backup(extra)
+
+    bad_nonce = tmp_path / "bad-nonce.cbk"
+    bad_nonce.write_bytes(backup.read_bytes())
+    _replace_header(bad_nonce, lambda h: h.__setitem__("nonce", "AA"))
+    with pytest.raises(maintenance.MaintenanceError, match="nonce"):
+        maintenance.verify_backup(bad_nonce)
+
+    long_key_id = tmp_path / "long-key-id.cbk"
+    long_key_id.write_bytes(backup.read_bytes())
+    _replace_header(long_key_id, lambda h: h.__setitem__("key_id", "a" * 65))
+    with pytest.raises(maintenance.MaintenanceError, match="key_id"):
+        maintenance.verify_backup(long_key_id)
+
+    bad_timestamp = tmp_path / "bad-time.cbk"
+    bad_timestamp.write_bytes(backup.read_bytes())
+    _replace_header(bad_timestamp, lambda h: h.__setitem__("created_at", "not-a-time"))
+    with pytest.raises(maintenance.MaintenanceError, match="timestamp"):
+        maintenance.verify_backup(bad_timestamp)
+
+    bad_schema = tmp_path / "bad-schema.cbk"
+    bad_schema.write_bytes(backup.read_bytes())
+    _replace_header(bad_schema, lambda h: h.__setitem__("schema_version", "3"))
+    with pytest.raises(maintenance.MaintenanceError, match="схем"):
+        maintenance.verify_backup(bad_schema)
+
+    monkeypatch.setattr(maintenance, "MAX_BACKUP_BYTES", 32)
+    with pytest.raises(maintenance.MaintenanceError, match="размер"):
+        maintenance.inspect_backup(backup)
+
+
+def test_nonce_uniqueness_regression(auth_client, tmp_path):
+    from backend.app import maintenance
+    nonces = set()
+    for idx in range(100):
+        backup = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / f"nonce-{idx}.cbk")
+        nonce = _header(backup)["nonce"]
+        assert nonce not in nonces
+        nonces.add(nonce)
+    assert len(nonces) == 100
 
 
 def test_cli_create_inspect_verify_and_restore(tmp_path):
@@ -393,7 +614,7 @@ def test_cli_create_inspect_verify_and_restore(tmp_path):
     )
     assert verify.returncode == 0
     restore = subprocess.run(
-        [sys.executable, "-m", "backend.cli", "restore", str(backup), "--yes"],
+        [sys.executable, "-m", "backend.cli", "restore", str(backup), "--yes", "--confirm-offline"],
         cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
     )
     assert restore.returncode == 0, restore.stderr
