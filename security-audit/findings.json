@@ -70,12 +70,12 @@
     "severity": "Medium",
     "confidence": "High",
     "affected_component": "SQLite database and backups",
-    "affected_endpoints": ["backend/data/clinic.db", "backend/data/backups/*.db"],
+    "affected_endpoints": ["backend/data/clinic.db", "backend/data/clinic.db-wal", "backend/data/clinic.db-shm", "backend/data/backups/*.cbk"],
     "cwe": "CWE-311",
     "owasp": "Cryptographic Failures",
     "source_skill": "skills/conducting-api-security-testing/SKILL.md",
-    "status": "confirmed",
-    "remediation": "Enforce disk encryption and consider encrypted backup packaging/key management."
+    "status": "partial",
+    "remediation": "Encrypted backup packaging and key validation are implemented in fix/backup-security. Enforce disk or volume encryption for live SQLite, WAL/SHM, swap, crash dumps, and snapshots; SQLCipher/application-level DB encryption remains separate."
   },
   {
     "id": "SEC-2026-007",

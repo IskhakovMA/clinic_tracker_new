@@ -278,7 +278,7 @@ Confidence: High
 
 Affected component: SQLite database and backups.
 
-Affected paths: `backend/data/clinic.db`, WAL/SHM, `backend/data/backups/*.db`.
+Affected paths: `backend/data/clinic.db`, WAL/SHM, `backend/data/backups/*.cbk`.
 
 CWE: CWE-311.
 
@@ -286,42 +286,45 @@ OWASP: Cryptographic Failures.
 
 Source skill: `skills/conducting-api-security-testing/SKILL.md`.
 
-Description: The application stores medical data in SQLite and backups without
-application-level encryption. Documentation requires disk encryption and backups
-are chmod 0600, but app-level encryption, backup encryption, and key management
-are not implemented.
+Description: The application stores medical data in the live SQLite database
+without application-level database encryption. Encrypted backup packaging and
+operator key handling are implemented in `fix/backup-security`, but the live DB,
+WAL/SHM, swap, crash dumps, and filesystem snapshots still rely on deployment
+disk/volume controls.
 
 Prerequisites: Local filesystem access, backup file disclosure, or compromised
 host account.
 
-Evidence: `backend/app/maintenance.py` creates SQLite backups and restricts
-permissions to 0600; README states disk encryption is required and app-level DB
-encryption is not implemented.
+Evidence: `backend/app/maintenance.py` creates encrypted Clinic Backup Format
+v1 files using AES-256-GCM and validates AEAD, SQLite integrity, FK, and schema
+before restore. `BACKUP_SECURITY.md` documents key management and states that
+live DB encryption is not implemented.
 
 Impact: If host filesystem controls fail, patient data may be readable from DB,
 WAL/SHM, or backups.
 
-Existing controls: DB/backups excluded from Git and static serving; backup
-validation; restricted file permissions; README deployment requirement for disk
-encryption.
+Existing controls: DB/backups excluded from Git and static serving; encrypted
+backup container; backup validation; wrong-key/tamper/truncation rejection;
+restricted file permissions; README/deployment requirement for disk encryption.
 
-Remediation: For pilot, enforce full-disk encryption operationally. Consider
-encrypted backup archives or SQLCipher/key management if deployment assumptions
-require portable encrypted backups.
+Remediation: For pilot, enforce full-disk encryption operationally. Portable
+backup encryption is implemented; SQLCipher/application-level DB encryption
+remains a separate architectural decision if deployment assumptions require it.
 
-Regression test recommendation: File permission tests plus deployment checklist
-verification.
+Regression test recommendation: Keep encrypted backup lifecycle, tamper,
+wrong-key, path safety, permission, recovery, and deployment checklist tests.
 
 Exploitability: Depends on host compromise/local access.
 
 Data sensitivity: High, includes medical and contact data.
 
-Residual risk: Medium under single-host encrypted-disk deployment, higher if
-backups leave the host unencrypted.
+Residual risk: Medium under single-host encrypted-disk deployment. Backup files
+are encrypted, but live database artifacts and temporary plaintext depend on
+encrypted volumes and OS controls.
 
-Application hardening status: OUT OF SCOPE for
-`fix/application-security-hardening`; backup/database encryption is intentionally
-separate.
+Backup security status: PARTIAL in `fix/backup-security`. Encrypted backups are
+implemented and tested; live database-at-rest encryption remains deployment
+controlled.
 
 ## SEC-2026-007: GitHub Advanced Security and vulnerability-alert settings were not verifiable
 

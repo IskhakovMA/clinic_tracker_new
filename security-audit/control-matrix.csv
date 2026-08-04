@@ -40,7 +40,7 @@
 "GET /api/analytics/*","Session","Role patient scope","N/A","Before aggregation/pagination","Aggregates/details scoped","No","No","Pagination for details","PASS"
 "POST /api/analytics/export","Session","Role patient scope","Required","Before export","CSV minimized by default","No DB write","analytics_report_exported","Per-session limiter","PASS"
 "CLI create-developer/import-structure","Local operator","Shell/local access","N/A","N/A","Staff/bootstrap data","Yes","Varies","N/A","PARTIAL"
-"CLI backup/restore/check-db/audit-prune","Local operator","Shell/local access","N/A","N/A","DB/backups","Yes for restore/prune","Backup/restore/audit prune","N/A","PARTIAL"
+"CLI backup/restore/check-db/audit-prune","Local operator","Shell/local access; backup key via env or protected key file","N/A","N/A","DB/backups","Yes for restore/prune; encrypted backup create/verify/restore","Backup/restore/audit prune without PHI/key/path detail","N/A","PARTIAL"
 "Notification worker service","Local/API developer trigger","Developer for HTTP trigger","Required via HTTP","Patient/preference checks","No phone/body logs","Yes queue processing","Notification events","Batch bounded","PASS"
 "GitHub Actions","GitHub","CI/security workflows added","N/A","N/A","Source/build artifacts","N/A","N/A","Checks pending PR run","PARTIAL"
 "Branch protection main","GitHub","API returned 404; settings not changed","N/A","N/A","Repository integrity","N/A","N/A","N/A","NOT VERIFIED"

@@ -28,6 +28,18 @@ Please include:
 Do not include real medical data, real phone numbers, production URLs, raw
 secrets, or exploit payloads that could harm third parties.
 
+## Backup And At-Rest Data
+
+Application backups are encrypted with Clinic Backup Format v1 and require a
+runtime backup key from `CLINIC_BACKUP_KEY` or `CLINIC_BACKUP_KEY_FILE`. Do not
+send backup keys, encrypted backups, plaintext legacy backups, SQLite databases,
+WAL/SHM files, or recovery copies through public channels.
+
+Encrypted backups do not encrypt the live SQLite database, swap, crash dumps, or
+filesystem snapshots. Production deployments must use full-disk or volume
+encryption and restricted OS permissions as documented in `BACKUP_SECURITY.md`
+and `OPERATIONS.md`.
+
 ## Response Expectations
 
 The maintainer should acknowledge a private report within 5 business days when
