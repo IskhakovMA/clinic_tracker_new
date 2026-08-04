@@ -15,6 +15,7 @@ PORT = int(os.environ.get("CLINIC_PORT", "8420"))
 HTTPS = os.environ.get("CLINIC_HTTPS", "false").strip().lower() in ("1", "true", "yes")
 
 DEBUG = os.environ.get("CLINIC_DEBUG", "false").strip().lower() in ("1", "true", "yes")
+APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Europe/Moscow").strip() or "Europe/Moscow"
 
 # Прежний общий пароль (CLINIC_ADMIN_PASSWORD + app_login) выведен из
 # эксплуатации: вход возможен только по персональной учётной записи,
