@@ -41,6 +41,22 @@ DEFAULT_BACKUP_SUFFIX = ".cbk"
 _KEY_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _STATIC_DIR = _REPO_ROOT / "static"
+MAX_HEADER_BYTES = int(os.environ.get("CLINIC_BACKUP_MAX_HEADER_BYTES", str(16 * 1024)))
+MIN_HEADER_BYTES = 2
+MAX_BACKUP_BYTES = int(os.environ.get("CLINIC_BACKUP_MAX_BYTES", str(1024 * 1024 * 1024)))
+SQLITE_EXCLUSIVE_TIMEOUT_MS = int(os.environ.get("CLINIC_RESTORE_EXCLUSIVE_TIMEOUT_MS", "1000"))
+HEADER_FIELDS = frozenset(
+    {
+        "format",
+        "version",
+        "algorithm",
+        "key_id",
+        "nonce",
+        "created_at",
+        "schema_version",
+        "ciphertext_length",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -146,7 +162,9 @@ def _decode_key(value: str, *, source: str) -> bytes:
 
 
 def _safe_key_id(key_id: str | None, key: bytes) -> str:
-    value = (key_id or "").strip()
+    if key_id is not None and not key_id.strip():
+        raise MaintenanceError("key_id не должен быть пустым")
+    value = key_id.strip() if key_id is not None else ""
     if not value:
         value = hashlib.sha256(b"clinic-backup-key-id:" + key).hexdigest()[:16]
     if not _KEY_ID_RE.fullmatch(value):
@@ -183,7 +201,7 @@ def _load_keyring() -> dict[str, bytes]:
     raw = os.environ.get("CLINIC_BACKUP_DECRYPT_KEYS", "").strip()
     if raw:
         try:
-            parsed = json.loads(raw)
+            parsed = _loads_json_no_duplicates(raw.encode("utf-8"))
         except json.JSONDecodeError as exc:
             raise MaintenanceError("CLINIC_BACKUP_DECRYPT_KEYS должен быть JSON object") from exc
         if not isinstance(parsed, dict):
@@ -192,13 +210,53 @@ def _load_keyring() -> dict[str, bytes]:
             key_id = _safe_key_id(str(key_id), b"")
             if not isinstance(encoded, str):
                 raise MaintenanceError("Decrypt-only key должен быть строкой")
-            keys[key_id] = _decode_key(encoded, source=f"CLINIC_BACKUP_DECRYPT_KEYS[{key_id}]")
+            key = _decode_key(encoded, source=f"CLINIC_BACKUP_DECRYPT_KEYS[{key_id}]")
+            existing = keys.get(key_id)
+            if existing is not None and not secrets.compare_digest(existing, key):
+                raise MaintenanceError("Backup keyring содержит конфликтующий key_id")
+            keys[key_id] = key
     return keys
 
 
 def generate_backup_key() -> str:
     """Generate a printable 256-bit key for operator documentation/tests."""
     return _b64encode(secrets.token_bytes(KEY_BYTES))
+
+
+def _key_fingerprint(key: bytes) -> str:
+    return hashlib.sha256(b"clinic-backup-key-fingerprint:" + key).hexdigest()[:16]
+
+
+def create_backup_key_file(path: Path, *, key_id: str | None = None) -> dict:
+    """Create a new backup key file without returning or printing key material."""
+    raw_key = secrets.token_bytes(KEY_BYTES)
+    safe_key_id = _safe_key_id(key_id, raw_key)
+    key_path = _prepare_key_file_path(path)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(key_path, flags, 0o600)
+    except FileExistsError as exc:
+        raise MaintenanceError("Файл backup-ключа уже существует") from exc
+    except OSError as exc:
+        raise MaintenanceError("Файл backup-ключа не создан") from exc
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_b64encode(raw_key) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        try:
+            key_path.unlink(missing_ok=True)
+        finally:
+            raise
+    _restrict_permissions(key_path)
+    _fsync_dir(key_path.parent)
+    return {
+        "path": str(key_path),
+        "filename": key_path.name,
+        "key_id": safe_key_id,
+        "fingerprint": _key_fingerprint(raw_key),
+    }
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -222,7 +280,22 @@ def _reject_symlink(path: Path, label: str) -> None:
         raise MaintenanceError(f"{label}: путь недоступен") from exc
 
 
+def _prepare_key_file_path(path: Path) -> Path:
+    key_path = Path(path).expanduser()
+    _reject_path_traversal(key_path)
+    _reject_symlink(key_path, "key file")
+    resolved = key_path.resolve(strict=False)
+    if _is_relative_to(resolved, _REPO_ROOT):
+        raise MaintenanceError("Файл backup-ключа нельзя создавать внутри Git repository")
+    if _is_relative_to(resolved, config.DATA_DIR.resolve(strict=False)):
+        raise MaintenanceError("Файл backup-ключа нельзя хранить рядом с базой или backup")
+    _ensure_private_dir(resolved.parent)
+    return resolved
+
+
 def _prepare_output_path(dest: Path | None, *, overwrite: bool) -> Path:
+    if overwrite:
+        raise MaintenanceError("Перезапись backup отключена; выберите новое имя файла")
     if dest is None:
         _ensure_private_dir(config.BACKUP_DIR)
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -232,8 +305,8 @@ def _prepare_output_path(dest: Path | None, *, overwrite: bool) -> Path:
         _reject_path_traversal(dest)
     _reject_symlink(dest, "output")
     dest = dest.resolve(strict=False)
-    if dest.exists() and not overwrite:
-        raise MaintenanceError("Файл уже существует (используйте --overwrite)")
+    if dest.exists():
+        raise MaintenanceError("Файл уже существует; выберите новое имя")
     if _is_relative_to(dest, _STATIC_DIR.resolve(strict=False)):
         raise MaintenanceError("Backup нельзя создавать внутри static directory")
     backup_dir = config.BACKUP_DIR.resolve(strict=False)
@@ -321,9 +394,16 @@ def _aad(header_bytes: bytes) -> bytes:
 
 
 def _write_container(dest: Path, header_bytes: bytes, ciphertext: bytes) -> None:
-    if len(header_bytes) >= 2 ** (HEADER_LEN_BYTES * 8):
+    if len(header_bytes) > MAX_HEADER_BYTES:
         raise MaintenanceError("Backup header слишком большой")
-    with open(dest, "wb") as f:
+    if len(ciphertext) > MAX_BACKUP_BYTES:
+        raise MaintenanceError("Backup слишком большой")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    try:
+        fd = os.open(dest, flags, 0o600)
+    except FileExistsError as exc:
+        raise MaintenanceError("Файл уже существует") from exc
+    with os.fdopen(fd, "wb") as f:
         f.write(MAGIC)
         f.write(len(header_bytes).to_bytes(HEADER_LEN_BYTES, "big"))
         f.write(header_bytes)
@@ -336,6 +416,14 @@ def _write_container(dest: Path, header_bytes: bytes, ciphertext: bytes) -> None
 def _read_container(path: Path) -> tuple[dict, bytes, bytes]:
     backup_path = _validate_input_path(path)
     try:
+        file_size = backup_path.stat().st_size
+    except OSError as exc:
+        raise MaintenanceError("Файл резервной копии недоступен") from exc
+    if file_size > MAX_BACKUP_BYTES + MAX_HEADER_BYTES + len(MAGIC) + HEADER_LEN_BYTES:
+        raise MaintenanceError("Backup превышает допустимый размер")
+    if file_size < len(MAGIC) + HEADER_LEN_BYTES:
+        raise MaintenanceError("Файл резервной копии повреждён")
+    try:
         with open(backup_path, "rb") as f:
             magic = f.read(len(MAGIC))
             if magic != MAGIC:
@@ -344,19 +432,36 @@ def _read_container(path: Path) -> tuple[dict, bytes, bytes]:
             if len(raw_len) != HEADER_LEN_BYTES:
                 raise MaintenanceError("Файл резервной копии повреждён")
             header_len = int.from_bytes(raw_len, "big")
-            if header_len <= 0 or header_len > 16 * 1024:
+            if header_len < MIN_HEADER_BYTES or header_len > MAX_HEADER_BYTES:
                 raise MaintenanceError("Неподдерживаемый размер header")
             raw_header = f.read(header_len)
             if len(raw_header) != header_len:
                 raise MaintenanceError("Файл резервной копии повреждён")
             ciphertext = f.read()
+            actual_size = len(MAGIC) + HEADER_LEN_BYTES + header_len + len(ciphertext)
+            if actual_size != file_size:
+                raise MaintenanceError("Файл резервной копии повреждён")
+            if len(ciphertext) > MAX_BACKUP_BYTES:
+                raise MaintenanceError("Backup превышает допустимый размер")
     except OSError as exc:
         raise MaintenanceError("Файл резервной копии не прочитан") from exc
     try:
-        header = json.loads(raw_header.decode("utf-8"))
+        header = _loads_json_no_duplicates(raw_header)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise MaintenanceError("Header резервной копии повреждён") from exc
     return header, raw_header, ciphertext
+
+
+def _loads_json_no_duplicates(raw: bytes) -> dict:
+    def reject_duplicates(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise json.JSONDecodeError(f"duplicate key: {key}", "", 0)
+            result[key] = value
+        return result
+
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=reject_duplicates)
 
 
 def inspect_backup(backup_path: Path) -> dict:
@@ -370,11 +475,7 @@ def inspect_backup(backup_path: Path) -> dict:
 
 
 def _validate_header(header: dict, ciphertext: bytes, *, require_supported: bool = True) -> dict:
-    required = {
-        "format", "version", "algorithm", "key_id", "nonce",
-        "created_at", "schema_version", "ciphertext_length",
-    }
-    if not isinstance(header, dict) or not required.issubset(header):
+    if not isinstance(header, dict) or set(header) != HEADER_FIELDS:
         raise MaintenanceError("Header резервной копии неполный")
     version = header["version"]
     algorithm = header["algorithm"]
@@ -391,15 +492,26 @@ def _validate_header(header: dict, ciphertext: bytes, *, require_supported: bool
         raise MaintenanceError("Header содержит некорректный nonce") from exc
     if require_supported and len(nonce) != NONCE_BYTES:
         raise MaintenanceError("Header содержит некорректный nonce")
-    if int(header["ciphertext_length"]) != len(ciphertext):
+    if not isinstance(header["ciphertext_length"], int) or header["ciphertext_length"] < 16:
+        raise MaintenanceError("Header содержит некорректную длину ciphertext")
+    if header["ciphertext_length"] != len(ciphertext):
         raise MaintenanceError("Файл резервной копии усечён или повреждён")
+    schema_version = header["schema_version"]
+    if not isinstance(schema_version, int) or schema_version < 1 or schema_version > 10_000:
+        raise MaintenanceError("Header содержит некорректную версию схемы")
+    try:
+        created_at = datetime.fromisoformat(str(header["created_at"]))
+    except ValueError as exc:
+        raise MaintenanceError("Header содержит некорректный timestamp") from exc
+    if created_at.tzinfo is None:
+        raise MaintenanceError("Header содержит timestamp без timezone")
     return {
         "format": header["format"],
         "version": version,
         "algorithm": algorithm,
         "key_id": key_id,
         "created_at": header["created_at"],
-        "schema_version": header["schema_version"],
+        "schema_version": schema_version,
         "ciphertext_length": len(ciphertext),
     }
 
@@ -455,7 +567,10 @@ def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool 
             ciphertext = AESGCM(key.key).encrypt(nonce, plaintext_bytes, _aad(raw_header))
             _write_container(tmp_output, raw_header, ciphertext)
             _fsync_file(tmp_output)
-            tmp_output.replace(dest)
+            try:
+                os.link(tmp_output, dest)
+            except FileExistsError as exc:
+                raise MaintenanceError("Файл уже существует") from exc
             _restrict_permissions(dest)
             _fsync_dir(dest.parent)
         finally:
@@ -495,7 +610,7 @@ def verify_backup(backup_path: Path) -> dict:
     return validate_backup(backup_path)
 
 
-def restore_database(backup_path: Path, db_path: Path) -> dict:
+def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool = False) -> dict:
     """Validate, snapshot the current DB, then replace it atomically.
 
     The replacement is written to a temp file next to the live database and
@@ -503,6 +618,8 @@ def restore_database(backup_path: Path, db_path: Path) -> dict:
     left half-written: either the old database or the restored one.
     """
     backup_path = _validate_input_path(backup_path)
+    if not confirm_offline:
+        raise MaintenanceError("Restore требует подтверждения offline maintenance mode")
     db_path = Path(db_path).resolve(strict=False)
     if db_path.name != "clinic.db":
         raise MaintenanceError("Restore разрешён только в ожидаемый файл clinic.db")
@@ -514,38 +631,45 @@ def restore_database(backup_path: Path, db_path: Path) -> dict:
     _ensure_private_dir(db_path.parent)
     staging = db_path.with_name(f".{db_path.name}.{secrets.token_hex(8)}.restore-tmp")
 
-    with tempfile.TemporaryDirectory(prefix="clinic-restore-", dir=str(db_path.parent)) as tmp_name:
-        temp_dir = Path(tmp_name)
-        _ensure_private_dir(temp_dir)
-        plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
-        if not looks_like_sqlite(plaintext):
-            raise MaintenanceError("Расшифрованный backup не является базой SQLite")
-        report = check_database(plaintext)
-        if not report["ok"]:
-            raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
-        report.update(metadata)
+    lock_conn = _acquire_exclusive_restore_lock(db_path) if db_path.exists() else None
+    try:
+        with tempfile.TemporaryDirectory(prefix="clinic-restore-", dir=str(db_path.parent)) as tmp_name:
+            temp_dir = Path(tmp_name)
+            _ensure_private_dir(temp_dir)
+            plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
+            if not looks_like_sqlite(plaintext):
+                raise MaintenanceError("Расшифрованный backup не является базой SQLite")
+            report = check_database(plaintext)
+            if not report["ok"]:
+                raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
+            report.update(metadata)
 
-        if db_path.exists():
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            pre_restore_backup = backup_database(
-                db_path, config.BACKUP_DIR / f"pre_restore_{stamp}{DEFAULT_BACKUP_SUFFIX}"
-            )
+            if db_path.exists():
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                pre_restore_backup = backup_database(
+                    db_path, config.BACKUP_DIR / f"pre_restore_{stamp}_{secrets.token_hex(4)}{DEFAULT_BACKUP_SUFFIX}"
+                )
 
-        try:
-            _sqlite_backup_to_file(plaintext, staging)
-            _fsync_file(staging)
-            staging.replace(db_path)
-            _fsync_dir(db_path.parent)
-        except OSError as exc:
-            staging.unlink(missing_ok=True)
-            raise MaintenanceError("Не удалось заменить базу") from exc
+            try:
+                _sqlite_backup_to_file(plaintext, staging)
+                _fsync_file(staging)
+            except OSError as exc:
+                staging.unlink(missing_ok=True)
+                raise MaintenanceError("Не удалось подготовить восстановленную базу") from exc
+    finally:
+        if lock_conn is not None:
+            lock_conn.rollback()
+            lock_conn.close()
 
-    # Stale WAL/SHM from the previous database would misrepresent the restored file.
-    for suffix in ("-wal", "-shm"):
-        sidecar = db_path.with_name(db_path.name + suffix)
-        if sidecar.exists():
-            sidecar.unlink()
+    try:
+        _remove_sidecars(db_path)
+        os.replace(staging, db_path)
+        _fsync_dir(db_path.parent)
+    except OSError as exc:
+        staging.unlink(missing_ok=True)
+        raise MaintenanceError("Не удалось заменить базу") from exc
 
+    _remove_sidecars(db_path)
     _restrict_permissions(db_path)
 
     return {
@@ -556,3 +680,26 @@ def restore_database(backup_path: Path, db_path: Path) -> dict:
         "format_version": report.get("version"),
         "key_id": report.get("key_id"),
     }
+
+
+def _acquire_exclusive_restore_lock(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(db_path), timeout=SQLITE_EXCLUSIVE_TIMEOUT_MS / 1000)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_EXCLUSIVE_TIMEOUT_MS}")
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.execute("BEGIN EXCLUSIVE")
+        return conn
+    except sqlite3.Error as exc:
+        conn.close()
+        raise MaintenanceError("Restore отклонён: база занята или приложение не остановлено") from exc
+
+
+def _remove_sidecars(db_path: Path) -> None:
+    for suffix in ("-wal", "-shm"):
+        sidecar = db_path.with_name(db_path.name + suffix)
+        if sidecar.exists():
+            try:
+                sidecar.unlink()
+            except OSError as exc:
+                raise MaintenanceError("Не удалось удалить stale WAL/SHM после restore") from exc
+    _fsync_dir(db_path.parent)

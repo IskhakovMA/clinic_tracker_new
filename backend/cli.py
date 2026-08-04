@@ -3,7 +3,7 @@
     python -m backend.cli create-developer
     python -m backend.cli import-structure <file.json>
     python -m backend.cli check-db
-    python -m backend.cli backup [--dest PATH] [--overwrite]
+    python -m backend.cli backup [--dest PATH]
     python -m backend.cli backup-inspect <backup-file>
     python -m backend.cli backup-verify <backup-file>
     python -m backend.cli restore <backup-file> [--yes]
@@ -264,9 +264,14 @@ def cmd_restore(args: argparse.Namespace) -> int:
     print(f"  версия схемы:     {report.get('schema_version')}")
     print(f"  записей пациентов: {report.get('patient_count')}")
 
+    if not args.confirm_offline:
+        print("Restore требует --confirm-offline после остановки приложения и worker.", file=sys.stderr)
+        return 1
+
     if not args.yes:
         print("\nВНИМАНИЕ: текущая база будет заменена содержимым этой копии.")
         print("Перед заменой автоматически создаётся резервная копия текущей базы.")
+        print("Продолжайте только если приложение и notification worker остановлены.")
         answer = input("Введите 'yes' для подтверждения: ").strip().lower()
         if answer != "yes":
             print("Отменено, база не изменена.")
@@ -274,7 +279,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
 
     db.reset_singleton_for_tests()  # release the app's handle before swapping the file
     try:
-        result = maintenance.restore_database(args.backup_file, config.DB_PATH)
+        result = maintenance.restore_database(args.backup_file, config.DB_PATH, confirm_offline=True)
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -292,9 +297,17 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_backup_keygen(_args: argparse.Namespace) -> int:
-    print(maintenance.generate_backup_key())
-    print("Сохраните ключ в защищённом хранилище или key file с правами 0600.", file=sys.stderr)
+def cmd_backup_keygen(args: argparse.Namespace) -> int:
+    try:
+        result = maintenance.create_backup_key_file(args.key_file, key_id=args.key_id)
+    except maintenance.MaintenanceError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print("Backup key file created.")
+    print(f"  key_id:      {result['key_id']}")
+    print(f"  fingerprint: {result['fingerprint']}")
+    print(f"  filename:    {result['filename']}")
+    print("Store this file separately from DB and backups; the key is not recoverable if lost.")
     return 0
 
 
@@ -391,7 +404,7 @@ def main() -> int:
 
     p_backup = sub.add_parser("backup", help="Создать encrypted backup базы")
     p_backup.add_argument("--dest", default=None, help="Путь encrypted backup (по умолчанию data/backups/*.cbk)")
-    p_backup.add_argument("--overwrite", action="store_true", help="Перезаписать существующий файл")
+    p_backup.add_argument("--overwrite", action="store_true", help="Отключено: выберите новое имя файла")
 
     p_backup_inspect = sub.add_parser("backup-inspect", help="Показать безопасные metadata encrypted backup")
     p_backup_inspect.add_argument("backup_file", help="Путь к encrypted backup")
@@ -399,11 +412,14 @@ def main() -> int:
     p_backup_verify = sub.add_parser("backup-verify", help="Проверить AEAD, SQLite integrity, FK и schema")
     p_backup_verify.add_argument("backup_file", help="Путь к encrypted backup")
 
-    sub.add_parser("backup-keygen", help="Сгенерировать 256-bit backup key для CLINIC_BACKUP_KEY")
+    p_keygen = sub.add_parser("backup-keygen", help="Создать protected key file для encrypted backups")
+    p_keygen.add_argument("key_file", help="Новый файл ключа; не должен существовать")
+    p_keygen.add_argument("--key-id", default=None, help="Непустой non-secret key_id для backup header")
 
     p_restore = sub.add_parser("restore", help="Восстановить базу из резервной копии")
     p_restore.add_argument("backup_file", help="Путь к файлу резервной копии")
     p_restore.add_argument("--yes", action="store_true", help="Не спрашивать подтверждение")
+    p_restore.add_argument("--confirm-offline", action="store_true", help="Подтвердить, что приложение и worker остановлены")
 
     p_tail = sub.add_parser("audit-tail", help="Показать последние события аудита")
     p_tail.add_argument("--limit", type=int, default=50, help="Сколько событий показать (максимум 200)")
