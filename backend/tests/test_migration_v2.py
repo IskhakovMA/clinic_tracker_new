@@ -158,10 +158,13 @@ def test_check_db_ok_after_migration(migrated):
     assert report["missing_tables"] == []
 
 
-def test_backup_restore_after_migration(migrated):
+def test_backup_restore_after_migration(migrated, monkeypatch):
     client, tmp_path = migrated
     from backend.app import maintenance
-    dest = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "after_migration.db")
+    monkeypatch.setenv("CLINIC_BACKUP_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+    monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "migration-test-key")
+    dest = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "after_migration.cbk")
+    assert maintenance.looks_like_encrypted_backup(dest)
     report = maintenance.validate_backup(dest)
     assert report["ok"] is True
     assert report["patient_count"] == 1

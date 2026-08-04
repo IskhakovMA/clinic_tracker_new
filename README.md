@@ -112,8 +112,11 @@ uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 python -m backend.cli create-developer    # создать учётную запись Разработчика (bootstrap)
 python -m backend.cli import-structure f  # локальный импорт оргструктуры из JSON (файл вне Git)
 python -m backend.cli check-db            # integrity_check, foreign_key_check, версия схемы, таблицы
-python -m backend.cli backup              # резервная копия через SQLite backup API
-python -m backend.cli restore <file>      # восстановление с проверками и подтверждением
+python -m backend.cli backup-keygen f     # создать protected key file для encrypted backups
+python -m backend.cli backup              # encrypted backup через SQLite backup API + AES-GCM
+python -m backend.cli backup-inspect f    # безопасные metadata encrypted backup без расшифровки
+python -m backend.cli backup-verify f     # AEAD, integrity_check, FK и schema проверки
+python -m backend.cli restore <file> --confirm-offline  # restore при остановленном приложении
 python -m backend.cli audit-tail          # последние события аудита
 python -m backend.cli audit-prune         # удалить события старше срока хранения
 python -m backend.cli purge-sessions      # удалить истёкшие сессии
@@ -152,25 +155,43 @@ node --check static/app.js             # синтаксис фронтенда (
 
 ## Данные, защита каталога и резервное копирование
 
-- **База**: `backend/data/clinic.db` (SQLite, исключена из Git и не раздаётся по HTTP).
-- **Резервные копии**: `python -m backend.cli backup` → `backend/data/backups/clinic_<дата>.db`.
-  Копия делается через SQLite backup API, поэтому консистентна даже при работающем приложении.
-  Существующий файл не перезаписывается без `--overwrite`.
+- **База**: `backend/data/clinic.db` (SQLite schema v3, исключена из Git и не раздаётся по HTTP).
+- **Encrypted backups**: создайте key file и настройте `CLINIC_BACKUP_KEY_FILE`, затем
+  `python -m backend.cli backup` → `backend/data/backups/clinic_<дата>.cbk`.
+  Копия делается через SQLite backup API, проверяется и упаковывается в Clinic Backup Format v1
+  с AES-256-GCM. Существующий backup не перезаписывается: выберите новое имя файла.
+- **Проверка копии**:
+  ```bash
+  python -m backend.cli backup-inspect backend/data/backups/clinic_20260730_120000.cbk
+  python -m backend.cli backup-verify backend/data/backups/clinic_20260730_120000.cbk
+  ```
+  `inspect` показывает только безопасный header; `verify` расшифровывает во временную директорию,
+  проверяет AEAD, SQLite integrity, FK и версию схемы.
 - **Защита каталога**: держите `backend/data/` доступным только владельцу. На macOS/Linux:
   `chmod 700 backend/data` (файлы копий приложение само выставляет в `600`). На Windows
   `chmod` не действует — ограничьте доступ через свойства папки (NTFS ACL).
-- **Шифрование диска обязательно.** Шифрование базы на уровне приложения не реализовано
-  намеренно (самодельная криптография опаснее её отсутствия). Медицинские данные лежат на
-  диске в открытом виде, поэтому конфиденциальность должна обеспечиваться полным шифрованием
-  диска: FileVault (macOS), BitLocker (Windows), LUKS (Linux).
+- **Шифрование рабочей БД на диске обязательно.** Encrypted backup не шифрует live-файл
+  `clinic.db`, WAL/SHM, swap, crash dumps и filesystem snapshots. Для production требуется
+  полное шифрование диска/тома: FileVault (macOS), BitLocker (Windows), LUKS (Linux), плюс
+  ограниченные OS permissions. SQLCipher и application-level DB encryption остаются отдельным
+  архитектурным решением.
+- **Ключи**: ключ backup не хранится в Git, `.env.example`, shell history, рядом с DB или рядом
+  с backup. Создайте его через `python -m backend.cli backup-keygen /secure/offline/location/clinic-backup.key`,
+  храните отдельно и
+  резервируйте по операторской процедуре. Потеря ключа делает соответствующие backups
+  невосстановимыми. Подробно: `BACKUP_SECURITY.md` и `OPERATIONS.md`.
 - **Восстановление данных**:
   ```bash
-  python -m backend.cli restore backend/data/backups/clinic_20260730_120000.db
+  python -m backend.cli restore backend/data/backups/clinic_20260730_120000.cbk --confirm-offline
   ```
-  Команда проверит, что файл — корректная база SQLite с ожидаемой версией схемы, сделает
-  резервную копию текущей базы, спросит подтверждение и заменит базу атомарно. Повреждённая
-  или несовместимая копия отклоняется, текущая база при этом не меняется. После восстановления
-  все прежние сессии недействительны — войдите заново.
+  До restore остановите приложение и notification worker. Команда проверит формат, key_id,
+  AEAD tag, SQLite integrity, FK и ожидаемую версию схемы, попытается получить exclusive SQLite
+  lock, сделает encrypted recovery copy текущей базы, спросит подтверждение и заменит базу
+  атомарно.
+  Повреждённая, изменённая, усечённая, plaintext или несовместимая копия отклоняется, текущая
+  база при этом не меняется. После restore обязательно выполните `python -m backend.cli check-db`;
+  только затем запускайте приложение снова. После восстановления все прежние сессии
+  недействительны — войдите заново.
 - **Журнал аудита** хранится в той же базе (таблица `audit_events`), содержит только
   обезличенные события (без ФИО, диагнозов, паролей и токенов). Срок хранения — 365 дней,
   очистка вручную: `python -m backend.cli audit-prune`.

@@ -78,17 +78,23 @@ persistent/deployment limiter remains a later operational hardening item.
 Expected change: Formalize encrypted disk/backups for pilot. If backups leave
 the host, add encrypted backup packaging and key handling.
 
-Application Security Hardening status: OUT OF SCOPE. Backup/database encryption
-is intentionally not included in this PR.
+Backup Security status: PARTIAL. `fix/backup-security` implements encrypted
+portable backups, key validation, AEAD verification, path hardening, restore
+recovery, offline exclusive-lock restore, WAL/SHM cleanup, parser size bounds,
+and regression tests. Live SQLite/WAL/SHM encryption remains an operational
+deployment control.
 
-Regression tests: Backup permission tests, backup encryption verification if
-implemented.
+Regression tests: Backup permission tests, backup encryption verification,
+wrong-key/tamper/truncation rejection, path safety, failed restore preservation,
+nonce uniqueness, keyring conflicts, active-lock rejection, bounds parsing,
+WAL/SHM restore, and CLI create/inspect/verify/restore/keygen.
 
-Migration risk: Medium if database encryption is introduced.
+Migration risk: Low for encrypted backups because SQLite schema remains v3.
+Medium if future database encryption is introduced.
 
 Deployment risk: Medium due key management.
 
-Recommended PR: `chore/encrypted-backup-policy`.
+Recommended PR: `fix/backup-security`.
 
 ## P3 - Low/Hardening
 
