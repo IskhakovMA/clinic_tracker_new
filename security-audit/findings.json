@@ -48,8 +48,8 @@
     "cwe": "CWE-693",
     "owasp": "CI/CD Security Misconfiguration",
     "source_skill": "skills/securing-github-actions-workflows/SKILL.md",
-    "status": "confirmed",
-    "remediation": "Add protected main, required reviews/checks, CI, SAST, SCA, and secret scanning."
+    "status": "partial",
+    "remediation": "CI, dependency audit, Bandit, Gitleaks, Dependabot, CODEOWNERS and SECURITY.md are added in fix/github-security-baseline. Apply protected main, required reviews/checks and no-direct-push settings in a separate post-merge step."
   },
   {
     "id": "SEC-2026-005",

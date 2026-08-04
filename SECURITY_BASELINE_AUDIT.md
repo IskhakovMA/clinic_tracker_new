@@ -108,13 +108,13 @@ Summary by area:
 
 PASS: 31
 
-PARTIAL: 9
+PARTIAL: 10
 
-FAIL: 2
+FAIL: 0
 
 N/A: 6
 
-NOT VERIFIED: 7
+NOT VERIFIED: 8
 
 ## Findings by Severity
 
@@ -201,21 +201,25 @@ Rate limiting audit: PARTIAL. Login has a real in-memory limiter; heavy
 authenticated endpoints do not have comparable throttling.
 
 Dependency audit: PASS/PARTIAL. `pip-audit` found no known vulnerabilities.
-Dependencies are pinned in `requirements.txt`, but hashes and CI enforcement are
-absent.
+Dependencies are pinned in `requirements.txt`, and a pinned `dependency-audit`
+CI job was added. Hash-pinned Python application installs are still not used.
 
-SAST: NOT VERIFIED for Bandit/Semgrep tools because they are not installed.
-Manual grep/static review was performed.
+SAST: PARTIAL. A pinned Bandit CI job was added for `backend/app`. Current B608
+findings were manually reviewed as false positives and are allowed only by exact
+path, line and test ID; new Medium/High findings fail the job.
 
-Secret scan current tree: PARTIAL. Manual grep found no committed real secrets,
-but specialized tools were unavailable.
+Secret scan current tree: PARTIAL. A pinned Gitleaks CI job scans the working
+tree with redacted output. Local Gitleaks 8.28.0 found no leaks.
 
-Secret scan Git history: NOT VERIFIED by specialized tool. Manual history-wide
-secret scanning was not exhaustive in this audit-only pass.
+Secret scan Git history: PARTIAL. The same Gitleaks CI job scans Git history
+using `fetch-depth: 0`. Local Gitleaks 8.28.0 scanned 34 commits with no leaks.
 
-GitHub Actions audit: FAIL. No workflows were present.
+GitHub Actions audit: PARTIAL. Least-privilege workflows were added for pytest,
+temporary DB check, JS/CSP checks, workflow policy, pip-audit, Bandit and
+Gitleaks. Protection settings and required checks are not applied yet.
 
-Branch protection audit: FAIL. Protection API returned 404 for `main`.
+Branch protection audit: NOT VERIFIED. Protection API returned 404 for `main`;
+this may mean no protection or insufficient access. No settings were changed.
 
 Production configuration audit: PARTIAL. Safe defaults exist for debug false,
 no CORS, trusted hosts, mock notifications, and check-db. Production HTTPS/HSTS,
@@ -226,7 +230,8 @@ deployment responsibilities.
 
 Top risks:
 
-1. No visible GitHub CI/branch protection baseline.
+1. GitHub CI baseline is added, but branch protection and required checks are
+not applied yet.
 2. `/openapi.json` exposed outside debug.
 3. Heavy endpoints lack broad rate limiting.
 4. App-level DB/backup encryption absent.
