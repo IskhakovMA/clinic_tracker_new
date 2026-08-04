@@ -324,6 +324,24 @@ const app = {
             sort: 'scheduled_asc',
         },
     },
+    analytics: {
+        summary: null,
+        stages: null,
+        overdue: null,
+        workload: null,
+        dataQuality: null,
+        checklists: null,
+        notifications: null,
+        details: null,
+        filters: {
+            dateFrom: '',
+            dateTo: '',
+            stage: '',
+            nosology: '',
+            doctor: '',
+            department: '',
+        },
+    },
 
     QUALITY_SEVERITY_LABELS: {
         critical: 'Критическая ошибка',
@@ -1456,6 +1474,7 @@ const app = {
         if (view === 'calendar') this.renderCalendar();
         if (view === 'checklists') this.renderChecklistsView();
         if (view === 'notifications') this.renderNotifications();
+        if (view === 'analytics') this.renderAnalytics();
         if (view === 'quality') this.renderDataQuality();
         if (view === 'plans') this.renderPlansView();
         if (view === 'audit') this.renderAudit();
@@ -1982,6 +2001,17 @@ const app = {
             option('scheduled_desc', 'Поздние первыми'),
             option('status', 'По статусу'),
         ]));
+
+        $('analyticsStageFilter').replaceChildren(frag([
+            option('', 'Все этапы', true),
+            ...this.stageOrder.map(s => option(s, this.stageNames[s])),
+        ]));
+        $('analyticsNosologyFilter').replaceChildren(frag([
+            option('', 'Любой профиль клиентского пути', true),
+            ...Object.keys(this.nosologyData).map(key => option(key, this.nosologyData[key].label)),
+        ]));
+        $('analyticsDoctorFilter').replaceChildren(option('', 'Любой лечащий врач', true));
+        $('analyticsDepartmentFilter').replaceChildren(option('', 'Любое отделение', true));
 
         $('diagnosisLocalization').replaceChildren(frag([
             option('', 'Выберите локализацию', true),
@@ -3458,6 +3488,286 @@ const app = {
                 }),
             ])),
         ]));
+    },
+
+    /* =============================================================== РЕНДЕР: АНАЛИТИКА */
+
+    analyticsParams(extra = {}) {
+        const f = Object.assign({}, this.analytics.filters, extra);
+        const params = new URLSearchParams();
+        if (f.dateFrom) params.set('date_from', f.dateFrom);
+        if (f.dateTo) params.set('date_to', f.dateTo);
+        if (f.stage) params.set('stage', f.stage);
+        if (f.nosology) params.set('nosology', f.nosology);
+        if (f.doctor) params.set('doctor_user_id', f.doctor);
+        if (f.department) params.set('department_id', f.department);
+        params.set('limit', '50');
+        params.set('offset', '0');
+        return params.toString();
+    },
+
+    async loadAnalytics() {
+        const params = this.analyticsParams();
+        const [
+            summary,
+            stages,
+            overdue,
+            workload,
+            dataQuality,
+            checklists,
+            notificationStats,
+        ] = await Promise.all([
+            apiGetJson(`/api/analytics/summary?${params}`),
+            apiGetJson(`/api/analytics/stages?${params}`),
+            apiGetJson(`/api/analytics/overdue?${params}`),
+            apiGetJson(`/api/analytics/workload?${params}`),
+            apiGetJson(`/api/analytics/data-quality?${params}`),
+            apiGetJson(`/api/analytics/checklists?${params}`),
+            apiGetJson(`/api/analytics/notifications?${params}`),
+        ]);
+        Object.assign(this.analytics, {
+            summary,
+            stages,
+            overdue,
+            workload,
+            dataQuality,
+            checklists,
+            notifications: notificationStats,
+        });
+    },
+
+    async renderAnalytics() {
+        $('analyticsStatsRow').replaceChildren();
+        $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
+        $('analyticsQualityList').replaceChildren();
+        $('analyticsOverdueList').replaceChildren();
+        $('analyticsWorkloadList').replaceChildren();
+        $('analyticsChecklistList').replaceChildren();
+        $('analyticsNotificationsList').replaceChildren();
+        $('analyticsDetailsPanel').replaceChildren();
+        try {
+            await this.loadAnalytics();
+            this.renderAnalyticsFilterOptions();
+            this.renderAnalyticsSummary();
+            this.renderAnalyticsStages();
+            this.renderAnalyticsQuality();
+            this.renderAnalyticsOverdue();
+            this.renderAnalyticsWorkload();
+            this.renderAnalyticsChecklists();
+            this.renderAnalyticsNotifications();
+        } catch (e) {
+            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить аналитику: ${e.message}` }));
+        }
+    },
+
+    renderAnalyticsFilterOptions() {
+        const selectedDoctor = this.analytics.filters.doctor;
+        const selectedDepartment = this.analytics.filters.department;
+        const workloadRows = (this.analytics.workload && this.analytics.workload.rows) || [];
+        const doctors = workloadRows
+            .filter(row => row.doctor_user_id)
+            .map(row => ({ id: row.doctor_user_id, name: row.doctor_name }))
+            .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        const departments = [];
+        const seenDepartments = new Set();
+        workloadRows.forEach(row => {
+            (row.department_ids || []).forEach((id, index) => {
+                if (!id || seenDepartments.has(id)) return;
+                seenDepartments.add(id);
+                departments.push({ id, name: (row.department_names || [])[index] || id });
+            });
+        });
+        departments.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        $('analyticsDoctorFilter').replaceChildren(frag([
+            option('', 'Любой лечащий врач', !selectedDoctor),
+            ...doctors.map(d => option(d.id, d.name, d.id === selectedDoctor)),
+        ]));
+        $('analyticsDepartmentFilter').replaceChildren(frag([
+            option('', 'Любое отделение', !selectedDepartment),
+            ...departments.map(d => option(d.id, d.name, d.id === selectedDepartment)),
+        ]));
+    },
+
+    resetAnalyticsFilters() {
+        this.analytics.filters = { dateFrom: '', dateTo: '', stage: '', nosology: '', doctor: '', department: '' };
+        $('analyticsDateFrom').value = '';
+        $('analyticsDateTo').value = '';
+        $('analyticsStageFilter').value = '';
+        $('analyticsNosologyFilter').value = '';
+        $('analyticsDoctorFilter').value = '';
+        $('analyticsDepartmentFilter').value = '';
+        this.renderAnalytics();
+    },
+
+    renderAnalyticsSummary() {
+        const cards = (this.analytics.summary && this.analytics.summary.cards) || [];
+        const nodes = cards.map(card => el('button', {
+            type: 'button',
+            class: 'stat stat--button',
+            on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
+        }, [
+            el('div', { class: 'stat__label', text: card.label }),
+            el('div', { class: 'stat__value', text: String(card.value ?? 0) }),
+            el('div', { class: 'stat__meta', text: card.kind === 'period' ? 'за период' : 'текущее состояние' }),
+        ]));
+        $('analyticsStatsRow').replaceChildren(frag(nodes));
+    },
+
+    renderAnalyticsStages() {
+        const rows = (this.analytics.stages && this.analytics.stages.rows) || [];
+        if (!rows.length) {
+            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Доступных пациентов по выбранным условиям нет.' }));
+            return;
+        }
+        $('analyticsStageChart').replaceChildren(frag(rows.map(row => el('button', {
+            type: 'button',
+            class: 'bar-row',
+            on: { click: () => this.renderAnalyticsDetails('patients', row.stage_label, { stage: row.stage }) },
+        }, [
+            el('span', { class: 'bar-row__label', text: row.stage_label }),
+            el('progress', { class: 'bar-row__bar', max: 100, value: row.percent, 'aria-label': `${row.stage_label}: ${row.percent}%` }),
+            el('span', { class: 'bar-row__value', text: `${row.count} · ${row.percent}%` }),
+            el('span', { class: 'bar-row__meta', text: `Просрочки: ${row.overdue_patients}; качество данных: ${row.quality_patients}` }),
+        ]))));
+    },
+
+    renderAnalyticsQuality() {
+        const data = this.analytics.dataQuality || {};
+        const severity = data.by_severity || [];
+        const summary = data.summary || {};
+        $('analyticsQualityList').replaceChildren(frag([
+            el('div', { class: 'analytics-row' }, [
+                el('span', { text: 'Средняя полнота карточек' }),
+                el('strong', { text: `${summary.average_completeness ?? 0}%` }),
+            ]),
+            ...severity.map(row => el('button', {
+                type: 'button',
+                class: 'analytics-row analytics-row--button',
+                on: { click: () => this.renderAnalyticsDetails(row.severity === 'critical' ? 'quality_critical' : 'quality_warning', this.QUALITY_SEVERITY_LABELS[row.severity] || row.severity) },
+            }, [
+                el('span', { text: this.QUALITY_SEVERITY_LABELS[row.severity] || row.severity }),
+                el('strong', { text: String(row.count || 0) }),
+            ])),
+            el('p', { class: 'muted', text: 'Показано текущее состояние: история findings не хранится.' }),
+        ]));
+    },
+
+    renderAnalyticsOverdue() {
+        const data = this.analytics.overdue || {};
+        const buckets = data.buckets || [];
+        $('analyticsOverdueList').replaceChildren(frag([
+            el('button', {
+                type: 'button',
+                class: 'analytics-row analytics-row--button',
+                on: { click: () => this.renderAnalyticsDetails('overdue_events', 'Просроченные события') },
+            }, [
+                el('span', { text: 'Всего просроченных событий' }),
+                el('strong', { text: String(data.total || 0) }),
+            ]),
+            ...buckets.map(row => el('div', { class: 'analytics-row' }, [
+                el('span', { text: row.label }),
+                el('strong', { text: String(row.count || 0) }),
+            ])),
+        ]));
+    },
+
+    renderAnalyticsWorkload() {
+        const rows = (this.analytics.workload && this.analytics.workload.rows) || [];
+        if (!rows.length) {
+            $('analyticsWorkloadList').replaceChildren(el('div', { class: 'empty', text: 'Нет данных по нагрузке в текущем scope.' }));
+            return;
+        }
+        $('analyticsWorkloadList').replaceChildren(frag(rows.slice(0, 8).map(row => el('div', { class: 'analytics-row analytics-row--stack' }, [
+            el('span', { text: row.doctor_name }),
+            el('strong', { text: `${row.active_patients} активных` }),
+            el('small', { text: `Просрочки: ${row.overdue_patients}; чек-листы: ${row.incomplete_required_checklists}; уведомления failed: ${row.failed_notifications}` }),
+        ]))));
+    },
+
+    renderAnalyticsChecklists() {
+        const data = this.analytics.checklists || {};
+        const percentText = data.completion_percent === null || data.completion_percent === undefined
+            ? 'нет обязательных пунктов'
+            : `${data.completion_percent}%`;
+        $('analyticsChecklistList').replaceChildren(frag([
+            el('div', { class: 'analytics-row' }, [
+                el('span', { text: 'Обязательная полнота' }),
+                el('strong', { text: percentText }),
+            ]),
+            el('button', {
+                type: 'button',
+                class: 'analytics-row analytics-row--button',
+                on: { click: () => this.renderAnalyticsDetails('incomplete_checklists', 'Незавершённые обязательные чек-листы') },
+            }, [
+                el('span', { text: 'Незавершённые обязательные пункты' }),
+                el('strong', { text: String(data.incomplete_required_items || 0) }),
+            ]),
+            el('p', { class: 'muted', text: data.formula || '' }),
+        ]));
+    },
+
+    renderAnalyticsNotifications() {
+        const data = this.analytics.notifications || {};
+        const counts = data.status_counts || {};
+        $('analyticsNotificationsList').replaceChildren(frag([
+            ...Object.entries(this.NOTIFICATION_STATUS_LABELS).map(([status, label]) => el('button', {
+                type: 'button',
+                class: 'analytics-row analytics-row--button',
+                on: { click: () => {
+                    if (status === 'pending') this.renderAnalyticsDetails('notifications_pending', label);
+                    else if (status === 'failed') this.renderAnalyticsDetails('notifications_failed', label);
+                } },
+            }, [
+                el('span', { text: label }),
+                el('strong', { text: String(counts[status] || 0) }),
+            ])),
+        ]));
+    },
+
+    async renderAnalyticsDetails(type, title, extra = {}) {
+        const params = this.analyticsParams(extra);
+        const data = await apiGetJson(`/api/analytics/details?type=${encodeURIComponent(type)}&${params}`);
+        const panel = $('analyticsDetailsPanel');
+        const rows = data.items || [];
+        panel.replaceChildren(frag([
+            el('h2', { class: 'panel__title', text: title || 'Детальный список' }),
+            el('p', { class: 'panel__text', text: `Показано ${rows.length} из ${data.total || 0}. Данные ограничены текущей областью доступа.` }),
+            rows.length ? el('div', { class: 'analytics-list' }, rows.map(item => el('div', { class: 'analytics-detail' }, [
+                el('div', { class: 'person__name', text: item.patient_name || item.doctor_name || item.title || 'Запись' }),
+                item.stage_label ? el('div', { class: 'person__meta', text: item.stage_label }) : null,
+                item.treating_doctor_name ? el('div', { class: 'person__meta', text: item.treating_doctor_name }) : null,
+                item.days_overdue ? el('div', { class: 'person__meta', text: `Просрочено: ${item.days_overdue} дн.` }) : null,
+                item.error_code ? el('div', { class: 'person__meta', text: this.NOTIFICATION_REASON_LABELS[item.error_code] || item.error_code }) : null,
+                item.patient_id ? el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: 'Открыть пациента',
+                    on: { click: () => this.openPatient(item.patient_id) },
+                }) : null,
+            ]))) : el('div', { class: 'empty', text: 'По выбранным условиям записей нет.' }),
+        ]));
+    },
+
+    async exportAnalyticsCsv() {
+        try {
+            const params = this.analyticsParams();
+            const response = await apiFetch(`/api/analytics/export?${params}`, {
+                method: 'POST',
+                body: JSON.stringify({ reportType: 'summary', detailLevel: 'aggregate' }),
+            });
+            const blob = await response.blob();
+            const disposition = response.headers.get('content-disposition') || '';
+            const match = disposition.match(/filename=\"([^\"]+)\"/);
+            const filename = match ? match[1] : 'analytics_summary.csv';
+            const link = el('a', { href: URL.createObjectURL(blob), download: filename });
+            document.body.append(link);
+            link.click();
+            URL.revokeObjectURL(link.href);
+            link.remove();
+            ui.toast('CSV отчёт сформирован.', 'good');
+        } catch (e) {
+            ui.toast(`Не удалось сформировать CSV: ${e.message}`, 'warning');
+        }
     },
 
     tabNotifications() {
@@ -5136,6 +5446,35 @@ const app = {
         on('notificationsResetFiltersBtn', 'click', () => this.resetNotificationsFilters());
         on('notificationsGenerateBtn', 'click', () => this.generateNotificationsDue());
         on('notificationsProcessBtn', 'click', () => this.processNotificationsDue());
+
+        // Аналитика
+        on('analyticsRefreshBtn', 'click', () => this.renderAnalytics());
+        on('analyticsExportBtn', 'click', () => this.exportAnalyticsCsv());
+        on('analyticsDateFrom', 'change', (event) => {
+            this.analytics.filters.dateFrom = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsDateTo', 'change', (event) => {
+            this.analytics.filters.dateTo = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsStageFilter', 'change', (event) => {
+            this.analytics.filters.stage = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsNosologyFilter', 'change', (event) => {
+            this.analytics.filters.nosology = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsDoctorFilter', 'change', (event) => {
+            this.analytics.filters.doctor = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsDepartmentFilter', 'change', (event) => {
+            this.analytics.filters.department = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsResetFiltersBtn', 'click', () => this.resetAnalyticsFilters());
 
         // Экспорт
         on('openExportBtn', 'click', () => this.openExportModal());

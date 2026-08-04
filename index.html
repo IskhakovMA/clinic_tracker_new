@@ -74,6 +74,7 @@
             <button type="button" class="nav__item is-active" data-view="patients" aria-current="page">Пациенты</button>
             <button type="button" class="nav__item" data-view="calendar">Календарь</button>
             <button type="button" class="nav__item" data-view="notifications">Уведомления</button>
+            <button type="button" class="nav__item" data-view="analytics">Аналитика</button>
             <button type="button" class="nav__item" data-view="checklists">Чек-листы</button>
             <button type="button" class="nav__item" data-view="quality">Качество данных</button>
             <button type="button" class="nav__item" data-view="plans">Будущие планы</button>
@@ -343,6 +344,82 @@
                 </div>
 
                 <div class="panel panel--pad quality-duplicates" id="qualityDuplicatesPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-analytics">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Аналитика</h1>
+                        <p class="pagehead__subtitle">Организационные показатели маршрутов, просрочек и заполненности данных</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="analyticsExportBtn">CSV</button>
+                        <button type="button" class="btn btn--ghost" id="analyticsRefreshBtn">Обновить</button>
+                    </div>
+                </div>
+
+                <div class="toolbar">
+                    <div class="toolbar__filters analytics-filters">
+                        <label class="visually-hidden" for="analyticsDateFrom">Дата от</label>
+                        <input class="input" type="date" id="analyticsDateFrom">
+                        <label class="visually-hidden" for="analyticsDateTo">Дата до</label>
+                        <input class="input" type="date" id="analyticsDateTo">
+                        <label class="visually-hidden" for="analyticsStageFilter">Этап</label>
+                        <select class="select" id="analyticsStageFilter"></select>
+                        <label class="visually-hidden" for="analyticsNosologyFilter">Профиль клиентского пути</label>
+                        <select class="select" id="analyticsNosologyFilter"></select>
+                        <label class="visually-hidden" for="analyticsDoctorFilter">Лечащий врач</label>
+                        <select class="select" id="analyticsDoctorFilter"></select>
+                        <label class="visually-hidden" for="analyticsDepartmentFilter">Отделение</label>
+                        <select class="select" id="analyticsDepartmentFilter"></select>
+                        <button type="button" class="btn btn--ghost" id="analyticsResetFiltersBtn">Сбросить</button>
+                    </div>
+                </div>
+
+                <div class="split-note">
+                    <span class="chip chip--neutral">Текущее состояние</span>
+                    <span class="muted">Карточки, этапы, качество данных, чек-листы, workload и очередь уведомлений считаются на момент запроса.</span>
+                    <span class="chip chip--accent">За выбранный период</span>
+                    <span class="muted">Просрочки фильтруются по плановой дате, длительности этапов — по дате завершения интервала.</span>
+                </div>
+
+                <div class="stats" id="analyticsStatsRow"></div>
+
+                <div class="cards-2 analytics-grid">
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Пациенты по этапам</h2>
+                        <div class="bar-list" id="analyticsStageChart"></div>
+                    </div>
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Текущее состояние качества данных</h2>
+                        <div class="analytics-list" id="analyticsQualityList"></div>
+                    </div>
+                </div>
+
+                <div class="cards-2 analytics-grid">
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Просроченные события</h2>
+                        <div class="analytics-list" id="analyticsOverdueList"></div>
+                    </div>
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Распределение рабочей нагрузки</h2>
+                        <div class="analytics-list" id="analyticsWorkloadList"></div>
+                    </div>
+                </div>
+
+                <div class="cards-2 analytics-grid">
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Чек-листы</h2>
+                        <div class="analytics-list" id="analyticsChecklistList"></div>
+                    </div>
+                    <div class="panel panel--pad">
+                        <h2 class="panel__title">Уведомления</h2>
+                        <p class="panel__text">Статус sent означает обработку тестовым провайдером, а не подтверждённую доставку пациенту.</p>
+                        <div class="analytics-list" id="analyticsNotificationsList"></div>
+                    </div>
+                </div>
+
+                <div class="panel panel--pad" id="analyticsDetailsPanel"></div>
             </section>
 
             <section class="view is-hidden" id="view-plans">
