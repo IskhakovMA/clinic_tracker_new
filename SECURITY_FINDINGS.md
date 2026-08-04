@@ -162,28 +162,36 @@ Source skills: `skills/securing-github-actions-workflows/SKILL.md`,
 `skills/integrating-sast-into-github-actions-pipeline/SKILL.md`,
 `skills/implementing-github-advanced-security-for-code-scanning/SKILL.md`.
 
-Description: Read-only GitHub API reported zero workflows. Branch protection
-API for `main` returned 404. PR #8 also reported no checks. This means local
-checks are not enforced by GitHub before merge.
+Description: The baseline audit found no workflows and no published PR checks.
+This remediation branch adds least-privilege CI, dependency audit, Bandit SAST,
+Gitleaks tree/history scanning, Dependabot config, CODEOWNERS, SECURITY.md and
+a PR template. Branch protection and required checks are not enabled yet, so the
+finding remains partially remediated until post-merge settings are applied.
 
 Prerequisites: Maintainer access or compromised maintainer token.
 
 Evidence:
 
 ```text
-gh api repos/applehooked-cmd/clinic_tracker_new/actions/workflows -> {"total_count":0}
-gh api repos/applehooked-cmd/clinic_tracker_new/branches/main/protection -> 404
+Before this branch:
+  gh api repos/applehooked-cmd/clinic_tracker_new/actions/workflows -> {"total_count":0}
+  gh api repos/applehooked-cmd/clinic_tracker_new/branches/main/protection -> 404
+
+In this branch:
+  .github/workflows/ci.yml adds backend-tests, frontend-security,
+  workflow-policy, dependency-audit, sast-bandit and secret-scan.
 ```
 
 Impact: Direct pushes, force pushes, or unreviewed merges may be possible
 depending on repository settings not visible via protection. Security tests,
 SCA, SAST, and secret scanning are not enforced in CI.
 
-Existing controls: Manual local checks and PR discipline.
+Existing controls: Manual local checks, PR discipline, and new CI/security
+workflow definitions in this branch. Branch protection is not yet enforced.
 
-Remediation: Add protected `main`, required PR reviews, required status checks,
-least-privilege workflow permissions, dependency/SAST/secret scans, and no admin
-bypass for normal merges.
+Remediation: After merge, enable protected `main`, required PR reviews, required
+status checks, no routine admin bypass, and no direct pushes where the GitHub
+plan supports it.
 
 Regression test recommendation: Repository governance checklist and CI status
 checks on every PR.
@@ -192,7 +200,8 @@ Exploitability: Medium; depends on GitHub permissions.
 
 Data sensitivity: Source code, release integrity, future secrets.
 
-Residual risk: High until repository controls are enforced.
+Residual risk: High until the new checks are required by branch protection or an
+equivalent ruleset.
 
 ## SEC-2026-005: Request schemas generally ignore unknown JSON fields
 

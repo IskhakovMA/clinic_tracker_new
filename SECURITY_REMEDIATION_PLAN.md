@@ -14,6 +14,11 @@ Expected change: Add branch protection for `main`, required PR reviews,
 required status checks, no routine admin bypass, and CI workflows for pytest,
 pip-audit, JS syntax/CSP checks, SAST, and secret scanning.
 
+Current remediation branch status: PARTIAL. CI/security workflows, Dependabot
+configuration, CODEOWNERS, SECURITY.md, PR template and a post-merge settings
+plan are added. Branch protection, required checks and GitHub-native security
+features still require a separate confirmed settings step after merge.
+
 Regression tests: GitHub checks must appear on every PR and block merge on
 failure.
 
@@ -22,7 +27,8 @@ Migration risk: None to application data.
 Deployment risk: Medium operational risk because stricter repository controls
 can block emergency changes until workflows are stable.
 
-Recommended PR: `chore/github-security-baseline`.
+Recommended PR: `fix/github-security-baseline`, followed by a separate
+post-merge repository settings step.
 
 ## P2 - Medium
 
