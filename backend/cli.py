@@ -4,6 +4,8 @@
     python -m backend.cli import-structure <file.json>
     python -m backend.cli check-db
     python -m backend.cli backup [--dest PATH] [--overwrite]
+    python -m backend.cli backup-inspect <backup-file>
+    python -m backend.cli backup-verify <backup-file>
     python -m backend.cli restore <backup-file> [--yes]
     python -m backend.cli audit-tail [--limit N]
     python -m backend.cli audit-prune [--days N]
@@ -204,12 +206,48 @@ def cmd_check_db(args: argparse.Namespace) -> int:
 def cmd_backup(args: argparse.Namespace) -> int:
     try:
         dest = maintenance.backup_database(config.DB_PATH, args.dest, overwrite=args.overwrite)
+        report = maintenance.inspect_backup(dest)
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
-    audit.record(db.get_connection(), audit.BACKUP_CREATED, detail="via=cli")
+    audit.record(
+        db.get_connection(),
+        audit.BACKUP_CREATED,
+        detail=f"via=cli format=v{report['version']} key_id={report['key_id']}",
+    )
     print(f"Резервная копия создана: {dest}")
-    print("Файл содержит медицинские данные — храните его так же защищённо, как основную базу.")
+    print(f"Формат: encrypted v{report['version']} ({report['algorithm']}), key_id={report['key_id']}")
+    print("Файл зашифрован. Храните backup-ключ отдельно от базы и резервных копий.")
+    return 0
+
+
+def cmd_backup_inspect(args: argparse.Namespace) -> int:
+    try:
+        metadata = maintenance.inspect_backup(args.backup_file)
+    except maintenance.MaintenanceError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print("Метаданные резервной копии (header не аутентифицирован без verify):")
+    print(f"  формат:          {metadata['format']} v{metadata['version']}")
+    print(f"  алгоритм:        {metadata['algorithm']}")
+    print(f"  key_id:          {metadata['key_id']}")
+    print(f"  создано:         {metadata['created_at']}")
+    print(f"  версия схемы:    {metadata['schema_version']}")
+    print(f"  ciphertext bytes: {metadata['ciphertext_length']}")
+    return 0
+
+
+def cmd_backup_verify(args: argparse.Namespace) -> int:
+    try:
+        report = maintenance.verify_backup(args.backup_file)
+    except maintenance.MaintenanceError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    print("Резервная копия прошла проверку AEAD и SQLite.")
+    print(f"  формат:          v{report.get('version')}")
+    print(f"  key_id:          {report.get('key_id')}")
+    print(f"  версия схемы:    {report.get('schema_version')}")
+    print(f"  записей пациентов: {report.get('patient_count')}")
     return 0
 
 
@@ -220,7 +258,9 @@ def cmd_restore(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
-    print(f"Резервная копия прошла проверку: {args.backup_file}")
+    print("Резервная копия прошла проверку AEAD и SQLite.")
+    print(f"  формат:          v{report.get('version')}")
+    print(f"  key_id:          {report.get('key_id')}")
     print(f"  версия схемы:     {report.get('schema_version')}")
     print(f"  записей пациентов: {report.get('patient_count')}")
 
@@ -239,12 +279,22 @@ def cmd_restore(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
 
-    audit.record(db.get_connection(), audit.RESTORE_PERFORMED, detail="via=cli")
+    audit.record(
+        db.get_connection(),
+        audit.RESTORE_PERFORMED,
+        detail=f"via=cli format=v{result['format_version']} key_id={result['key_id']}",
+    )
     print("Восстановление завершено.")
-    print(f"  из копии:                    {result['restored_from']}")
-    print(f"  копия прежней базы:          {result['pre_restore_backup']}")
+    print(f"  backup filename:             {result['restored_from']}")
+    print(f"  recovery copy:               {Path(result['pre_restore_backup']).name if result['pre_restore_backup'] else '-'}")
     print(f"  записей пациентов:           {result['patient_count']}")
     print("Все прежние сессии недействительны — войдите заново.")
+    return 0
+
+
+def cmd_backup_keygen(_args: argparse.Namespace) -> int:
+    print(maintenance.generate_backup_key())
+    print("Сохраните ключ в защищённом хранилище или key file с правами 0600.", file=sys.stderr)
     return 0
 
 
@@ -339,9 +389,17 @@ def main() -> int:
         help="Не применять создание отсутствующих таблиц, проверить файл как есть",
     )
 
-    p_backup = sub.add_parser("backup", help="Создать резервную копию базы")
-    p_backup.add_argument("--dest", default=None, help="Путь файла копии (по умолчанию data/backups/)")
+    p_backup = sub.add_parser("backup", help="Создать encrypted backup базы")
+    p_backup.add_argument("--dest", default=None, help="Путь encrypted backup (по умолчанию data/backups/*.cbk)")
     p_backup.add_argument("--overwrite", action="store_true", help="Перезаписать существующий файл")
+
+    p_backup_inspect = sub.add_parser("backup-inspect", help="Показать безопасные metadata encrypted backup")
+    p_backup_inspect.add_argument("backup_file", help="Путь к encrypted backup")
+
+    p_backup_verify = sub.add_parser("backup-verify", help="Проверить AEAD, SQLite integrity, FK и schema")
+    p_backup_verify.add_argument("backup_file", help="Путь к encrypted backup")
+
+    sub.add_parser("backup-keygen", help="Сгенерировать 256-bit backup key для CLINIC_BACKUP_KEY")
 
     p_restore = sub.add_parser("restore", help="Восстановить базу из резервной копии")
     p_restore.add_argument("backup_file", help="Путь к файлу резервной копии")
@@ -365,6 +423,9 @@ def main() -> int:
         "import-structure": cmd_import_structure,
         "check-db": cmd_check_db,
         "backup": cmd_backup,
+        "backup-inspect": cmd_backup_inspect,
+        "backup-verify": cmd_backup_verify,
+        "backup-keygen": cmd_backup_keygen,
         "restore": cmd_restore,
         "audit-tail": cmd_audit_tail,
         "audit-prune": cmd_audit_prune,
