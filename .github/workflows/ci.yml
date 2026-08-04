@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      CLINIC_DATA_DIR: ${{ runner.temp }}/clinic-ci-data
+      CLINIC_DATA_DIR: /tmp/clinic-ci-data-${{ github.run_id }}
       CLINIC_DEBUG: "false"
       NOTIFICATION_PROVIDER: mock
     steps:
@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      CLINIC_DATA_DIR: ${{ runner.temp }}/clinic-frontend-data
+      CLINIC_DATA_DIR: /tmp/clinic-frontend-data-${{ github.run_id }}
       CLINIC_DEBUG: "false"
       NOTIFICATION_PROVIDER: mock
     steps:
