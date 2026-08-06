@@ -14,10 +14,11 @@ def test_export_shape_and_content(auth_client):
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     doc = json.loads(r.content.decode("utf-8"))
-    assert doc["schemaVersion"] == 3
+    assert doc["schemaVersion"] == 4
     assert "generatedAt" in doc
     assert len(doc["patients"]) == 1
     assert doc["patients"][0]["name"] == "Кириллица Юникодовна"
+    assert doc["patients"][0]["policyNumber"] == "7700000000000000"
     assert doc["patients"][0]["complaint"] == "ёжик — тест"
     assert doc["patients"][0]["id"] == created["id"]
 

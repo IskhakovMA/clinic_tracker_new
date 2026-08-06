@@ -19,6 +19,7 @@ QualityCategory = Literal["assignment", "checklist", "completeness", "dates", "d
 QualityCode = Literal[
     "missing_treating_doctor",
     "missing_required_field",
+    "missing_policy_number",
     "missing_client_path_profile",
     "missing_diagnosis",
     "missing_stage",

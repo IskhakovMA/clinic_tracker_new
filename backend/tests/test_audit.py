@@ -8,6 +8,7 @@ SENSITIVE_MARKERS = [
     "$argon2id$",
     "Тестов Тест Тестович",       # patient name
     "+7 (999) 000-00-00",        # phone
+    "7700000000000000",          # OMS policy number
     "C34.1",                      # diagnosis
     "Жалобы для теста",          # complaint
     "Др. Проверяющий",           # doctor

@@ -361,6 +361,7 @@ const app = {
     QUALITY_CODE_LABELS: {
         missing_treating_doctor: 'Не назначен лечащий врач',
         missing_required_field: 'Не заполнено поле',
+        missing_policy_number: 'Не указан номер полиса ОМС',
         missing_client_path_profile: 'Не указан профиль клиентского пути',
         missing_diagnosis: 'Не указан диагноз',
         missing_stage: 'Не указан текущий этап',
@@ -1863,6 +1864,7 @@ const app = {
             const q = this.searchQuery.toLowerCase();
             filtered = filtered.filter(p =>
                 (p.name || '').toLowerCase().includes(q) ||
+                (p.policyNumber || '').toLowerCase().includes(q) ||
                 (p.diagnosis || '').toLowerCase().includes(q) ||
                 (p.doctor || '').toLowerCase().includes(q) ||
                 (p.head || '').toLowerCase().includes(q)
@@ -1880,6 +1882,7 @@ const app = {
     generateSummary(p) {
         const lines = [];
         lines.push(`Пациент: ${p.name}, ${p.age} лет.`);
+        lines.push(`Номер полиса ОМС: ${p.policyNumber || 'не указан'}.`);
         lines.push(`Диагноз (МКБ-10): ${p.diagnosis || 'не указан'}.`);
         if (p.nosology && this.nosologyData[p.nosology]) {
             lines.push(`Профиль клиентского пути: ${this.nosologyData[p.nosology].label}${p.diseaseStage ? ', стадия ' + p.diseaseStage : ''}.`);
@@ -2254,6 +2257,7 @@ const app = {
                         el('h1', { class: 'pcard__name', text: p.name }),
                         el('div', { class: 'pcard__meta', text: `${p.age} лет · приоритет: ${this.PRIORITY_LABELS[p.priority] || p.priority}` }),
                         p.phone ? el('div', { class: 'pcard__phone', text: p.phone }) : null,
+                        el('div', { class: 'pcard__sub', text: `Полис ОМС: ${p.policyNumber || 'Не указан'}` }),
                     ]),
                 ]),
                 this.statusChip(p),
@@ -2583,6 +2587,7 @@ const app = {
                     this.field('Возраст', this.patientInput(p, 'age', 'number', p.age, v => parseInt(v, 10) || 0)),
                     this.field('Телефон', this.patientInput(p, 'phone', 'tel', p.phone)),
                 ]),
+                this.field('Номер полиса ОМС', this.patientInput(p, 'policyNumber', 'text', p.policyNumber || '')),
             ]),
             el('fieldset', { class: 'fieldset' }, [
                 el('legend', { class: 'fieldset__legend', text: 'Медицинская информация' }),
@@ -4466,6 +4471,7 @@ const app = {
             name: fio,
             age: parseInt($('age').value, 10) || 0,
             phone: $('phone').value,
+            policyNumber: $('policyNumber').value,
             priority: $('priority').value,
             stage,
             diagnosis,

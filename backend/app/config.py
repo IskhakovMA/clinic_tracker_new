@@ -61,10 +61,10 @@ MAX_IMPORT_PATIENTS = 500
 MAX_EVENTS_PER_HISTORY_ENTRY = 200
 MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 
-# v3: notification preferences, templates and queue.
-SCHEMA_VERSION = 3
+# v4: nullable OMS policy number on patient cards.
+SCHEMA_VERSION = 4
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
-IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2, 3)
+IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2, 3, 4)
 
 NOTIFICATION_PROVIDER = os.environ.get("NOTIFICATION_PROVIDER", "mock").strip().lower()
 NOTIFICATION_DEFAULT_REMINDER_HOURS = int(os.environ.get("NOTIFICATION_DEFAULT_REMINDER_HOURS", "24"))
