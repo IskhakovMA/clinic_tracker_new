@@ -29,6 +29,41 @@ class AnalyticsSummaryOut(BaseModel):
     cards: list[MetricCard]
 
 
+class DashboardChartRow(BaseModel):
+    code: str | None = None
+    label: str
+    count: int
+    percent: float = 0.0
+    detail_type: str | None = None
+    filter: dict[str, Any] = Field(default_factory=dict)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardTrendRow(BaseModel):
+    date: str
+    label: str
+    new_patients: int
+    completed_patients: int = 0
+
+
+class DashboardSection(BaseModel):
+    title: str
+    total: int = 0
+    rows: list[DashboardChartRow] = Field(default_factory=list)
+
+
+class AnalyticsDashboardOut(BaseModel):
+    meta: AnalyticsMeta
+    summary: AnalyticsSummaryOut
+    stages: "AnalyticsStagesOut"
+    profiles: DashboardSection
+    route_state: DashboardSection
+    data_quality: DashboardSection
+    trend: dict[str, Any]
+    workload: "WorkloadOut"
+    attention: DashboardSection
+
+
 class StageRow(BaseModel):
     stage: str
     stage_label: str

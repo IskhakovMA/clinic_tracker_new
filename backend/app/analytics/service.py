@@ -11,7 +11,7 @@ import sqlite3
 import csv
 import io
 from collections import Counter, defaultdict
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import config, policy
@@ -23,6 +23,10 @@ from .metrics import duration_stats, ordered_stage_rows, overdue_bucket, percent
 
 SUMMARY_DEFINITIONS = {
     "total_patients": "Все пациенты, доступные текущей роли с учётом фильтров.",
+    "active_patients": "Доступные пациенты в этапах маршрута до завершения.",
+    "completed_patients": "Доступные пациенты на этапе «Завершено».",
+    "patients_need_attention": "Пациенты с текущими findings Центра качества данных.",
+    "data_quality_issues": "Все текущие critical/warning findings Центра качества данных по доступным пациентам.",
     "unassigned_patients": "Доступные пациенты без закреплённой учётной записи лечащего врача.",
     "patients_with_overdue": "Пациенты с текущим finding overdue_event из Центра качества данных.",
     "overdue_events": "Текущие planned events в прошлом без фактического выполнения по правилам Центра качества данных.",
@@ -99,7 +103,9 @@ def _quality_issue_ids(result: dict, *, severity: str | None = None, code: str |
 
 def _filtered_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters, quality: dict | None = None) -> set[str]:
     where, params = _base_patient_where(filters, user)
-    rows = conn.execute(f"SELECT patients.id FROM patients WHERE {' AND '.join(where)}", params).fetchall()
+    rows = conn.execute(  # nosec B608 - clauses come from server-side allowlisted filters and bound params.
+        f"SELECT patients.id FROM patients WHERE {' AND '.join(where)}", params  # nosec B608
+    ).fetchall()
     ids = {r["id"] for r in rows}
     if not ids:
         return set()
@@ -115,7 +121,7 @@ def _filtered_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, fi
             f"""SELECT DISTINCT notifications.patient_id
                 FROM notifications
                 JOIN patients ON patients.id = notifications.patient_id
-                WHERE notifications.status = ? AND patients.id IN ({marks})""",
+                WHERE notifications.status = ? AND patients.id IN ({marks})""",  # nosec B608
             [filters.notification_status, *sorted(ids)],
         ).fetchall()
         ids &= {r["patient_id"] for r in nrows}
@@ -136,7 +142,7 @@ def _patient_rows(conn: sqlite3.Connection, patient_ids: set[str] | None = None)
             LEFT JOIN departments d ON d.id = ud.department_id AND d.status = 'active'
             WHERE {cond}
             GROUP BY patients.id
-            ORDER BY patients.name ASC, patients.id ASC""",
+            ORDER BY patients.name ASC, patients.id ASC""",  # nosec B608
         params,
     ).fetchall()
 
@@ -161,7 +167,7 @@ def _notification_counts(conn: sqlite3.Connection, patient_ids: set[str]) -> dic
         f"""SELECT notifications.status, COUNT(*) AS c
             FROM notifications JOIN patients ON patients.id = notifications.patient_id
             WHERE {cond}
-            GROUP BY notifications.status""",
+            GROUP BY notifications.status""",  # nosec B608
         params,
     ).fetchall()
     counts = {status: 0 for status in notifications.QUEUE_STATUSES}
@@ -197,7 +203,7 @@ def _checklist_state(conn: sqlite3.Connection, patient_ids: set[str]) -> dict:
             )
             WHERE {cond}
             GROUP BY patients.id
-            ORDER BY patients.name ASC, patients.id ASC""",
+            ORDER BY patients.name ASC, patients.id ASC""",  # nosec B608
         params,
     ).fetchall()
     state = {
@@ -259,10 +265,15 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
     overdue_issues = [i for i in quality["issues"] if i["code"] == "overdue_event" and i["patient_id"] in ids]
     critical = [i for i in quality["issues"] if i["severity"] == "critical" and i["patient_id"] in ids]
     warnings = [i for i in quality["issues"] if i["severity"] == "warning" and i["patient_id"] in ids]
+    quality_patient_ids = {i["patient_id"] for i in quality["issues"] if i["patient_id"] in ids}
     checklist = _checklist_state(conn, ids)
     notification_counts = _notification_counts(conn, ids)
     cards = [
         {"code": "total_patients", "label": "Всего доступных пациентов", "value": len(ids), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["total_patients"]},
+        {"code": "active_patients", "label": "Активные", "value": sum(1 for r in rows if r["stage"] != "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["active_patients"]},
+        {"code": "completed_patients", "label": "Завершённые", "value": sum(1 for r in rows if r["stage"] == "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["completed_patients"]},
+        {"code": "patients_need_attention", "label": "Требуют внимания", "value": len(quality_patient_ids), "kind": "current", "detail_type": "quality_warning", "definition": SUMMARY_DEFINITIONS["patients_need_attention"]},
+        {"code": "data_quality_issues", "label": "Проблемы качества данных", "value": len(critical) + len(warnings), "kind": "current", "detail_type": "quality_warning", "definition": SUMMARY_DEFINITIONS["data_quality_issues"]},
         {"code": "unassigned_patients", "label": "Пациенты без назначенного врача", "value": sum(1 for r in rows if not r["treating_doctor_user_id"]), "kind": "current", "detail_type": "unassigned_patients", "definition": SUMMARY_DEFINITIONS["unassigned_patients"]},
         {"code": "patients_with_overdue", "label": "Пациенты с просроченными событиями", "value": len({i["patient_id"] for i in overdue_issues}), "kind": "current", "detail_type": "overdue_events", "definition": SUMMARY_DEFINITIONS["patients_with_overdue"]},
         {"code": "overdue_events", "label": "Просроченные события", "value": len(overdue_issues), "kind": "current", "detail_type": "overdue_events", "definition": SUMMARY_DEFINITIONS["overdue_events"]},
@@ -273,6 +284,161 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
         {"code": "failed_notifications", "label": "Ошибки уведомлений", "value": notification_counts["failed"], "kind": "current", "detail_type": "notifications_failed", "definition": SUMMARY_DEFINITIONS["failed_notifications"]},
     ]
     return {"meta": _computed_meta(user, filters, SUMMARY_DEFINITIONS), "cards": cards}
+
+
+def _profile_rows(rows: list[sqlite3.Row]) -> dict:
+    total = len(rows)
+    counter = Counter((row["nosology"] or "").strip() for row in rows)
+    result = []
+    for code, count in sorted(counter.items(), key=lambda x: (-x[1], x[0] or "zz")):
+        result.append({
+            "code": code or "missing",
+            "label": code or "Не указан",
+            "count": count,
+            "percent": percent(count, total),
+            "detail_type": "patients",
+            "filter": {"nosology": code} if code else {},
+            "meta": {"nosology": code},
+        })
+    return {"title": "Пациенты по профилю клиентского пути", "total": total, "rows": result}
+
+
+def _route_state_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[str]) -> dict:
+    total = len(rows)
+    quality_ids = _quality_issue_ids(quality) & patient_ids
+    active = sum(1 for row in rows if row["stage"] != "completed")
+    completed = sum(1 for row in rows if row["stage"] == "completed")
+    attention = len(quality_ids)
+    return {
+        "title": "Состояние маршрутов",
+        "total": total,
+        "rows": [
+            {"code": "active", "label": "Активные", "count": active, "percent": percent(active, total), "detail_type": "patients", "filter": {}, "meta": {"overlap": False}},
+            {"code": "completed", "label": "Завершённые", "count": completed, "percent": percent(completed, total), "detail_type": "patients", "filter": {"stage": "completed"}, "meta": {"overlap": False}},
+            {"code": "attention", "label": "Требуют внимания", "count": attention, "percent": percent(attention, total), "detail_type": "quality_warning", "filter": {}, "meta": {"overlap": True}},
+        ],
+    }
+
+
+def _quality_code_rows(quality: dict, patient_ids: set[str]) -> dict:
+    issues = [issue for issue in quality["issues"] if issue["patient_id"] in patient_ids]
+    by_code = Counter(issue["code"] for issue in issues)
+    rows = []
+    for code, count in sorted(by_code.items(), key=lambda x: (-x[1], x[0])):
+        rows.append({
+            "code": code,
+            "label": QUALITY_CODE_LABELS.get(code, code),
+            "count": count,
+            "percent": percent(count, len(issues)),
+            "detail_type": _quality_detail_type_for_code(issues, code),
+            "filter": {"code": code},
+            "meta": {"rule": data_quality.QUALITY_RULES.get(code, "")},
+        })
+    return {"title": "Самые частые проблемы качества данных", "total": len(issues), "rows": rows}
+
+
+QUALITY_CODE_LABELS = {
+    "missing_treating_doctor": "Не назначен лечащий врач",
+    "missing_required_field": "Не заполнено поле",
+    "missing_policy_number": "Не указан номер полиса ОМС",
+    "missing_client_path_profile": "Не указан профиль клиентского пути",
+    "missing_diagnosis": "Не указан диагноз",
+    "missing_stage": "Не указан текущий этап",
+    "invalid_phone": "Некорректный телефон",
+    "actual_date_in_future": "Фактическая дата в будущем",
+    "planned_date_in_past": "Плановая дата в прошлом",
+    "stage_sequence_violation": "Нарушение маршрута",
+    "overdue_event": "Просроченное событие",
+    "incomplete_required_checklist": "Незавершённый чек-лист",
+    "possible_duplicate": "Возможный дубль",
+}
+
+
+def _quality_detail_type_for_code(issues: list[dict], code: str) -> str:
+    severities = {issue["severity"] for issue in issues if issue["code"] == code}
+    return "quality_critical" if "critical" in severities else "quality_warning"
+
+
+def _attention_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[str], checklist: dict) -> dict:
+    issue_ids = _quality_issue_ids(quality) & patient_ids
+    overdue_ids = _quality_issue_ids(quality, code="overdue_event") & patient_ids
+    unassigned = sum(1 for row in rows if not row["treating_doctor_user_id"])
+    critical = len([issue for issue in quality["issues"] if issue["severity"] == "critical" and issue["patient_id"] in patient_ids])
+    rows_out = [
+        {"code": "quality", "label": "Пациенты с проблемами качества данных", "count": len(issue_ids), "detail_type": "quality_warning", "filter": {}, "meta": {}},
+        {"code": "overdue", "label": "Пациенты с просроченными событиями", "count": len(overdue_ids), "detail_type": "overdue_events", "filter": {}, "meta": {}},
+        {"code": "unassigned", "label": "Без назначенного лечащего врача", "count": unassigned, "detail_type": "unassigned_patients", "filter": {}, "meta": {}},
+        {"code": "critical", "label": "Критические findings", "count": critical, "detail_type": "quality_critical", "filter": {}, "meta": {}},
+        {"code": "checklists", "label": "Незавершённые обязательные чек-листы", "count": checklist["incomplete_required"], "detail_type": "incomplete_checklists", "filter": {}, "meta": {}},
+    ]
+    rows_out = sorted(rows_out, key=lambda x: (-x["count"], x["label"]))
+    return {"title": "Требуют внимания", "total": len(issue_ids), "rows": rows_out}
+
+
+def _trend_rows(conn: sqlite3.Connection, patient_ids: set[str], filters: AnalyticsFilters) -> dict:
+    start, end = filters.period_or_default()
+    truncated = False
+    if (end - start).days > 89:
+        start = end - timedelta(days=89)
+        truncated = True
+    days = (end - start).days + 1
+    labels = [(start + timedelta(days=idx)) for idx in range(days)]
+    created = Counter()
+    completed = Counter()
+    if patient_ids:
+        cond, params = _ids_clause(patient_ids)
+        rows = conn.execute(  # nosec B608 - patient scope fragment is generated as placeholders by _ids_clause.
+            f"SELECT patients.arrival FROM patients WHERE {cond}", params  # nosec B608
+        ).fetchall()
+        for row in rows:
+            day = _safe_date(row["arrival"])
+            if day and start <= day <= end:
+                created[day] += 1
+        hrows = conn.execute(
+            f"""SELECT h.entered_at
+                FROM history_entries h
+                JOIN patients ON patients.id = h.patient_id
+                WHERE {cond} AND h.stage = 'completed'""",  # nosec B608
+            params,
+        ).fetchall()
+        for row in hrows:
+            day = _safe_date(row["entered_at"])
+            if day and start <= day <= end:
+                completed[day] += 1
+    return {
+        "title": "Динамика за период",
+        "period_days": days,
+        "truncated": truncated,
+        "max_days": 90,
+        "rows": [
+            {
+                "date": day.isoformat(),
+                "label": day.strftime("%d.%m"),
+                "new_patients": created[day],
+                "completed_patients": completed[day],
+            }
+            for day in labels
+        ],
+    }
+
+
+def dashboard(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
+    quality = _quality_context(conn, user)
+    patient_ids = _filtered_patient_ids(conn, user, filters, quality)
+    rows = _patient_rows(conn, patient_ids)
+    ids = {row["id"] for row in rows}
+    checklist = _checklist_state(conn, ids)
+    return {
+        "meta": _computed_meta(user, filters, {"dashboard": "Агрегированный scoped dashboard без PHI и внешних запросов."}),
+        "summary": summary(conn, user, filters),
+        "stages": stages(conn, user, filters),
+        "profiles": _profile_rows(rows),
+        "route_state": _route_state_rows(rows, quality, ids),
+        "data_quality": _quality_code_rows(quality, ids),
+        "trend": _trend_rows(conn, ids, filters),
+        "workload": workload(conn, user, filters),
+        "attention": _attention_rows(rows, quality, ids, checklist),
+    }
 
 
 def stages(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
@@ -375,7 +541,7 @@ def stage_durations(conn: sqlite3.Connection, user: policy.CurrentUser, filters:
                    h.stage, h.entered_at, h.seq
             FROM patients JOIN history_entries h ON h.patient_id = patients.id
             WHERE {cond}
-            ORDER BY patients.id, h.seq ASC""",
+            ORDER BY patients.id, h.seq ASC""",  # nosec B608
         params,
     ).fetchall()
     if not history_rows:
@@ -485,7 +651,7 @@ def _notification_status_by_patient(conn: sqlite3.Connection, patient_ids: set[s
         f"""SELECT notifications.patient_id, notifications.status, COUNT(*) AS c
             FROM notifications JOIN patients ON patients.id = notifications.patient_id
             WHERE {cond}
-            GROUP BY notifications.patient_id, notifications.status""",
+            GROUP BY notifications.patient_id, notifications.status""",  # nosec B608
         params,
     ).fetchall()
     for row in rows:
@@ -570,7 +736,7 @@ def notifications_state(conn: sqlite3.Connection, user: policy.CurrentUser, filt
                 JOIN patients ON patients.id = notifications.patient_id
                 LEFT JOIN notification_templates t ON t.code = notifications.template_code
                 WHERE {cond}
-                GROUP BY notifications.status, notifications.template_code, notifications.source_type, notifications.error_code, t.name""",
+                GROUP BY notifications.status, notifications.template_code, notifications.source_type, notifications.error_code, t.name""",  # nosec B608
             params,
         ).fetchall()
     status_counts = {status: 0 for status in notifications.QUEUE_STATUSES}
@@ -609,7 +775,7 @@ def _notification_patient_preconditions(conn: sqlite3.Connection, patient_ids: s
                    COALESCE(pref.sms_enabled, 0) AS sms_enabled
             FROM patients
             LEFT JOIN patient_notification_preferences pref ON pref.patient_id = patients.id
-            WHERE {cond}""",
+            WHERE {cond}""",  # nosec B608
         params,
     ).fetchall()
     no_consent = 0
@@ -687,7 +853,7 @@ def _notification_details(conn: sqlite3.Connection, patient_ids: set[str], statu
             JOIN patients ON patients.id = notifications.patient_id
             LEFT JOIN users u ON u.id = patients.treating_doctor_user_id
             WHERE {cond} AND notifications.status = ?
-            ORDER BY notifications.scheduled_at ASC, notifications.id ASC""",
+            ORDER BY notifications.scheduled_at ASC, notifications.id ASC""",  # nosec B608
         [*params, status_value],
     ).fetchall()
     return [

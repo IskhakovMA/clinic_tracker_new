@@ -325,6 +325,7 @@ const app = {
         },
     },
     analytics: {
+        dashboard: null,
         summary: null,
         stages: null,
         overdue: null,
@@ -3508,31 +3509,13 @@ const app = {
 
     async loadAnalytics() {
         const params = this.analyticsParams();
-        const [
-            summary,
-            stages,
-            overdue,
-            workload,
-            dataQuality,
-            checklists,
-            notificationStats,
-        ] = await Promise.all([
-            apiGetJson(`/api/analytics/summary?${params}`),
-            apiGetJson(`/api/analytics/stages?${params}`),
-            apiGetJson(`/api/analytics/overdue?${params}`),
-            apiGetJson(`/api/analytics/workload?${params}`),
-            apiGetJson(`/api/analytics/data-quality?${params}`),
-            apiGetJson(`/api/analytics/checklists?${params}`),
-            apiGetJson(`/api/analytics/notifications?${params}`),
-        ]);
+        const dashboard = await apiGetJson(`/api/analytics/dashboard?${params}`);
         Object.assign(this.analytics, {
-            summary,
-            stages,
-            overdue,
-            workload,
-            dataQuality,
-            checklists,
-            notifications: notificationStats,
+            dashboard,
+            summary: dashboard.summary,
+            stages: dashboard.stages,
+            workload: dashboard.workload,
+            dataQuality: dashboard.data_quality,
         });
     },
 
@@ -3540,21 +3523,43 @@ const app = {
         $('analyticsStatsRow').replaceChildren();
         $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
         $('analyticsQualityList').replaceChildren();
-        $('analyticsOverdueList').replaceChildren();
         $('analyticsWorkloadList').replaceChildren();
-        $('analyticsChecklistList').replaceChildren();
-        $('analyticsNotificationsList').replaceChildren();
+        $('analyticsProfileChart').replaceChildren();
+        $('analyticsRouteStateChart').replaceChildren();
+        $('analyticsTrendChart').replaceChildren();
+        $('analyticsAttentionList').replaceChildren();
+        $('analyticsOperationsList').replaceChildren();
         $('analyticsDetailsPanel').replaceChildren();
         try {
             await this.loadAnalytics();
             this.renderAnalyticsFilterOptions();
             this.renderAnalyticsSummary();
-            this.renderAnalyticsStages();
-            this.renderAnalyticsQuality();
-            this.renderAnalyticsOverdue();
+            this.renderAnalyticsAttention();
+            this.renderAnalyticsBarChart('analyticsStageChart', this.analytics.stages.rows || [], {
+                labelKey: 'stage_label',
+                meta: row => `Просрочки: ${row.overdue_patients}; качество данных: ${row.quality_patients}`,
+                onClick: row => this.renderAnalyticsDetails('patients', row.stage_label, { stage: row.stage }),
+            });
+            this.renderAnalyticsBarChart('analyticsProfileChart', this.analytics.dashboard.profiles.rows || [], {
+                labelKey: 'label',
+                label: row => this.nosologyData[row.meta && row.meta.nosology] ? this.nosologyData[row.meta.nosology].label : row.label,
+                empty: 'Доступных пациентов с профилем клиентского пути нет.',
+                onClick: row => row.meta && row.meta.nosology ? this.renderAnalyticsDetails('patients', this.nosologyData[row.meta.nosology]?.label || row.label, { nosology: row.meta.nosology }) : null,
+            });
+            this.renderAnalyticsBarChart('analyticsRouteStateChart', this.analytics.dashboard.route_state.rows || [], {
+                labelKey: 'label',
+                meta: row => row.meta && row.meta.overlap ? 'Может пересекаться с другими состояниями' : 'Текущее состояние',
+                onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, row.filter || {}) : null,
+            });
+            this.renderAnalyticsBarChart('analyticsQualityList', this.analytics.dashboard.data_quality.rows || [], {
+                labelKey: 'label',
+                empty: 'Проблем качества данных по выбранным условиям нет.',
+                meta: row => row.meta && row.meta.rule ? row.meta.rule : '',
+                onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null,
+            });
+            this.renderAnalyticsTrend();
             this.renderAnalyticsWorkload();
-            this.renderAnalyticsChecklists();
-            this.renderAnalyticsNotifications();
+            this.renderAnalyticsOperations();
         } catch (e) {
             $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить аналитику: ${e.message}` }));
         }
@@ -3601,7 +3606,15 @@ const app = {
 
     renderAnalyticsSummary() {
         const cards = (this.analytics.summary && this.analytics.summary.cards) || [];
-        const nodes = cards.map(card => el('button', {
+        const visibleCodes = new Set([
+            'total_patients',
+            'active_patients',
+            'completed_patients',
+            'patients_need_attention',
+            'unassigned_patients',
+            'data_quality_issues',
+        ]);
+        const nodes = cards.filter(card => visibleCodes.has(card.code)).map(card => el('button', {
             type: 'button',
             class: 'stat stat--button',
             on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
@@ -3613,62 +3626,35 @@ const app = {
         $('analyticsStatsRow').replaceChildren(frag(nodes));
     },
 
-    renderAnalyticsStages() {
-        const rows = (this.analytics.stages && this.analytics.stages.rows) || [];
+    renderAnalyticsBarChart(targetId, rows, config) {
+        const labelKey = config.labelKey || 'label';
         if (!rows.length) {
-            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Доступных пациентов по выбранным условиям нет.' }));
+            $(targetId).replaceChildren(el('div', { class: 'empty', text: config.empty || 'Данных по выбранным условиям нет.' }));
             return;
         }
-        $('analyticsStageChart').replaceChildren(frag(rows.map(row => el('button', {
+        const max = Math.max(1, ...rows.map(row => Number(row.count || 0)));
+        $(targetId).replaceChildren(frag(rows.map(row => el('button', {
             type: 'button',
             class: 'bar-row',
-            on: { click: () => this.renderAnalyticsDetails('patients', row.stage_label, { stage: row.stage }) },
+            on: { click: () => config.onClick ? config.onClick(row) : null },
         }, [
-            el('span', { class: 'bar-row__label', text: row.stage_label }),
-            el('progress', { class: 'bar-row__bar', max: 100, value: row.percent, 'aria-label': `${row.stage_label}: ${row.percent}%` }),
-            el('span', { class: 'bar-row__value', text: `${row.count} · ${row.percent}%` }),
-            el('span', { class: 'bar-row__meta', text: `Просрочки: ${row.overdue_patients}; качество данных: ${row.quality_patients}` }),
+            el('span', { class: 'bar-row__label', text: config.label ? config.label(row) : row[labelKey] }),
+            el('progress', { class: 'bar-row__bar', max, value: row.count || 0, 'aria-label': `${row[labelKey]}: ${row.count || 0}` }),
+            el('span', { class: 'bar-row__value', text: config.valueText ? config.valueText(row) : `${row.count} · ${row.percent}%` }),
+            el('span', { class: 'bar-row__meta', text: config.meta ? config.meta(row) : '' }),
         ]))));
     },
 
-    renderAnalyticsQuality() {
-        const data = this.analytics.dataQuality || {};
-        const severity = data.by_severity || [];
-        const summary = data.summary || {};
-        $('analyticsQualityList').replaceChildren(frag([
-            el('div', { class: 'analytics-row' }, [
-                el('span', { text: 'Средняя полнота карточек' }),
-                el('strong', { text: `${summary.average_completeness ?? 0}%` }),
-            ]),
-            ...severity.map(row => el('button', {
-                type: 'button',
-                class: 'analytics-row analytics-row--button',
-                on: { click: () => this.renderAnalyticsDetails(row.severity === 'critical' ? 'quality_critical' : 'quality_warning', this.QUALITY_SEVERITY_LABELS[row.severity] || row.severity) },
-            }, [
-                el('span', { text: this.QUALITY_SEVERITY_LABELS[row.severity] || row.severity }),
-                el('strong', { text: String(row.count || 0) }),
-            ])),
-            el('p', { class: 'muted', text: 'Показано текущее состояние: история findings не хранится.' }),
-        ]));
-    },
-
-    renderAnalyticsOverdue() {
-        const data = this.analytics.overdue || {};
-        const buckets = data.buckets || [];
-        $('analyticsOverdueList').replaceChildren(frag([
-            el('button', {
-                type: 'button',
-                class: 'analytics-row analytics-row--button',
-                on: { click: () => this.renderAnalyticsDetails('overdue_events', 'Просроченные события') },
-            }, [
-                el('span', { text: 'Всего просроченных событий' }),
-                el('strong', { text: String(data.total || 0) }),
-            ]),
-            ...buckets.map(row => el('div', { class: 'analytics-row' }, [
-                el('span', { text: row.label }),
-                el('strong', { text: String(row.count || 0) }),
-            ])),
-        ]));
+    renderAnalyticsAttention() {
+        const rows = (this.analytics.dashboard && this.analytics.dashboard.attention && this.analytics.dashboard.attention.rows) || [];
+        $('analyticsAttentionList').replaceChildren(frag(rows.map(row => el('button', {
+            type: 'button',
+            class: 'analytics-row analytics-row--button analytics-row--accent',
+            on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null },
+        }, [
+            el('span', { text: row.label }),
+            el('strong', { text: String(row.count || 0) }),
+        ]))));
     },
 
     renderAnalyticsWorkload() {
@@ -3677,51 +3663,81 @@ const app = {
             $('analyticsWorkloadList').replaceChildren(el('div', { class: 'empty', text: 'Нет данных по нагрузке в текущем scope.' }));
             return;
         }
-        $('analyticsWorkloadList').replaceChildren(frag(rows.slice(0, 8).map(row => el('div', { class: 'analytics-row analytics-row--stack' }, [
-            el('span', { text: row.doctor_name }),
-            el('strong', { text: `${row.active_patients} активных` }),
-            el('small', { text: `Просрочки: ${row.overdue_patients}; чек-листы: ${row.incomplete_required_checklists}; уведомления failed: ${row.failed_notifications}` }),
+        const chartRows = rows.slice(0, 8).map(row => ({
+            label: row.doctor_name,
+            count: row.active_patients,
+            percent: 0,
+            meta: `Просрочки: ${row.overdue_patients}; чек-листы: ${row.incomplete_required_checklists}; уведомления failed: ${row.failed_notifications}`,
+        }));
+        const max = Math.max(1, ...chartRows.map(row => row.count));
+        chartRows.forEach(row => { row.percent = Math.round(row.count / max * 1000) / 10; });
+        this.renderAnalyticsBarChart('analyticsWorkloadList', chartRows, {
+            labelKey: 'label',
+            meta: row => row.meta,
+            valueText: row => `${row.count} активных`,
+            onClick: () => null,
+        });
+    },
+
+    renderAnalyticsOperations() {
+        const cards = (this.analytics.summary && this.analytics.summary.cards) || [];
+        const byCode = Object.fromEntries(cards.map(card => [card.code, card]));
+        const rows = ['overdue_events', 'incomplete_required_checklists', 'pending_notifications', 'failed_notifications']
+            .map(code => byCode[code])
+            .filter(Boolean);
+        $('analyticsOperationsList').replaceChildren(frag(rows.map(card => el('button', {
+            type: 'button',
+            class: 'analytics-row analytics-row--button',
+            on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
+        }, [
+            el('span', { text: card.label }),
+            el('strong', { text: String(card.value || 0) }),
         ]))));
     },
 
-    renderAnalyticsChecklists() {
-        const data = this.analytics.checklists || {};
-        const percentText = data.completion_percent === null || data.completion_percent === undefined
-            ? 'нет обязательных пунктов'
-            : `${data.completion_percent}%`;
-        $('analyticsChecklistList').replaceChildren(frag([
-            el('div', { class: 'analytics-row' }, [
-                el('span', { text: 'Обязательная полнота' }),
-                el('strong', { text: percentText }),
+    renderAnalyticsTrend() {
+        const trend = this.analytics.dashboard && this.analytics.dashboard.trend;
+        const rows = (trend && trend.rows) || [];
+        if (!rows.length) {
+            $('analyticsTrendChart').replaceChildren(el('div', { class: 'empty', text: 'Данных по динамике за период нет.' }));
+            return;
+        }
+        const max = Math.max(1, ...rows.map(row => Math.max(row.new_patients || 0, row.completed_patients || 0)));
+        const width = 640;
+        const height = 180;
+        const chart = document.createElementNS(SVG_NS, 'svg');
+        chart.setAttribute('class', 'analytics-trend__svg');
+        chart.setAttribute('viewBox', `0 0 ${width} ${height}`);
+        chart.setAttribute('role', 'img');
+        chart.setAttribute('aria-label', 'Новые пациенты за выбранный период');
+        const gap = 2;
+        const barWidth = Math.max(4, Math.floor((width - 40) / rows.length) - gap);
+        rows.forEach((row, index) => {
+            const value = row.new_patients || 0;
+            const barHeight = Math.round((height - 45) * value / max);
+            const rect = document.createElementNS(SVG_NS, 'rect');
+            rect.setAttribute('class', 'analytics-trend__bar');
+            rect.setAttribute('x', String(24 + index * (barWidth + gap)));
+            rect.setAttribute('y', String(height - 24 - barHeight));
+            rect.setAttribute('width', String(barWidth));
+            rect.setAttribute('height', String(barHeight));
+            rect.setAttribute('rx', '3');
+            chart.append(rect);
+        });
+        const axis = document.createElementNS(SVG_NS, 'line');
+        axis.setAttribute('class', 'analytics-trend__axis');
+        axis.setAttribute('x1', '20');
+        axis.setAttribute('x2', String(width - 12));
+        axis.setAttribute('y1', String(height - 24));
+        axis.setAttribute('y2', String(height - 24));
+        chart.append(axis);
+        $('analyticsTrendChart').replaceChildren(
+            chart,
+            el('div', { class: 'analytics-trend__meta' }, [
+                el('span', { text: `${rows.reduce((sum, row) => sum + (row.new_patients || 0), 0)} новых пациентов` }),
+                el('span', { text: `${rows.reduce((sum, row) => sum + (row.completed_patients || 0), 0)} завершений по истории этапов` }),
             ]),
-            el('button', {
-                type: 'button',
-                class: 'analytics-row analytics-row--button',
-                on: { click: () => this.renderAnalyticsDetails('incomplete_checklists', 'Незавершённые обязательные чек-листы') },
-            }, [
-                el('span', { text: 'Незавершённые обязательные пункты' }),
-                el('strong', { text: String(data.incomplete_required_items || 0) }),
-            ]),
-            el('p', { class: 'muted', text: data.formula || '' }),
-        ]));
-    },
-
-    renderAnalyticsNotifications() {
-        const data = this.analytics.notifications || {};
-        const counts = data.status_counts || {};
-        $('analyticsNotificationsList').replaceChildren(frag([
-            ...Object.entries(this.NOTIFICATION_STATUS_LABELS).map(([status, label]) => el('button', {
-                type: 'button',
-                class: 'analytics-row analytics-row--button',
-                on: { click: () => {
-                    if (status === 'pending') this.renderAnalyticsDetails('notifications_pending', label);
-                    else if (status === 'failed') this.renderAnalyticsDetails('notifications_failed', label);
-                } },
-            }, [
-                el('span', { text: label }),
-                el('strong', { text: String(counts[status] || 0) }),
-            ])),
-        ]));
+        );
     },
 
     async renderAnalyticsDetails(type, title, extra = {}) {

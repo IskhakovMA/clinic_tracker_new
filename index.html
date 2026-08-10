@@ -383,43 +383,53 @@
                     <span class="muted">Просрочки фильтруются по плановой дате, длительности этапов — по дате завершения интервала.</span>
                 </div>
 
-                <div class="stats" id="analyticsStatsRow"></div>
+                <div class="analytics-dashboard">
+                    <div class="stats analytics-kpis" id="analyticsStatsRow"></div>
 
-                <div class="cards-2 analytics-grid">
-                    <div class="panel panel--pad">
+                    <div class="panel panel--pad analytics-panel analytics-panel--wide">
+                        <h2 class="panel__title">Требуют внимания</h2>
+                        <div class="analytics-list analytics-attention" id="analyticsAttentionList"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel">
                         <h2 class="panel__title">Пациенты по этапам</h2>
                         <div class="bar-list" id="analyticsStageChart"></div>
                     </div>
-                    <div class="panel panel--pad">
-                        <h2 class="panel__title">Текущее состояние качества данных</h2>
-                        <div class="analytics-list" id="analyticsQualityList"></div>
-                    </div>
-                </div>
 
-                <div class="cards-2 analytics-grid">
-                    <div class="panel panel--pad">
-                        <h2 class="panel__title">Просроченные события</h2>
-                        <div class="analytics-list" id="analyticsOverdueList"></div>
+                    <div class="panel panel--pad analytics-panel">
+                        <h2 class="panel__title">Пациенты по профилю клиентского пути</h2>
+                        <div class="bar-list" id="analyticsProfileChart"></div>
                     </div>
-                    <div class="panel panel--pad">
+
+                    <div class="panel panel--pad analytics-panel">
+                        <h2 class="panel__title">Состояние маршрутов</h2>
+                        <p class="panel__text">Блок «Требуют внимания» может пересекаться с активными и завершёнными маршрутами.</p>
+                        <div class="bar-list" id="analyticsRouteStateChart"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel">
+                        <h2 class="panel__title">Самые частые проблемы качества данных</h2>
+                        <div class="bar-list" id="analyticsQualityList"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel analytics-panel--wide">
+                        <h2 class="panel__title">Новые пациенты за период</h2>
+                        <div class="analytics-trend" id="analyticsTrendChart"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel">
                         <h2 class="panel__title">Распределение рабочей нагрузки</h2>
-                        <div class="analytics-list" id="analyticsWorkloadList"></div>
+                        <div class="bar-list" id="analyticsWorkloadList"></div>
                     </div>
+
+                    <div class="panel panel--pad analytics-panel">
+                        <h2 class="panel__title">Операционные показатели</h2>
+                        <div class="analytics-list" id="analyticsOperationsList"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel analytics-panel--wide" id="analyticsDetailsPanel"></div>
                 </div>
 
-                <div class="cards-2 analytics-grid">
-                    <div class="panel panel--pad">
-                        <h2 class="panel__title">Чек-листы</h2>
-                        <div class="analytics-list" id="analyticsChecklistList"></div>
-                    </div>
-                    <div class="panel panel--pad">
-                        <h2 class="panel__title">Уведомления</h2>
-                        <p class="panel__text">Статус sent означает обработку тестовым провайдером, а не подтверждённую доставку пациенту.</p>
-                        <div class="analytics-list" id="analyticsNotificationsList"></div>
-                    </div>
-                </div>
-
-                <div class="panel panel--pad" id="analyticsDetailsPanel"></div>
             </section>
 
             <section class="view is-hidden" id="view-plans">

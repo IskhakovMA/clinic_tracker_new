@@ -1230,6 +1230,18 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
    -------------------------------------------------------------------------- */
 
 .analytics-grid { align-items: start; }
+.analytics-dashboard {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--sp-4);
+}
+.analytics-kpis,
+.analytics-panel--wide {
+    grid-column: 1 / -1;
+}
+.analytics-kpis {
+    margin: 0;
+}
 .analytics-filters { display: flex; flex-wrap: wrap; }
 .split-note {
     display: flex;
@@ -1304,8 +1316,43 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     display: grid;
 }
 
+.analytics-row--accent {
+    border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+
 .analytics-row small {
     color: var(--text-2);
+}
+
+.analytics-trend {
+    display: grid;
+    gap: var(--sp-3);
+    min-width: 0;
+}
+
+.analytics-trend__svg {
+    width: 100%;
+    min-height: 180px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+}
+
+.analytics-trend__bar {
+    fill: var(--accent);
+}
+
+.analytics-trend__axis {
+    stroke: var(--border-strong);
+    stroke-width: 1;
+}
+
+.analytics-trend__meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+    color: var(--text-2);
+    font-size: var(--text-sm);
 }
 
 .analytics-detail {
@@ -1318,6 +1365,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 }
 
 @media (max-width: 700px) {
+    .analytics-dashboard { grid-template-columns: 1fr; }
     .analytics-filters { display: grid; grid-template-columns: 1fr; }
     .bar-row { grid-template-columns: 1fr; }
     .analytics-row { align-items: flex-start; }
