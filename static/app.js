@@ -3507,6 +3507,38 @@ const app = {
         return params.toString();
     },
 
+    analyticsDateString(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    },
+
+    setAnalyticsPeriodPreset(days) {
+        const end = new Date();
+        const start = new Date();
+        start.setDate(end.getDate() - Number(days) + 1);
+        this.analytics.filters.dateFrom = this.analyticsDateString(start);
+        this.analytics.filters.dateTo = this.analyticsDateString(end);
+        $('analyticsDateFrom').value = this.analytics.filters.dateFrom;
+        $('analyticsDateTo').value = this.analytics.filters.dateTo;
+        this.updateAnalyticsPeriodPresetState();
+        this.renderAnalytics();
+    },
+
+    updateAnalyticsPeriodPresetState() {
+        const from = this.analytics.filters.dateFrom;
+        const to = this.analytics.filters.dateTo;
+        document.querySelectorAll('[data-analytics-period]').forEach(button => {
+            const days = Number(button.dataset.analyticsPeriod);
+            const end = new Date();
+            const start = new Date();
+            start.setDate(end.getDate() - days + 1);
+            const active = from === this.analyticsDateString(start) && to === this.analyticsDateString(end);
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        });
+    },
+
     async loadAnalytics() {
         const params = this.analyticsParams();
         const dashboard = await apiGetJson(`/api/analytics/dashboard?${params}`);
@@ -3533,6 +3565,7 @@ const app = {
         try {
             await this.loadAnalytics();
             this.renderAnalyticsFilterOptions();
+            this.updateAnalyticsPeriodPresetState();
             this.renderAnalyticsSummary();
             this.renderAnalyticsAttention();
             this.renderAnalyticsBarChart('analyticsStageChart', this.analytics.stages.rows || [], {
@@ -3601,6 +3634,7 @@ const app = {
         $('analyticsNosologyFilter').value = '';
         $('analyticsDoctorFilter').value = '';
         $('analyticsDepartmentFilter').value = '';
+        this.updateAnalyticsPeriodPresetState();
         this.renderAnalytics();
     },
 
@@ -5468,11 +5502,16 @@ const app = {
         on('analyticsExportBtn', 'click', () => this.exportAnalyticsCsv());
         on('analyticsDateFrom', 'change', (event) => {
             this.analytics.filters.dateFrom = event.target.value;
+            this.updateAnalyticsPeriodPresetState();
             this.renderAnalytics();
         });
         on('analyticsDateTo', 'change', (event) => {
             this.analytics.filters.dateTo = event.target.value;
+            this.updateAnalyticsPeriodPresetState();
             this.renderAnalytics();
+        });
+        document.querySelectorAll('[data-analytics-period]').forEach(button => {
+            button.addEventListener('click', () => this.setAnalyticsPeriodPreset(button.dataset.analyticsPeriod));
         });
         on('analyticsStageFilter', 'change', (event) => {
             this.analytics.filters.stage = event.target.value;

@@ -352,18 +352,26 @@
                         <h1 class="pagehead__title">Аналитика</h1>
                         <p class="pagehead__subtitle">Организационные показатели маршрутов, просрочек и заполненности данных</p>
                     </div>
-                    <div class="pagehead__actions">
-                        <button type="button" class="btn btn--ghost" id="analyticsExportBtn">CSV</button>
-                        <button type="button" class="btn btn--ghost" id="analyticsRefreshBtn">Обновить</button>
-                    </div>
                 </div>
 
-                <div class="toolbar">
-                    <div class="toolbar__filters analytics-filters">
+                <div class="analytics-controls">
+                    <div class="analytics-controls__period">
+                        <span class="analytics-controls__label">Период</span>
                         <label class="visually-hidden" for="analyticsDateFrom">Дата от</label>
-                        <input class="input" type="date" id="analyticsDateFrom">
+                        <input class="input analytics-date" type="date" id="analyticsDateFrom">
                         <label class="visually-hidden" for="analyticsDateTo">Дата до</label>
-                        <input class="input" type="date" id="analyticsDateTo">
+                        <input class="input analytics-date" type="date" id="analyticsDateTo">
+                        <div class="analytics-presets" aria-label="Быстрый выбор периода">
+                            <button type="button" class="btn btn--ghost btn--sm analytics-preset" data-analytics-period="7">7 дней</button>
+                            <button type="button" class="btn btn--ghost btn--sm analytics-preset" data-analytics-period="30">30 дней</button>
+                            <button type="button" class="btn btn--ghost btn--sm analytics-preset" data-analytics-period="90">90 дней</button>
+                        </div>
+                    </div>
+                    <div class="analytics-controls__actions">
+                        <button type="button" class="btn btn--ghost btn--sm" id="analyticsRefreshBtn">Обновить</button>
+                        <button type="button" class="btn btn--ghost btn--sm" id="analyticsExportBtn">CSV</button>
+                    </div>
+                    <div class="analytics-controls__filters">
                         <label class="visually-hidden" for="analyticsStageFilter">Этап</label>
                         <select class="select" id="analyticsStageFilter"></select>
                         <label class="visually-hidden" for="analyticsNosologyFilter">Профиль клиентского пути</label>
@@ -372,15 +380,13 @@
                         <select class="select" id="analyticsDoctorFilter"></select>
                         <label class="visually-hidden" for="analyticsDepartmentFilter">Отделение</label>
                         <select class="select" id="analyticsDepartmentFilter"></select>
-                        <button type="button" class="btn btn--ghost" id="analyticsResetFiltersBtn">Сбросить</button>
+                        <button type="button" class="btn btn--ghost btn--sm" id="analyticsResetFiltersBtn">Сбросить фильтры</button>
                     </div>
                 </div>
 
-                <div class="split-note">
-                    <span class="chip chip--neutral">Текущее состояние</span>
-                    <span class="muted">Карточки, этапы, качество данных, чек-листы, workload и очередь уведомлений считаются на момент запроса.</span>
-                    <span class="chip chip--accent">За выбранный период</span>
-                    <span class="muted">Просрочки фильтруются по плановой дате, длительности этапов — по дате завершения интервала.</span>
+                <div class="analytics-note">
+                    <span>Текущее состояние</span>
+                    <span class="muted">Карточки, качество данных и workload считаются на момент запроса; динамика и просрочки учитывают выбранный период.</span>
                 </div>
 
                 <div class="analytics-dashboard">
