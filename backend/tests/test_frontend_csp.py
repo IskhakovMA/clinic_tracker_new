@@ -201,6 +201,7 @@ def test_internal_notification_center_frontend_contract_is_present():
     assert "/api/internal-notifications/summary" in js
     assert "/api/internal-notifications/read-all" in js
     assert "/api/internal-notifications/" in js
+    assert "data.items || []" in js
     assert "internalNotificationsBadge" in js
     assert "Открыть уведомления" in js
 

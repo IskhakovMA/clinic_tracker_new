@@ -3344,9 +3344,9 @@ const app = {
 
     async loadInternalNotifications(target) {
         const data = await apiGetJson(`/api/internal-notifications?${this.internalNotificationParams(target)}`);
-        if (target === 'drawer') this.internalNotifications.drawerItems = data.notifications || [];
+        if (target === 'drawer') this.internalNotifications.drawerItems = data.items || [];
         else {
-            this.internalNotifications.fullItems = data.notifications || [];
+            this.internalNotifications.fullItems = data.items || [];
             this.internalNotifications.total = data.total || 0;
         }
         this.internalNotifications.summary = data.summary || this.internalNotifications.summary;
