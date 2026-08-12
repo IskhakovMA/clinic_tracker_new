@@ -324,6 +324,24 @@ const app = {
             sort: 'scheduled_asc',
         },
     },
+    internalNotifications: {
+        summary: null,
+        drawerItems: [],
+        fullItems: [],
+        drawerFilter: 'all',
+        fullTab: 'all',
+        total: 0,
+        loading: false,
+        error: '',
+        lastFocusId: '',
+        filters: {
+            query: '',
+            type: '',
+            unread: '',
+            limit: 20,
+            offset: 0,
+        },
+    },
     analytics: {
         dashboard: null,
         summary: null,
@@ -397,6 +415,24 @@ const app = {
         event_inactive: 'Событие завершено или отменено',
         event_rescheduled: 'Дата события изменена',
     },
+
+    INTERNAL_NOTIFICATION_TYPE_LABELS: {
+        overdue: 'Просрочено',
+        today: 'Сегодня',
+        upcoming: 'Скоро',
+        checklist: 'Чек-листы',
+        data_quality: 'Качество данных',
+    },
+
+    INTERNAL_NOTIFICATION_TABS: [
+        { value: 'all', label: 'Все' },
+        { value: 'unread', label: 'Новые' },
+        { value: 'overdue', label: 'Просрочено' },
+        { value: 'today', label: 'Сегодня' },
+        { value: 'upcoming', label: 'Скоро' },
+        { value: 'checklist', label: 'Чек-листы' },
+        { value: 'data_quality', label: 'Качество' },
+    ],
 
     icd10Localizations: {
         lip_oral_pharynx: {
@@ -1347,6 +1383,7 @@ const app = {
         await this.loadActivity();
         await this.loadDoctors();
         this.fillStaticSelects();
+        await this.refreshInternalNotificationSummary();
         this.showView('patients');
         if (this.can('importData')) this.maybeOfferLegacyMigration();
     },
@@ -1449,6 +1486,7 @@ const app = {
         const index = this.patients.findIndex(x => x.id === updated.id);
         if (index === -1) this.patients.push(updated);
         else this.patients[index] = updated;
+        if (this.user) this.refreshInternalNotificationSummary();
     },
 
     getPatient(id) {
@@ -1476,6 +1514,7 @@ const app = {
         if (view === 'calendar') this.renderCalendar();
         if (view === 'checklists') this.renderChecklistsView();
         if (view === 'notifications') this.renderNotifications();
+        if (view === 'notification-center') this.renderInternalNotificationCenter();
         if (view === 'analytics') this.renderAnalytics();
         if (view === 'quality') this.renderDataQuality();
         if (view === 'plans') this.renderPlansView();
@@ -3256,6 +3295,235 @@ const app = {
         this.currentTab = tab || 'overview';
         this.showView('patient');
         this.renderPatientView();
+    },
+
+    /* =============================================== РЕНДЕР: ЦЕНТР УВЕДОМЛЕНИЙ */
+
+    internalNotificationParams(target) {
+        const state = this.internalNotifications;
+        const params = new URLSearchParams();
+        const tab = target === 'drawer' ? state.drawerFilter : state.fullTab;
+        const filters = state.filters;
+        const type = target === 'drawer' ? '' : filters.type;
+        const unread = target === 'drawer' ? '' : filters.unread;
+        const query = target === 'drawer' ? '' : filters.query;
+
+        if (tab === 'unread' || unread === 'unread') params.set('unread_only', 'true');
+        if (tab === 'today' || tab === 'overdue') params.set('drawer_filter', tab);
+        if (this.INTERNAL_NOTIFICATION_TYPE_LABELS[tab] && tab !== 'today' && tab !== 'overdue') {
+            params.set('type', tab);
+        }
+        if (type) params.set('type', type);
+        if (query) params.set('search', query);
+        params.set('limit', String(target === 'drawer' ? 5 : filters.limit));
+        params.set('offset', String(target === 'drawer' ? 0 : filters.offset));
+        return params.toString();
+    },
+
+    async refreshInternalNotificationSummary() {
+        try {
+            this.internalNotifications.summary = await apiGetJson('/api/internal-notifications/summary');
+            this.updateInternalNotificationsBadge();
+        } catch (e) {
+            this.internalNotifications.summary = null;
+            this.updateInternalNotificationsBadge();
+        }
+    },
+
+    updateInternalNotificationsBadge() {
+        const badge = $('internalNotificationsBadge');
+        const bell = $('internalNotificationsBell');
+        if (!badge || !bell) return;
+        const unread = Number((this.internalNotifications.summary || {}).unread_count || 0);
+        badge.classList.toggle('is-hidden', unread <= 0);
+        badge.textContent = unread > 99 ? '99+' : String(unread);
+        bell.setAttribute('aria-label', unread
+            ? `Открыть уведомления, новых: ${unread}`
+            : 'Открыть уведомления');
+    },
+
+    async loadInternalNotifications(target) {
+        const data = await apiGetJson(`/api/internal-notifications?${this.internalNotificationParams(target)}`);
+        if (target === 'drawer') this.internalNotifications.drawerItems = data.notifications || [];
+        else {
+            this.internalNotifications.fullItems = data.notifications || [];
+            this.internalNotifications.total = data.total || 0;
+        }
+        this.internalNotifications.summary = data.summary || this.internalNotifications.summary;
+        this.updateInternalNotificationsBadge();
+        return data;
+    },
+
+    internalNotificationTone(type) {
+        if (type === 'overdue') return 'danger';
+        if (type === 'today' || type === 'data_quality') return 'warning';
+        if (type === 'checklist') return 'info';
+        return 'accent';
+    },
+
+    renderInternalNotificationTabs(containerId, active, onSelect, full) {
+        const items = full ? this.INTERNAL_NOTIFICATION_TABS : this.INTERNAL_NOTIFICATION_TABS.slice(0, 4);
+        $(containerId).replaceChildren(frag(items.map(tab => el('button', {
+            type: 'button',
+            class: `notification-tab${active === tab.value ? ' is-active' : ''}`,
+            text: tab.label,
+            'aria-pressed': active === tab.value ? 'true' : 'false',
+            on: { click: () => onSelect(tab.value) },
+        }))));
+    },
+
+    renderInternalNotificationCard(item, compact) {
+        const unread = !item.read_at;
+        return el('article', { class: `internal-notification${unread ? ' internal-notification--unread' : ''}` }, [
+            el('div', { class: 'internal-notification__main' }, [
+                el('div', { class: 'internal-notification__head' }, [
+                    el('span', {
+                        class: `chip chip--${this.internalNotificationTone(item.type)}`,
+                        text: this.INTERNAL_NOTIFICATION_TYPE_LABELS[item.type] || item.type,
+                    }),
+                    unread ? el('span', { class: 'internal-notification__unread', text: 'Новое' }) : null,
+                ]),
+                el('h3', { class: 'internal-notification__title', text: item.title || 'Уведомление' }),
+                compact ? null : el('p', { class: 'internal-notification__text', text: item.description || '' }),
+                el('div', { class: 'internal-notification__meta', text: [
+                    item.patient_name || 'Пациент',
+                    item.event_at ? this.formatDateTime(item.event_at) : 'Дата не указана',
+                ].join(' · ') }),
+            ]),
+            el('div', { class: 'internal-notification__actions' }, [
+                item.patient_id ? el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: 'Открыть',
+                    on: { click: () => this.openInternalNotificationPatient(item) },
+                }) : null,
+                unread ? el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: 'Прочитано',
+                    on: { click: () => this.markInternalNotificationRead(item.id) },
+                }) : null,
+            ]),
+        ]);
+    },
+
+    async openInternalNotificationsDrawer() {
+        this.internalNotifications.lastFocusId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+        $('internalNotificationsScrim').classList.remove('is-hidden');
+        $('internalNotificationsDrawer').classList.remove('is-hidden');
+        $('internalNotificationsDrawer').setAttribute('aria-hidden', 'false');
+        $('internalNotificationsBell').setAttribute('aria-expanded', 'true');
+        $('internalNotificationsClose').focus();
+        await this.renderInternalNotificationsDrawer();
+    },
+
+    closeInternalNotificationsDrawer() {
+        $('internalNotificationsScrim').classList.add('is-hidden');
+        $('internalNotificationsDrawer').classList.add('is-hidden');
+        $('internalNotificationsDrawer').setAttribute('aria-hidden', 'true');
+        $('internalNotificationsBell').setAttribute('aria-expanded', 'false');
+        const focusId = this.internalNotifications.lastFocusId || 'internalNotificationsBell';
+        if ($(focusId)) $(focusId).focus();
+    },
+
+    async renderInternalNotificationsDrawer() {
+        const list = $('internalNotificationsDrawerList');
+        const summary = this.internalNotifications.summary || {};
+        $('internalNotificationsSubtitle').textContent = summary.unread_count
+            ? `${summary.unread_count} ${this.pluralize(summary.unread_count, 'новое', 'новых', 'новых')}`
+            : 'Новых уведомлений нет';
+        this.renderInternalNotificationTabs('internalNotificationsDrawerTabs', this.internalNotifications.drawerFilter, (value) => {
+            this.internalNotifications.drawerFilter = value;
+            this.renderInternalNotificationsDrawer();
+        }, false);
+        list.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
+        try {
+            await this.loadInternalNotifications('drawer');
+            const rows = this.internalNotifications.drawerItems || [];
+            $('internalNotificationsReadAllBtn').disabled = !((this.internalNotifications.summary || {}).unread_count);
+            if (!rows.length) {
+                list.replaceChildren(el('div', { class: 'empty', text: 'По выбранному фильтру уведомлений нет.' }));
+                return;
+            }
+            list.replaceChildren(frag(rows.map(item => this.renderInternalNotificationCard(item, true))));
+        } catch (e) {
+            list.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить уведомления: ${e.message}` }));
+        }
+    },
+
+    syncInternalNotificationControls() {
+        $('internalNotificationsSearchInput').value = this.internalNotifications.filters.query;
+        $('internalNotificationsTypeFilter').value = this.internalNotifications.filters.type;
+        $('internalNotificationsUnreadFilter').value = this.internalNotifications.filters.unread;
+    },
+
+    renderInternalNotificationFiltersOptions() {
+        const selectedType = this.internalNotifications.filters.type;
+        $('internalNotificationsTypeFilter').replaceChildren(frag([
+            option('', 'Все типы', !selectedType),
+            ...Object.entries(this.INTERNAL_NOTIFICATION_TYPE_LABELS)
+                .map(([value, label]) => option(value, label, value === selectedType)),
+        ]));
+        const selectedUnread = this.internalNotifications.filters.unread;
+        $('internalNotificationsUnreadFilter').replaceChildren(frag([
+            option('', 'Все статусы', !selectedUnread),
+            option('unread', 'Только новые', selectedUnread === 'unread'),
+        ]));
+        this.syncInternalNotificationControls();
+    },
+
+    async renderInternalNotificationCenter() {
+        this.renderInternalNotificationFiltersOptions();
+        this.renderInternalNotificationTabs('internalNotificationsFullTabs', this.internalNotifications.fullTab, (value) => {
+            this.internalNotifications.fullTab = value;
+            this.internalNotifications.filters.offset = 0;
+            this.renderInternalNotificationCenter();
+        }, true);
+        const list = $('internalNotificationsFullList');
+        list.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
+        try {
+            await this.loadInternalNotifications('full');
+            const rows = this.internalNotifications.fullItems || [];
+            if (!rows.length) {
+                list.replaceChildren(el('div', { class: 'empty', text: 'По выбранным условиям уведомлений нет.' }));
+            } else {
+                list.replaceChildren(frag(rows.map(item => this.renderInternalNotificationCard(item, false))));
+            }
+            const { offset, limit } = this.internalNotifications.filters;
+            const total = this.internalNotifications.total || 0;
+            $('internalNotificationsPageInfo').textContent = total
+                ? `${offset + 1}-${Math.min(offset + limit, total)} из ${total}`
+                : '0 из 0';
+            $('internalNotificationsPrevBtn').disabled = offset <= 0;
+            $('internalNotificationsNextBtn').disabled = offset + limit >= total;
+        } catch (e) {
+            list.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить уведомления: ${e.message}` }));
+            $('internalNotificationsPageInfo').textContent = '';
+            $('internalNotificationsPrevBtn').disabled = true;
+            $('internalNotificationsNextBtn').disabled = true;
+        }
+    },
+
+    async markInternalNotificationRead(id) {
+        await apiPost(`/api/internal-notifications/${encodeURIComponent(id)}/read`, {});
+        await this.refreshInternalNotificationSummary();
+        if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) await this.renderInternalNotificationsDrawer();
+        if (this.currentView === 'notification-center') await this.renderInternalNotificationCenter();
+    },
+
+    async markAllInternalNotificationsRead() {
+        await apiPost('/api/internal-notifications/read-all', {});
+        await this.refreshInternalNotificationSummary();
+        if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) await this.renderInternalNotificationsDrawer();
+        if (this.currentView === 'notification-center') await this.renderInternalNotificationCenter();
+    },
+
+    openInternalNotificationPatient(item) {
+        this.closeInternalNotificationsDrawer();
+        const tab = item.source_type === 'checklist' ? 'checklist'
+            : item.source_type === 'data_quality' ? 'data'
+            : 'events';
+        this.openPatientTab(item.patient_id, tab);
     },
 
     /* ============================================================ РЕНДЕР: УВЕДОМЛЕНИЯ */
@@ -5380,6 +5648,44 @@ const app = {
             this.applyTheme(event.target.value);
         });
 
+        // Внутренний центр уведомлений
+        on('internalNotificationsBell', 'click', () => this.openInternalNotificationsDrawer());
+        on('internalNotificationsClose', 'click', () => this.closeInternalNotificationsDrawer());
+        on('internalNotificationsScrim', 'click', () => this.closeInternalNotificationsDrawer());
+        on('internalNotificationsReadAllBtn', 'click', () => this.markAllInternalNotificationsRead());
+        on('internalNotificationsFullBtn', 'click', () => {
+            this.closeInternalNotificationsDrawer();
+            this.showView('notification-center');
+        });
+        on('internalNotificationsRefreshBtn', 'click', () => this.renderInternalNotificationCenter());
+        on('internalNotificationsSearchInput', 'input', (event) => {
+            this.internalNotifications.filters.query = event.target.value;
+            this.internalNotifications.filters.offset = 0;
+            this.renderInternalNotificationCenter();
+        });
+        on('internalNotificationsTypeFilter', 'change', (event) => {
+            this.internalNotifications.filters.type = event.target.value;
+            this.internalNotifications.fullTab = 'all';
+            this.internalNotifications.filters.offset = 0;
+            this.renderInternalNotificationCenter();
+        });
+        on('internalNotificationsUnreadFilter', 'change', (event) => {
+            this.internalNotifications.filters.unread = event.target.value;
+            this.internalNotifications.fullTab = 'all';
+            this.internalNotifications.filters.offset = 0;
+            this.renderInternalNotificationCenter();
+        });
+        on('internalNotificationsPrevBtn', 'click', () => {
+            const f = this.internalNotifications.filters;
+            f.offset = Math.max(0, f.offset - f.limit);
+            this.renderInternalNotificationCenter();
+        });
+        on('internalNotificationsNextBtn', 'click', () => {
+            const f = this.internalNotifications.filters;
+            f.offset += f.limit;
+            this.renderInternalNotificationCenter();
+        });
+
         // Фильтры списка
         on('searchInput', 'input', (event) => {
             this.searchQuery = event.target.value;
@@ -5582,6 +5888,9 @@ const app = {
                     $('appScreen').classList.remove('is-nav-open');
                     $('sidebarScrim').hidden = true;
                     $('sidebarToggle').setAttribute('aria-expanded', 'false');
+                }
+                if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) {
+                    this.closeInternalNotificationsDrawer();
                 }
                 return;
             }

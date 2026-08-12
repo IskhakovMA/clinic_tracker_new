@@ -190,6 +190,21 @@ def test_policy_number_frontend_contract_is_present():
     assert "missing_policy_number" in js
 
 
+def test_internal_notification_center_frontend_contract_is_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    assert 'id="internalNotificationsBell"' in html
+    assert 'id="internalNotificationsDrawer"' in html
+    assert 'id="view-notification-center"' in html
+    assert 'data-view="notification-center"' in html
+    assert "Центр уведомлений" in html
+    assert "/api/internal-notifications/summary" in js
+    assert "/api/internal-notifications/read-all" in js
+    assert "/api/internal-notifications/" in js
+    assert "internalNotificationsBadge" in js
+    assert "Открыть уведомления" in js
+
+
 def test_data_quality_mvp_does_not_offer_automatic_duplicate_merge():
     """MVP только показывает кандидатов и не добавляет массовое исправление."""
     combined = "\n".join(path.read_text(encoding="utf-8") for path in (HTML, JS))

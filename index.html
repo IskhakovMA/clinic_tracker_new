@@ -74,6 +74,7 @@
             <button type="button" class="nav__item is-active" data-view="patients" aria-current="page">Пациенты</button>
             <button type="button" class="nav__item" data-view="calendar">Календарь</button>
             <button type="button" class="nav__item" data-view="notifications">Уведомления</button>
+            <button type="button" class="nav__item" data-view="notification-center">Центр уведомлений</button>
             <button type="button" class="nav__item" data-view="analytics">Аналитика</button>
             <button type="button" class="nav__item" data-view="checklists">Чек-листы</button>
             <button type="button" class="nav__item" data-view="quality">Качество данных</button>
@@ -106,8 +107,33 @@
             <div class="topbar__spacer"></div>
             <span class="chip chip--neutral is-hidden" id="readOnlyChip" title="Ваша роль позволяет просматривать данные без изменения">Режим просмотра</span>
             <span class="chip chip--neutral" title="Приложение работает локально, данные не покидают этот компьютер">Локальный режим</span>
+            <button type="button" class="btn btn--icon notification-bell" id="internalNotificationsBell" aria-label="Открыть уведомления" aria-expanded="false" aria-controls="internalNotificationsDrawer">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+                <span class="notification-bell__badge is-hidden" id="internalNotificationsBadge"></span>
+            </button>
             <button type="button" class="btn btn--ghost btn--sm" id="themeToggle" aria-pressed="false">Светлая тема</button>
         </header>
+
+        <div class="drawer-scrim is-hidden" id="internalNotificationsScrim"></div>
+        <aside class="notification-drawer is-hidden" id="internalNotificationsDrawer" aria-labelledby="internalNotificationsTitle" aria-hidden="true">
+            <div class="notification-drawer__head">
+                <div>
+                    <h2 id="internalNotificationsTitle">Уведомления</h2>
+                    <p id="internalNotificationsSubtitle">Новых уведомлений нет</p>
+                </div>
+                <button type="button" class="btn btn--icon" id="internalNotificationsClose" aria-label="Закрыть уведомления">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                </button>
+            </div>
+            <div class="notification-tabs" id="internalNotificationsDrawerTabs" aria-label="Фильтр уведомлений"></div>
+            <div class="notification-drawer__actions">
+                <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsReadAllBtn">Отметить все прочитанными</button>
+            </div>
+            <div class="notification-list" id="internalNotificationsDrawerList"></div>
+            <div class="notification-drawer__footer">
+                <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsFullBtn">Все уведомления</button>
+            </div>
+        </aside>
 
         <main class="content" id="content">
 
@@ -288,6 +314,40 @@
                 </div>
 
                 <div class="panel panel--pad is-hidden" id="notificationTemplatesPanel"></div>
+            </section>
+
+            <section class="view is-hidden" id="view-notification-center">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Центр уведомлений</h1>
+                        <p class="pagehead__subtitle">Персональная очередь событий по доступным пациентам</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="internalNotificationsRefreshBtn">Обновить</button>
+                    </div>
+                </div>
+                <div class="panel panel--pad">
+                    <div class="toolbar">
+                        <div class="search">
+                            <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                            <label class="visually-hidden" for="internalNotificationsSearchInput">Поиск по пациенту</label>
+                            <input class="input search__input" type="search" id="internalNotificationsSearchInput" placeholder="Поиск по пациенту…">
+                        </div>
+                        <div class="toolbar__filters">
+                            <label class="visually-hidden" for="internalNotificationsTypeFilter">Тип уведомления</label>
+                            <select class="select" id="internalNotificationsTypeFilter"></select>
+                            <label class="visually-hidden" for="internalNotificationsUnreadFilter">Статус прочтения</label>
+                            <select class="select" id="internalNotificationsUnreadFilter"></select>
+                        </div>
+                    </div>
+                    <div class="notification-tabs" id="internalNotificationsFullTabs" aria-label="Фильтр центра уведомлений"></div>
+                    <div class="notification-list notification-list--full" id="internalNotificationsFullList"></div>
+                    <div class="pagination">
+                        <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsPrevBtn">Назад</button>
+                        <span id="internalNotificationsPageInfo"></span>
+                        <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsNextBtn">Вперёд</button>
+                    </div>
+                </div>
             </section>
 
             <section class="view is-hidden" id="view-quality">

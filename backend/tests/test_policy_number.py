@@ -50,7 +50,7 @@ def test_invalid_policy_number_rejected(auth_client):
 
 def test_policy_number_import_export_and_legacy_import(auth_client):
     doc = {
-        "schemaVersion": 4,
+        "schemaVersion": 5,
         "patients": [
             make_patient_payload(name="Полисов Импорт", policyNumber="7700-0000 0000 0003"),
             make_patient_payload(name="Безполисов Импорт"),
@@ -71,7 +71,7 @@ def test_policy_number_import_export_and_legacy_import(auth_client):
 
     exported = json.loads(auth_client.get("/api/export").text)
     by_name = {p["name"]: p for p in exported["patients"]}
-    assert exported["schemaVersion"] == 4
+    assert exported["schemaVersion"] == 5
     assert by_name["Полисов Импорт"]["policyNumber"] == "7700000000000003"
     assert by_name["Безполисов Импорт"]["policyNumber"] == ""
 
