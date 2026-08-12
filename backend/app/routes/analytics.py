@@ -27,6 +27,15 @@ def summary(
     return service.summary(conn, user, filters)
 
 
+@router.get("/dashboard", response_model=schemas.AnalyticsDashboardOut)
+def dashboard(
+    filters: AnalyticsFilters = Depends(analytics_filters),
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    return service.dashboard(conn, user, filters)
+
+
 @router.get("/stages", response_model=schemas.AnalyticsStagesOut)
 def stages(
     filters: AnalyticsFilters = Depends(analytics_filters),

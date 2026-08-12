@@ -90,6 +90,7 @@ def test_registered_analytics_routes_inventory():
                 routes.add((tuple(sorted(child.methods)), path, child.name))
     assert routes >= {
         (("GET",), "/api/analytics/summary", "summary"),
+        (("GET",), "/api/analytics/dashboard", "dashboard"),
         (("GET",), "/api/analytics/stages", "stages"),
         (("GET",), "/api/analytics/overdue", "overdue"),
         (("GET",), "/api/analytics/stage-durations", "stage_durations"),
@@ -100,6 +101,71 @@ def test_registered_analytics_routes_inventory():
         (("GET",), "/api/analytics/details", "details"),
         (("POST",), "/api/analytics/export", "export"),
     }
+
+
+def test_dashboard_empty_database_contract(client):
+    create_account("analytics.empty.dev", "developer", "Разработчик Empty")
+    _as_user(client, "analytics.empty.dev")
+    body = client.get("/api/analytics/dashboard").json()
+    cards = {card["code"]: card["value"] for card in body["summary"]["cards"]}
+    assert cards["total_patients"] == 0
+    assert cards["active_patients"] == 0
+    assert cards["completed_patients"] == 0
+    assert body["stages"]["rows"] == []
+    assert body["profiles"]["rows"] == []
+    assert body["route_state"]["rows"][2]["code"] == "attention"
+    assert len(body["trend"]["rows"]) == 30
+    capped = client.get("/api/analytics/dashboard?date_from=1900-01-01&date_to=2999-12-31").json()
+    assert capped["trend"]["period_days"] == 90
+    assert capped["trend"]["truncated"] is True
+
+
+def test_dashboard_visual_aggregates_filters_and_scope(client):
+    ids = _stand(client)
+    completed = _create_patient(
+        ids["doc_a"],
+        name="Аналитика Завершён",
+        phone="+7 (999) 303-30-30",
+        diagnosis="C34.2 скрытый диагноз",
+        nosology="lung34",
+        stage="completed",
+        events=[],
+    )
+    conn = get_conn()
+    with conn:
+        conn.execute("UPDATE patients SET arrival = '2026-08-02T10:00:00+00:00' WHERE id = ?", (completed,))
+        conn.execute(
+            """INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note)
+               VALUES ('analytics_dashboard_completed', ?, 1, 'completed', '2026-08-03T00:00:00+00:00', NULL, '')""",
+            (completed,),
+        )
+    _as_user(client, "analytics.dev")
+    body = client.get("/api/analytics/dashboard?date_from=2026-08-01&date_to=2026-08-30").json()
+    cards = {card["code"]: card["value"] for card in body["summary"]["cards"]}
+    assert cards["total_patients"] == 4
+    assert cards["active_patients"] == 3
+    assert cards["completed_patients"] == 1
+    assert cards["unassigned_patients"] == 1
+    assert cards["data_quality_issues"] >= 1
+    stages = {row["stage"]: row for row in body["stages"]["rows"]}
+    assert stages["completed"]["count"] == 1
+    assert round(sum(row["percent"] for row in body["profiles"]["rows"]), 1) in (99.9, 100.0, 100.1)
+    profile_rows = {row["meta"]["nosology"]: row for row in body["profiles"]["rows"]}
+    assert profile_rows["lung34"]["count"] == 2
+    assert body["route_state"]["rows"][2]["code"] == "attention"
+    assert body["route_state"]["rows"][2]["meta"]["overlap"] is True
+    assert body["data_quality"]["rows"] == sorted(body["data_quality"]["rows"], key=lambda row: (-row["count"], row["code"]))
+    assert sum(row["new_patients"] for row in body["trend"]["rows"]) >= 1
+    assert sum(row["completed_patients"] for row in body["trend"]["rows"]) >= 1
+    assert body["attention"]["rows"] == sorted(body["attention"]["rows"], key=lambda row: (-row["count"], row["label"]))
+
+    filtered = client.get("/api/analytics/dashboard?nosology=lung34").json()
+    assert filtered["summary"]["cards"][0]["value"] == 2
+
+    _as_user(client, "analytics.doc.a")
+    scoped = client.get(f"/api/analytics/dashboard?doctor_user_id={ids['doc_b']}").json()
+    assert scoped["summary"]["cards"][0]["value"] == 0
+    assert scoped["workload"]["rows"] == []
 
 
 def test_summary_stages_overdue_and_details_respect_patient_scope(client):
@@ -258,6 +324,7 @@ def test_all_analytics_endpoints_apply_role_scope_and_details_pagination(client)
     ids = _stand(client)
     endpoints = [
         "/api/analytics/summary",
+        "/api/analytics/dashboard",
         "/api/analytics/stages",
         "/api/analytics/overdue",
         "/api/analytics/stage-durations",
