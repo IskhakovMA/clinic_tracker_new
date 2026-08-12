@@ -146,10 +146,10 @@ def _insert_full_patient(
             "SELECT full_name FROM users WHERE id = ?", (treating_doctor_user_id,)
         ).fetchone()
     conn.execute(
-        """INSERT INTO patients (id, name, age, priority, stage, phone, complaint, diagnosis,
+        """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
                                   nosology, disease_stage, arrival, doctor, head, created_at,
                                   updated_at, treating_doctor_user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             patient_id,
             p.name,
@@ -157,6 +157,7 @@ def _insert_full_patient(
             p.priority,
             p.stage,
             p.phone,
+            p.policyNumber,
             p.complaint,
             p.diagnosis,
             p.nosology,

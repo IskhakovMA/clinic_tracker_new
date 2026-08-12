@@ -28,6 +28,7 @@ STAGE_INDEX = {stage: i for i, stage in enumerate(STAGE_ORDER)}
 COMPLETENESS_FIELDS = (
     ("name", "ФИО", "critical"),
     ("phone", "Телефон", "warning"),
+    ("policyNumber", "Номер полиса ОМС", "info"),
     ("diagnosis", "Диагноз", "critical"),
     ("nosology", "Профиль клиентского пути", "warning"),
     ("stage", "Текущий этап", "critical"),
@@ -37,6 +38,7 @@ COMPLETENESS_FIELDS = (
 QUALITY_RULES = {
     "missing_treating_doctor": "Пациент не сопоставлен с учётной записью лечащего врача.",
     "missing_required_field": "Поле нужно для корректной регистрационной карточки.",
+    "missing_policy_number": "Номер полиса ОМС повышает полноту регистрационной карточки.",
     "missing_client_path_profile": "Профиль клиентского пути нужен для регламентных сроков и чек-листа.",
     "missing_diagnosis": "Диагноз обязателен для новых записей и нужен для корректной карточки.",
     "missing_stage": "Текущий этап нужен для маршрута лечения.",
@@ -129,6 +131,7 @@ class PatientRecord:
     name: str
     age: int
     phone: str
+    policy_number: str
     diagnosis: str
     nosology: str
     stage: str
@@ -213,7 +216,7 @@ def _load_scoped_patients(conn: sqlite3.Connection, user: policy.CurrentUser) ->
             LEFT JOIN departments d ON d.id = ud.department_id AND d.status = 'active'
             WHERE {cond}
             GROUP BY patients.id
-            ORDER BY patients.arrival ASC""",
+            ORDER BY patients.arrival ASC""",  # nosec B608 - scope condition is generated server-side by policy.
         params,
     ).fetchall()
     records = [
@@ -222,6 +225,7 @@ def _load_scoped_patients(conn: sqlite3.Connection, user: policy.CurrentUser) ->
             name=r["name"] or "",
             age=r["age"] or 0,
             phone=r["phone"] or "",
+            policy_number=r["policy_number"] or "",
             diagnosis=r["diagnosis"] or "",
             nosology=r["nosology"] or "",
             stage=r["stage"] or "",
@@ -246,7 +250,7 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
     marks = ",".join("?" for _ in patient_by_id)
     history_rows = conn.execute(
         f"""SELECT * FROM history_entries
-            WHERE patient_id IN ({marks}) ORDER BY patient_id, seq ASC""",
+            WHERE patient_id IN ({marks}) ORDER BY patient_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
         list(patient_by_id),
     ).fetchall()
     history_by_entry = {}
@@ -266,7 +270,7 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
         marks = ",".join("?" for _ in history_by_entry)
         event_rows = conn.execute(
             f"""SELECT * FROM events
-                WHERE history_entry_id IN ({marks}) ORDER BY history_entry_id, seq ASC""",
+                WHERE history_entry_id IN ({marks}) ORDER BY history_entry_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
             list(history_by_entry),
         ).fetchall()
         for e in event_rows:
@@ -283,7 +287,7 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
     plan_rows = conn.execute(
         f"""SELECT * FROM future_plans
             WHERE patient_id IN ({','.join('?' for _ in patient_by_id)})
-            ORDER BY patient_id, template_index ASC""",
+            ORDER BY patient_id, template_index ASC""",  # nosec B608 - IDs are bound through generated placeholders.
         list(patient_by_id),
     ).fetchall()
     for fp in plan_rows:
@@ -300,6 +304,7 @@ def completeness(patient: PatientRecord) -> dict:
     values = {
         "name": patient.name,
         "phone": patient.phone,
+        "policyNumber": patient.policy_number,
         "diagnosis": patient.diagnosis,
         "nosology": patient.nosology,
         "stage": patient.stage,
@@ -315,7 +320,7 @@ def completeness(patient: PatientRecord) -> dict:
         "present": present,
         "total": len(COMPLETENESS_FIELDS),
         "missing": missing,
-        "formula": "равные доли 6 полей: ФИО, телефон, диагноз, Профиль клиентского пути, текущий этап, лечащий врач",
+        "formula": "равные доли 7 полей: ФИО, телефон, номер полиса ОМС, диагноз, Профиль клиентского пути, текущий этап, лечащий врач",
     }
 
 
@@ -351,6 +356,14 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
             title="Не заполнен телефон", description="Телефон нужен для полноты регистрационной карточки.",
             field_name="phone", details={"field_label": "Телефон"},
             suggested_action=_action("Уточнить телефон во вкладке «Данные»", "data", can_write),
+        ))
+    if "policyNumber" in missing_by_field:
+        issues.append(_finding(
+            patient=patient, code="missing_policy_number", category="completeness", severity="info",
+            title="Не указан номер полиса ОМС",
+            description="Номер полиса ОМС можно добавить для более полной регистрационной карточки.",
+            field_name="policyNumber", details={"field_label": "Номер полиса ОМС"},
+            suggested_action=_action("Уточнить номер полиса ОМС во вкладке «Данные»", "data", can_write),
         ))
     if "nosology" in missing_by_field:
         issues.append(_finding(

@@ -179,6 +179,17 @@ def test_data_quality_frontend_entrypoint_and_api_contract_are_present():
     assert "action.can_write !== false" in js
 
 
+def test_policy_number_frontend_contract_is_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    assert 'id="policyNumber"' in html
+    assert "Номер полиса ОМС" in html
+    assert "policyNumber: $('policyNumber').value" in js
+    assert "(p.policyNumber || '').toLowerCase().includes(q)" in js
+    assert "Полис ОМС: ${p.policyNumber || 'Не указан'}" in js
+    assert "missing_policy_number" in js
+
+
 def test_data_quality_mvp_does_not_offer_automatic_duplicate_merge():
     """MVP только показывает кандидатов и не добавляет массовое исправление."""
     combined = "\n".join(path.read_text(encoding="utf-8") for path in (HTML, JS))

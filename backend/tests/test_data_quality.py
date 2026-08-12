@@ -73,7 +73,7 @@ def test_rules_detect_assignment_completeness_phone_dates_stage_and_checklist(au
 def test_recommended_completeness_fields_and_score(auth_client):
     pid = _create_patient(None, phone="", nosology="", diagnosis="C34.1", stage="exam")
     body = auth_client.get(f"/api/data-quality/patients/{pid}").json()
-    assert body["patient"]["completeness"]["score"] == 50
+    assert body["patient"]["completeness"]["score"] == 57
     codes = _issue_codes(body)
     assert "missing_required_field" in codes  # phone
     assert "missing_client_path_profile" in codes

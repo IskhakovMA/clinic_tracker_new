@@ -8,6 +8,7 @@ are computed server-side and never trusted from the client.
 """
 from __future__ import annotations
 
+import re
 from datetime import date as date_type
 from typing import Literal, Optional
 
@@ -25,6 +26,8 @@ STAGES = (
 )
 DISEASE_STAGES = ("", "I", "II", "III", "IV")
 TREATMENT_TYPES = ("", "surgery", "radiation", "chemo")
+POLICY_NUMBER_MAX_LENGTH = 32
+POLICY_NUMBER_INPUT_MAX_LENGTH = 64
 
 Priority = Literal["urgent", "high", "normal"]
 Stage = Literal[
@@ -48,6 +51,22 @@ def _normalize_multiline(v: Optional[str]) -> Optional[str]:
         return None
     lines = [" ".join(line.split()) for line in v.strip().splitlines()]
     return "\n".join(lines)
+
+
+def normalize_policy_number(v: Optional[str]) -> str:
+    if v is None:
+        return ""
+    raw = str(v).strip()
+    if not raw:
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError("Номер полиса ОМС содержит недопустимые управляющие символы")
+    if "<" in raw or ">" in raw:
+        raise ValueError("Номер полиса ОМС не должен содержать HTML или JavaScript")
+    value = re.sub(r"[ -]+", "", raw)
+    if len(value) > POLICY_NUMBER_MAX_LENGTH:
+        raise ValueError(f"Номер полиса ОМС не должен быть длиннее {POLICY_NUMBER_MAX_LENGTH} символов")
+    return value
 
 
 class EventIn(StrictRequestModel):
@@ -114,7 +133,7 @@ class FuturePlanIn(StrictRequestModel):
 
 class PatientFieldUpdateIn(StrictRequestModel):
     field: Literal[
-        "name", "age", "phone", "diagnosis", "nosology", "diseaseStage", "priority", "doctor", "head", "complaint"
+        "name", "age", "phone", "policyNumber", "diagnosis", "nosology", "diseaseStage", "priority", "doctor", "head", "complaint"
     ]
     value: str | int
 
@@ -123,6 +142,7 @@ class PatientCreateIn(StrictRequestModel):
     name: str = Field(..., min_length=1, max_length=200)
     age: int = Field(0, ge=0, le=150)
     phone: str = Field("", max_length=50)
+    policyNumber: str = Field("", max_length=POLICY_NUMBER_INPUT_MAX_LENGTH)
     priority: Priority
     stage: Stage
     diagnosis: str = Field(..., min_length=1, max_length=500)
@@ -147,6 +167,11 @@ class PatientCreateIn(StrictRequestModel):
     @classmethod
     def _norm_multiline(cls, v):
         return _normalize_multiline(v)
+
+    @field_validator("policyNumber", mode="before")
+    @classmethod
+    def _norm_policy_number(cls, v):
+        return normalize_policy_number(v)
 
     @field_validator("diseaseStage")
     @classmethod
@@ -188,6 +213,7 @@ class PatientOut(BaseModel):
     priority: str
     stage: str
     phone: str
+    policyNumber: str
     complaint: str
     diagnosis: str
     nosology: str
@@ -265,6 +291,7 @@ class ImportPatientIn(StrictRequestModel):
     priority: str
     stage: str
     phone: str = Field("", max_length=50)
+    policyNumber: str = Field("", max_length=POLICY_NUMBER_INPUT_MAX_LENGTH)
     complaint: str = Field("", max_length=5000)
     diagnosis: str = Field("", max_length=500)
     # legacy-имя `nosology` (UI: «Профиль клиентского пути») — часть формата
@@ -292,6 +319,11 @@ class ImportPatientIn(StrictRequestModel):
     @classmethod
     def _none_to_empty(cls, v):
         return "" if v is None else v
+
+    @field_validator("policyNumber", mode="before")
+    @classmethod
+    def _norm_policy_number(cls, v):
+        return normalize_policy_number(v)
 
     @field_validator("priority")
     @classmethod

@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS patients (
     priority TEXT NOT NULL,
     stage TEXT NOT NULL,
     phone TEXT,
+    policy_number TEXT,
     complaint TEXT,
     diagnosis TEXT,
     nosology TEXT,
@@ -201,6 +202,7 @@ CREATE INDEX IF NOT EXISTS idx_history_patient ON history_entries(patient_id);
 CREATE INDEX IF NOT EXISTS idx_events_history ON events(history_entry_id);
 CREATE INDEX IF NOT EXISTS idx_future_plans_patient ON future_plans(patient_id);
 CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(name);
+CREATE INDEX IF NOT EXISTS idx_patients_policy_number ON patients(policy_number);
 CREATE INDEX IF NOT EXISTS idx_patients_head ON patients(head);
 CREATE INDEX IF NOT EXISTS idx_patients_stage ON patients(stage);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
@@ -395,6 +397,11 @@ def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     _seed_notification_templates(conn)
 
 
+def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """v3 → v4: nullable OMS policy number on patient cards."""
+    _add_column_if_missing(conn, "patients", "policy_number", "policy_number TEXT")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -405,6 +412,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     with conn:
         conn.executescript(SCHEMA_SQL)   # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
+        migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -416,6 +424,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 2:
             migrate_v2_to_v3(conn)
+            migrate_v3_to_v4(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 3:
+            migrate_v3_to_v4(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

@@ -97,6 +97,7 @@ def make_patient_payload(**overrides):
         "name": "Тестов Тест Тестович",
         "age": 50,
         "phone": "+7 (999) 000-00-00",
+        "policyNumber": "7700000000000000",
         "priority": "normal",
         "stage": "exam",
         "diagnosis": "C34.1",

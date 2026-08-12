@@ -15,12 +15,14 @@ from .models import (
     PRIORITIES,
     EventIn,
     PatientCreateIn,
+    normalize_policy_number,
 )
 
 FIELD_COLUMN = {
     "name": "name",
     "age": "age",
     "phone": "phone",
+    "policyNumber": "policy_number",
     "diagnosis": "diagnosis",
     "nosology": "nosology",
     "diseaseStage": "disease_stage",
@@ -32,6 +34,7 @@ FIELD_COLUMN = {
 FIELD_MAX_LEN = {
     "name": 200,
     "phone": 50,
+    "policyNumber": 64,
     "diagnosis": 500,
     "nosology": 100,
     "doctor": 200,
@@ -117,6 +120,7 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "priority": p["priority"],
         "stage": p["stage"],
         "phone": p["phone"] or "",
+        "policyNumber": p["policy_number"] or "",
         "complaint": p["complaint"] or "",
         "diagnosis": p["diagnosis"] or "",
         "nosology": p["nosology"] or "",
@@ -149,7 +153,7 @@ def list_patients(
     ids = [
         r["id"]
         for r in conn.execute(
-            f"SELECT id FROM patients WHERE {cond} ORDER BY arrival ASC", params
+            f"SELECT id FROM patients WHERE {cond} ORDER BY arrival ASC", params  # nosec B608 - cond is policy scope.
         ).fetchall()
     ]
     return [patient_to_dict(conn, pid) for pid in ids]
@@ -165,10 +169,10 @@ def create_patient(
     doctor_text = _treating_doctor_name(conn, treating_doctor_user_id) or data.doctor
     with conn:
         conn.execute(
-            """INSERT INTO patients (id, name, age, priority, stage, phone, complaint, diagnosis,
+            """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
                                       nosology, disease_stage, arrival, doctor, head, created_at,
                                       updated_at, treating_doctor_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pid,
                 data.name,
@@ -176,6 +180,7 @@ def create_patient(
                 data.priority,
                 data.stage,
                 data.phone,
+                data.policyNumber,
                 data.complaint,
                 data.diagnosis,
                 data.nosology,
@@ -263,6 +268,8 @@ def update_patient_field(conn: sqlite3.Connection, patient_id: str, field: str, 
     elif field == "diseaseStage":
         if value not in DISEASE_STAGES:
             raise ValueError(f"diseaseStage must be one of {DISEASE_STAGES}")
+    elif field == "policyNumber":
+        value = normalize_policy_number(value)
     else:
         value = "" if value is None else str(value)
         limit = FIELD_MAX_LEN.get(field)
@@ -270,7 +277,10 @@ def update_patient_field(conn: sqlite3.Connection, patient_id: str, field: str, 
             raise ValueError(f"{field} exceeds max length {limit}")
 
     with conn:
-        cur = conn.execute(f"UPDATE patients SET {column} = ?, updated_at = ? WHERE id = ?", (value, now_iso(), patient_id))
+        cur = conn.execute(
+            f"UPDATE patients SET {column} = ?, updated_at = ? WHERE id = ?",  # nosec B608
+            (value, now_iso(), patient_id),
+        )
         return cur.rowcount > 0
 
 
@@ -394,7 +404,10 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
         raise ValueError("value too long")
     column = EVENT_FIELD_COLUMN[field]
     with conn:
-        conn.execute(f"UPDATE events SET {column} = ? WHERE id = ?", (value or None, event_id))
+        conn.execute(
+            f"UPDATE events SET {column} = ? WHERE id = ?",  # nosec B608
+            (value or None, event_id),
+        )
         if field in ("actualDate", "actualTime"):
             row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
             if not row["no_plan"]:
@@ -442,7 +455,7 @@ def update_future_plan(conn: sqlite3.Connection, patient_id: str, template_index
         ).fetchone()
         if existing:
             conn.execute(
-                f"UPDATE future_plans SET {column} = ? WHERE patient_id = ? AND template_index = ?",
+                f"UPDATE future_plans SET {column} = ? WHERE patient_id = ? AND template_index = ?",  # nosec B608
                 (value, patient_id, template_index),
             )
         else:
