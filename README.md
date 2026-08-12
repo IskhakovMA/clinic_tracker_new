@@ -17,6 +17,11 @@ Backend — FastAPI + SQLite, frontend — статические файлы, к
   безопасные системные шаблоны, ручная обработка через mock provider и
   статусы отправки без реальных SMS. Подробности — в
   [NOTIFICATIONS.md](NOTIFICATIONS.md).
+- **Внутренний центр уведомлений**: персональная лента просроченных,
+  сегодняшних и ближайших событий, незавершённых чек-листов и критичных
+  проблем качества данных внутри текущего RBAC/patient scope. Состояние
+  «прочитано» хранится server-side; внешних отправок нет. Подробности —
+  в [INTERNAL_NOTIFICATION_CENTER.md](INTERNAL_NOTIFICATION_CENTER.md).
 - Раздел **«Аналитика»**: визуальный dashboard для руководящих ролей и
   администратора с KPI, распределением по этапам и профилям клиентского пути,
   состоянием маршрутов, проблемами качества данных, динамикой и нагрузкой
@@ -159,7 +164,7 @@ node --check static/app.js             # синтаксис фронтенда (
 
 ## Данные, защита каталога и резервное копирование
 
-- **База**: `backend/data/clinic.db` (SQLite schema v4, исключена из Git и не раздаётся по HTTP).
+- **База**: `backend/data/clinic.db` (SQLite schema v5, исключена из Git и не раздаётся по HTTP).
 - **Encrypted backups**: создайте key file и настройте `CLINIC_BACKUP_KEY_FILE`, затем
   `python -m backend.cli backup` → `backend/data/backups/clinic_<дата>.cbk`.
   Копия делается через SQLite backup API, проверяется и упаковывается в Clinic Backup Format v1

@@ -81,6 +81,10 @@ NOTIFICATION_TEMPLATE_UPDATED = "notification_template_updated"
 # Analytics
 ANALYTICS_REPORT_EXPORTED = "analytics_report_exported"
 
+# Internal employee notification center
+INTERNAL_NOTIFICATION_READ = "internal_notification_read"
+INTERNAL_NOTIFICATION_READ_ALL = "internal_notification_read_all"
+
 RESULT_OK = "ok"
 RESULT_DENIED = "denied"
 RESULT_ERROR = "error"

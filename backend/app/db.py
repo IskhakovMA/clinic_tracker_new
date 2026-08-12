@@ -193,6 +193,21 @@ CREATE TABLE IF NOT EXISTS notifications (
     cancelled_by_user_id TEXT REFERENCES users(id)
 );
 
+CREATE TABLE IF NOT EXISTS internal_notification_state (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    stable_key TEXT NOT NULL,
+    patient_id TEXT REFERENCES patients(id) ON DELETE CASCADE,
+    notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality')),
+    source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality')),
+    source_id TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    read_at TEXT,
+    resolved_at TEXT,
+    UNIQUE (user_id, stable_key)
+);
+
 """
 
 # Индексы создаются после миграции: часть из них ссылается на колонки,
@@ -221,6 +236,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notificat
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_active
     ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
     WHERE status IN ('pending', 'processing', 'sent');
+CREATE INDEX IF NOT EXISTS idx_internal_notifications_user_active
+    ON internal_notification_state(user_id, resolved_at, read_at, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_internal_notifications_patient
+    ON internal_notification_state(patient_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_internal_notifications_user_key
+    ON internal_notification_state(user_id, stable_key);
 """
 
 # Роли — справочник, а не бизнес-конфигурация: наполняется всегда.
@@ -252,6 +273,7 @@ REQUIRED_TABLES = (
     "patient_notification_preferences",
     "notification_templates",
     "notifications",
+    "internal_notification_state",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -402,6 +424,11 @@ def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "patients", "policy_number", "policy_number TEXT")
 
 
+def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """v4 → v5: read-state for computed internal notification conditions."""
+    conn.executescript(SCHEMA_SQL)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -413,6 +440,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_SQL)   # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
+        migrate_v4_to_v5(conn)           # создаёт read-state для внутреннего центра уведомлений
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -428,6 +456,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 3:
             migrate_v3_to_v4(conn)
+            migrate_v4_to_v5(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 4:
+            migrate_v4_to_v5(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
