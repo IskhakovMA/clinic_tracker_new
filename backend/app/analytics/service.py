@@ -17,7 +17,7 @@ from typing import Any
 from .. import config, policy
 from ..models import STAGES
 from ..phone import phone_sendable
-from ..services import data_quality, notifications
+from ..services import data_quality, notifications, patient_attention
 from .filters import AnalyticsFilters, app_timezone, today_local
 from .metrics import duration_stats, ordered_stage_rows, overdue_bucket, percent, stage_label
 
@@ -25,7 +25,8 @@ SUMMARY_DEFINITIONS = {
     "total_patients": "Все пациенты, доступные текущей роли с учётом фильтров.",
     "active_patients": "Доступные пациенты в этапах маршрута до завершения.",
     "completed_patients": "Доступные пациенты на этапе «Завершено».",
-    "patients_need_attention": "Пациенты с текущими findings Центра качества данных.",
+    "patients_need_attention": "Пациенты с минимум одной активной ручной отметкой «требует внимания».",
+    "operational_signals": "Автоматические сигналы: просрочки, проблемы качества данных, незавершённые чек-листы и отсутствие закреплённого врача.",
     "data_quality_issues": "Все текущие critical/warning findings Центра качества данных по доступным пациентам.",
     "unassigned_patients": "Доступные пациенты без закреплённой учётной записи лечащего врача.",
     "patients_with_overdue": "Пациенты с текущим finding overdue_event из Центра качества данных.",
@@ -125,6 +126,8 @@ def _filtered_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, fi
             [filters.notification_status, *sorted(ids)],
         ).fetchall()
         ids &= {r["patient_id"] for r in nrows}
+    if filters.attention_reason:
+        ids &= patient_attention.active_patient_ids(conn, ids, filters.attention_reason)
     return ids
 
 
@@ -266,13 +269,14 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
     critical = [i for i in quality["issues"] if i["severity"] == "critical" and i["patient_id"] in ids]
     warnings = [i for i in quality["issues"] if i["severity"] == "warning" and i["patient_id"] in ids]
     quality_patient_ids = {i["patient_id"] for i in quality["issues"] if i["patient_id"] in ids}
+    attention_ids = patient_attention.active_patient_ids(conn, ids)
     checklist = _checklist_state(conn, ids)
     notification_counts = _notification_counts(conn, ids)
     cards = [
         {"code": "total_patients", "label": "Всего доступных пациентов", "value": len(ids), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["total_patients"]},
         {"code": "active_patients", "label": "Активные", "value": sum(1 for r in rows if r["stage"] != "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["active_patients"]},
         {"code": "completed_patients", "label": "Завершённые", "value": sum(1 for r in rows if r["stage"] == "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["completed_patients"]},
-        {"code": "patients_need_attention", "label": "Требуют внимания", "value": len(quality_patient_ids), "kind": "current", "detail_type": "quality_warning", "definition": SUMMARY_DEFINITIONS["patients_need_attention"]},
+        {"code": "patients_need_attention", "label": "Явно требуют внимания", "value": len(attention_ids), "kind": "current", "detail_type": "attention_patients", "definition": SUMMARY_DEFINITIONS["patients_need_attention"]},
         {"code": "data_quality_issues", "label": "Проблемы качества данных", "value": len(critical) + len(warnings), "kind": "current", "detail_type": "quality_warning", "definition": SUMMARY_DEFINITIONS["data_quality_issues"]},
         {"code": "unassigned_patients", "label": "Пациенты без назначенного врача", "value": sum(1 for r in rows if not r["treating_doctor_user_id"]), "kind": "current", "detail_type": "unassigned_patients", "definition": SUMMARY_DEFINITIONS["unassigned_patients"]},
         {"code": "patients_with_overdue", "label": "Пациенты с просроченными событиями", "value": len({i["patient_id"] for i in overdue_issues}), "kind": "current", "detail_type": "overdue_events", "definition": SUMMARY_DEFINITIONS["patients_with_overdue"]},
@@ -315,7 +319,7 @@ def _route_state_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[s
         "rows": [
             {"code": "active", "label": "Активные", "count": active, "percent": percent(active, total), "detail_type": "patients", "filter": {}, "meta": {"overlap": False}},
             {"code": "completed", "label": "Завершённые", "count": completed, "percent": percent(completed, total), "detail_type": "patients", "filter": {"stage": "completed"}, "meta": {"overlap": False}},
-            {"code": "attention", "label": "Требуют внимания", "count": attention, "percent": percent(attention, total), "detail_type": "quality_warning", "filter": {}, "meta": {"overlap": True}},
+            {"code": "operational_signals", "label": "Операционные сигналы", "count": attention, "percent": percent(attention, total), "detail_type": "quality_warning", "filter": {}, "meta": {"overlap": True}},
         ],
     }
 
@@ -372,7 +376,7 @@ def _attention_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[str
         {"code": "checklists", "label": "Незавершённые обязательные чек-листы", "count": checklist["incomplete_required"], "detail_type": "incomplete_checklists", "filter": {}, "meta": {}},
     ]
     rows_out = sorted(rows_out, key=lambda x: (-x["count"], x["label"]))
-    return {"title": "Требуют внимания", "total": len(issue_ids), "rows": rows_out}
+    return {"title": "Операционные сигналы", "total": len(issue_ids), "rows": rows_out}
 
 
 def _trend_rows(conn: sqlite3.Connection, patient_ids: set[str], filters: AnalyticsFilters) -> dict:
@@ -437,7 +441,8 @@ def dashboard(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analy
         "data_quality": _quality_code_rows(quality, ids),
         "trend": _trend_rows(conn, ids, filters),
         "workload": workload(conn, user, filters),
-        "attention": _attention_rows(rows, quality, ids, checklist),
+        "attention": patient_attention.active_reason_breakdown(conn, ids),
+        "operations": _attention_rows(rows, quality, ids, checklist),
     }
 
 
@@ -798,6 +803,7 @@ DETAIL_TYPES = {
     "incomplete_checklists",
     "notifications_pending",
     "notifications_failed",
+    "attention_patients",
 }
 
 
@@ -811,6 +817,9 @@ def details(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
         items = [_patient_ref(r) for r in _patient_rows(conn, patient_ids)]
     elif detail_type == "unassigned_patients":
         items = [_patient_ref(r) for r in _patient_rows(conn, patient_ids) if not r["treating_doctor_user_id"]]
+    elif detail_type == "attention_patients":
+        attention_ids = patient_attention.active_patient_ids(conn, patient_ids, filters.attention_reason)
+        items = [_patient_ref(r) for r in _patient_rows(conn, attention_ids)]
     elif detail_type == "overdue_events":
         items = _overdue_state(conn, user, filters)["items"]
     elif detail_type in {"quality_critical", "quality_warning"}:

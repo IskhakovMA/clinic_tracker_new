@@ -82,6 +82,8 @@ def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: 
 
 
 def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]:
+    from .services import patient_attention
+
     p = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
     if p is None:
         return None
@@ -133,6 +135,7 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "futurePlans": future_plans,
         "treatingDoctorUserId": p["treating_doctor_user_id"],
         "treatingDoctorName": _treating_doctor_name(conn, p["treating_doctor_user_id"]),
+        "attention": patient_attention.summary_for_patient(conn, patient_id),
     }
 
 
@@ -144,7 +147,11 @@ def _treating_doctor_name(conn: sqlite3.Connection, user_id: Optional[str]) -> O
 
 
 def list_patients(
-    conn: sqlite3.Connection, scope: Optional[tuple[str, list]] = None
+    conn: sqlite3.Connection,
+    scope: Optional[tuple[str, list]] = None,
+    *,
+    attention: str | None = None,
+    attention_reason: str | None = None,
 ) -> list[dict]:
     """Список пациентов; scope — SQL-условие из policy.patient_scope_filter.
     Одна и та же фильтрация обслуживает список, поиск, статистику, календарь
@@ -156,7 +163,30 @@ def list_patients(
             f"SELECT id FROM patients WHERE {cond} ORDER BY arrival ASC", params  # nosec B608 - cond is policy scope.
         ).fetchall()
     ]
-    return [patient_to_dict(conn, pid) for pid in ids]
+    from .services import patient_attention as attention_service
+
+    summary = attention_service.bulk_summary(conn, ids)
+    if attention in {"active", "none"} or attention_reason:
+        active_ids = {pid for pid, item in summary.items() if item["active"]}
+        if attention_reason:
+            active_ids = attention_service.active_patient_ids(conn, set(ids), attention_reason)
+        if attention == "none":
+            allowed_ids = set(ids) - active_ids
+        else:
+            allowed_ids = active_ids
+        ids = [pid for pid in ids if pid in allowed_ids]
+    patients = []
+    for pid in ids:
+        item = patient_to_dict(conn, pid)
+        if item is not None:
+            item["attention"] = summary.get(pid, {
+                "active": False,
+                "activeCount": 0,
+                "primaryReasonCode": None,
+                "primaryReasonLabel": "",
+            })
+            patients.append(item)
+    return patients
 
 
 def create_patient(

@@ -85,6 +85,10 @@ ANALYTICS_REPORT_EXPORTED = "analytics_report_exported"
 INTERNAL_NOTIFICATION_READ = "internal_notification_read"
 INTERNAL_NOTIFICATION_READ_ALL = "internal_notification_read_all"
 
+# Patient attention workflow
+ATTENTION_ISSUE_CREATED = "attention_issue_created"
+ATTENTION_ISSUE_CLOSED = "attention_issue_closed"
+
 RESULT_OK = "ok"
 RESULT_DENIED = "denied"
 RESULT_ERROR = "error"

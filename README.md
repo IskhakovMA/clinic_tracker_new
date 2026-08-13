@@ -19,13 +19,18 @@ Backend — FastAPI + SQLite, frontend — статические файлы, к
   [NOTIFICATIONS.md](NOTIFICATIONS.md).
 - **Внутренний центр уведомлений**: персональная лента просроченных,
   сегодняшних и ближайших событий, незавершённых чек-листов и критичных
-  проблем качества данных внутри текущего RBAC/patient scope. Состояние
+  проблем качества данных, а также ручных отметок «требует внимания» внутри текущего RBAC/patient scope. Состояние
   «прочитано» хранится server-side; внешних отправок нет. Подробности —
   в [INTERNAL_NOTIFICATION_CENTER.md](INTERNAL_NOTIFICATION_CENTER.md).
+- **Пациент требует внимания**: отдельная сущность `Patient Attention Issue`
+  с lifecycle `open/closed`, причиной, коротким комментарием, автором,
+  датой создания и историей закрытия. Это ручная управляемая отметка, а не
+  автоматическое превращение overdue/Data Quality finding в задачу.
 - Раздел **«Аналитика»**: визуальный dashboard для руководящих ролей и
   администратора с KPI, распределением по этапам и профилям клиентского пути,
-  состоянием маршрутов, проблемами качества данных, динамикой и нагрузкой
-  врачей. Данные считаются server-side внутри текущего RBAC/patient scope.
+  состоянием маршрутов, явными пациентами, требующими внимания, проблемами
+  качества данных, динамикой и нагрузкой врачей. Данные считаются server-side
+  внутри текущего RBAC/patient scope.
 
 ### Файлы фронтенда
 
@@ -164,7 +169,10 @@ node --check static/app.js             # синтаксис фронтенда (
 
 ## Данные, защита каталога и резервное копирование
 
-- **База**: `backend/data/clinic.db` (SQLite schema v5, исключена из Git и не раздаётся по HTTP).
+- **База**: `backend/data/clinic.db` (SQLite schema v6, исключена из Git и не раздаётся по HTTP).
+  v6 добавляет `patient_attention_issues` и расширяет internal notification
+  read-state для типа `attention`; patient/OMS/history/events/checklists не
+  мигрируются в новую структуру и сохраняются как есть.
 - **Encrypted backups**: создайте key file и настройте `CLINIC_BACKUP_KEY_FILE`, затем
   `python -m backend.cli backup` → `backend/data/backups/clinic_<дата>.cbk`.
   Копия делается через SQLite backup API, проверяется и упаковывается в Clinic Backup Format v1
