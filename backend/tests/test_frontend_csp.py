@@ -206,6 +206,23 @@ def test_internal_notification_center_frontend_contract_is_present():
     assert "Открыть уведомления" in js
 
 
+def test_ai_assistant_frontend_contract_is_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    assert 'id="aiAssistantBtn"' in html
+    assert 'id="aiAssistantDrawer"' in html
+    assert 'id="aiAssistantInput"' in html
+    assert 'aria-controls="aiAssistantDrawer"' in html
+    assert "ИИ-помощник" in html
+    assert "/api/ai/status" in js
+    assert "/api/ai/chat" in js
+    assert "Спросить помощника" in js
+    assert "patientContextId" in js
+    assert "История чата хранится только в текущей вкладке" in js
+    assert "localStorage.setItem('ai" not in js
+    assert "sessionStorage" not in js
+
+
 def test_data_quality_mvp_does_not_offer_automatic_duplicate_merge():
     """MVP только показывает кандидатов и не добавляет массовое исправление."""
     combined = "\n".join(path.read_text(encoding="utf-8") for path in (HTML, JS))

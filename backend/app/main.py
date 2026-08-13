@@ -14,7 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import config, security
 from .db import get_connection, init_db
-from .routes import analytics, audit_log, auth, data_quality, importexport, internal_notifications, migrate, notifications, patients, staff, structure
+from .routes import ai, analytics, audit_log, auth, data_quality, importexport, internal_notifications, migrate, notifications, patients, staff, structure
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -90,6 +90,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 
 app.include_router(auth.router)
+app.include_router(ai.router)
 app.include_router(patients.router)
 app.include_router(importexport.router)
 app.include_router(migrate.router)

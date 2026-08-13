@@ -74,3 +74,17 @@ NOTIFICATION_MAX_ATTEMPTS = int(os.environ.get("NOTIFICATION_MAX_ATTEMPTS", "3")
 NOTIFICATION_BATCH_LIMIT_MAX = 200
 NOTIFICATION_MOCK_MODE = os.environ.get("NOTIFICATION_MOCK_MODE", "success").strip().lower()
 NOTIFICATION_PROCESSING_LEASE_SECONDS = int(os.environ.get("NOTIFICATION_PROCESSING_LEASE_SECONDS", "300"))
+
+# Read-only AI assistant. Disabled by default; when disabled the main app keeps
+# working and the UI shows a controlled unavailable state.
+AI_ENABLED = os.environ.get("CLINIC_AI_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+AI_BASE_URL = os.environ.get("CLINIC_AI_BASE_URL", "http://127.0.0.1:1234/v1").strip().rstrip("/")
+AI_MODEL = os.environ.get("CLINIC_AI_MODEL", "").strip()
+AI_API_KEY = os.environ.get("CLINIC_AI_API_KEY", "")
+AI_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_TIMEOUT_SECONDS", "45")), 120))
+AI_MAX_OUTPUT_TOKENS = max(128, min(int(os.environ.get("CLINIC_AI_MAX_OUTPUT_TOKENS", "1200")), 4000))
+AI_MAX_TOOL_CALLS = max(1, min(int(os.environ.get("CLINIC_AI_MAX_TOOL_CALLS", "8")), 16))
+AI_MAX_HISTORY_MESSAGES = max(0, min(int(os.environ.get("CLINIC_AI_MAX_HISTORY_MESSAGES", "12")), 24))
+AI_MAX_USER_MESSAGE_CHARS = max(200, min(int(os.environ.get("CLINIC_AI_MAX_USER_MESSAGE_CHARS", "4000")), 12000))
+AI_RATE_LIMIT_REQUESTS = max(1, min(int(os.environ.get("CLINIC_AI_RATE_LIMIT_REQUESTS", "30")), 120))
+AI_RATE_LIMIT_WINDOW_SECONDS = max(60, min(int(os.environ.get("CLINIC_AI_RATE_LIMIT_WINDOW_SECONDS", "300")), 3600))

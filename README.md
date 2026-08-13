@@ -31,6 +31,11 @@ Backend — FastAPI + SQLite, frontend — статические файлы, к
   состоянием маршрутов, явными пациентами, требующими внимания, проблемами
   качества данных, динамикой и нагрузкой врачей. Данные считаются server-side
   внутри текущего RBAC/patient scope.
+- **ИИ-помощник V1**: встроенный read-only drawer для свободных вопросов по
+  доступным данным, Attention, просрочкам, внутренним уведомлениям и Analytics
+  V2. По умолчанию выключен, настраивается только backend-переменными для
+  OpenAI-compatible local/internal provider, историю не сохраняет. Подробности —
+  в [AI_ASSISTANT_V1.md](AI_ASSISTANT_V1.md).
 
 ### Файлы фронтенда
 
@@ -146,6 +151,26 @@ python -m pytest backend/tests -q      # auth, RBAC, CRUD, CSRF, импорт/э
 pip-audit -r backend/requirements.txt  # проверка зависимостей на известные уязвимости
 node --check static/app.js             # синтаксис фронтенда (если установлен Node.js)
 ```
+
+## ИИ-помощник V1
+
+По умолчанию помощник отключён: `CLINIC_AI_ENABLED=false`. В этом состоянии
+приложение работает штатно, а интерфейс показывает контролируемое сообщение
+«ИИ-помощник не настроен».
+
+Для локального development smoke можно использовать OpenAI-compatible endpoint,
+например LM Studio на `http://127.0.0.1:1234/v1`:
+
+```bash
+CLINIC_AI_ENABLED=true
+CLINIC_AI_BASE_URL=http://127.0.0.1:1234/v1
+CLINIC_AI_MODEL=<local-model-name>
+uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
+```
+
+API key задаётся только на backend через `CLINIC_AI_API_KEY` и не возвращается
+во frontend. Помощник не имеет write-tools, не хранит историю в SQLite или
+браузерных storage и не получает телефон/полис ОМС через V1 tools.
 
 ## Application Security Hardening
 

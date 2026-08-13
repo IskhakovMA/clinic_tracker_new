@@ -323,6 +323,30 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     }
 
 
+def preview_summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
+    """Read-only summary for AI tools.
+
+    Unlike summary()/list_items(), this deliberately does not synchronise
+    internal_notification_state and therefore cannot mark anything seen/read.
+    """
+    conditions = _compute_conditions(conn, user)
+    return {
+        "computed_at": now_iso(),
+        "timezone": config.APP_TIMEZONE,
+        "scope": user.scope_strategy,
+        "upcoming_days": UPCOMING_DAYS,
+        "total_count": len(conditions),
+        "unread_count": None,
+        "overdue_count": sum(1 for i in conditions if i.notification_type == "overdue"),
+        "today_count": sum(1 for i in conditions if i.notification_type == "today"),
+        "upcoming_count": sum(1 for i in conditions if i.notification_type == "upcoming"),
+        "checklist_count": sum(1 for i in conditions if i.notification_type == "checklist"),
+        "quality_count": sum(1 for i in conditions if i.notification_type == "data_quality"),
+        "attention_count": sum(1 for i in conditions if i.notification_type == "attention"),
+        "read_state": "not_changed",
+    }
+
+
 def list_items(
     conn: sqlite3.Connection,
     user: policy.CurrentUser,

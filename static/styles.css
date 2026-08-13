@@ -497,6 +497,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .topbar__spacer { flex: 1; }
 
 .notification-bell { position: relative; flex: 0 0 auto; }
+.ai-topbar-btn { flex: 0 0 auto; }
 .notification-bell__badge {
     position: absolute;
     min-width: 18px;
@@ -535,6 +536,123 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     background: var(--surface);
     box-shadow: var(--shadow-lg);
     overflow-y: auto;
+}
+
+.ai-drawer {
+    position: fixed;
+    inset: 0 0 0 auto;
+    z-index: 80;
+    width: min(500px, 100vw);
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-4);
+    padding: var(--sp-5);
+    border-left: 1px solid var(--border);
+    background: var(--surface);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+
+.ai-drawer__head,
+.ai-composer__actions,
+.ai-context,
+.ai-message__refs {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--sp-3);
+}
+
+.ai-drawer__head h2 { font-size: var(--text-xl); margin: 0; }
+.ai-drawer__head p { margin: var(--sp-1) 0 0; color: var(--text-2); }
+
+.ai-safety,
+.ai-status,
+.ai-context {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--sp-3);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: var(--text-sm);
+}
+
+.ai-status { color: var(--text); }
+
+.ai-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}
+
+.ai-chat {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding-right: var(--sp-1);
+}
+
+.ai-empty {
+    margin: auto 0;
+    color: var(--text-2);
+}
+
+.ai-empty h3 {
+    margin: 0 0 var(--sp-2);
+    font-size: var(--text-lg);
+    color: var(--text);
+}
+
+.ai-empty p { margin: 0; }
+
+.ai-message {
+    max-width: 88%;
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--sp-3);
+    background: var(--surface-2);
+    overflow-wrap: anywhere;
+}
+
+.ai-message--user {
+    align-self: flex-end;
+    background: var(--accent-soft);
+    border-color: var(--accent);
+}
+
+.ai-message--assistant { align-self: flex-start; }
+.ai-message__role {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    margin-bottom: var(--sp-1);
+}
+.ai-message__text {
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+.ai-message__refs {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    margin-top: var(--sp-3);
+}
+
+.ai-composer {
+    display: grid;
+    gap: var(--sp-3);
+    flex: 0 0 auto;
+}
+
+.ai-composer__input {
+    min-height: 92px;
+    max-height: 180px;
+    resize: vertical;
+}
+
+.ai-composer__actions {
+    align-items: center;
 }
 
 .notification-drawer__head,
@@ -1363,6 +1481,30 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .toolbar__filters { display: none; }
     .attention-issue__head { flex-direction: column; align-items: flex-start; }
 
+    #themeToggle {
+        width: 44px;
+        min-width: 44px;
+        padding: 0;
+        font-size: 0;
+        overflow: hidden;
+    }
+
+    #themeToggle::before {
+        content: '◐';
+        font-size: var(--text-lg);
+        line-height: 1;
+    }
+
+    .ai-topbar-btn {
+        width: 44px;
+        min-width: 44px;
+        padding: 0;
+    }
+
+    .ai-topbar-btn span {
+        display: none;
+    }
+
     /* Комфортные цели нажатия */
     .btn { min-height: 44px; }
     .btn--sm { min-height: 40px; }
@@ -1373,6 +1515,14 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
         padding: var(--sp-4);
         border-left: 0;
     }
+    .ai-drawer {
+        width: 100vw;
+        padding: var(--sp-4);
+        border-left: 0;
+    }
+    .ai-message { max-width: 94%; }
+    .ai-composer__actions { flex-wrap: wrap; }
+    .ai-composer__actions .btn { flex: 1 1 120px; }
     .internal-notification {
         grid-template-columns: 1fr;
         gap: var(--sp-2);
@@ -1484,19 +1634,6 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
         display: none;
     }
 
-    #themeToggle {
-        width: 44px;
-        min-width: 44px;
-        padding: 0;
-        font-size: 0;
-        overflow: hidden;
-    }
-
-    #themeToggle::before {
-        content: '◐';
-        font-size: var(--text-lg);
-        line-height: 1;
-    }
 }
 
 /* --------------------------------------------------------------------------

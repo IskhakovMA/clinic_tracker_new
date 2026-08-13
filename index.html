@@ -107,6 +107,10 @@
             <div class="topbar__spacer"></div>
             <span class="chip chip--neutral is-hidden" id="readOnlyChip" title="Ваша роль позволяет просматривать данные без изменения">Режим просмотра</span>
             <span class="chip chip--neutral" title="Приложение работает локально, данные не покидают этот компьютер">Локальный режим</span>
+            <button type="button" class="btn btn--ghost btn--sm ai-topbar-btn" id="aiAssistantBtn" aria-label="Открыть ИИ-помощник" aria-expanded="false" aria-controls="aiAssistantDrawer">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v3M7 8h10a4 4 0 0 1 4 4v5a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4v-5a4 4 0 0 1 4-4M8 13h.01M16 13h.01M9 17h6"/></svg>
+                <span>ИИ-помощник</span>
+            </button>
             <button type="button" class="btn btn--icon notification-bell" id="internalNotificationsBell" aria-label="Открыть уведомления" aria-expanded="false" aria-controls="internalNotificationsDrawer">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
                 <span class="notification-bell__badge is-hidden" id="internalNotificationsBadge"></span>
@@ -133,6 +137,37 @@
             <div class="notification-drawer__footer">
                 <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsFullBtn">Все уведомления</button>
             </div>
+        </aside>
+
+        <div class="drawer-scrim is-hidden" id="aiAssistantScrim"></div>
+        <aside class="ai-drawer is-hidden" id="aiAssistantDrawer" aria-labelledby="aiAssistantTitle" aria-hidden="true">
+            <div class="ai-drawer__head">
+                <div>
+                    <h2 id="aiAssistantTitle">ИИ-помощник</h2>
+                    <p id="aiAssistantSubtitle">Read-only ответы по доступным данным</p>
+                </div>
+                <button type="button" class="btn btn--icon" id="aiAssistantClose" aria-label="Закрыть ИИ-помощник">
+                    <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                </button>
+            </div>
+            <div class="ai-safety" id="aiAssistantSafety" role="note">
+                Помощник работает только в режиме просмотра, не изменяет данные и не заменяет медицинское решение.
+            </div>
+            <div class="ai-context is-hidden" id="aiAssistantContext"></div>
+            <div class="ai-suggestions" id="aiAssistantSuggestions"></div>
+            <div class="ai-chat" id="aiAssistantMessages" role="log" aria-live="polite" aria-relevant="additions"></div>
+            <div class="ai-status is-hidden" id="aiAssistantStatus" role="status"></div>
+            <form class="ai-composer" id="aiAssistantForm">
+                <label class="visually-hidden" for="aiAssistantInput">Сообщение ИИ-помощнику</label>
+                <textarea class="textarea ai-composer__input" id="aiAssistantInput" rows="3" maxlength="4000" placeholder="Задайте вопрос по доступным данным"></textarea>
+                <div class="ai-composer__actions">
+                    <button type="button" class="btn btn--ghost btn--sm" id="aiAssistantClearBtn">Очистить</button>
+                    <button type="submit" class="btn btn--primary btn--sm" id="aiAssistantSendBtn">
+                        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7"/></svg>
+                        <span>Отправить</span>
+                    </button>
+                </div>
+            </form>
         </aside>
 
         <main class="content" id="content">
