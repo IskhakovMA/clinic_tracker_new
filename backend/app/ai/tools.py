@@ -275,6 +275,7 @@ def get_patient_attention(conn: sqlite3.Connection, user: policy.CurrentUser, ar
 
 def list_overdue_patients(conn: sqlite3.Connection, user: policy.CurrentUser, args: ListOverdueArgs) -> dict:
     quality = data_quality.evaluate(conn, user, today=today_local())
+    patient_names = {patient["patient_id"]: patient["patient_name"] for patient in quality["patients"]}
     rows = []
     for issue in quality["issues"]:
         if issue["code"] != "overdue_event":
@@ -286,7 +287,7 @@ def list_overdue_patients(conn: sqlite3.Connection, user: policy.CurrentUser, ar
             continue
         rows.append({
             "patientId": issue["patient_id"],
-            "displayName": issue["patient_name"],
+            "displayName": patient_names.get(issue["patient_id"], "Пациент"),
             "daysOverdue": days,
             "bucket": bucket,
             "bucketLabel": bucket_label,

@@ -113,6 +113,48 @@ def test_ai_provider_tool_call_and_references(auth_client, monkeypatch):
     assert "7700000000000000" not in json.dumps(tool_payload)
 
 
+def test_ai_followup_reference_hint_uses_scoped_attention_order(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    first_id = _create_patient(name="ИИ Первый")
+    second_id = _create_patient(name="ИИ Второй")
+    for patient_id, reason in ((first_id, "other"), (second_id, "department_head_decision_required")):
+        response = auth_client.post(
+            f"/api/patients/{patient_id}/attention",
+            json={"reasonCode": reason, "eventDate": None, "comment": "synthetic"},
+            headers=auth_client.csrf,
+        )
+        assert response.status_code == 201
+    from backend.app import policy
+    from backend.app.ai import orchestrator, tools
+    from backend.app.ai.schemas import AIChatIn, AIHistoryMessage
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    attention_order = tools.list_attention_patients(get_conn(), user, tools.ListAttentionArgs(limit=10))["patients"]
+    expected_id = attention_order[1]["patientId"]
+    provider = FakeProvider([
+        _result(tool_calls=[_tool_call("get_patient_attention", {"patientId": expected_id})]),
+        _result("Второй требует решения заведующего."),
+    ])
+
+    result = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(
+            message="А второй почему?",
+            history=[
+                AIHistoryMessage(role="user", content="Какие мои пациенты требуют внимания?"),
+                AIHistoryMessage(role="assistant", content="1. ИИ Первый. 2. ИИ Второй."),
+            ],
+        ),
+        provider=provider,
+    )
+    first_messages = provider.calls[0]["messages"]
+    assert any("patientId=" + expected_id in message["content"] for message in first_messages if message["role"] == "system")
+    tool_payload = json.loads(provider.calls[1]["messages"][-1]["content"])
+    assert tool_payload["patientId"] == expected_id
+    assert result["references"] == [{"type": "patient", "patientId": expected_id, "label": "Открыть пациента"}]
+
+
 def test_openai_provider_malformed_response_and_reasoning_strip():
     from backend.app.ai.provider import OpenAICompatibleAIProvider, AIProviderError
 
