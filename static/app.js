@@ -288,7 +288,11 @@ const app = {
     stageFilter: null,
     headFilter: null,
     deadlineFilter: null,
+    attentionFilter: null,
+    attentionReasonFilter: null,
     sortOrder: 'updated-newest',
+    attentionModalPatientId: null,
+    attentionCloseTarget: null,
     quality: {
         summary: null,
         issues: [],
@@ -359,6 +363,7 @@ const app = {
             nosology: '',
             doctor: '',
             department: '',
+            attentionReason: '',
         },
     },
 
@@ -375,6 +380,17 @@ const app = {
         stage: 'Маршрут',
         checklist: 'Чек-лист',
         duplicates: 'Возможные дубли',
+    },
+    ATTENTION_REASON_LABELS: {
+        emergency_hospitalization: 'Экстренная госпитализация',
+        route_change: 'Изменение маршрута пациента',
+        critical_overdue: 'Критичная просрочка',
+        doctor_decision_required: 'Требуется решение врача',
+        department_head_decision_required: 'Требуется решение заведующего',
+        organizational_issue: 'Организационная проблема',
+        documents_or_data_issue: 'Проблема с документами или данными',
+        patient_unavailable: 'Не удалось связаться / пациент временно недоступен',
+        other: 'Другая причина',
     },
     QUALITY_CODE_LABELS: {
         missing_treating_doctor: 'Не назначен лечащий врач',
@@ -422,6 +438,7 @@ const app = {
         upcoming: 'Скоро',
         checklist: 'Чек-листы',
         data_quality: 'Качество данных',
+        attention: 'Требует внимания',
     },
 
     INTERNAL_NOTIFICATION_TABS: [
@@ -432,6 +449,7 @@ const app = {
         { value: 'upcoming', label: 'Скоро' },
         { value: 'checklist', label: 'Чек-листы' },
         { value: 'data_quality', label: 'Качество' },
+        { value: 'attention', label: 'Внимание' },
     ],
 
     icd10Localizations: {
@@ -1454,7 +1472,11 @@ const app = {
     /* --------------------------------------------------------------- Данные */
 
     async loadPatients() {
-        this.patients = await apiGetJson('/api/patients');
+        const params = new URLSearchParams();
+        if (this.attentionFilter) params.set('attention', this.attentionFilter);
+        if (this.attentionReasonFilter) params.set('attention_reason', this.attentionReasonFilter);
+        const query = params.toString();
+        this.patients = await apiGetJson(`/api/patients${query ? '?' + query : ''}`);
     },
 
     /** Журнал аудита даёт человекочитаемую подпись «что изменилось» в списке. */
@@ -1914,6 +1936,11 @@ const app = {
         else if (this.sortOrder === 'oldest') filtered.sort((a, b) => byDate(a.arrival) - byDate(b.arrival));
         else if (this.sortOrder === 'updated-newest') filtered.sort((a, b) => byDate(b.updatedAt || b.arrival) - byDate(a.updatedAt || a.arrival));
         else if (this.sortOrder === 'updated-oldest') filtered.sort((a, b) => byDate(a.updatedAt || a.arrival) - byDate(b.updatedAt || b.arrival));
+        else if (this.sortOrder === 'attention') filtered.sort((a, b) => {
+            const ac = (a.attention && a.attention.activeCount) || 0;
+            const bc = (b.attention && b.attention.activeCount) || 0;
+            return bc - ac || (a.name || '').localeCompare(b.name || '', 'ru');
+        });
         else if (this.sortOrder === 'name') filtered.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
         return filtered;
     },
@@ -2003,8 +2030,19 @@ const app = {
             option('no-date', 'Дата не назначена'),
         ]));
 
+        $('filterAttention').replaceChildren(frag([
+            option('', 'Все пациенты', true),
+            option('active', 'Требуют внимания'),
+            option('none', 'Без активных проблем'),
+        ]));
+        $('filterAttentionReason').replaceChildren(frag([
+            option('', 'Любая причина', true),
+            ...Object.entries(this.ATTENTION_REASON_LABELS).map(([code, label]) => option(code, label)),
+        ]));
+
         $('sortOrderSelect').replaceChildren(frag([
             option('updated-newest', 'Сначала изменённые', true),
+            option('attention', 'Сначала требуют внимания'),
             option('newest', 'Сначала новые'),
             option('oldest', 'Сначала давние'),
             option('name', 'По алфавиту'),
@@ -2132,7 +2170,7 @@ const app = {
 
     /** Счётчик у мобильной кнопки «Фильтры»: сколько условий сейчас активно. */
     activeFilterCount() {
-        return [this.stageFilter, this.headFilter, this.deadlineFilter].filter(Boolean).length;
+        return [this.stageFilter, this.headFilter, this.deadlineFilter, this.attentionFilter, this.attentionReasonFilter].filter(Boolean).length;
     },
 
     updateFiltersButton() {
@@ -2165,10 +2203,30 @@ const app = {
         this.stageFilter = null;
         this.headFilter = null;
         this.deadlineFilter = null;
+        this.attentionFilter = null;
+        this.attentionReasonFilter = null;
         $('filterStage').value = '';
         $('filterHead').value = '';
         $('filterDeadline').value = '';
-        this.renderPatients();
+        $('filterAttention').value = '';
+        $('filterAttentionReason').value = '';
+        this.reloadPatientsAndRender();
+    },
+
+    async reloadPatientsAndRender() {
+        try {
+            await this.loadPatients();
+            this.fillStaticSelects();
+            $('filterStage').value = this.stageFilter || '';
+            $('filterHead').value = this.headFilter || '';
+            $('filterDeadline').value = this.deadlineFilter || '';
+            $('filterAttention').value = this.attentionFilter || '';
+            $('filterAttentionReason').value = this.attentionReasonFilter || '';
+            $('sortOrderSelect').value = this.sortOrder;
+            this.renderPatients();
+        } catch (e) {
+            ui.toast(`Не удалось обновить список пациентов: ${e.message}`, 'warning');
+        }
     },
 
     /** Счётчик несопоставленных пациентов для Разработчика: баннер в списке
@@ -2217,6 +2275,11 @@ const app = {
             const stageLabel = this.getCurrentStageLabel(p);
             const percent = this.stageProgressPercent(p.stage);
             const activity = this.activityByPatient[p.id];
+            const attention = p.attention || {};
+            const attentionBadge = attention.active ? el('span', { class: 'chip chip--warning patient-attention-badge' }, [
+                el('span', { class: 'chip__dot' }),
+                `Требует внимания${attention.activeCount > 1 ? ' · ' + attention.activeCount : ''}`,
+            ]) : null;
 
             return el('tr', {}, [
                 el('td', {}, el('div', { class: 'person' }, [
@@ -2224,6 +2287,7 @@ const app = {
                     el('div', {}, [
                         el('div', { class: 'person__name', text: p.name }),
                         el('div', { class: 'person__meta', text: `${p.age} лет · ${p.diagnosis || 'диагноз не указан'}` }),
+                        attentionBadge,
                     ]),
                 ])),
                 el('td', { class: 'cell-stage' }, [
@@ -2263,6 +2327,7 @@ const app = {
         this.renderTabPanel(p);
         this.applyReadOnlyToPatientView();
         this.renderPatientQualityBlock(p.id);
+        if (this.currentTab === 'overview') this.renderPatientAttentionBlock(p.id);
         if (this.currentTab === 'notifications') this.renderPatientNotificationsBlock(p.id);
     },
 
@@ -2284,6 +2349,16 @@ const app = {
         return el('span', { class: 'chip chip--accent' }, [el('span', { class: 'chip__dot' }), 'В процессе обследования']);
     },
 
+    attentionReasonLabel(code) {
+        return this.ATTENTION_REASON_LABELS[code] || code || 'Причина не указана';
+    },
+
+    async refreshPatientRecord(patientId) {
+        const updated = await apiGetJson(`/api/patients/${encodeURIComponent(patientId)}`);
+        this.replacePatientInCache(updated);
+        return updated;
+    },
+
     renderPatientSide(p) {
         const percent = this.stageProgressPercent(p.stage);
         const nextNode = this.buildTimelineNodes(p).find(n => n.status === 'future' && n.isNext);
@@ -2300,6 +2375,7 @@ const app = {
                     ]),
                 ]),
                 this.statusChip(p),
+                this.renderPatientAttentionSummary(p),
 
                 el('div', { class: 'pcard__block' }, [
                     el('div', { class: 'pcard__label', text: 'Этап лечения' }),
@@ -2353,6 +2429,27 @@ const app = {
         ]));
     },
 
+    renderPatientAttentionSummary(p) {
+        const attention = p.attention || {};
+        const active = !!attention.active;
+        return el('div', { class: `pcard__block patient-attention-summary ${active ? 'is-active' : ''}` }, [
+            el('div', { class: 'pcard__label', text: 'Контроль внимания' }),
+            active ? el('div', { class: 'pcard__value' }, [
+                el('span', { class: 'chip chip--warning' }, [
+                    el('span', { class: 'chip__dot' }),
+                    `Требует внимания${attention.activeCount > 1 ? ' · ' + attention.activeCount : ''}`,
+                ]),
+            ]) : el('div', { class: 'pcard__value', text: 'Пациент не отмечен как требующий внимания' }),
+            active && attention.primaryReasonLabel ? el('div', { class: 'pcard__sub', text: attention.primaryReasonLabel }) : null,
+            this.can('editPatients') ? el('button', {
+                type: 'button',
+                class: 'btn btn--ghost btn--sm',
+                text: 'Добавить проблему',
+                on: { click: () => this.openAttentionModal(p.id) },
+            }) : el('div', { class: 'pcard__sub', text: 'Режим просмотра — изменение данных недоступно' }),
+        ]);
+    },
+
     TABS: [
         { key: 'overview', label: 'Обзор' },
         { key: 'notifications', label: 'Уведомления' },
@@ -2380,6 +2477,7 @@ const app = {
                     this.renderTabs();
                     this.renderTabPanel(this.getPatient(this.currentPatientId));
                     this.applyReadOnlyToPatientView();
+                    if (tab.key === 'overview') this.renderPatientAttentionBlock(this.currentPatientId);
                     if (tab.key === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
                 },
             },
@@ -2415,6 +2513,7 @@ const app = {
                 ]),
             ]),
             el('div', {}, [
+                this.patientAttentionCard(p),
                 el('div', { class: 'panel panel--pad', id: 'patientQualityBlock' }, [
                     el('h2', { class: 'section-title', text: 'Качество данных' }),
                     el('div', { class: 'empty', text: 'Загрузка…' }),
@@ -2427,6 +2526,143 @@ const app = {
                 ]),
             ]),
         ]);
+    },
+
+    patientAttentionCard(p) {
+        const activeCount = (p.attention && p.attention.activeCount) || 0;
+        return el('div', { class: `panel panel--pad attention-panel ${activeCount ? 'attention-panel--active' : ''}` }, [
+            el('div', { class: 'checkline' }, [
+                el('h2', { class: 'section-title', text: 'Требует внимания' }),
+                this.can('editPatients') ? el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: 'Добавить проблему',
+                    on: { click: () => this.openAttentionModal(p.id) },
+                }) : null,
+            ]),
+            el('div', { id: 'patientAttentionBlock' }, [
+                el('div', { class: 'empty', text: activeCount ? 'Загрузка…' : 'Пациент не отмечен как требующий внимания' }),
+            ]),
+        ]);
+    },
+
+    attentionIssueNode(issue, writable) {
+        const isEmergency = issue.reasonCode === 'emergency_hospitalization';
+        return el('div', { class: `attention-issue ${isEmergency ? 'attention-issue--emergency' : ''}` }, [
+            el('div', { class: 'attention-issue__head' }, [
+                el('strong', { text: issue.reasonLabel || this.attentionReasonLabel(issue.reasonCode) }),
+                el('span', { class: `chip ${issue.status === 'open' ? 'chip--warning' : 'chip--neutral'}` }, [
+                    el('span', { class: 'chip__dot' }),
+                    issue.status === 'open' ? 'Открыта' : 'Закрыта',
+                ]),
+            ]),
+            issue.eventDate ? el('div', { class: 'person__meta', text: `Дата события: ${issue.eventDate}` }) : null,
+            el('div', { class: 'person__meta', text: `Добавил: ${issue.createdByName || 'Сотрудник'} · ${this.formatDateTime(issue.createdAt)}` }),
+            issue.comment ? el('p', { class: 'attention-issue__comment', text: issue.comment }) : null,
+            issue.status === 'closed' ? el('div', { class: 'person__meta', text: `Закрыта: ${issue.closedByName || 'Сотрудник'} · ${this.formatDateTime(issue.closedAt)}` }) : null,
+            issue.status === 'closed' && issue.resolutionComment ? el('p', { class: 'attention-issue__comment', text: issue.resolutionComment }) : null,
+            issue.status === 'open' && writable ? el('button', {
+                type: 'button',
+                class: 'btn btn--ghost btn--sm',
+                text: 'Закрыть',
+                on: { click: () => this.openCloseAttentionIssueModal(issue.patientId, issue.id) },
+            }) : null,
+        ]);
+    },
+
+    async renderPatientAttentionBlock(patientId) {
+        const target = $('patientAttentionBlock');
+        if (!target) return;
+        try {
+            const data = await apiGetJson(`/api/patients/${encodeURIComponent(patientId)}/attention`);
+            const active = data.active || [];
+            const history = data.history || [];
+            const writable = this.can('editPatients');
+            target.replaceChildren(frag([
+                active.length ? el('div', { class: 'attention-list' }, active.map(issue => this.attentionIssueNode(issue, writable))) :
+                    el('div', { class: 'empty', text: 'Пациент не отмечен как требующий внимания' }),
+                history.length ? el('details', { class: 'attention-history' }, [
+                    el('summary', { text: `История внимания · ${history.length}` }),
+                    el('div', { class: 'attention-list' }, history.map(issue => this.attentionIssueNode(issue, false))),
+                ]) : null,
+            ]));
+        } catch (e) {
+            target.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить отметки внимания: ${e.message}` }));
+        }
+    },
+
+    openAttentionModal(patientId) {
+        this.attentionModalPatientId = patientId;
+        $('attentionForm').reset();
+        $('attentionFormError').classList.add('is-hidden');
+        $('attentionReason').replaceChildren(frag([
+            option('', 'Выберите причину', true),
+            ...Object.entries(this.ATTENTION_REASON_LABELS).map(([code, label]) => option(code, label)),
+        ]));
+        this.updateAttentionEventDateRequirement();
+        ui.openModal('attentionModal');
+    },
+
+    updateAttentionEventDateRequirement() {
+        const required = $('attentionReason').value === 'emergency_hospitalization';
+        $('attentionEventDate').required = required;
+        const label = document.querySelector('label[for="attentionEventDate"]');
+        if (label) label.textContent = required ? 'Дата события *' : 'Дата события';
+    },
+
+    openCloseAttentionIssueModal(patientId, issueId) {
+        this.attentionCloseTarget = { patientId, issueId };
+        $('attentionCloseForm').reset();
+        $('attentionCloseFormError').classList.add('is-hidden');
+        ui.openModal('attentionCloseModal');
+    },
+
+    async submitAttentionIssue(event) {
+        event.preventDefault();
+        const patientId = this.attentionModalPatientId;
+        if (!patientId) return;
+        const error = $('attentionFormError');
+        error.classList.add('is-hidden');
+        try {
+            await apiPost(`/api/patients/${encodeURIComponent(patientId)}/attention`, {
+                reasonCode: $('attentionReason').value,
+                eventDate: $('attentionEventDate').value || null,
+                comment: $('attentionComment').value,
+            });
+            ui.closeModal('attentionModal');
+            const updated = await this.refreshPatientRecord(patientId);
+            await this.loadPatients();
+            this.replacePatientInCache(updated);
+            this.renderPatientView();
+            this.refreshInternalNotificationSummary();
+            ui.toast('Проблема добавлена.', 'good');
+        } catch (e) {
+            error.textContent = e.message;
+            error.classList.remove('is-hidden');
+        }
+    },
+
+    async submitCloseAttentionIssue(event) {
+        event.preventDefault();
+        const target = this.attentionCloseTarget;
+        if (!target) return;
+        const error = $('attentionCloseFormError');
+        error.classList.add('is-hidden');
+        try {
+            await apiPost(`/api/patients/${encodeURIComponent(target.patientId)}/attention/${encodeURIComponent(target.issueId)}/close`, {
+                resolutionComment: $('attentionResolutionComment').value,
+            });
+            ui.closeModal('attentionCloseModal');
+            const updated = await this.refreshPatientRecord(target.patientId);
+            await this.loadPatients();
+            this.replacePatientInCache(updated);
+            this.renderPatientView();
+            this.refreshInternalNotificationSummary();
+            ui.toast('Проблема закрыта.', 'good');
+        } catch (e) {
+            error.textContent = e.message;
+            error.classList.remove('is-hidden');
+        }
     },
 
     renderTimeline(p) {
@@ -3775,6 +4011,7 @@ const app = {
         if (f.nosology) params.set('nosology', f.nosology);
         if (f.doctor) params.set('doctor_user_id', f.doctor);
         if (f.department) params.set('department_id', f.department);
+        if (f.attentionReason) params.set('attention_reason', f.attentionReason);
         params.set('limit', '50');
         params.set('offset', '0');
         return params.toString();
@@ -3897,16 +4134,21 @@ const app = {
             option('', 'Любое отделение', !selectedDepartment),
             ...departments.map(d => option(d.id, d.name, d.id === selectedDepartment)),
         ]));
+        $('analyticsAttentionReasonFilter').replaceChildren(frag([
+            option('', 'Любая причина внимания', !this.analytics.filters.attentionReason),
+            ...Object.entries(this.ATTENTION_REASON_LABELS).map(([code, label]) => option(code, label, code === this.analytics.filters.attentionReason)),
+        ]));
     },
 
     resetAnalyticsFilters() {
-        this.analytics.filters = { dateFrom: '', dateTo: '', stage: '', nosology: '', doctor: '', department: '' };
+        this.analytics.filters = { dateFrom: '', dateTo: '', stage: '', nosology: '', doctor: '', department: '', attentionReason: '' };
         $('analyticsDateFrom').value = '';
         $('analyticsDateTo').value = '';
         $('analyticsStageFilter').value = '';
         $('analyticsNosologyFilter').value = '';
         $('analyticsDoctorFilter').value = '';
         $('analyticsDepartmentFilter').value = '';
+        $('analyticsAttentionReasonFilter').value = '';
         this.updateAnalyticsPeriodPresetState();
         this.renderAnalytics();
     },
@@ -3954,10 +4196,14 @@ const app = {
 
     renderAnalyticsAttention() {
         const rows = (this.analytics.dashboard && this.analytics.dashboard.attention && this.analytics.dashboard.attention.rows) || [];
+        if (!rows.length) {
+            $('analyticsAttentionList').replaceChildren(el('div', { class: 'empty', text: 'Пациентов с активной ручной отметкой внимания нет.' }));
+            return;
+        }
         $('analyticsAttentionList').replaceChildren(frag(rows.map(row => el('button', {
             type: 'button',
             class: 'analytics-row analytics-row--button analytics-row--accent',
-            on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null },
+            on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, { attentionReason: row.code }) : null },
         }, [
             el('span', { text: row.label }),
             el('strong', { text: String(row.count || 0) }),
@@ -3987,18 +4233,14 @@ const app = {
     },
 
     renderAnalyticsOperations() {
-        const cards = (this.analytics.summary && this.analytics.summary.cards) || [];
-        const byCode = Object.fromEntries(cards.map(card => [card.code, card]));
-        const rows = ['overdue_events', 'incomplete_required_checklists', 'pending_notifications', 'failed_notifications']
-            .map(code => byCode[code])
-            .filter(Boolean);
+        const rows = (this.analytics.dashboard && this.analytics.dashboard.operations && this.analytics.dashboard.operations.rows) || [];
         $('analyticsOperationsList').replaceChildren(frag(rows.map(card => el('button', {
             type: 'button',
             class: 'analytics-row analytics-row--button',
-            on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
+            on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label, card.filter || {}) : null },
         }, [
             el('span', { text: card.label }),
-            el('strong', { text: String(card.value || 0) }),
+            el('strong', { text: String(card.count || card.value || 0) }),
         ]))));
     },
 
@@ -5703,6 +5945,15 @@ const app = {
             this.deadlineFilter = event.target.value || null;
             this.renderPatients();
         });
+        on('filterAttention', 'change', (event) => {
+            this.attentionFilter = event.target.value || null;
+            this.reloadPatientsAndRender();
+        });
+        on('filterAttentionReason', 'change', (event) => {
+            this.attentionReasonFilter = event.target.value || null;
+            if (this.attentionReasonFilter && !this.attentionFilter) this.attentionFilter = 'active';
+            this.reloadPatientsAndRender();
+        });
         on('sortOrderSelect', 'change', (event) => {
             this.sortOrder = event.target.value;
             this.renderPatients();
@@ -5718,6 +5969,15 @@ const app = {
         });
         on('diagnosisLocalization', 'change', () => this.onLocalizationChange());
         on('stage', 'change', () => this.updateStageFields());
+
+        // Пациент требует внимания
+        on('closeAttentionIconBtn', 'click', () => ui.closeModal('attentionModal'));
+        on('closeAttentionBtn', 'click', () => ui.closeModal('attentionModal'));
+        on('attentionReason', 'change', () => this.updateAttentionEventDateRequirement());
+        $('attentionForm').addEventListener('submit', (event) => this.submitAttentionIssue(event));
+        on('closeAttentionCloseIconBtn', 'click', () => ui.closeModal('attentionCloseModal'));
+        on('cancelAttentionCloseBtn', 'click', () => ui.closeModal('attentionCloseModal'));
+        $('attentionCloseForm').addEventListener('submit', (event) => this.submitCloseAttentionIssue(event));
 
         // Мобильные панели-листы: «Данные» и «Фильтры»
         on('openDataSheetBtn', 'click', () => ui.openModal('dataSheet'));
@@ -5839,6 +6099,10 @@ const app = {
         });
         on('analyticsDepartmentFilter', 'change', (event) => {
             this.analytics.filters.department = event.target.value;
+            this.renderAnalytics();
+        });
+        on('analyticsAttentionReasonFilter', 'change', (event) => {
+            this.analytics.filters.attentionReason = event.target.value;
             this.renderAnalytics();
         });
         on('analyticsResetFiltersBtn', 'click', () => this.resetAnalyticsFilters());

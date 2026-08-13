@@ -662,7 +662,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .table tbody tr { transition: background var(--transition); }
 .table tbody tr:hover { background: var(--surface-2); }
 
-.person { display: flex; align-items: center; gap: var(--sp-3); }
+.person { display: flex; align-items: center; gap: var(--sp-3); min-width: 0; }
+.person > div { min-width: 0; }
 
 .avatar {
     width: 36px; height: 36px; flex: none;
@@ -734,8 +735,10 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: var(--r-lg);
+    min-width: 0;
 }
-.pcard__head { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-4); }
+.pcard__head { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-4); min-width: 0; }
+.pcard__head > div { min-width: 0; }
 .pcard__name { font-size: var(--text-lg); }
 .pcard__meta { font-size: var(--text-sm); color: var(--text-3); margin-top: 2px; }
 .pcard__phone { font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-2); margin-top: var(--sp-1); }
@@ -773,7 +776,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
    12. Таймлайн
    -------------------------------------------------------------------------- */
 
-.timeline { display: flex; gap: var(--sp-2); overflow-x: auto; padding: var(--sp-2) 0 var(--sp-4); }
+.timeline { display: flex; gap: var(--sp-2); overflow-x: auto; padding: var(--sp-2) 0 var(--sp-4); max-width: 100%; min-width: 0; }
 
 .tl-step {
     flex: 1 1 0; min-width: 96px;
@@ -840,6 +843,63 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 }
 .feed__title { font-size: var(--text-md); font-weight: 600; }
 .feed__text { font-size: var(--text-sm); color: var(--text-2); margin-top: 2px; }
+
+.patient-attention-badge {
+    margin-top: var(--sp-1);
+    max-width: 100%;
+}
+
+.patient-attention-summary.is-active {
+    border-left: 3px solid var(--warning);
+}
+
+.attention-panel--active {
+    border-color: color-mix(in srgb, var(--warning) 42%, var(--border));
+}
+
+.attention-list {
+    display: grid;
+    gap: var(--sp-3);
+}
+
+.attention-issue {
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+}
+
+.attention-issue--emergency {
+    border-color: color-mix(in srgb, var(--warning) 48%, var(--border));
+    background: color-mix(in srgb, var(--warning) 8%, var(--surface-2));
+}
+
+.attention-issue__head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: var(--sp-3);
+}
+
+.attention-issue__comment {
+    margin: 0;
+    color: var(--text-2);
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.attention-history {
+    margin-top: var(--sp-3);
+}
+
+.attention-history > summary {
+    cursor: pointer;
+    color: var(--text-2);
+    font-weight: 700;
+    margin-bottom: var(--sp-3);
+}
 
 /* --------------------------------------------------------------------------
    13. Событийные блоки, чек-лист, планы
@@ -1242,7 +1302,11 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 
     .sidebar {
         position: fixed; inset: 0 auto 0 0;
-        width: 268px;
+        display: flex;
+        flex-direction: column;
+        width: min(268px, 100vw);
+        max-height: 100dvh;
+        overflow-y: auto;
         transform: translateX(-100%);
         transition: transform var(--transition);
     }
@@ -1297,6 +1361,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .only-wide { display: none !important; }
     .only-narrow { display: inline-flex !important; }
     .toolbar__filters { display: none; }
+    .attention-issue__head { flex-direction: column; align-items: flex-start; }
 
     /* Комфортные цели нажатия */
     .btn { min-height: 44px; }
@@ -1355,6 +1420,70 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 }
 
 @media (max-width: 320px) {
+    .topbar {
+        gap: var(--sp-2);
+        padding: 0 var(--sp-2);
+    }
+
+    .topbar__brand {
+        display: none;
+    }
+
+    .content {
+        padding: var(--sp-2);
+    }
+
+    .pagehead__actions {
+        grid-template-columns: 1fr;
+    }
+
+    .stats {
+        grid-template-columns: 1fr;
+    }
+
+    .pcard,
+    .panel--pad {
+        padding: var(--sp-3);
+    }
+
+    .checkline {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .content .btn {
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    .crumbs {
+        flex-wrap: wrap;
+    }
+
+    .crumbs__current {
+        min-width: 0;
+        overflow-wrap: anywhere;
+    }
+
+    .timeline {
+        flex-wrap: wrap;
+        overflow-x: hidden;
+    }
+
+    .tl-step {
+        flex: 1 1 100%;
+        min-width: 0;
+    }
+
+    .feed__row {
+        grid-template-columns: 1fr;
+    }
+
+    .feed__dot {
+        display: none;
+    }
+
     #themeToggle {
         width: 44px;
         min-width: 44px;
@@ -1448,7 +1577,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 
 #analyticsStageFilter,
 #analyticsDoctorFilter,
-#analyticsDepartmentFilter {
+#analyticsDepartmentFilter,
+#analyticsAttentionReasonFilter {
     flex: 1 1 180px;
 }
 
@@ -1598,7 +1728,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     .analytics-controls__actions {
         justify-content: flex-start;
     }
-    .analytics-controls__filters > *,
+    .analytics-controls__filters > :not(.visually-hidden),
     .analytics-date {
         width: 100%;
         flex-basis: 100%;

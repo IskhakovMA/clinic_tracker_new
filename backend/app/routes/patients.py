@@ -4,7 +4,9 @@ can_read/can_write; недоступный пациент неотличим о�
 """
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, policy, store
 from ..deps import get_db, require_active_password, require_csrf
@@ -12,12 +14,15 @@ from ..models import (
     ChecklistItemIn,
     EventFieldUpdateIn,
     FuturePlanIn,
+    AttentionIssueCloseIn,
+    AttentionIssueCreateIn,
     NoteIn,
     PatientCreateIn,
     PatientFieldUpdateIn,
     StageChangeIn,
     TreatingDoctorIn,
 )
+from ..services import patient_attention
 
 router = APIRouter(prefix="/api/patients", tags=["patients"])
 
@@ -49,10 +54,26 @@ def _require_writable(conn: sqlite3.Connection, user: policy.CurrentUser, patien
 
 @router.get("")
 def list_patients(
+    attention: Literal["active", "none"] | None = None,
+    attention_reason: str | None = Query(None, max_length=80),
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    return store.list_patients(conn, policy.patient_scope_filter(user))
+    if attention_reason and attention_reason not in patient_attention.REASON_LABELS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown attention reason")
+    return store.list_patients(
+        conn,
+        policy.patient_scope_filter(user),
+        attention=attention,
+        attention_reason=attention_reason,
+    )
+
+
+@router.get("/attention/reasons")
+def attention_reasons(
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    return {"reasons": patient_attention.reason_options(), "commentMaxLength": patient_attention.comment_max_length()}
 
 
 @router.get("/unresolved")
@@ -98,6 +119,55 @@ def get_patient(
     if p is None:
         _not_found()
     return p
+
+
+@router.get("/{patient_id}/attention")
+def get_patient_attention(
+    patient_id: str,
+    limit: int = Query(100, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    result = patient_attention.list_for_patient(conn, user, patient_id, limit=limit, offset=offset)
+    if not result.get("found"):
+        _not_found()
+    return result
+
+
+@router.post("/{patient_id}/attention", dependencies=[Depends(require_csrf)], status_code=status.HTTP_201_CREATED)
+def create_attention_issue(
+    patient_id: str,
+    body: AttentionIssueCreateIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    _require_writable(conn, user, patient_id)
+    try:
+        issue = patient_attention.create_issue(conn, user, patient_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    if issue is None:
+        _not_found()
+    return {"issue": issue, "attention": patient_attention.list_for_patient(conn, user, patient_id)}
+
+
+@router.post("/{patient_id}/attention/{issue_id}/close", dependencies=[Depends(require_csrf)])
+def close_attention_issue(
+    patient_id: str,
+    issue_id: str,
+    body: AttentionIssueCloseIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    _require_writable(conn, user, patient_id)
+    try:
+        issue = patient_attention.close_issue(conn, user, patient_id, issue_id, body)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if issue is None:
+        _not_found()
+    return {"issue": issue, "attention": patient_attention.list_for_patient(conn, user, patient_id)}
 
 
 @router.patch("/{patient_id}", dependencies=[Depends(require_csrf)])

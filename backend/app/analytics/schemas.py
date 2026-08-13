@@ -62,6 +62,7 @@ class AnalyticsDashboardOut(BaseModel):
     trend: dict[str, Any]
     workload: "WorkloadOut"
     attention: DashboardSection
+    operations: DashboardSection
 
 
 class StageRow(BaseModel):

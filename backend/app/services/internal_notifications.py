@@ -15,10 +15,10 @@ from typing import Any
 from .. import audit, config, policy
 from ..analytics.filters import app_timezone, today_local
 from ..db import now_iso
-from . import data_quality
+from . import data_quality, patient_attention
 
-TYPES = ("overdue", "today", "upcoming", "checklist", "data_quality")
-DRAWER_FILTERS = ("all", "unread", "today", "overdue")
+TYPES = ("overdue", "today", "upcoming", "checklist", "data_quality", "attention")
+DRAWER_FILTERS = ("all", "unread", "today", "overdue", "attention")
 QUALITY_SEVERITIES = {"critical", "warning"}
 UPCOMING_DAYS = max(1, min(config.INTERNAL_NOTIFICATION_UPCOMING_DAYS, 30))
 
@@ -186,10 +186,34 @@ def _quality_conditions(conn: sqlite3.Connection, user: policy.CurrentUser, toda
     return conditions
 
 
+def _attention_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[Condition]:
+    result: list[Condition] = []
+    for row in patient_attention.active_conditions(conn, user):
+        reason = patient_attention.reason_label(row["reason_code"])
+        result.append(Condition(
+            stable_key=f"attention:issue:{row['issue_id']}",
+            patient_id=row["patient_id"],
+            notification_type="attention",
+            source_type="attention",
+            source_id=row["issue_id"],
+            title="Требует внимания",
+            description=f"Причина: {reason}",
+            event_at=row["event_date"] or row["created_at"],
+            priority="high" if row["reason_code"] in {"emergency_hospitalization", "critical_overdue"} else "normal",
+            patient_name=row["patient_name"] or "Пациент",
+            stage=row["stage"] or "",
+        ))
+    return result
+
+
 def _compute_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[Condition]:
     today = today_local()
     merged: dict[str, Condition] = {}
-    for condition in [*_event_conditions(conn, user, today), *_quality_conditions(conn, user, today)]:
+    for condition in [
+        *_event_conditions(conn, user, today),
+        *_quality_conditions(conn, user, today),
+        *_attention_conditions(conn, user),
+    ]:
         merged.setdefault(condition.stable_key, condition)
     return [merged[key] for key in sorted(merged)]
 
@@ -248,6 +272,7 @@ def _type_label(kind: str) -> str:
         "upcoming": "Скоро",
         "checklist": "Чек-листы",
         "data_quality": "Качество данных",
+        "attention": "Требует внимания",
     }.get(kind, kind)
 
 
@@ -294,6 +319,7 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
         "upcoming_count": sum(1 for i in items if i["type"] == "upcoming"),
         "checklist_count": sum(1 for i in items if i["type"] == "checklist"),
         "quality_count": sum(1 for i in items if i["type"] == "data_quality"),
+        "attention_count": sum(1 for i in items if i["type"] == "attention"),
     }
 
 
@@ -319,6 +345,8 @@ def list_items(
         items = [i for i in items if i["type"] == "today"]
     if drawer_filter == "overdue":
         items = [i for i in items if i["type"] == "overdue"]
+    if drawer_filter == "attention":
+        items = [i for i in items if i["type"] == "attention"]
     if type:
         items = [i for i in items if i["type"] == type]
     if search:

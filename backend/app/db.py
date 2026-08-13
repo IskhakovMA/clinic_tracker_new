@@ -198,14 +198,39 @@ CREATE TABLE IF NOT EXISTS internal_notification_state (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     stable_key TEXT NOT NULL,
     patient_id TEXT REFERENCES patients(id) ON DELETE CASCADE,
-    notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality')),
-    source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality')),
+    notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality', 'attention')),
+    source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality', 'attention')),
     source_id TEXT NOT NULL,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
     read_at TEXT,
     resolved_at TEXT,
     UNIQUE (user_id, stable_key)
+);
+
+CREATE TABLE IF NOT EXISTS patient_attention_issues (
+    id TEXT PRIMARY KEY,
+    patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    reason_code TEXT NOT NULL CHECK (reason_code IN (
+        'emergency_hospitalization',
+        'route_change',
+        'critical_overdue',
+        'doctor_decision_required',
+        'department_head_decision_required',
+        'organizational_issue',
+        'documents_or_data_issue',
+        'patient_unavailable',
+        'other'
+    )),
+    status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+    comment TEXT,
+    event_date TEXT,
+    created_at TEXT NOT NULL,
+    created_by_user_id TEXT NOT NULL REFERENCES users(id),
+    closed_at TEXT,
+    closed_by_user_id TEXT REFERENCES users(id),
+    resolution_comment TEXT,
+    CHECK (status = 'open' OR (closed_at IS NOT NULL AND closed_by_user_id IS NOT NULL))
 );
 
 """
@@ -242,6 +267,14 @@ CREATE INDEX IF NOT EXISTS idx_internal_notifications_patient
     ON internal_notification_state(patient_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_internal_notifications_user_key
     ON internal_notification_state(user_id, stable_key);
+CREATE INDEX IF NOT EXISTS idx_attention_patient_status
+    ON patient_attention_issues(patient_id, status);
+CREATE INDEX IF NOT EXISTS idx_attention_status
+    ON patient_attention_issues(status);
+CREATE INDEX IF NOT EXISTS idx_attention_reason
+    ON patient_attention_issues(reason_code);
+CREATE INDEX IF NOT EXISTS idx_attention_created_at
+    ON patient_attention_issues(created_at);
 """
 
 # Роли — справочник, а не бизнес-конфигурация: наполняется всегда.
@@ -274,6 +307,7 @@ REQUIRED_TABLES = (
     "notification_templates",
     "notifications",
     "internal_notification_state",
+    "patient_attention_issues",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -429,6 +463,48 @@ def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
 
 
+def _rebuild_internal_notification_state_v6(conn: sqlite3.Connection) -> None:
+    if "internal_notification_state" not in {
+        row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+    }:
+        return
+    columns = _table_columns(conn, "internal_notification_state")
+    if not columns:
+        return
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS internal_notification_state_v6 (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            stable_key TEXT NOT NULL,
+            patient_id TEXT REFERENCES patients(id) ON DELETE CASCADE,
+            notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality', 'attention')),
+            source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality', 'attention')),
+            source_id TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            read_at TEXT,
+            resolved_at TEXT,
+            UNIQUE (user_id, stable_key)
+        );
+        INSERT OR IGNORE INTO internal_notification_state_v6
+            (id, user_id, stable_key, patient_id, notification_type, source_type, source_id,
+             first_seen_at, last_seen_at, read_at, resolved_at)
+        SELECT id, user_id, stable_key, patient_id, notification_type, source_type, source_id,
+               first_seen_at, last_seen_at, read_at, resolved_at
+        FROM internal_notification_state;
+        DROP TABLE internal_notification_state;
+        ALTER TABLE internal_notification_state_v6 RENAME TO internal_notification_state;
+        """
+    )
+
+
+def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """v5 → v6: patient attention issues and attention notification type."""
+    _rebuild_internal_notification_state_v6(conn)
+    conn.executescript(SCHEMA_SQL)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -460,6 +536,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 4:
             migrate_v4_to_v5(conn)
+            migrate_v5_to_v6(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 5:
+            migrate_v5_to_v6(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

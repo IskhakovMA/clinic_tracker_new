@@ -175,6 +175,10 @@
                         <select class="select" id="filterHead"></select>
                         <label class="visually-hidden" for="filterDeadline">Фильтр по сроку</label>
                         <select class="select" id="filterDeadline"></select>
+                        <label class="visually-hidden" for="filterAttention">Фильтр по отметке внимания</label>
+                        <select class="select" id="filterAttention"></select>
+                        <label class="visually-hidden" for="filterAttentionReason">Фильтр по причине внимания</label>
+                        <select class="select" id="filterAttentionReason"></select>
                         <label class="visually-hidden" for="sortOrderSelect">Сортировка</label>
                         <select class="select" id="sortOrderSelect"></select>
                     </div>
@@ -440,6 +444,8 @@
                         <select class="select" id="analyticsDoctorFilter"></select>
                         <label class="visually-hidden" for="analyticsDepartmentFilter">Отделение</label>
                         <select class="select" id="analyticsDepartmentFilter"></select>
+                        <label class="visually-hidden" for="analyticsAttentionReasonFilter">Причина внимания</label>
+                        <select class="select" id="analyticsAttentionReasonFilter"></select>
                         <button type="button" class="btn btn--ghost btn--sm" id="analyticsResetFiltersBtn">Сбросить фильтры</button>
                     </div>
                 </div>
@@ -453,7 +459,7 @@
                     <div class="stats analytics-kpis" id="analyticsStatsRow"></div>
 
                     <div class="panel panel--pad analytics-panel analytics-panel--wide">
-                        <h2 class="panel__title">Требуют внимания</h2>
+                        <h2 class="panel__title">Причины внимания</h2>
                         <div class="analytics-list analytics-attention" id="analyticsAttentionList"></div>
                     </div>
 
@@ -469,7 +475,7 @@
 
                     <div class="panel panel--pad analytics-panel">
                         <h2 class="panel__title">Состояние маршрутов</h2>
-                        <p class="panel__text">Блок «Требуют внимания» может пересекаться с активными и завершёнными маршрутами.</p>
+                        <p class="panel__text">Операционные сигналы считаются автоматически и не создают ручную отметку внимания.</p>
                         <div class="bar-list" id="analyticsRouteStateChart"></div>
                     </div>
 
@@ -888,6 +894,60 @@
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="sheetResetFiltersBtn">Сбросить</button>
             <button type="button" class="btn btn--primary" id="applyFiltersSheetBtn">Показать</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ПАЦИЕНТ ТРЕБУЕТ ВНИМАНИЯ -->
+<div class="modal modal--sm" id="attentionModal" role="dialog" aria-modal="true" aria-labelledby="attentionModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="attentionModalTitle">Добавить проблему</h2>
+            <button type="button" class="btn btn--icon" id="closeAttentionIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <form class="modal__body form" id="attentionForm">
+            <p class="alert alert--danger is-hidden" id="attentionFormError" role="alert"></p>
+            <div class="field">
+                <label class="field__label" for="attentionReason">Причина <span class="req">*</span></label>
+                <select class="select" id="attentionReason" required></select>
+            </div>
+            <div class="field" id="attentionEventDateField">
+                <label class="field__label" for="attentionEventDate">Дата события</label>
+                <input class="input" type="date" id="attentionEventDate">
+            </div>
+            <div class="field">
+                <label class="field__label" for="attentionComment">Комментарий</label>
+                <textarea class="textarea" id="attentionComment" rows="4" maxlength="800"></textarea>
+            </div>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="closeAttentionBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="attentionForm">Сохранить</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ЗАКРЫТИЕ ПРОБЛЕМЫ -->
+<div class="modal modal--sm" id="attentionCloseModal" role="dialog" aria-modal="true" aria-labelledby="attentionCloseModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="attentionCloseModalTitle">Закрыть проблему</h2>
+            <button type="button" class="btn btn--icon" id="closeAttentionCloseIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <form class="modal__body form" id="attentionCloseForm">
+            <p class="alert alert--danger is-hidden" id="attentionCloseFormError" role="alert"></p>
+            <div class="field">
+                <label class="field__label" for="attentionResolutionComment">Комментарий к закрытию</label>
+                <textarea class="textarea" id="attentionResolutionComment" rows="4" maxlength="800"></textarea>
+            </div>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="cancelAttentionCloseBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="attentionCloseForm">Закрыть</button>
         </div>
     </div>
 </div>

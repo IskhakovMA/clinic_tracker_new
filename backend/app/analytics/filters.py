@@ -10,7 +10,7 @@ from fastapi import HTTPException, Query, status
 
 from .. import config
 from ..models import STAGES
-from ..services import data_quality, notifications
+from ..services import data_quality, notifications, patient_attention
 
 SORT_FIELDS = (
     "name",
@@ -75,6 +75,7 @@ class AnalyticsFilters:
     has_overdue: bool | None = None
     data_quality_severity: str | None = None
     notification_status: str | None = None
+    attention_reason: str | None = None
     group_by: str | None = None
     limit: int = 50
     offset: int = 0
@@ -100,6 +101,7 @@ class AnalyticsFilters:
             "has_overdue": self.has_overdue,
             "data_quality_severity": self.data_quality_severity,
             "notification_status": self.notification_status,
+            "attention_reason": self.attention_reason,
             "group_by": self.group_by,
             "limit": self.limit,
             "offset": self.offset,
@@ -118,6 +120,7 @@ def analytics_filters(
     has_overdue: bool | None = None,
     data_quality_severity: str | None = Query(None, max_length=20),
     notification_status: str | None = Query(None, max_length=20),
+    attention_reason: str | None = Query(None, max_length=80),
     group_by: str | None = Query(None, max_length=40),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
@@ -134,6 +137,8 @@ def analytics_filters(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown data quality severity")
     if notification_status and notification_status not in notifications.QUEUE_STATUSES:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown notification status")
+    if attention_reason and attention_reason not in patient_attention.REASON_LABELS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown attention reason")
     if group_by and group_by not in GROUP_BY_FIELDS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown group_by")
     if sort not in SORT_FIELDS:
@@ -148,6 +153,7 @@ def analytics_filters(
         has_overdue=has_overdue,
         data_quality_severity=data_quality_severity,
         notification_status=notification_status,
+        attention_reason=attention_reason,
         group_by=group_by,
         limit=limit,
         offset=offset,

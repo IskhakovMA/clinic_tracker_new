@@ -96,14 +96,22 @@ def export_patients(
         selected = [p for p in scoped if p["id"] in wanted]
     else:
         selected = scoped
+    exported = []
+    for patient in selected:
+        row = dict(patient)
+        # `attention` is a live UI summary for the current user scope, not part
+        # of the import/export patient record format. Historical attention
+        # issues remain in the database and backups.
+        row.pop("attention", None)
+        exported.append(row)
 
     payload = {
         "schemaVersion": config.SCHEMA_VERSION,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "patients": selected,
+        "patients": exported,
     }
     body = json.dumps(payload, ensure_ascii=False, indent=2)
-    audit.record(conn, audit.EXPORT, detail=f"records={len(selected)}",
+    audit.record(conn, audit.EXPORT, detail=f"records={len(exported)}",
                  **audit.actor_ctx(user))
     return Response(
         content=body,

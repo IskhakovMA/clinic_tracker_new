@@ -28,6 +28,18 @@ DISEASE_STAGES = ("", "I", "II", "III", "IV")
 TREATMENT_TYPES = ("", "surgery", "radiation", "chemo")
 POLICY_NUMBER_MAX_LENGTH = 32
 POLICY_NUMBER_INPUT_MAX_LENGTH = 64
+ATTENTION_COMMENT_MAX_LENGTH = 800
+ATTENTION_REASON_CODES = (
+    "emergency_hospitalization",
+    "route_change",
+    "critical_overdue",
+    "doctor_decision_required",
+    "department_head_decision_required",
+    "organizational_issue",
+    "documents_or_data_issue",
+    "patient_unavailable",
+    "other",
+)
 
 Priority = Literal["urgent", "high", "normal"]
 Stage = Literal[
@@ -226,6 +238,45 @@ class PatientOut(BaseModel):
     futurePlans: dict[str, FuturePlanOut] = Field(default_factory=dict)
     treatingDoctorUserId: Optional[str] = None
     treatingDoctorName: Optional[str] = None
+    attention: dict = Field(default_factory=dict)
+
+
+class AttentionIssueCreateIn(StrictRequestModel):
+    reasonCode: str = Field(..., min_length=1, max_length=80)
+    comment: str = Field("", max_length=ATTENTION_COMMENT_MAX_LENGTH)
+    eventDate: Optional[str] = Field(None, max_length=10)
+
+    @field_validator("reasonCode")
+    @classmethod
+    def _valid_reason(cls, v):
+        if v not in ATTENTION_REASON_CODES:
+            raise ValueError("unknown attention reason")
+        return v
+
+    @field_validator("comment")
+    @classmethod
+    def _norm_comment(cls, v):
+        return _normalize_multiline(v) or ""
+
+    @field_validator("eventDate")
+    @classmethod
+    def _valid_event_date(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            date_type.fromisoformat(v)
+        except ValueError:
+            raise ValueError("eventDate must be YYYY-MM-DD")
+        return v
+
+
+class AttentionIssueCloseIn(StrictRequestModel):
+    resolutionComment: str = Field("", max_length=ATTENTION_COMMENT_MAX_LENGTH)
+
+    @field_validator("resolutionComment")
+    @classmethod
+    def _norm_resolution(cls, v):
+        return _normalize_multiline(v) or ""
 
 
 # --- Import/export -------------------------------------------------------
