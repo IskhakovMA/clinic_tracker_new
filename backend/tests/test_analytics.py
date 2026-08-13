@@ -113,7 +113,8 @@ def test_dashboard_empty_database_contract(client):
     assert cards["completed_patients"] == 0
     assert body["stages"]["rows"] == []
     assert body["profiles"]["rows"] == []
-    assert body["route_state"]["rows"][2]["code"] == "attention"
+    assert body["route_state"]["rows"][2]["code"] == "operational_signals"
+    assert body["attention"]["title"] == "Причины внимания"
     assert len(body["trend"]["rows"]) == 30
     capped = client.get("/api/analytics/dashboard?date_from=1900-01-01&date_to=2999-12-31").json()
     assert capped["trend"]["period_days"] == 90
@@ -152,7 +153,7 @@ def test_dashboard_visual_aggregates_filters_and_scope(client):
     assert round(sum(row["percent"] for row in body["profiles"]["rows"]), 1) in (99.9, 100.0, 100.1)
     profile_rows = {row["meta"]["nosology"]: row for row in body["profiles"]["rows"]}
     assert profile_rows["lung34"]["count"] == 2
-    assert body["route_state"]["rows"][2]["code"] == "attention"
+    assert body["route_state"]["rows"][2]["code"] == "operational_signals"
     assert body["route_state"]["rows"][2]["meta"]["overlap"] is True
     assert body["data_quality"]["rows"] == sorted(body["data_quality"]["rows"], key=lambda row: (-row["count"], row["code"]))
     assert sum(row["new_patients"] for row in body["trend"]["rows"]) >= 1
