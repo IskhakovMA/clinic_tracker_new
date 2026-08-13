@@ -62,6 +62,7 @@ const ICON_PATHS = {
     plus: ['M12 5v14', 'M5 12h14'],
     chevron: ['M6 9l6 6 6-6'],
     check: ['M5 12l5 5 9-10'],
+    sparkles: ['M12 3l1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2L12 3', 'M19 14l.8 2.2L22 17l-2.2.8L19 20l-.8-2.2L16 17l2.2-.8L19 14'],
 };
 
 /** Иконка создаётся через createElementNS — SVG требует своего namespace. */
@@ -345,6 +346,16 @@ const app = {
             limit: 20,
             offset: 0,
         },
+    },
+    ai: {
+        status: { enabled: false, available: false, message: 'ИИ-помощник не настроен' },
+        messages: [],
+        references: [],
+        patientContextId: null,
+        patientContextLabel: '',
+        loading: false,
+        lastError: '',
+        lastFocusId: '',
     },
     analytics: {
         dashboard: null,
@@ -1401,6 +1412,7 @@ const app = {
         await this.loadActivity();
         await this.loadDoctors();
         this.fillStaticSelects();
+        await this.refreshAIStatus();
         await this.refreshInternalNotificationSummary();
         this.showView('patients');
         if (this.can('importData')) this.maybeOfferLegacyMigration();
@@ -1603,6 +1615,10 @@ const app = {
             // Даже при сетевой ошибке сбрасываем клиентское состояние.
         }
         this.patients = [];
+        this.ai.messages = [];
+        this.ai.references = [];
+        this.ai.patientContextId = null;
+        this.ai.patientContextLabel = '';
         location.reload();
     },
 
@@ -2419,6 +2435,13 @@ const app = {
                     el('button', {
                         type: 'button', class: 'btn btn--ghost', text: 'Скопировать сводку',
                         on: { click: () => this.copySummary(p.id) },
+                    }),
+                    el('button', {
+                        type: 'button',
+                        class: 'btn btn--ghost',
+                        text: 'Спросить помощника',
+                        'aria-label': `Спросить помощника по пациенту: ${p.name}`,
+                        on: { click: () => this.openAIDrawer(p.id) },
                     }),
                     this.can('deletePatients') ? el('button', {
                         type: 'button', class: 'btn btn--quiet', text: 'Удалить пациента',
@@ -3531,6 +3554,220 @@ const app = {
         this.currentTab = tab || 'overview';
         this.showView('patient');
         this.renderPatientView();
+    },
+
+    /* ============================================================= ИИ-ПОМОЩНИК */
+
+    async refreshAIStatus() {
+        try {
+            this.ai.status = await apiGetJson('/api/ai/status');
+        } catch (e) {
+            this.ai.status = { enabled: false, available: false, message: 'ИИ-помощник сейчас недоступен.' };
+        }
+        this.updateAIButtonState();
+        this.renderAIDrawer();
+    },
+
+    updateAIButtonState() {
+        const button = $('aiAssistantBtn');
+        if (!button) return;
+        const status = this.ai.status || {};
+        button.classList.toggle('is-muted', !status.available);
+        button.setAttribute('aria-label', status.available ? 'Открыть ИИ-помощник' : 'Открыть состояние ИИ-помощника');
+        button.title = status.available ? 'ИИ-помощник' : (status.message || 'ИИ-помощник не настроен');
+    },
+
+    roleAISuggestions() {
+        const role = this.user && this.user.roleId;
+        if (role === 'doctor') {
+            return [
+                'Какие мои пациенты требуют внимания?',
+                'Что у меня на сегодня?',
+                'Есть ли у моих пациентов просрочки?',
+            ];
+        }
+        if (role === 'department_head') {
+            return [
+                'Кому в отделении требуется решение заведующего?',
+                'Где больше всего просрочек?',
+                'Как распределена нагрузка по врачам?',
+            ];
+        }
+        return [
+            'Сколько пациентов требуют внимания?',
+            'Какая самая частая причина внимания?',
+            'Что у меня на сегодня?',
+        ];
+    },
+
+    openAIDrawer(patientId) {
+        if (patientId) {
+            const patient = this.getPatient(patientId);
+            this.ai.patientContextId = patientId;
+            this.ai.patientContextLabel = patient ? patient.name : 'Пациент';
+        }
+        this.ai.lastFocusId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+        this.closeInternalNotificationsDrawer(false);
+        $('aiAssistantScrim').classList.remove('is-hidden');
+        $('aiAssistantDrawer').classList.remove('is-hidden');
+        $('aiAssistantDrawer').setAttribute('aria-hidden', 'false');
+        $('aiAssistantBtn').setAttribute('aria-expanded', 'true');
+        this.renderAIDrawer();
+        $('aiAssistantInput').focus();
+    },
+
+    closeAIDrawer(returnFocus = true) {
+        $('aiAssistantScrim').classList.add('is-hidden');
+        $('aiAssistantDrawer').classList.add('is-hidden');
+        $('aiAssistantDrawer').setAttribute('aria-hidden', 'true');
+        $('aiAssistantBtn').setAttribute('aria-expanded', 'false');
+        if (returnFocus) {
+            const focusId = this.ai.lastFocusId || 'aiAssistantBtn';
+            if ($(focusId)) $(focusId).focus();
+        }
+    },
+
+    setAIPatientContext(patientId) {
+        const patient = this.getPatient(patientId);
+        this.ai.patientContextId = patientId;
+        this.ai.patientContextLabel = patient ? patient.name : 'Пациент';
+        this.renderAIContext();
+    },
+
+    clearAIPatientContext() {
+        this.ai.patientContextId = null;
+        this.ai.patientContextLabel = '';
+        this.renderAIContext();
+    },
+
+    renderAIContext() {
+        const box = $('aiAssistantContext');
+        if (!box) return;
+        if (!this.ai.patientContextId) {
+            box.classList.add('is-hidden');
+            box.replaceChildren();
+            return;
+        }
+        box.classList.remove('is-hidden');
+        box.replaceChildren(frag([
+            el('span', { text: `Пациент: ${this.ai.patientContextLabel || this.ai.patientContextId}` }),
+            el('button', {
+                type: 'button',
+                class: 'btn btn--ghost btn--sm',
+                text: 'Убрать',
+                'aria-label': 'Убрать контекст пациента',
+                on: { click: () => this.clearAIPatientContext() },
+            }),
+        ]));
+    },
+
+    renderAISuggestions() {
+        const box = $('aiAssistantSuggestions');
+        if (!box) return;
+        const suggestions = this.roleAISuggestions();
+        box.replaceChildren(frag(suggestions.map(prompt => el('button', {
+            type: 'button',
+            class: 'chip-btn',
+            text: prompt,
+            on: {
+                click: () => {
+                    $('aiAssistantInput').value = prompt;
+                    $('aiAssistantInput').focus();
+                },
+            },
+        }))));
+    },
+
+    renderAIMessage(message) {
+        const mine = message.role === 'user';
+        const children = [
+            el('div', { class: 'ai-message__role', text: mine ? 'Вы' : 'Помощник' }),
+            el('div', { class: 'ai-message__text', text: message.content }),
+        ];
+        if (!mine && message.references && message.references.length) {
+            children.push(el('div', { class: 'ai-message__refs' }, message.references.map(ref => {
+                if (ref.type !== 'patient') return null;
+                return el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: ref.label || 'Открыть пациента',
+                    on: { click: () => this.openPatientTab(ref.patientId, 'overview') },
+                });
+            })));
+        }
+        return el('article', { class: `ai-message ${mine ? 'ai-message--user' : 'ai-message--assistant'}` }, children);
+    },
+
+    renderAIDrawer() {
+        const status = this.ai.status || {};
+        const messages = $('aiAssistantMessages');
+        if (!messages) return;
+        $('aiAssistantSubtitle').textContent = status.available
+            ? 'Ответы по доступным данным системы'
+            : (status.message || 'ИИ-помощник недоступен');
+        this.renderAIContext();
+        this.renderAISuggestions();
+        const statusBox = $('aiAssistantStatus');
+        statusBox.classList.toggle('is-hidden', !this.ai.loading && !this.ai.lastError && status.available);
+        statusBox.textContent = this.ai.loading
+            ? 'Помощник готовит ответ…'
+            : this.ai.lastError || (!status.available ? (status.message || 'ИИ-помощник недоступен') : '');
+        $('aiAssistantInput').disabled = this.ai.loading || !status.available;
+        $('aiAssistantSendBtn').disabled = this.ai.loading || !status.available;
+        $('aiAssistantClearBtn').disabled = this.ai.loading || this.ai.messages.length === 0;
+        messages.replaceChildren(this.ai.messages.length
+            ? frag(this.ai.messages.map(message => this.renderAIMessage(message)))
+            : el('div', { class: 'ai-empty' }, [
+                el('h3', { text: 'Спросите о доступных пациентах, внимании или просрочках' }),
+                el('p', { text: 'История чата хранится только в текущей вкладке и очищается при выходе или перезагрузке.' }),
+            ]));
+        messages.scrollTop = messages.scrollHeight;
+    },
+
+    async sendAIMessage(event) {
+        if (event) event.preventDefault();
+        const input = $('aiAssistantInput');
+        const text = input.value.trim();
+        if (!text || this.ai.loading) return;
+        this.ai.loading = true;
+        this.ai.lastError = '';
+        this.ai.messages.push({ role: 'user', content: text });
+        input.value = '';
+        this.renderAIDrawer();
+        try {
+            const history = this.ai.messages
+                .slice(0, -1)
+                .filter(message => message.role === 'user' || message.role === 'assistant')
+                .slice(-12)
+                .map(message => ({ role: message.role, content: message.content }));
+            const response = await apiPost('/api/ai/chat', {
+                message: text,
+                history,
+                patientContextId: this.ai.patientContextId,
+            });
+            const refs = response.references || [];
+            this.ai.references = refs;
+            this.ai.messages.push({
+                role: 'assistant',
+                content: response.answer || 'В доступных данных системы такой информации нет.',
+                references: refs,
+            });
+        } catch (e) {
+            this.ai.lastError = e.status === 503
+                ? 'ИИ-помощник сейчас недоступен.'
+                : `Не удалось получить ответ: ${e.message}`;
+        } finally {
+            this.ai.loading = false;
+            this.renderAIDrawer();
+        }
+    },
+
+    clearAIConversation() {
+        this.ai.messages = [];
+        this.ai.references = [];
+        this.ai.lastError = '';
+        this.renderAIDrawer();
+        $('aiAssistantInput').focus();
     },
 
     /* =============================================== РЕНДЕР: ЦЕНТР УВЕДОМЛЕНИЙ */
@@ -5890,8 +6127,24 @@ const app = {
             this.applyTheme(event.target.value);
         });
 
+        // ИИ-помощник
+        on('aiAssistantBtn', 'click', () => this.openAIDrawer());
+        on('aiAssistantClose', 'click', () => this.closeAIDrawer());
+        on('aiAssistantScrim', 'click', () => this.closeAIDrawer());
+        on('aiAssistantClearBtn', 'click', () => this.clearAIConversation());
+        $('aiAssistantForm').addEventListener('submit', (event) => this.sendAIMessage(event));
+        $('aiAssistantInput').addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                this.sendAIMessage();
+            }
+        });
+
         // Внутренний центр уведомлений
-        on('internalNotificationsBell', 'click', () => this.openInternalNotificationsDrawer());
+        on('internalNotificationsBell', 'click', () => {
+            this.closeAIDrawer(false);
+            this.openInternalNotificationsDrawer();
+        });
         on('internalNotificationsClose', 'click', () => this.closeInternalNotificationsDrawer());
         on('internalNotificationsScrim', 'click', () => this.closeInternalNotificationsDrawer());
         on('internalNotificationsReadAllBtn', 'click', () => this.markAllInternalNotificationsRead());
@@ -6155,6 +6408,9 @@ const app = {
                 }
                 if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) {
                     this.closeInternalNotificationsDrawer();
+                }
+                if (!$('aiAssistantDrawer').classList.contains('is-hidden')) {
+                    this.closeAIDrawer();
                 }
                 return;
             }
