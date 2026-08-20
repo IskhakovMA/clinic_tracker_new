@@ -24,8 +24,7 @@ FIELD_COLUMN = {
     "phone": "phone",
     "policyNumber": "policy_number",
     "diagnosis": "diagnosis",
-    "consiliumCode": "consilium_code",
-    "pgiCode": "pgi_code",
+    "pgiResult": "pgi_malignancy_confirmed",
     "nosology": "nosology",
     "diseaseStage": "disease_stage",
     "priority": "priority",
@@ -38,8 +37,6 @@ FIELD_MAX_LEN = {
     "phone": 50,
     "policyNumber": 64,
     "diagnosis": 500,
-    "consiliumCode": 100,
-    "pgiCode": 100,
     "nosology": 100,
     "doctor": 200,
     "head": 200,
@@ -60,15 +57,32 @@ def _event_row_to_dict(row: sqlite3.Row) -> dict:
         "actualTime": row["actual_time"],
         "matchedPlan": None if row["matched_plan"] is None else bool(row["matched_plan"]),
         "noPlan": bool(row["no_plan"]),
+        "consiliumDecision": row["consilium_decision"],
         "setAt": row["set_at"],
     }
+
+
+def pgi_result_to_db(value) -> int | None:
+    if value in (None, ""):
+        return None
+    if value == "confirmed":
+        return 1
+    if value == "not_confirmed":
+        return 0
+    raise ValueError("pgiResult must be one of ('', 'confirmed', 'not_confirmed')")
+
+
+def pgi_result_from_db(value) -> str:
+    if value is None:
+        return ""
+    return "confirmed" if int(value) == 1 else "not_confirmed"
 
 
 def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: EventIn) -> None:
     conn.execute(
         """INSERT INTO events (id, history_entry_id, seq, date, time, treatment_type,
-                                actual_date, actual_time, matched_plan, no_plan, set_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                actual_date, actual_time, matched_plan, no_plan, consilium_decision, set_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             new_id(),
             history_entry_id,
@@ -80,6 +94,7 @@ def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: 
             ev.actualTime or None,
             None if ev.matchedPlan is None else int(ev.matchedPlan),
             int(bool(ev.noPlan)),
+            ev.consiliumDecision or None,
             now_iso() if (ev.actualDate or ev.noPlan) else None,
         ),
     )
@@ -136,6 +151,7 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "diagnosis": p["diagnosis"] or "",
         "consiliumCode": p["consilium_code"] or "",
         "pgiCode": p["pgi_code"] or "",
+        "pgiResult": pgi_result_from_db(p["pgi_malignancy_confirmed"]),
         "nosology": p["nosology"] or "",
         "diseaseStage": p["disease_stage"] or "",
         "arrival": p["arrival"],
@@ -222,9 +238,9 @@ def create_patient(
     with conn:
         conn.execute(
             """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                      consilium_code, pgi_code, nosology, disease_stage, arrival, doctor, head, created_at,
-                                      updated_at, treating_doctor_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                      consilium_code, pgi_code, pgi_malignancy_confirmed, nosology, disease_stage,
+                                      arrival, doctor, head, created_at, updated_at, treating_doctor_user_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pid,
                 data.name,
@@ -237,6 +253,7 @@ def create_patient(
                 data.diagnosis,
                 data.consiliumCode,
                 data.pgiCode,
+                pgi_result_to_db(data.pgiResult),
                 data.nosology,
                 data.diseaseStage,
                 now,
@@ -330,10 +347,10 @@ def update_patient_field_with_actor(
             raise ValueError(f"diseaseStage must be one of {DISEASE_STAGES}")
     elif field == "policyNumber":
         value = normalize_policy_number(value)
+    elif field == "pgiResult":
+        value = pgi_result_to_db(value)
     else:
         value = "" if value is None else str(value)
-        if field in {"consiliumCode", "pgiCode"}:
-            value = " ".join(value.strip().split()) if value.strip() else ""
         limit = FIELD_MAX_LEN.get(field)
         if limit and len(value) > limit:
             raise ValueError(f"{field} exceeds max length {limit}")
@@ -381,6 +398,14 @@ def change_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str, last
         return False
     if p["stage"] == new_stage:
         return False
+    if last_event_update and last_event_update.consiliumDecision:
+        if p["stage"] != "consult":
+            raise ValueError("consiliumDecision is allowed only for the current OK stage")
+        if last_event_update.consiliumDecision == "dispensary_observation":
+            if new_stage != "dispensary-observation":
+                raise ValueError("dispensary_observation decision must end in dispensary-observation")
+        elif new_stage not in {"treatment-prep", "treatment"}:
+            raise ValueError("treatment OK decisions must continue the treatment flow")
     with conn:
         history_count = _count_history(conn, patient_id)
         current_entry_id = _history_entry_id(conn, patient_id, history_count - 1) if history_count > 0 else None
@@ -391,12 +416,14 @@ def change_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str, last
             if events:
                 last_event_id = events[-1]["id"]
                 conn.execute(
-                    """UPDATE events SET actual_date = ?, actual_time = ?, matched_plan = ?, set_at = ?
+                    """UPDATE events SET actual_date = ?, actual_time = ?, matched_plan = ?,
+                                           consilium_decision = COALESCE(?, consilium_decision), set_at = ?
                        WHERE id = ?""",
                     (
                         last_event_update.actualDate or None,
                         last_event_update.actualTime or "",
                         None if last_event_update.matchedPlan is None else int(last_event_update.matchedPlan),
+                        last_event_update.consiliumDecision or None,
                         now_iso(),
                         last_event_id,
                     ),

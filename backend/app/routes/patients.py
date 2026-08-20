@@ -189,13 +189,12 @@ def update_patient_field(
     if not ok:
         _not_found()
     # Field *name* only — never the value, which is patient data. Diagnosis
-    # and doctor-requested codes get explicit safe event types without detail.
+    # and physician-requested structured values get explicit safe event types
+    # without detail.
     if body.field == "diagnosis":
         audit.record(conn, audit.PATIENT_DIAGNOSIS_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
-    elif body.field == "consiliumCode":
-        audit.record(conn, audit.CONSILIUM_CODE_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
-    elif body.field == "pgiCode":
-        audit.record(conn, audit.PGI_CODE_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
+    elif body.field == "pgiResult":
+        audit.record(conn, audit.PGI_RESULT_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
     else:
         audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
                      detail=f"field={body.field}", **audit.actor_ctx(user))
@@ -248,7 +247,10 @@ def change_stage(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
-    ok = store.change_stage(conn, patient_id, body.newStage, body.lastEventUpdate)
+    try:
+        ok = store.change_stage(conn, patient_id, body.newStage, body.lastEventUpdate)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
         p = store.patient_to_dict(conn, patient_id)
         if p is None:
@@ -256,6 +258,8 @@ def change_stage(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Stage unchanged")
     audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
                  detail=f"stage={body.newStage}", **audit.actor_ctx(user))
+    if body.lastEventUpdate and body.lastEventUpdate.consiliumDecision:
+        audit.record(conn, audit.CONSILIUM_DECISION_RECORDED, patient_id=patient_id, **audit.actor_ctx(user))
     return store.patient_to_dict(conn, patient_id)
 
 

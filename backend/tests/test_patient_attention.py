@@ -180,7 +180,7 @@ def test_schema_v5_to_v6_preserves_internal_notification_state_and_patients(auth
         )
         conn.execute("UPDATE schema_version SET version = 5")
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
     assert conn.execute("SELECT COUNT(*) FROM patient_attention_issues").fetchone()[0] == 0
     row = conn.execute("SELECT read_at FROM internal_notification_state WHERE id = 'legacy_state'").fetchone()
     assert row["read_at"] == "2026-01-01T00:01:00+00:00"

@@ -83,6 +83,9 @@ CREATE TABLE IF NOT EXISTS patients (
     diagnosis TEXT,
     consilium_code TEXT,
     pgi_code TEXT,
+    pgi_malignancy_confirmed INTEGER CHECK (
+        pgi_malignancy_confirmed IN (0, 1) OR pgi_malignancy_confirmed IS NULL
+    ),
     nosology TEXT,
     disease_stage TEXT,
     arrival TEXT NOT NULL,
@@ -115,6 +118,10 @@ CREATE TABLE IF NOT EXISTS events (
     actual_time TEXT,
     matched_plan INTEGER,
     no_plan INTEGER NOT NULL DEFAULT 0,
+    consilium_decision TEXT CHECK (
+        consilium_decision IN ('treatment_strategy_defined', 'treatment_strategy_changed', 'dispensary_observation')
+        OR consilium_decision IS NULL
+    ),
     set_at TEXT,
     UNIQUE (history_entry_id, seq)
 );
@@ -525,6 +532,27 @@ def migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
 
 
+def migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """v7 → v8: structured OK decision and PGI result.
+
+    Legacy free-text `consilium_code`/`pgi_code` are preserved as deprecated
+    compatibility columns; no automatic conversion is attempted.
+    """
+    _add_column_if_missing(
+        conn,
+        "patients",
+        "pgi_malignancy_confirmed",
+        "pgi_malignancy_confirmed INTEGER CHECK (pgi_malignancy_confirmed IN (0, 1) OR pgi_malignancy_confirmed IS NULL)",
+    )
+    _add_column_if_missing(
+        conn,
+        "events",
+        "consilium_decision",
+        "consilium_decision TEXT CHECK (consilium_decision IN ('treatment_strategy_defined', 'treatment_strategy_changed', 'dispensary_observation') OR consilium_decision IS NULL)",
+    )
+    conn.executescript(SCHEMA_SQL)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -538,6 +566,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
         migrate_v4_to_v5(conn)           # создаёт read-state для внутреннего центра уведомлений
         migrate_v6_to_v7(conn)           # nullable doctor feedback columns/table
+        migrate_v7_to_v8(conn)           # structured OK/PGI physician clarifications
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -562,9 +591,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         elif row["version"] == 5:
             migrate_v5_to_v6(conn)
             migrate_v6_to_v7(conn)
+            migrate_v7_to_v8(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 6:
             migrate_v6_to_v7(conn)
+            migrate_v7_to_v8(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 7:
+            migrate_v7_to_v8(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

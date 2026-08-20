@@ -147,9 +147,9 @@ def _insert_full_patient(
         ).fetchone()
     conn.execute(
         """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                  consilium_code, pgi_code, nosology, disease_stage, arrival, doctor, head, created_at,
-                                  updated_at, treating_doctor_user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                  consilium_code, pgi_code, pgi_malignancy_confirmed, nosology, disease_stage,
+                                  arrival, doctor, head, created_at, updated_at, treating_doctor_user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             patient_id,
             p.name,
@@ -162,6 +162,7 @@ def _insert_full_patient(
             p.diagnosis,
             p.consiliumCode,
             p.pgiCode,
+            store.pgi_result_to_db(p.pgiResult),
             p.nosology,
             p.diseaseStage,
             arrival,
