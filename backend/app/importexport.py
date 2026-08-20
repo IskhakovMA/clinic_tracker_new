@@ -147,9 +147,9 @@ def _insert_full_patient(
         ).fetchone()
     conn.execute(
         """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                  nosology, disease_stage, arrival, doctor, head, created_at,
+                                  consilium_code, pgi_code, nosology, disease_stage, arrival, doctor, head, created_at,
                                   updated_at, treating_doctor_user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             patient_id,
             p.name,
@@ -160,6 +160,8 @@ def _insert_full_patient(
             p.policyNumber,
             p.complaint,
             p.diagnosis,
+            p.consiliumCode,
+            p.pgiCode,
             p.nosology,
             p.diseaseStage,
             arrival,
@@ -188,6 +190,20 @@ def _insert_full_patient(
         conn.execute(
             "INSERT INTO future_plans (patient_id, template_index, date, time, treatment_type) VALUES (?, ?, ?, ?, ?)",
             (patient_id, idx, fp.date, fp.time, fp.treatmentType),
+        )
+    for item in p.diagnosisHistory:
+        conn.execute(
+            """INSERT INTO patient_diagnosis_history
+               (id, patient_id, changed_at, actor_user_id, old_diagnosis, new_diagnosis)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                store.new_id(),
+                patient_id,
+                item.changedAt,
+                item.actorUserId,
+                item.oldDiagnosis,
+                item.newDiagnosis,
+            ),
         )
 
 

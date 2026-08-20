@@ -81,6 +81,8 @@ CREATE TABLE IF NOT EXISTS patients (
     policy_number TEXT,
     complaint TEXT,
     diagnosis TEXT,
+    consilium_code TEXT,
+    pgi_code TEXT,
     nosology TEXT,
     disease_stage TEXT,
     arrival TEXT NOT NULL,
@@ -115,6 +117,15 @@ CREATE TABLE IF NOT EXISTS events (
     no_plan INTEGER NOT NULL DEFAULT 0,
     set_at TEXT,
     UNIQUE (history_entry_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS patient_diagnosis_history (
+    id TEXT PRIMARY KEY,
+    patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    changed_at TEXT NOT NULL,
+    actor_user_id TEXT REFERENCES users(id),
+    old_diagnosis TEXT,
+    new_diagnosis TEXT
 );
 
 CREATE TABLE IF NOT EXISTS future_plans (
@@ -243,6 +254,7 @@ CREATE INDEX IF NOT EXISTS idx_events_history ON events(history_entry_id);
 CREATE INDEX IF NOT EXISTS idx_future_plans_patient ON future_plans(patient_id);
 CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(name);
 CREATE INDEX IF NOT EXISTS idx_patients_policy_number ON patients(policy_number);
+CREATE INDEX IF NOT EXISTS idx_diagnosis_history_patient ON patient_diagnosis_history(patient_id, changed_at);
 CREATE INDEX IF NOT EXISTS idx_patients_head ON patients(head);
 CREATE INDEX IF NOT EXISTS idx_patients_stage ON patients(stage);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
@@ -301,6 +313,7 @@ REQUIRED_TABLES = (
     "patients",
     "history_entries",
     "events",
+    "patient_diagnosis_history",
     "future_plans",
     "audit_events",
     "patient_notification_preferences",
@@ -505,6 +518,13 @@ def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
 
 
+def migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """v6 → v7: doctor feedback optional patient codes and diagnosis history."""
+    _add_column_if_missing(conn, "patients", "consilium_code", "consilium_code TEXT")
+    _add_column_if_missing(conn, "patients", "pgi_code", "pgi_code TEXT")
+    conn.executescript(SCHEMA_SQL)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -517,6 +537,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
         migrate_v4_to_v5(conn)           # создаёт read-state для внутреннего центра уведомлений
+        migrate_v6_to_v7(conn)           # nullable doctor feedback columns/table
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -540,6 +561,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 5:
             migrate_v5_to_v6(conn)
+            migrate_v6_to_v7(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 6:
+            migrate_v6_to_v7(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

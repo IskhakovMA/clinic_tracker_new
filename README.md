@@ -194,10 +194,17 @@ API key задаётся только на backend через `CLINIC_AI_API_KEY
 
 ## Данные, защита каталога и резервное копирование
 
-- **База**: `backend/data/clinic.db` (SQLite schema v6, исключена из Git и не раздаётся по HTTP).
-  v6 добавляет `patient_attention_issues` и расширяет internal notification
-  read-state для типа `attention`; patient/OMS/history/events/checklists не
-  мигрируются в новую структуру и сохраняются как есть.
+- **База**: `backend/data/clinic.db` (SQLite schema v7, исключена из Git и не раздаётся по HTTP).
+  v7 добавляет patient-level поля `consilium_code`, `pgi_code` и таблицу
+  `patient_diagnosis_history`. История диагноза хранит patient id, timestamp,
+  actor user id и старый/новый диагноз для отображения в timeline; audit пишет
+  только техническое событие `patient_diagnosis_changed` без значений диагноза.
+  Поля `consilium_code`/`pgi_code` — временная patient-level реализация до
+  утверждения медицинского словаря и формата справочника.
+- Локальный словарь МКБ-10 включает D37–D48 и текущие D00–D09. In situ D00–D09
+  автоматически предлагают уже существующий профиль клиентского пути только
+  там, где локализация однозначно соответствует профилю; остальные коды
+  остаются без автоподстановки, чтобы не создавать фиктивные профили.
 - **Encrypted backups**: создайте key file и настройте `CLINIC_BACKUP_KEY_FILE`, затем
   `python -m backend.cli backup` → `backend/data/backups/clinic_<дата>.cbk`.
   Копия делается через SQLite backup API, проверяется и упаковывается в Clinic Backup Format v1

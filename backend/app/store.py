@@ -24,6 +24,8 @@ FIELD_COLUMN = {
     "phone": "phone",
     "policyNumber": "policy_number",
     "diagnosis": "diagnosis",
+    "consiliumCode": "consilium_code",
+    "pgiCode": "pgi_code",
     "nosology": "nosology",
     "diseaseStage": "disease_stage",
     "priority": "priority",
@@ -36,6 +38,8 @@ FIELD_MAX_LEN = {
     "phone": 50,
     "policyNumber": 64,
     "diagnosis": 500,
+    "consiliumCode": 100,
+    "pgiCode": 100,
     "nosology": 100,
     "doctor": 200,
     "head": 200,
@@ -115,6 +119,11 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         }
         for r in fp_rows
     }
+    diagnosis_history_rows = conn.execute(
+        """SELECT * FROM patient_diagnosis_history
+           WHERE patient_id = ? ORDER BY changed_at ASC, id ASC""",
+        (patient_id,),
+    ).fetchall()
     return {
         "id": p["id"],
         "name": p["name"],
@@ -125,6 +134,8 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "policyNumber": p["policy_number"] or "",
         "complaint": p["complaint"] or "",
         "diagnosis": p["diagnosis"] or "",
+        "consiliumCode": p["consilium_code"] or "",
+        "pgiCode": p["pgi_code"] or "",
         "nosology": p["nosology"] or "",
         "diseaseStage": p["disease_stage"] or "",
         "arrival": p["arrival"],
@@ -133,6 +144,17 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "updatedAt": p["updated_at"],
         "history": history,
         "futurePlans": future_plans,
+        "diagnosisHistory": [
+            {
+                "id": row["id"],
+                "patientId": row["patient_id"],
+                "changedAt": row["changed_at"],
+                "actorUserId": row["actor_user_id"],
+                "oldDiagnosis": row["old_diagnosis"] or "",
+                "newDiagnosis": row["new_diagnosis"] or "",
+            }
+            for row in diagnosis_history_rows
+        ],
         "treatingDoctorUserId": p["treating_doctor_user_id"],
         "treatingDoctorName": _treating_doctor_name(conn, p["treating_doctor_user_id"]),
         "attention": patient_attention.summary_for_patient(conn, patient_id),
@@ -200,9 +222,9 @@ def create_patient(
     with conn:
         conn.execute(
             """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                      nosology, disease_stage, arrival, doctor, head, created_at,
+                                      consilium_code, pgi_code, nosology, disease_stage, arrival, doctor, head, created_at,
                                       updated_at, treating_doctor_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pid,
                 data.name,
@@ -213,6 +235,8 @@ def create_patient(
                 data.policyNumber,
                 data.complaint,
                 data.diagnosis,
+                data.consiliumCode,
+                data.pgiCode,
                 data.nosology,
                 data.diseaseStage,
                 now,
@@ -283,6 +307,12 @@ def delete_patient(conn: sqlite3.Connection, patient_id: str) -> bool:
 
 
 def update_patient_field(conn: sqlite3.Connection, patient_id: str, field: str, value) -> bool:
+    return update_patient_field_with_actor(conn, patient_id, field, value, actor_user_id=None)
+
+
+def update_patient_field_with_actor(
+    conn: sqlite3.Connection, patient_id: str, field: str, value, *, actor_user_id: str | None = None
+) -> bool:
     if field not in FIELD_COLUMN:
         raise ValueError("unknown field")
     column = FIELD_COLUMN[field]
@@ -302,15 +332,30 @@ def update_patient_field(conn: sqlite3.Connection, patient_id: str, field: str, 
         value = normalize_policy_number(value)
     else:
         value = "" if value is None else str(value)
+        if field in {"consiliumCode", "pgiCode"}:
+            value = " ".join(value.strip().split()) if value.strip() else ""
         limit = FIELD_MAX_LEN.get(field)
         if limit and len(value) > limit:
             raise ValueError(f"{field} exceeds max length {limit}")
 
     with conn:
+        previous = None
+        if field == "diagnosis":
+            row = conn.execute("SELECT diagnosis FROM patients WHERE id = ?", (patient_id,)).fetchone()
+            if row is None:
+                return False
+            previous = row["diagnosis"] or ""
         cur = conn.execute(
             f"UPDATE patients SET {column} = ?, updated_at = ? WHERE id = ?",  # nosec B608
             (value, now_iso(), patient_id),
         )
+        if field == "diagnosis" and cur.rowcount > 0 and previous != value:
+            conn.execute(
+                """INSERT INTO patient_diagnosis_history
+                   (id, patient_id, changed_at, actor_user_id, old_diagnosis, new_diagnosis)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (new_id(), patient_id, now_iso(), actor_user_id, previous, str(value or "")),
+            )
         return cur.rowcount > 0
 
 

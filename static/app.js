@@ -1183,6 +1183,80 @@ const app = {
                 { code: 'D36.9', label: 'Доброкачественное новообразование неуточненной локализации' },
             ]
         },
+        uncertain_unknown_behavior: {
+            label: 'Новообразования неопределённого или неизвестного характера',
+            diagnoses: [
+                { code: 'D37.0', label: 'Новообразование неопределённого или неизвестного характера губы, полости рта и глотки' },
+                { code: 'D37.1', label: 'Новообразование неопределённого или неизвестного характера желудка' },
+                { code: 'D37.2', label: 'Новообразование неопределённого или неизвестного характера тонкого кишечника' },
+                { code: 'D37.3', label: 'Новообразование неопределённого или неизвестного характера аппендикса' },
+                { code: 'D37.4', label: 'Новообразование неопределённого или неизвестного характера ободочной кишки' },
+                { code: 'D37.5', label: 'Новообразование неопределённого или неизвестного характера прямой кишки' },
+                { code: 'D37.6', label: 'Новообразование неопределённого или неизвестного характера печени, желчного пузыря и желчных протоков' },
+                { code: 'D37.7', label: 'Новообразование неопределённого или неизвестного характера других органов пищеварения' },
+                { code: 'D37.9', label: 'Новообразование неопределённого или неизвестного характера органа пищеварения неуточнённого' },
+                { code: 'D38.0', label: 'Новообразование неопределённого или неизвестного характера гортани' },
+                { code: 'D38.1', label: 'Новообразование неопределённого или неизвестного характера трахеи, бронха и лёгкого' },
+                { code: 'D38.2', label: 'Новообразование неопределённого или неизвестного характера плевры' },
+                { code: 'D38.3', label: 'Новообразование неопределённого или неизвестного характера средостения' },
+                { code: 'D38.4', label: 'Новообразование неопределённого или неизвестного характера вилочковой железы' },
+                { code: 'D38.5', label: 'Новообразование неопределённого или неизвестного характера других органов дыхания' },
+                { code: 'D38.6', label: 'Новообразование неопределённого или неизвестного характера органа дыхания неуточнённого' },
+                { code: 'D39.0', label: 'Новообразование неопределённого или неизвестного характера матки' },
+                { code: 'D39.1', label: 'Новообразование неопределённого или неизвестного характера яичника' },
+                { code: 'D39.2', label: 'Новообразование неопределённого или неизвестного характера плаценты' },
+                { code: 'D39.7', label: 'Новообразование неопределённого или неизвестного характера других женских половых органов' },
+                { code: 'D39.9', label: 'Новообразование неопределённого или неизвестного характера женского полового органа неуточнённого' },
+                { code: 'D40.0', label: 'Новообразование неопределённого или неизвестного характера предстательной железы' },
+                { code: 'D40.1', label: 'Новообразование неопределённого или неизвестного характера яичка' },
+                { code: 'D40.7', label: 'Новообразование неопределённого или неизвестного характера других мужских половых органов' },
+                { code: 'D40.9', label: 'Новообразование неопределённого или неизвестного характера мужского полового органа неуточнённого' },
+                { code: 'D41.0', label: 'Новообразование неопределённого или неизвестного характера почки' },
+                { code: 'D41.1', label: 'Новообразование неопределённого или неизвестного характера почечной лоханки' },
+                { code: 'D41.2', label: 'Новообразование неопределённого или неизвестного характера мочеточника' },
+                { code: 'D41.3', label: 'Новообразование неопределённого или неизвестного характера уретры' },
+                { code: 'D41.4', label: 'Новообразование неопределённого или неизвестного характера мочевого пузыря' },
+                { code: 'D41.7', label: 'Новообразование неопределённого или неизвестного характера других мочевых органов' },
+                { code: 'D41.9', label: 'Новообразование неопределённого или неизвестного характера мочевого органа неуточнённого' },
+                { code: 'D42.0', label: 'Новообразование неопределённого или неизвестного характера мозговых оболочек' },
+                { code: 'D42.1', label: 'Новообразование неопределённого или неизвестного характера спинномозговых оболочек' },
+                { code: 'D42.9', label: 'Новообразование неопределённого или неизвестного характера оболочек центральной нервной системы неуточнённых' },
+                { code: 'D43.0', label: 'Новообразование неопределённого или неизвестного характера головного мозга над намётом' },
+                { code: 'D43.1', label: 'Новообразование неопределённого или неизвестного характера головного мозга под намётом' },
+                { code: 'D43.2', label: 'Новообразование неопределённого или неизвестного характера головного мозга неуточнённой локализации' },
+                { code: 'D43.3', label: 'Новообразование неопределённого или неизвестного характера черепных нервов' },
+                { code: 'D43.4', label: 'Новообразование неопределённого или неизвестного характера спинного мозга' },
+                { code: 'D43.7', label: 'Новообразование неопределённого или неизвестного характера других частей центральной нервной системы' },
+                { code: 'D43.9', label: 'Новообразование неопределённого или неизвестного характера центральной нервной системы неуточнённой' },
+                { code: 'D44.0', label: 'Новообразование неопределённого или неизвестного характера щитовидной железы' },
+                { code: 'D44.1', label: 'Новообразование неопределённого или неизвестного характера надпочечника' },
+                { code: 'D44.2', label: 'Новообразование неопределённого или неизвестного характера паращитовидной железы' },
+                { code: 'D44.3', label: 'Новообразование неопределённого или неизвестного характера гипофиза' },
+                { code: 'D44.4', label: 'Новообразование неопределённого или неизвестного характера краниофарингеального протока' },
+                { code: 'D44.5', label: 'Новообразование неопределённого или неизвестного характера шишковидной железы' },
+                { code: 'D44.6', label: 'Новообразование неопределённого или неизвестного характера каротидного тела' },
+                { code: 'D44.7', label: 'Новообразование неопределённого или неизвестного характера аортального тела' },
+                { code: 'D44.8', label: 'Новообразование неопределённого или неизвестного характера нескольких эндокринных желез' },
+                { code: 'D44.9', label: 'Новообразование неопределённого или неизвестного характера эндокринной железы неуточнённой' },
+                { code: 'D45', label: 'Истинная полицитемия' },
+                { code: 'D46', label: 'Миелодиспластические синдромы' },
+                { code: 'D47.0', label: 'Опухоли тучных клеток неопределённого или неизвестного характера' },
+                { code: 'D47.1', label: 'Хроническое миелопролиферативное заболевание' },
+                { code: 'D47.2', label: 'Моноклональная гаммапатия неопределённого значения' },
+                { code: 'D47.3', label: 'Эссенциальная тромбоцитемия' },
+                { code: 'D47.7', label: 'Другие уточнённые новообразования лимфоидной, кроветворной и родственных им тканей неопределённого или неизвестного характера' },
+                { code: 'D47.9', label: 'Новообразование лимфоидной, кроветворной и родственных им тканей неопределённого или неизвестного характера неуточнённое' },
+                { code: 'D48.0', label: 'Новообразование неопределённого или неизвестного характера костей и суставных хрящей' },
+                { code: 'D48.1', label: 'Новообразование неопределённого или неизвестного характера соединительной и мягких тканей' },
+                { code: 'D48.2', label: 'Новообразование неопределённого или неизвестного характера периферических нервов и вегетативной нервной системы' },
+                { code: 'D48.3', label: 'Новообразование неопределённого или неизвестного характера забрюшинного пространства' },
+                { code: 'D48.4', label: 'Новообразование неопределённого или неизвестного характера брюшины' },
+                { code: 'D48.5', label: 'Новообразование неопределённого или неизвестного характера кожи' },
+                { code: 'D48.6', label: 'Новообразование неопределённого или неизвестного характера молочной железы' },
+                { code: 'D48.7', label: 'Новообразование неопределённого или неизвестного характера других уточнённых локализаций' },
+                { code: 'D48.9', label: 'Новообразование неопределённого или неизвестного характера неуточнённой локализации' },
+            ]
+        },
     },
 
     // Регламентные сроки указаны для приоритета "Обычный".
@@ -1242,7 +1316,7 @@ const app = {
         lung34: {
             label: 'Легкое (3-4 стадия)',
             stage1Days: 14, stage2Standard: 4, stage2StageIV: 7,
-            checklistRequired: ['Рентген ОГК или КТ ОГК (солидный очаг >9мм)', 'КТ ОГК и ОБП с контрастом', 'ВИЧ, гепатит В и С', 'Общий анализ крови', 'Биохимический анализ', 'Коагулограмма', 'ЭКГ', 'ФВД', 'Консультация терапевта/пульмонолога', 'Направление на бронхоскопию', 'УЗИ лимфоузлов', 'ЭГДС + колоноскопия', 'УЗДГ вен нижних конечностей', 'УЗИ ОБП и лимфоузлов', 'Консультации профильных специалистов', 'Гистология (после бронхоскопии)', 'ИГХ и генетические исследования'],
+            checklistRequired: ['Рентген ОГК или КТ ОГК (солидный очаг >9мм)', 'КТ ОГК и ОБП с контрастом', 'ВИЧ, гепатит В и С', 'Общий анализ крови', 'Биохимический анализ', 'Коагулограмма', 'ЭКГ', 'ФВД', 'Консультация терапевта/пульмонолога', 'Направление на бронхоскопию', 'УЗИ лимфоузлов', 'ЭГДС + колоноскопия', 'УЗДГ вен нижних конечностей', 'УЗИ ОБП и лимфоузлов', 'Консультации профильных специалистов', 'Гистология (после бронхоскопии)', 'Гистологическое исследование', 'ИГХ и генетические исследования'],
             checklistOptional: ['МРТ ГМ с контрастом', 'ПЭТ/КТ или сцинтиграфия костей', 'УЗДГ сосудов/артерий', 'Дообследование функционального статуса']
         },
         melanoma: {
@@ -1284,7 +1358,7 @@ const app = {
         thyroidSuspected: {
             label: 'Щитовидная железа (подозрение на ЗНО)',
             stage1Days: 7, stage2Standard: 4, stage2StageIV: 7,
-            checklistRequired: ['Пункция узла щитовидной железы и/или лимфоузла', 'Цитологическое исследование', 'ЭГДС', 'КТ ОГК с контрастом', 'КТ ОБП/ОМТ с контрастом (или УЗИ)', 'ЭКГ'],
+            checklistRequired: ['Пункция узла щитовидной железы и/или лимфоузла', 'Цитологическое исследование', 'Гистологическое исследование', 'ЭГДС', 'КТ ОГК с контрастом', 'КТ ОБП/ОМТ с контрастом (или УЗИ)', 'ЭКГ'],
             checklistOptional: ['Эхо-КГ', 'КТ/МРТ шеи с контрастом', 'Сцинтиграфия костей', 'Сцинтиграфия щитовидной железы']
         },
         thyroidConfirmed: {
@@ -1334,6 +1408,68 @@ const app = {
         ];
     },
 
+    allDiagnosisOptions() {
+        return Object.entries(this.icd10Localizations).flatMap(([localization, item]) =>
+            item.diagnoses.map(d => ({ ...d, localization, localizationLabel: item.label }))
+        );
+    },
+
+    filterDiagnosisOptions(localization, query) {
+        const q = String(query || '').trim().toLowerCase();
+        const selectedLocalization = this.icd10Localizations[localization];
+        const source = (q || !localization)
+            ? this.allDiagnosisOptions()
+            : ((selectedLocalization && selectedLocalization.diagnoses) || []).map(d => ({
+                ...d,
+                localization,
+                localizationLabel: selectedLocalization.label,
+            }));
+        const filtered = q
+            ? source.filter(d =>
+                d.code.toLowerCase().includes(q) ||
+                d.label.toLowerCase().includes(q) ||
+                d.localizationLabel.toLowerCase().includes(q)
+            )
+            : source;
+        return filtered.slice(0, 120);
+    },
+
+    diagnosisOptionNodes(localization, query, selected) {
+        const items = this.filterDiagnosisOptions(localization, query);
+        if (!items.length) return [option('', 'Ничего не найдено', !selected)];
+        return [
+            option('', 'Выберите диагноз', !selected),
+            ...items.map(d => option(d.code, `${d.code} — ${d.label}`, d.code === selected)),
+        ];
+    },
+
+    suggestedNosologyForDiagnosis(code) {
+        const normalized = String(code || '').trim().toUpperCase();
+        const exact = {
+            'D00.0': 'headneckConfirmed',
+            'D00.2': 'stomach',
+            'D01.0': 'colon',
+            'D01.1': 'colon',
+            'D01.2': 'colon',
+            'D01.5': 'liver',
+            'D02.0': 'headneckConfirmed',
+            'D02.2': 'lung12',
+            'D07.0': 'uterus',
+            D05: 'breast',
+            D06: 'cervixCytology',
+            'D07.5': 'prostate',
+            'D09.0': 'bladder',
+            'D09.1': 'upperUrinary',
+            'D09.3': 'thyroidConfirmed',
+        };
+        if (exact[normalized]) return exact[normalized];
+        if (normalized.startsWith('D03.')) return 'melanoma';
+        if (normalized.startsWith('D04.')) return 'skin';
+        if (normalized.startsWith('D05.')) return 'breast';
+        if (normalized.startsWith('D06.')) return 'cervixCytology';
+        return '';
+    },
+
     stageNames: {
         'primary-appointment': 'Первичный прием',
         'exam': 'На обследовании',
@@ -1341,10 +1477,14 @@ const app = {
         'consult': 'Направлен на ОК',
         'treatment-prep': 'Направлен на лечение',
         'treatment': 'Проходит лечение',
-        'completed': 'Завершил лечение'
+        'completed': 'Завершил лечение',
+        'dispensary-observation': 'Диспансерное наблюдение',
+        'diagnosis-not-confirmed': 'Диагноз не подтверждён',
     },
 
     stageOrder: ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'completed'],
+    terminalStages: ['completed', 'dispensary-observation', 'diagnosis-not-confirmed'],
+    stageFilterOrder: ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'completed', 'dispensary-observation', 'diagnosis-not-confirmed'],
 
     stageShortLabels: {
         'primary-appointment': 'Первичный приём',
@@ -1354,6 +1494,8 @@ const app = {
         'treatment-prep': 'Направление',
         treatment: 'Лечение',
         completed: 'Завершено',
+        'dispensary-observation': 'Наблюдение',
+        'diagnosis-not-confirmed': 'Не подтверждён',
     },
 
     HEAD_OPTIONS: [
@@ -1734,11 +1876,12 @@ const app = {
     },
 
     stageProgressClass(stage) {
+        if (this.terminalStages.includes(stage)) return 'progress__bar--step7';
         return `progress__bar--step${this.stageIndex(stage) + 1}`;
     },
 
     stageToneClass(stage) {
-        if (stage === 'completed') return 'progress__bar--completed';
+        if (this.terminalStages.includes(stage)) return 'progress__bar--completed';
         if (stage === 'treatment' || stage === 'treatment-prep') return 'progress__bar--treatment';
         if (stage === 'consult') return 'progress__bar--consult';
         if (stage === 'appointment') return 'progress__bar--appointment';
@@ -1747,7 +1890,16 @@ const app = {
     },
 
     stageProgressPercent(stage) {
+        if (this.terminalStages.includes(stage)) return 100;
         return Math.round((this.stageIndex(stage) + 1) / this.stageOrder.length * 100);
+    },
+
+    firstVisitTime(p) {
+        const visit = (p.history || [])
+            .filter(occ => occ.stage === 'primary-appointment')
+            .flatMap(occ => occ.events || [])
+            .find(ev => ev.actualDate);
+        return visit ? new Date(`${visit.actualDate}T${visit.actualTime || '00:00'}`).getTime() || 0 : 0;
     },
 
     getPriorityFactor(priority) {
@@ -1914,6 +2066,8 @@ const app = {
             if (matches) templateIndex++;
         });
 
+        if (history.length && this.terminalStages.includes(history[lastIdx].stage)) return nodes;
+
         for (let j = templateIndex; j < template.length; j++) {
             nodes.push({ stage: template[j], status: 'future', templateIndex: j, isNext: j === templateIndex });
         }
@@ -1923,6 +2077,9 @@ const app = {
 
     getFiltered() {
         let filtered = this.patients.slice();
+        if (!this.stageFilter && !this.searchQuery) {
+            filtered = filtered.filter(p => !this.terminalStages.includes(p.stage));
+        }
         if (this.stageFilter) filtered = filtered.filter(p => p.stage === this.stageFilter);
         if (this.headFilter) filtered = filtered.filter(p => p.head === this.headFilter);
         if (this.deadlineFilter) {
@@ -1957,6 +2114,14 @@ const app = {
             const bc = (b.attention && b.attention.activeCount) || 0;
             return bc - ac || (a.name || '').localeCompare(b.name || '', 'ru');
         });
+        else if (this.sortOrder === 'first-visit-oldest') filtered.sort((a, b) =>
+            (this.firstVisitTime(a) || Number.MAX_SAFE_INTEGER) - (this.firstVisitTime(b) || Number.MAX_SAFE_INTEGER) ||
+            (a.name || '').localeCompare(b.name || '', 'ru')
+        );
+        else if (this.sortOrder === 'first-visit-newest') filtered.sort((a, b) =>
+            (this.firstVisitTime(b) || -1) - (this.firstVisitTime(a) || -1) ||
+            (a.name || '').localeCompare(b.name || '', 'ru')
+        );
         else if (this.sortOrder === 'name') filtered.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
         return filtered;
     },
@@ -2028,7 +2193,7 @@ const app = {
     fillStaticSelects() {
         $('filterStage').replaceChildren(frag([
             option('', 'Все этапы', true),
-            ...this.stageOrder.map(s => option(s, this.stageNames[s])),
+            ...this.stageFilterOrder.map(s => option(s, this.stageNames[s])),
         ]));
 
         const heads = [...new Set(this.patients.map(p => p.head).filter(Boolean))].sort();
@@ -2061,6 +2226,8 @@ const app = {
             option('attention', 'Сначала требуют внимания'),
             option('newest', 'Сначала новые'),
             option('oldest', 'Сначала давние'),
+            option('first-visit-oldest', 'Первый визит: сначала ранние'),
+            option('first-visit-newest', 'Первый визит: сначала поздние'),
             option('name', 'По алфавиту'),
         ]));
 
@@ -2101,7 +2268,7 @@ const app = {
 
         $('analyticsStageFilter').replaceChildren(frag([
             option('', 'Все этапы', true),
-            ...this.stageOrder.map(s => option(s, this.stageNames[s])),
+            ...this.stageFilterOrder.map(s => option(s, this.stageNames[s])),
         ]));
         $('analyticsNosologyFilter').replaceChildren(frag([
             option('', 'Любой профиль клиентского пути', true),
@@ -2122,7 +2289,7 @@ const app = {
 
         $('stage').replaceChildren(frag([
             option('', 'Выберите этап', true),
-            ...this.stageOrder.map(s => option(s, this.stageNames[s])),
+            ...this.stageFilterOrder.map(s => option(s, this.stageNames[s])),
         ]));
 
         $('head').replaceChildren(frag([
@@ -2361,6 +2528,8 @@ const app = {
 
     statusChip(p) {
         if (p.stage === 'completed') return el('span', { class: 'chip chip--good' }, [el('span', { class: 'chip__dot' }), 'Завершил лечение']);
+        if (p.stage === 'dispensary-observation') return el('span', { class: 'chip chip--good' }, [el('span', { class: 'chip__dot' }), 'Диспансерное наблюдение']);
+        if (p.stage === 'diagnosis-not-confirmed') return el('span', { class: 'chip chip--neutral' }, [el('span', { class: 'chip__dot' }), 'Диагноз не подтверждён']);
         if (p.stage === 'treatment' || p.stage === 'treatment-prep') return el('span', { class: 'chip chip--teal' }, [el('span', { class: 'chip__dot' }), 'На лечении']);
         return el('span', { class: 'chip chip--accent' }, [el('span', { class: 'chip__dot' }), 'В процессе обследования']);
     },
@@ -2431,6 +2600,21 @@ const app = {
                         type: 'button', class: 'btn btn--primary',
                         text: `Перевести: ${this.stageNames[nextNode.stage]}`,
                         on: { click: () => this.advanceToStage(p.id, nextNode.stage, this.stageNames[nextNode.stage]) },
+                    }) : null,
+                    (p.stage === 'appointment' && this.can('editPatients')) ? el('button', {
+                        type: 'button', class: 'btn btn--ghost',
+                        text: 'Дополнительное обследование',
+                        on: { click: () => this.advanceToStage(p.id, 'exam', this.stageNames.exam) },
+                    }) : null,
+                    (p.stage === 'consult' && this.can('editPatients')) ? el('button', {
+                        type: 'button', class: 'btn btn--ghost',
+                        text: 'Диспансерное наблюдение',
+                        on: { click: () => this.advanceToStage(p.id, 'dispensary-observation', this.stageNames['dispensary-observation']) },
+                    }) : null,
+                    ((p.stage === 'exam' || p.stage === 'appointment' || p.stage === 'consult') && this.can('editPatients')) ? el('button', {
+                        type: 'button', class: 'btn btn--quiet',
+                        text: 'Диагноз не подтверждён',
+                        on: { click: () => this.advanceToStage(p.id, 'diagnosis-not-confirmed', this.stageNames['diagnosis-not-confirmed']) },
                     }) : null,
                     el('button', {
                         type: 'button', class: 'btn btn--ghost', text: 'Скопировать сводку',
@@ -2763,6 +2947,14 @@ const app = {
                 entries.push({ at: occ.enteredAt, tone: 'warning', title: 'Заметка', text: occ.note });
             }
         });
+        (p.diagnosisHistory || []).forEach(item => {
+            entries.push({
+                at: item.changedAt,
+                tone: 'info',
+                title: 'Изменение диагноза',
+                text: `${item.oldDiagnosis || 'не указан'} → ${item.newDiagnosis || 'не указан'}`,
+            });
+        });
 
         if (!entries.length) {
             return el('div', { class: 'empty', text: 'Событий пока нет — они появятся после первых отметок дат.' });
@@ -2876,6 +3068,24 @@ const app = {
         }, optionNodes);
     },
 
+    patientDiagnosisControl(p) {
+        const search = el('input', {
+            class: 'input',
+            type: 'search',
+            value: '',
+            placeholder: 'Поиск по коду или названию',
+            'aria-label': 'Поиск диагноза пациента',
+        });
+        const select = el('select', {
+            class: 'select',
+            on: { change: (event) => this.updatePatientField(p.id, 'diagnosis', event.target.value) },
+        }, this.diagnosisOptionNodes('', '', p.diagnosis));
+        search.addEventListener('input', () => {
+            select.replaceChildren(frag(this.diagnosisOptionNodes('', search.value, select.value || p.diagnosis)));
+        });
+        return el('div', { class: 'stack stack--sm' }, [search, select]);
+    },
+
     tabData(p) {
         return el('div', { class: 'panel panel--pad' }, [
             el('fieldset', { class: 'fieldset' }, [
@@ -2889,7 +3099,7 @@ const app = {
             ]),
             el('fieldset', { class: 'fieldset' }, [
                 el('legend', { class: 'fieldset__legend', text: 'Медицинская информация' }),
-                this.field('Диагноз (МКБ-10)', this.patientInput(p, 'diagnosis', 'text', p.diagnosis)),
+                this.field('Диагноз (МКБ-10)', this.patientDiagnosisControl(p)),
                 el('div', { class: 'grid-2' }, [
                     this.field('Профиль клиентского пути', this.patientSelect(p, 'nosology', [
                         option('', 'Не указана', !p.nosology),
@@ -2899,6 +3109,10 @@ const app = {
                         option('', 'Не указана', !p.diseaseStage),
                         ...['I', 'II', 'III', 'IV'].map(s => option(s, s, p.diseaseStage === s)),
                     ])),
+                ]),
+                el('div', { class: 'grid-2' }, [
+                    this.field('Код консилиума', this.patientInput(p, 'consiliumCode', 'text', p.consiliumCode || '')),
+                    this.field('Код ПГИ', this.patientInput(p, 'pgiCode', 'text', p.pgiCode || '')),
                 ]),
             ]),
             el('fieldset', { class: 'fieldset' }, [
@@ -5076,32 +5290,22 @@ const app = {
             const lastEvent = events.length ? events[events.length - 1] : { date: null, time: null };
             if (!lastEvent.actualDate) {
                 const stageLabel = this.stageNames[occ.stage] || occ.stage;
-                if (lastEvent.date) {
-                    const matched = await ui.confirm({
-                        title: `Этап «${stageLabel}» состоялся по плану?`,
-                        text: `План: ${lastEvent.date}${lastEvent.time ? ' ' + lastEvent.time : ''}. Если событие прошло в другой день, укажите фактическую дату.`,
-                        okLabel: 'Да, по плану',
-                        danger: false,
-                    });
-                    if (matched) {
-                        lastEventUpdate = { actualDate: lastEvent.date, actualTime: lastEvent.time || '', matchedPlan: true };
-                    } else {
-                        const answer = await ui.promptDateTime({
-                            title: 'Фактическая дата события',
-                            text: `Укажите, когда событие этапа «${stageLabel}» состоялось на самом деле.`,
-                            date: lastEvent.date || '',
-                            time: lastEvent.time || '',
-                        });
-                        if (!answer) return false;
-                        lastEventUpdate = { actualDate: answer.date, actualTime: answer.time || '', matchedPlan: false };
-                    }
+                const today = new Date();
+                const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                if (!lastEvent.date) {
+                    lastEventUpdate = { actualDate: todayValue, actualTime: '', matchedPlan: null };
+                } else if (lastEvent.date === todayValue) {
+                    lastEventUpdate = { actualDate: todayValue, actualTime: lastEvent.time || '', matchedPlan: true };
                 } else {
                     const answer = await ui.promptDateTime({
                         title: 'Фактическая дата события',
-                        text: `Для этапа «${stageLabel}» плановая дата не указана. Укажите фактическую дату события.`,
+                        text: `Плановая дата этапа «${stageLabel}»: ${lastEvent.date}${lastEvent.time ? ' ' + lastEvent.time : ''}. Укажите фактическую дату события.`,
+                        date: todayValue,
+                        time: lastEvent.time || '',
                     });
                     if (!answer) return false;
-                    lastEventUpdate = { actualDate: answer.date, actualTime: answer.time || '', matchedPlan: false };
+                    const matchedPlan = answer.date === lastEvent.date && (answer.time || '') === (lastEvent.time || '');
+                    lastEventUpdate = { actualDate: answer.date, actualTime: answer.time || '', matchedPlan };
                 }
             }
         }
@@ -5137,23 +5341,27 @@ const app = {
 
     resetDiagnosisSelect() {
         const select = $('diagnosis');
-        select.replaceChildren(option('', 'Сначала выберите локализацию'));
+        const search = $('diagnosisSearch');
+        if (search) search.value = '';
+        select.replaceChildren(option('', 'Введите код/название или выберите локализацию'));
         select.disabled = true;
     },
 
     onLocalizationChange() {
         const locId = $('diagnosisLocalization').value;
+        const query = $('diagnosisSearch').value;
         const select = $('diagnosis');
-        if (!locId) {
+        if (!locId && !query.trim()) {
             this.resetDiagnosisSelect();
             return;
         }
-        const loc = this.icd10Localizations[locId];
         select.disabled = false;
-        select.replaceChildren(frag([
-            option('', 'Выберите диагноз'),
-            ...loc.diagnoses.map(d => option(d.code, `${d.code} — ${d.label}`)),
-        ]));
+        select.replaceChildren(frag(this.diagnosisOptionNodes(locId, query, select.value)));
+    },
+
+    onDiagnosisChange() {
+        const suggested = this.suggestedNosologyForDiagnosis($('diagnosis').value);
+        if (suggested && !$('nosology').value) $('nosology').value = suggested;
     },
 
     updateStageFields() {
@@ -5222,6 +5430,8 @@ const app = {
             priority: $('priority').value,
             stage,
             diagnosis,
+            consiliumCode: $('consiliumCode').value,
+            pgiCode: $('pgiCode').value,
             nosology: $('nosology').value,
             diseaseStage: $('diseaseStage').value,
             doctor: doctorLabel,
@@ -6221,6 +6431,8 @@ const app = {
             if (event.key === 'Enter' && event.target.tagName !== 'TEXTAREA') event.preventDefault();
         });
         on('diagnosisLocalization', 'change', () => this.onLocalizationChange());
+        on('diagnosisSearch', 'input', () => this.onLocalizationChange());
+        on('diagnosis', 'change', () => this.onDiagnosisChange());
         on('stage', 'change', () => this.updateStageFields());
 
         // Пациент требует внимания

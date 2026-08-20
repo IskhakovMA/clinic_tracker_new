@@ -13,6 +13,8 @@ STAGE_LABELS = {
     "treatment-prep": "Подготовка к лечению",
     "treatment": "Лечение",
     "completed": "Завершено",
+    "dispensary-observation": "Диспансерное наблюдение",
+    "diagnosis-not-confirmed": "Диагноз не подтверждён",
 }
 
 
