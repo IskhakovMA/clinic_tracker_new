@@ -19,7 +19,7 @@ The review found three non-blocking residual risks:
 | SEC-V2-002 | Informational | Accepted Residual | HTTPS security headers and cookie `Secure` flag depend on `CLINIC_HTTPS` |
 | SEC-V2-003 | Informational | Accepted Residual | AI provider egress boundary is controlled by trusted environment configuration |
 
-Strix was run in local/self-hosted mode after Docker Desktop and the local LM Studio endpoint became available. Both white-box and dynamic localhost scans were attempted, but neither completed because the required local model `qwen3-8b` was not able to complete Strix's first root-agent turns within the available context/stream constraints. No Strix candidate vulnerability was produced, so no new `SEC-V2-*` finding was created from Strix output. The project source was not sent to Strix managed cloud or an external LLM provider.
+Strix was run in local/self-hosted mode after Docker Desktop and the local LM Studio endpoint became available. Full-repository, targeted backend, targeted frontend, targeted AI/security, and dynamic localhost scans were attempted, but none completed because the required local model `qwen3-8b` could not complete Strix's first root-agent turns within the available context/stream constraints. No Strix candidate vulnerability was produced, so no new `SEC-V2-*` finding was created from Strix output. The project source was not sent to Strix managed cloud or an external LLM provider.
 
 Production code was not changed and no autofix was used.
 
@@ -117,6 +117,7 @@ Observed prerequisites:
 - Strix autofix: not used
 - Strix CLI telemetry: logs include `skill_loaded` PostHog/Scarf events; no source, patient data, synthetic credentials, or findings were observed in those sanitized log lines
 - Raw run artifacts: kept outside the repository under `/private/tmp/clinic-strix-v2-*`
+- Maximum observed local model prompt usage: `41314` tokens requested against `40960` available context in the targeted AI/security attempt
 
 Sanitized Strix evidence: `security-audit/strix-v2-summary.md`.
 
@@ -464,12 +465,22 @@ Strix dynamic localhost scan:
 - SARIF results: `0`
 - Accepted Strix findings: `0`
 
+Additional targeted Strix attempts after the broad runs:
+
+| Attempt | Target | Mode | Run id | Status | Evidence | SARIF results |
+| --- | --- | --- | --- | --- | --- | --- |
+| Targeted backend | `/Users/maksutishakov/Documents/clinic_tracker_new/backend` | quick, non-interactive, full scope, max turns 10, max budget 0.15 | `backend_62f1` | failed | `ContextWindowExceededError`; `request (41251 tokens) exceeds the available context size (40960 tokens)` | `0` |
+| Targeted frontend | temp copy with only `index.html` and `static/` | quick, non-interactive, full scope, max turns 10, max budget 0.15 | `clinic-strix-frontend-target-202_fd12` | failed | `ContextWindowExceededError`; `request (41298 tokens) exceeds the available context size (40960 tokens)` | `0` |
+| Targeted AI/security | temp copy of AI/auth/security/policy/scope route files only | quick, non-interactive, full scope, max turns 10, max budget 0.15 | `clinic-strix-ai-security-target_c9f7` | failed | `ContextWindowExceededError`; `request (41314 tokens) exceeds the available context size (40960 tokens)` | `0` |
+| Final lightweight dynamic | synthetic localhost app on `127.0.0.1:8431`, sandbox target `host.docker.internal:8431` | quick, non-interactive, max turns 8, max budget 0.10 | `host-docker-internal-8431_8c7b` | interrupted | first model stream produced no event for 300s, retry started, then manually interrupted | `0` |
+
 Important interpretation:
 
 - These are real Strix execution attempts with Docker and local LM Studio, but not completed scans.
 - `0` SARIF results is not evidence that the app has zero vulnerabilities; it only means Strix produced no candidate finding before failure/interruption.
 - No new `SEC-V2-*` finding was created from Strix because there was no candidate to validate.
 - The local model was not changed because the audit instructions forbade automatic switch to cloud/frontier models.
+- Under the current Strix 1.5.3 prompt/tooling profile and LM Studio `qwen3-8b` context/stream behavior, `qwen3-8b` is not considered usable for future Strix scans of this project without changing the model/context setup or Strix prompt profile.
 
 ## Findings
 
