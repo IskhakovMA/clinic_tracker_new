@@ -19,7 +19,7 @@ The review found three non-blocking residual risks:
 | SEC-V2-002 | Informational | Accepted Residual | HTTPS security headers and cookie `Secure` flag depend on `CLINIC_HTTPS` |
 | SEC-V2-003 | Informational | Accepted Residual | AI provider egress boundary is controlled by trusted environment configuration |
 
-Strix was evaluated but not run because the local prerequisites were not met: Docker CLI is installed, but the Docker daemon was not available, and no local OpenAI-compatible LLM endpoint was reachable. The project source was not sent to any external Strix cloud or external LLM provider.
+Strix was run in local/self-hosted mode after Docker Desktop and the local LM Studio endpoint became available. Both white-box and dynamic localhost scans were attempted, but neither completed because the required local model `qwen3-8b` was not able to complete Strix's first root-agent turns within the available context/stream constraints. No Strix candidate vulnerability was produced, so no new `SEC-V2-*` finding was created from Strix output. The project source was not sent to Strix managed cloud or an external LLM provider.
 
 Production code was not changed and no autofix was used.
 
@@ -98,16 +98,25 @@ Unrelated malware, phishing, AD, cloud exploitation, OT/ICS, and mobile skills w
 
 ### Strix
 
-Status: not run.
+Status: attempted; failed/partial coverage only.
 
 Repository clone was kept outside the project under `/tmp/clinic-security-audit-v2-tools/strix` at commit `6f88b7d7d5b6f57833b73a5384079e229e21aa2f`.
 
 Observed prerequisites:
 
-- Docker CLI: `/usr/local/bin/docker`, Docker `29.5.3`
-- Docker daemon: unavailable
-- Local LLM endpoint `http://127.0.0.1:1234/v1/models`: unavailable
-- External LLM/cloud mode: not used, because this stage forbids sending project context to unknown external providers without explicit need and approval
+- Strix CLI: `strix-agent 1.5.3`, installed in temporary venv `/tmp/clinic-strix-v2-venv`
+- Docker CLI: `/usr/local/bin/docker`, client `29.5.3`, active context `desktop-linux`
+- Docker daemon: available via Docker Desktop `4.77.0`, server engine `29.5.3`
+- Strix sandbox image: `ghcr.io/usestrix/strix-sandbox:1.3.0`
+- Local LLM endpoint `http://127.0.0.1:1234/v1/models`: available
+- Local model: `qwen3-8b`
+- LiteLLM model identifier used: `lm_studio/qwen3-8b`
+- LLM API base used: `http://127.0.0.1:1234/v1`
+- External LLM/cloud mode: not used
+- Strix managed cloud: not used
+- Strix autofix: not used
+- Strix CLI telemetry: logs include `skill_loaded` PostHog/Scarf events; no source, patient data, synthetic credentials, or findings were observed in those sanitized log lines
+- Raw run artifacts: kept outside the repository under `/private/tmp/clinic-strix-v2-*`
 
 Sanitized Strix evidence: `security-audit/strix-v2-summary.md`.
 
@@ -432,16 +441,35 @@ No CI policy vulnerability was confirmed.
 
 ## Strix Results
 
-Strix white-box findings: not run.
-Strix dynamic findings: not run.
+Strix white-box scan:
 
-Reason:
+- Command mode: `--non-interactive --scan-mode quick --scope-mode full --max-turns 20 --max-budget 0.25`
+- Target: `/Users/maksutishakov/Documents/clinic_tracker_new`
+- Run id: `clinic-tracker-new_354f`
+- Status: failed
+- Failure: `ContextWindowExceededError`; LM Studio returned `request (41306 tokens) exceeds the available context size (40960 tokens)`
+- SARIF results: `0`
+- Accepted Strix findings: `0`
 
-- Docker daemon unavailable.
-- Local LLM endpoint unavailable.
-- External cloud/LLM mode was not used in this audit-only stage.
+Strix dynamic localhost scan:
 
-No Strix findings were accepted, confirmed, or marked false positive because no scan output exists.
+- Command mode: `--non-interactive --scan-mode quick --max-turns 20 --max-budget 0.25`
+- Synthetic target: `http://127.0.0.1:8431`
+- Sandbox target mapping: `http://host.docker.internal:8431`
+- Synthetic DB path: `/tmp/clinic-strix-dynamic-data.*`
+- Synthetic roles: developer, doctor A, doctor B, department head A, department head B, read-only
+- Run id: `host-docker-internal-8431_6385`
+- Status: interrupted after prolonged idle/no useful first model response
+- Evidence: Strix log showed `model stream produced no event for 300s; abandoning the turn`, retry, then manual interruption while waiting for model response
+- SARIF results: `0`
+- Accepted Strix findings: `0`
+
+Important interpretation:
+
+- These are real Strix execution attempts with Docker and local LM Studio, but not completed scans.
+- `0` SARIF results is not evidence that the app has zero vulnerabilities; it only means Strix produced no candidate finding before failure/interruption.
+- No new `SEC-V2-*` finding was created from Strix because there was no candidate to validate.
+- The local model was not changed because the audit instructions forbade automatic switch to cloud/frontier models.
 
 ## Findings
 
@@ -586,7 +614,7 @@ Regression test recommendation:
 2. Before public or multi-worker deployment, replace or augment process-local rate limiting.
 3. Add a production deployment checklist for HTTPS/proxy/header validation.
 4. Formalize AI provider policy before enabling AI outside localhost.
-5. Re-run Strix when Docker daemon and a local or explicitly approved LLM provider are available.
+5. Re-run Strix with a model/context configuration capable of completing the root-agent prompt, or with an explicitly approved alternative model/provider.
 6. Keep `node --check static/app.js` in CI; local machine currently lacks Node.
 
 ## Remediation Priority
@@ -597,7 +625,7 @@ Regression test recommendation:
 | P2 | Persistent/deployment-level rate limiting before multi-worker/public exposure. |
 | P2 | Production HTTPS/proxy/header smoke checks before pilot deployment. |
 | P3 | AI provider endpoint allowlist/policy before non-local AI provider use. |
-| P3 | Re-run Strix in local mode when prerequisites are available. |
+| P3 | Re-run Strix with a capable local or explicitly approved model; current `qwen3-8b` attempt did not complete. |
 
 ## Retest Plan
 
@@ -607,4 +635,4 @@ Regression test recommendation:
 4. Re-run strict schema/mass-assignment tests on all request models.
 5. Re-run AI backend/tool security tests with synthetic prompt-injection data.
 6. Re-run backup tamper/verify/restore tests on synthetic schema 8 database.
-7. If Docker and local LLM are available, run Strix against the local repository and localhost synthetic app, then manually validate every candidate finding.
+7. Re-run Strix against the local repository and localhost synthetic app with a model/context setup that completes the first root-agent turns, then manually validate every candidate finding.
