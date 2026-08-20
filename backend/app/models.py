@@ -29,6 +29,8 @@ STAGES = (
 TERMINAL_STAGES = ("completed", "dispensary-observation", "diagnosis-not-confirmed")
 DISEASE_STAGES = ("", "I", "II", "III", "IV")
 TREATMENT_TYPES = ("", "surgery", "radiation", "chemo")
+CONSILIUM_DECISIONS = ("treatment_strategy_defined", "treatment_strategy_changed", "dispensary_observation")
+PGI_RESULTS = ("", "confirmed", "not_confirmed")
 POLICY_NUMBER_MAX_LENGTH = 32
 POLICY_NUMBER_INPUT_MAX_LENGTH = 64
 ATTENTION_COMMENT_MAX_LENGTH = 800
@@ -45,6 +47,8 @@ ATTENTION_REASON_CODES = (
 )
 
 Priority = Literal["urgent", "high", "normal"]
+ConsiliumDecision = Literal["treatment_strategy_defined", "treatment_strategy_changed", "dispensary_observation"]
+PgiResult = Literal["", "confirmed", "not_confirmed"]
 Stage = Literal[
     "primary-appointment",
     "exam",
@@ -100,6 +104,7 @@ class EventIn(StrictRequestModel):
     actualTime: Optional[str] = Field(None, max_length=5)
     matchedPlan: Optional[bool] = None
     noPlan: Optional[bool] = False
+    consiliumDecision: Optional[ConsiliumDecision] = None
     # Present in v3 export; accepted for roundtrip compatibility and ignored
     # on write because event timestamps are server-authoritative.
     setAt: Optional[str] = Field(None, max_length=40)
@@ -161,8 +166,7 @@ class PatientFieldUpdateIn(StrictRequestModel):
         "phone",
         "policyNumber",
         "diagnosis",
-        "consiliumCode",
-        "pgiCode",
+        "pgiResult",
         "nosology",
         "diseaseStage",
         "priority",
@@ -181,8 +185,11 @@ class PatientCreateIn(StrictRequestModel):
     priority: Priority
     stage: Stage
     diagnosis: str = Field(..., min_length=1, max_length=500)
+    # Deprecated v7 compatibility fields. Active UI no longer sends them,
+    # but v7 clients/imports are accepted without data loss.
     consiliumCode: str = Field("", max_length=100)
     pgiCode: str = Field("", max_length=100)
+    pgiResult: PgiResult = ""
     # В UI — «Профиль клиентского пути»; legacy-имя `nosology` сохранено намеренно
     # для совместимости с существующей БД и форматом импорта/экспорта (см. README).
     nosology: str = Field("", max_length=100)
@@ -226,6 +233,7 @@ class EventOut(BaseModel):
     actualTime: Optional[str] = None
     matchedPlan: Optional[bool] = None
     noPlan: bool = False
+    consiliumDecision: Optional[str] = None
     setAt: Optional[str] = None
 
 
@@ -264,6 +272,7 @@ class PatientOut(BaseModel):
     diagnosis: str
     consiliumCode: str = ""
     pgiCode: str = ""
+    pgiResult: str = ""
     nosology: str
     diseaseStage: str
     arrival: str
@@ -384,6 +393,7 @@ class ImportPatientIn(StrictRequestModel):
     diagnosis: str = Field("", max_length=500)
     consiliumCode: str = Field("", max_length=100)
     pgiCode: str = Field("", max_length=100)
+    pgiResult: PgiResult = ""
     # legacy-имя `nosology` (UI: «Профиль клиентского пути») — часть формата
     # импорта/экспорта, менять нельзя без миграции формата (см. README).
     nosology: str = Field("", max_length=100)
@@ -410,6 +420,7 @@ class ImportPatientIn(StrictRequestModel):
         "diagnosis",
         "consiliumCode",
         "pgiCode",
+        "pgiResult",
         "nosology",
         "diseaseStage",
         "doctor",

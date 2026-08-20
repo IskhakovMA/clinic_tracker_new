@@ -222,7 +222,7 @@
                     <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--green"></span>4+ дн.</span>
                     <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--yellow"></span>0–3 дн.</span>
                     <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--red"></span>срок прошёл</span>
-                    <span class="deadline-legend__note">Пороговые сроки профиля требуют подтверждения главным врачом.</span>
+                    <span class="deadline-legend__note">Пороговые сроки профиля подтверждены врачебной обратной связью.</span>
                 </div>
 
                 <!-- Баннер Разработчику: есть пациенты без сопоставленного врача -->
@@ -761,15 +761,14 @@
                     <label class="field__label" for="complaint">Жалобы и симптомы</label>
                     <textarea class="textarea" id="complaint" rows="4"></textarea>
                 </div>
-                <div class="grid-2">
-                    <div class="field">
-                        <label class="field__label" for="consiliumCode">Код консилиума</label>
-                        <input class="input" type="text" id="consiliumCode" maxlength="100" autocomplete="off">
-                    </div>
-                    <div class="field">
-                        <label class="field__label" for="pgiCode">Код ПГИ</label>
-                        <input class="input" type="text" id="pgiCode" maxlength="100" autocomplete="off">
-                    </div>
+                <div class="field">
+                    <label class="field__label" for="pgiResult">Результат ПГИ</label>
+                    <select class="select" id="pgiResult">
+                        <option value="">Не указано</option>
+                        <option value="confirmed">Подтверждено</option>
+                        <option value="not_confirmed">Не подтверждено</option>
+                    </select>
+                    <p class="field__hint">Не переводит маршрут автоматически.</p>
                 </div>
             </fieldset>
 

@@ -19,7 +19,7 @@ def _create_patient(auth_client, **overrides):
     return response.json()
 
 
-def test_schema_v6_to_v7_adds_codes_and_diagnosis_history(tmp_path):
+def test_schema_v6_to_v8_adds_feedback_fields_and_diagnosis_history(tmp_path):
     from backend.app import config, db, maintenance
 
     path = tmp_path / "clinic.db"
@@ -60,7 +60,7 @@ def test_schema_v6_to_v7_adds_codes_and_diagnosis_history(tmp_path):
         )
     db.init_db(conn)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 7
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
     patient_columns = {row["name"] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
     assert {"consilium_code", "pgi_code"} <= patient_columns
     row = conn.execute("SELECT diagnosis, policy_number FROM patients WHERE id = 'legacy_v6'").fetchone()
@@ -220,43 +220,38 @@ def test_diagnosis_change_history_and_audit_without_phi(auth_client):
     assert "C73" not in audit_text
 
 
-def test_consilium_and_pgi_codes_roundtrip_and_audit_without_values(auth_client):
+def test_legacy_consilium_and_pgi_codes_are_preserved_but_not_active_fields(auth_client):
     created = _create_patient(auth_client, consiliumCode="OK-123", pgiCode="PGI-456")
     assert created["consiliumCode"] == "OK-123"
     assert created["pgiCode"] == "PGI-456"
 
-    updated = auth_client.patch(
+    legacy_patch = auth_client.patch(
         f"/api/patients/{created['id']}",
         json={"field": "consiliumCode", "value": "OK-999"},
         headers=auth_client.csrf,
     )
-    assert updated.status_code == 200, updated.text
-    updated = auth_client.patch(
+    assert legacy_patch.status_code == 422
+    legacy_patch = auth_client.patch(
         f"/api/patients/{created['id']}",
         json={"field": "pgiCode", "value": "PGI-999"},
         headers=auth_client.csrf,
     )
-    assert updated.status_code == 200, updated.text
+    assert legacy_patch.status_code == 422
 
     exported = json.loads(auth_client.get("/api/export").text)
     patient = exported["patients"][0]
-    assert patient["consiliumCode"] == "OK-999"
-    assert patient["pgiCode"] == "PGI-999"
+    assert patient["consiliumCode"] == "OK-123"
+    assert patient["pgiCode"] == "PGI-456"
     audit_text = json.dumps(auth_client.get("/api/audit").json()["events"], ensure_ascii=False)
-    assert "consilium_code_changed" in audit_text
-    assert "pgi_code_changed" in audit_text
-    assert "OK-999" not in audit_text
-    assert "PGI-999" not in audit_text
+    assert "consilium_code_changed" not in audit_text
+    assert "pgi_code_changed" not in audit_text
+    assert "OK-123" not in audit_text
+    assert "PGI-456" not in audit_text
 
     too_long = "X" * 101
     assert auth_client.post(
         "/api/patients",
         json=make_patient_payload(consiliumCode=too_long),
-        headers=auth_client.csrf,
-    ).status_code == 422
-    assert auth_client.patch(
-        f"/api/patients/{created['id']}",
-        json={"field": "pgiCode", "value": too_long},
         headers=auth_client.csrf,
     ).status_code == 422
 
@@ -429,7 +424,7 @@ def test_frontend_transition_question_removed_single_prompt_and_first_visit_sort
     assert "состоялся по плану" not in app_js
     assert "first-visit-oldest" in app_js
     assert "firstVisitTime" in app_js
-    body = re.search(r"async changeStage\(id, newStage\) \{(?P<body>.*?)\n    \},\n\n    refreshCurrent", app_js, re.S).group("body")
+    body = re.search(r"async changeStage\(id, newStage(?:, options = \{\})?\) \{(?P<body>.*?)\n    \},\n\n    refreshCurrent", app_js, re.S).group("body")
     assert body.count("ui.promptDateTime") == 1
     assert "lastEvent.date === todayValue" in body
     assert "matchedPlan = answer.date === lastEvent.date" in body
@@ -465,7 +460,7 @@ def test_diagnosis_history_privacy_excludes_audit_notifications_and_ai(auth_clie
         assert forbidden not in text
 
 
-def test_schema_v7_encrypted_backup_restore_preserves_doctor_feedback_fields(auth_client, tmp_path, monkeypatch):
+def test_schema_v8_encrypted_backup_restore_preserves_doctor_feedback_fields(auth_client, tmp_path, monkeypatch):
     monkeypatch.setenv("CLINIC_BACKUP_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "doctor-feedback-key")
     monkeypatch.delenv("CLINIC_BACKUP_KEY_FILE", raising=False)
@@ -487,15 +482,15 @@ def test_schema_v7_encrypted_backup_restore_preserves_doctor_feedback_fields(aut
         headers=auth_client.csrf,
     )
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
-    backup = maintenance.backup_database(db_path, tmp_path / "doctor-feedback-v7.cbk")
-    assert maintenance.inspect_backup(backup)["schema_version"] == 7
+    backup = maintenance.backup_database(db_path, tmp_path / "doctor-feedback-v8.cbk")
+    assert maintenance.inspect_backup(backup)["schema_version"] == 8
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
     with get_conn():
         get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
     assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
     restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
-    assert restore["schema_version"] == 7
+    assert restore["schema_version"] == 8
     restored = auth_client.get(f"/api/patients/{patient['id']}").json()
     assert restored["stage"] == "dispensary-observation"
     assert restored["consiliumCode"] == "OK-BACKUP"

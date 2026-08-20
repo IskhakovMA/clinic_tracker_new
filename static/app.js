@@ -1511,6 +1511,16 @@ const app = {
 
     PRIORITY_LABELS: { urgent: 'Срочно', high: 'Высокий', normal: 'Обычный' },
     TREATMENT_LABELS: { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия' },
+    CONSILIUM_DECISION_LABELS: {
+        treatment_strategy_defined: 'Определение тактики лечения',
+        treatment_strategy_changed: 'Изменение тактики лечения',
+        dispensary_observation: 'Диспансерное наблюдение',
+    },
+    PGI_RESULT_LABELS: {
+        '': 'Не указано',
+        confirmed: 'Подтверждено',
+        not_confirmed: 'Не подтверждено',
+    },
 
     /* ---------------------------------------------------------------- Запуск */
 
@@ -1919,6 +1929,7 @@ const app = {
         else parts.push('план не указан');
         if (ev.actualDate) parts.push(`факт ${ev.actualDate}${ev.actualTime ? ' ' + ev.actualTime : ''}`);
         if (typeName) parts.push(typeName);
+        if (ev.consiliumDecision) parts.push(`Решение: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`);
         const status = ev.actualDate ? (ev.matchedPlan ? 'состоялось по плану' : 'состоялось с отклонением') : (isPending ? 'ожидается' : 'без отметки');
         return { text: parts.join(' · '), status };
     },
@@ -2165,6 +2176,9 @@ const app = {
                 const { text, status } = this.formatEventText(ev, isPending, this.TREATMENT_LABELS);
                 const label = events.length > 1 ? `   – событие ${idx + 1}: ` : '   – ';
                 lines.push(`${label}${text} — ${status}`);
+                if (ev.consiliumDecision) {
+                    lines.push(`     ОК — Решение: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`);
+                }
             });
 
             if (occEffectiveDate) prevEffectiveDate = occEffectiveDate;
@@ -2596,7 +2610,7 @@ const app = {
                 ]),
 
                 el('div', { class: 'pcard__actions' }, [
-                    (nextNode && this.can('editPatients')) ? el('button', {
+                    (nextNode && p.stage !== 'consult' && this.can('editPatients')) ? el('button', {
                         type: 'button', class: 'btn btn--primary',
                         text: `Перевести: ${this.stageNames[nextNode.stage]}`,
                         on: { click: () => this.advanceToStage(p.id, nextNode.stage, this.stageNames[nextNode.stage]) },
@@ -2606,11 +2620,7 @@ const app = {
                         text: 'Дополнительное обследование',
                         on: { click: () => this.advanceToStage(p.id, 'exam', this.stageNames.exam) },
                     }) : null,
-                    (p.stage === 'consult' && this.can('editPatients')) ? el('button', {
-                        type: 'button', class: 'btn btn--ghost',
-                        text: 'Диспансерное наблюдение',
-                        on: { click: () => this.advanceToStage(p.id, 'dispensary-observation', this.stageNames['dispensary-observation']) },
-                    }) : null,
+                    ...(p.stage === 'consult' && this.can('editPatients') ? this.renderConsiliumDecisionActions(p.id) : []),
                     ((p.stage === 'exam' || p.stage === 'appointment' || p.stage === 'consult') && this.can('editPatients')) ? el('button', {
                         type: 'button', class: 'btn btn--quiet',
                         text: 'Диагноз не подтверждён',
@@ -2634,6 +2644,41 @@ const app = {
                 ]),
             ]),
         ]));
+    },
+
+    renderConsiliumDecisionActions(patientId) {
+        return [
+            el('button', {
+                type: 'button',
+                class: 'btn btn--primary',
+                text: 'Определение тактики лечения',
+                on: {
+                    click: () => this.advanceToStage(patientId, 'treatment-prep', this.stageNames['treatment-prep'], {
+                        consiliumDecision: 'treatment_strategy_defined',
+                    }),
+                },
+            }),
+            el('button', {
+                type: 'button',
+                class: 'btn btn--ghost',
+                text: 'Изменение тактики лечения',
+                on: {
+                    click: () => this.advanceToStage(patientId, 'treatment-prep', this.stageNames['treatment-prep'], {
+                        consiliumDecision: 'treatment_strategy_changed',
+                    }),
+                },
+            }),
+            el('button', {
+                type: 'button',
+                class: 'btn btn--ghost',
+                text: 'Диспансерное наблюдение',
+                on: {
+                    click: () => this.advanceToStage(patientId, 'dispensary-observation', this.stageNames['dispensary-observation'], {
+                        consiliumDecision: 'dispensary_observation',
+                    }),
+                },
+            }),
+        ];
     },
 
     renderPatientAttentionSummary(p) {
@@ -3110,10 +3155,11 @@ const app = {
                         ...['I', 'II', 'III', 'IV'].map(s => option(s, s, p.diseaseStage === s)),
                     ])),
                 ]),
-                el('div', { class: 'grid-2' }, [
-                    this.field('Код консилиума', this.patientInput(p, 'consiliumCode', 'text', p.consiliumCode || '')),
-                    this.field('Код ПГИ', this.patientInput(p, 'pgiCode', 'text', p.pgiCode || '')),
-                ]),
+                this.field('Результат ПГИ', this.patientSelect(p, 'pgiResult', [
+                    option('', this.PGI_RESULT_LABELS[''], !p.pgiResult),
+                    option('confirmed', this.PGI_RESULT_LABELS.confirmed, p.pgiResult === 'confirmed'),
+                    option('not_confirmed', this.PGI_RESULT_LABELS.not_confirmed, p.pgiResult === 'not_confirmed'),
+                ]), 'Не переводит маршрут автоматически.'),
             ]),
             el('fieldset', { class: 'fieldset' }, [
                 el('legend', { class: 'fieldset__legend', text: 'Классификация и ответственные' }),
@@ -3265,6 +3311,13 @@ const app = {
                         }, icon('trash')),
                     ]),
                     statusNode,
+                    ev.consiliumDecision ? el('div', { class: 'event-card__group' }, [
+                        el('div', { class: 'event-card__legend', text: 'ОК' }),
+                        el('span', {
+                            class: 'chip chip--accent',
+                            text: `Решение: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`,
+                        }),
+                    ]) : null,
                     el('div', { class: 'event-card__group' }, [
                         el('div', { class: 'event-card__legend', text: 'План' }),
                         el('div', { class: 'grid-2' }, [
@@ -5263,22 +5316,24 @@ const app = {
         this.renderTabPanel(this.getPatient(patientId));
     },
 
-    async advanceToStage(patientId, stage, stageLabel) {
+    async advanceToStage(patientId, stage, stageLabel, options = {}) {
         const confirmed = await ui.confirm({
             title: 'Перевести на следующий этап?',
-            text: `Пациент будет переведён на этап «${stageLabel}».`,
+            text: options.consiliumDecision
+                ? `Пациент будет переведён на этап «${stageLabel}». Решение ОК: ${this.CONSILIUM_DECISION_LABELS[options.consiliumDecision]}.`
+                : `Пациент будет переведён на этап «${stageLabel}».`,
             okLabel: 'Перевести',
             danger: false,
         });
         if (!confirmed) return;
-        await this.changeStage(patientId, stage);
+        await this.changeStage(patientId, stage, options);
     },
 
     /**
      * Перед переходом фиксируем фактическую дату текущего события: сервер
      * принимает её вместе со сменой этапа одним запросом.
      */
-    async changeStage(id, newStage) {
+    async changeStage(id, newStage, options = {}) {
         const p = this.getPatient(id);
         if (!p || p.stage === newStage) return false;
 
@@ -5307,6 +5362,14 @@ const app = {
                     const matchedPlan = answer.date === lastEvent.date && (answer.time || '') === (lastEvent.time || '');
                     lastEventUpdate = { actualDate: answer.date, actualTime: answer.time || '', matchedPlan };
                 }
+            }
+            if (options.consiliumDecision) {
+                lastEventUpdate = lastEventUpdate || {
+                    actualDate: lastEvent.actualDate || null,
+                    actualTime: lastEvent.actualTime || '',
+                    matchedPlan: lastEvent.matchedPlan === undefined ? null : lastEvent.matchedPlan,
+                };
+                lastEventUpdate.consiliumDecision = options.consiliumDecision;
             }
         }
 
@@ -5430,8 +5493,7 @@ const app = {
             priority: $('priority').value,
             stage,
             diagnosis,
-            consiliumCode: $('consiliumCode').value,
-            pgiCode: $('pgiCode').value,
+            pgiResult: $('pgiResult').value,
             nosology: $('nosology').value,
             diseaseStage: $('diseaseStage').value,
             doctor: doctorLabel,
