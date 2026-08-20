@@ -23,7 +23,10 @@ STAGES = (
     "treatment-prep",
     "treatment",
     "completed",
+    "dispensary-observation",
+    "diagnosis-not-confirmed",
 )
+TERMINAL_STAGES = ("completed", "dispensary-observation", "diagnosis-not-confirmed")
 DISEASE_STAGES = ("", "I", "II", "III", "IV")
 TREATMENT_TYPES = ("", "surgery", "radiation", "chemo")
 POLICY_NUMBER_MAX_LENGTH = 32
@@ -43,7 +46,15 @@ ATTENTION_REASON_CODES = (
 
 Priority = Literal["urgent", "high", "normal"]
 Stage = Literal[
-    "primary-appointment", "exam", "appointment", "consult", "treatment-prep", "treatment", "completed"
+    "primary-appointment",
+    "exam",
+    "appointment",
+    "consult",
+    "treatment-prep",
+    "treatment",
+    "completed",
+    "dispensary-observation",
+    "diagnosis-not-confirmed",
 ]
 
 
@@ -145,7 +156,19 @@ class FuturePlanIn(StrictRequestModel):
 
 class PatientFieldUpdateIn(StrictRequestModel):
     field: Literal[
-        "name", "age", "phone", "policyNumber", "diagnosis", "nosology", "diseaseStage", "priority", "doctor", "head", "complaint"
+        "name",
+        "age",
+        "phone",
+        "policyNumber",
+        "diagnosis",
+        "consiliumCode",
+        "pgiCode",
+        "nosology",
+        "diseaseStage",
+        "priority",
+        "doctor",
+        "head",
+        "complaint",
     ]
     value: str | int
 
@@ -158,6 +181,8 @@ class PatientCreateIn(StrictRequestModel):
     priority: Priority
     stage: Stage
     diagnosis: str = Field(..., min_length=1, max_length=500)
+    consiliumCode: str = Field("", max_length=100)
+    pgiCode: str = Field("", max_length=100)
     # В UI — «Профиль клиентского пути»; legacy-имя `nosology` сохранено намеренно
     # для совместимости с существующей БД и форматом импорта/экспорта (см. README).
     nosology: str = Field("", max_length=100)
@@ -170,7 +195,7 @@ class PatientCreateIn(StrictRequestModel):
     # (врач — только себя, заведующий — врача своего отделения, Разработчик — любого).
     treatingDoctorUserId: Optional[str] = Field(None, max_length=100)
 
-    @field_validator("name", "doctor", "head")
+    @field_validator("name", "doctor", "head", "consiliumCode", "pgiCode")
     @classmethod
     def _norm_text(cls, v):
         return _normalize_text(v)
@@ -218,6 +243,15 @@ class FuturePlanOut(BaseModel):
     treatmentType: str = ""
 
 
+class DiagnosisHistoryOut(BaseModel):
+    id: str
+    patientId: str
+    changedAt: str
+    actorUserId: Optional[str] = None
+    oldDiagnosis: str = ""
+    newDiagnosis: str = ""
+
+
 class PatientOut(BaseModel):
     id: str
     name: str
@@ -228,6 +262,8 @@ class PatientOut(BaseModel):
     policyNumber: str
     complaint: str
     diagnosis: str
+    consiliumCode: str = ""
+    pgiCode: str = ""
     nosology: str
     diseaseStage: str
     arrival: str
@@ -236,6 +272,7 @@ class PatientOut(BaseModel):
     updatedAt: Optional[str] = None
     history: list[HistoryEntryOut] = Field(default_factory=list)
     futurePlans: dict[str, FuturePlanOut] = Field(default_factory=dict)
+    diagnosisHistory: list[DiagnosisHistoryOut] = Field(default_factory=list)
     treatingDoctorUserId: Optional[str] = None
     treatingDoctorName: Optional[str] = None
     attention: dict = Field(default_factory=dict)
@@ -345,6 +382,8 @@ class ImportPatientIn(StrictRequestModel):
     policyNumber: str = Field("", max_length=POLICY_NUMBER_INPUT_MAX_LENGTH)
     complaint: str = Field("", max_length=5000)
     diagnosis: str = Field("", max_length=500)
+    consiliumCode: str = Field("", max_length=100)
+    pgiCode: str = Field("", max_length=100)
     # legacy-имя `nosology` (UI: «Профиль клиентского пути») — часть формата
     # импорта/экспорта, менять нельзя без миграции формата (см. README).
     nosology: str = Field("", max_length=100)
@@ -354,6 +393,7 @@ class ImportPatientIn(StrictRequestModel):
     head: str = Field("", max_length=200)
     updatedAt: Optional[str] = Field(None, max_length=40)
     history: list[ImportHistoryEntry] = Field(default_factory=list)
+    diagnosisHistory: list[DiagnosisHistoryOut] = Field(default_factory=list)
     # Legacy localStorage/create-payload shape kept events at the patient root.
     # It is a known compatibility field, not an open-ended extra.
     events: list[EventIn] = Field(default_factory=list)
@@ -365,7 +405,16 @@ class ImportPatientIn(StrictRequestModel):
     treatingDoctorName: Optional[str] = Field(None, max_length=200)
 
     @field_validator(
-        "phone", "complaint", "diagnosis", "nosology", "diseaseStage", "doctor", "head", mode="before"
+        "phone",
+        "complaint",
+        "diagnosis",
+        "consiliumCode",
+        "pgiCode",
+        "nosology",
+        "diseaseStage",
+        "doctor",
+        "head",
+        mode="before",
     )
     @classmethod
     def _none_to_empty(cls, v):

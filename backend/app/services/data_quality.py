@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from .. import policy
-from ..models import STAGES
+from ..models import STAGES, TERMINAL_STAGES
 from ..phone import normalize_phone as _normalize_phone
 from ..phone import phone_is_valid
 
@@ -24,6 +24,7 @@ SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 
 STAGE_ORDER = list(STAGES)
 STAGE_INDEX = {stage: i for i, stage in enumerate(STAGE_ORDER)}
+TERMINAL_STAGE_SET = set(TERMINAL_STAGES)
 
 COMPLETENESS_FIELDS = (
     ("name", "ФИО", "critical"),
@@ -408,6 +409,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
             field_name="stage", details={"current_stage": patient.stage, "last_history_stage": last_stage},
             suggested_action=_action("Проверить маршрут во вкладке «События и даты»", "events", can_write),
         ))
+    route_closed = patient.stage in TERMINAL_STAGE_SET
     for occ_index, occ in enumerate(patient.history):
         stage = occ["stage"]
         entered = _safe_date(occ["enteredAt"])
@@ -421,7 +423,8 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
             ))
         else:
             current_stage_index = STAGE_INDEX[stage]
-            if current_stage_index < prev_stage_index:
+            is_allowed_repeat = prev_stage_index == STAGE_INDEX.get("appointment") and stage == "exam"
+            if current_stage_index < prev_stage_index and not is_allowed_repeat:
                 issues.append(_finding(
                     patient=patient, code="stage_sequence_violation", category="stage", severity="warning",
                     title="Этапы идут не по маршруту",
@@ -476,7 +479,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                     field_name="actualDate", details={"occurrence_index": occ_index, "event_index": event_index},
                     suggested_action=_action("Проверить даты этапа", "events", can_write),
                 ))
-            if planned and planned < today and not actual and not event.get("noPlan"):
+            if planned and planned < today and not actual and not event.get("noPlan") and not route_closed:
                 issues.append(_finding(
                     patient=patient, code="overdue_event", category="dates", severity="warning",
                     title="Плановое событие просрочено",
@@ -495,7 +498,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                 field_name="futurePlans", details={"template_index": index},
                 suggested_action=_action("Исправить будущий план", "plans", can_write),
             ))
-        elif planned and planned < today and patient.stage != "completed":
+        elif planned and planned < today and not route_closed:
             issues.append(_finding(
                 patient=patient, code="planned_date_in_past", category="dates", severity="warning",
                 title="Будущий план в прошлом",
@@ -504,7 +507,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                 suggested_action=_action("Актуализировать будущий план", "plans", can_write),
             ))
 
-    latest = patient.history[-1] if patient.history else None
+    latest = patient.history[-1] if patient.history and not route_closed else None
     if latest:
         required = REQUIRED_CHECKLISTS.get(patient.nosology, {}).get(latest["stage"], [])
         if required:

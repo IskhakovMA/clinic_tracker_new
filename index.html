@@ -218,6 +218,12 @@
                         <select class="select" id="sortOrderSelect"></select>
                     </div>
                 </div>
+                <div class="deadline-legend" aria-label="Легенда цветов сроков">
+                    <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--green"></span>4+ дн.</span>
+                    <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--yellow"></span>0–3 дн.</span>
+                    <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--red"></span>срок прошёл</span>
+                    <span class="deadline-legend__note">Пороговые сроки профиля требуют подтверждения главным врачом.</span>
+                </div>
 
                 <!-- Баннер Разработчику: есть пациенты без сопоставленного врача -->
                 <div class="alert alert--warning is-hidden" id="unresolvedBanner" role="status">
@@ -727,6 +733,10 @@
                     <select class="select" id="diagnosisLocalization"></select>
                 </div>
                 <div class="field">
+                    <label class="field__label" for="diagnosisSearch">Поиск диагноза</label>
+                    <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D44.0 или щитовидная">
+                </div>
+                <div class="field">
                     <label class="field__label" for="diagnosis">Диагноз (МКБ-10) <span class="req">*</span></label>
                     <select class="select" id="diagnosis" required disabled></select>
                 </div>
@@ -750,6 +760,16 @@
                 <div class="field">
                     <label class="field__label" for="complaint">Жалобы и симптомы</label>
                     <textarea class="textarea" id="complaint" rows="4"></textarea>
+                </div>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="consiliumCode">Код консилиума</label>
+                        <input class="input" type="text" id="consiliumCode" maxlength="100" autocomplete="off">
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="pgiCode">Код ПГИ</label>
+                        <input class="input" type="text" id="pgiCode" maxlength="100" autocomplete="off">
+                    </div>
                 </div>
             </fieldset>
 

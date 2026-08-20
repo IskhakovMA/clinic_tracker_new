@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from .. import audit, config, policy, store
 from ..db import now_iso
+from ..models import TERMINAL_STAGES
 from ..notifications.mock_provider import provider_from_config
 from ..notifications.provider import NotificationContext, NotificationProvider
 from ..phone import masked_phone, normalize_phone, phone_sendable
@@ -539,7 +540,7 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
     ensure_known_provider()
     created = skipped = cancelled = duplicates = 0
     for row in planned_events(conn, user):
-        if row["actual_date"] or row["no_plan"] or row["patient_stage"] == "completed":
+        if row["actual_date"] or row["no_plan"] or row["patient_stage"] in TERMINAL_STAGES:
             with conn:
                 cur = conn.execute(
                     """UPDATE notifications

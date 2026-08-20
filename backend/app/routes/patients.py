@@ -183,14 +183,22 @@ def update_patient_field(
         # (как и само закрепление) может только Разработчик.
         _forbidden(conn, user, "action=patient_doctor_text")
     try:
-        ok = store.update_patient_field(conn, patient_id, body.field, body.value)
+        ok = store.update_patient_field_with_actor(conn, patient_id, body.field, body.value, actor_user_id=user.id)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
         _not_found()
-    # Field *name* only — never the value, which is patient data.
-    audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
-                 detail=f"field={body.field}", **audit.actor_ctx(user))
+    # Field *name* only — never the value, which is patient data. Diagnosis
+    # and doctor-requested codes get explicit safe event types without detail.
+    if body.field == "diagnosis":
+        audit.record(conn, audit.PATIENT_DIAGNOSIS_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
+    elif body.field == "consiliumCode":
+        audit.record(conn, audit.CONSILIUM_CODE_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
+    elif body.field == "pgiCode":
+        audit.record(conn, audit.PGI_CODE_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
+    else:
+        audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+                     detail=f"field={body.field}", **audit.actor_ctx(user))
     return store.patient_to_dict(conn, patient_id)
 
 

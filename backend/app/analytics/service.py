@@ -15,7 +15,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import config, policy
-from ..models import STAGES
+from ..models import STAGES, TERMINAL_STAGES
 from ..phone import phone_sendable
 from ..services import data_quality, notifications, patient_attention
 from .filters import AnalyticsFilters, app_timezone, today_local
@@ -274,7 +274,7 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
     notification_counts = _notification_counts(conn, ids)
     cards = [
         {"code": "total_patients", "label": "Всего доступных пациентов", "value": len(ids), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["total_patients"]},
-        {"code": "active_patients", "label": "Активные", "value": sum(1 for r in rows if r["stage"] != "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["active_patients"]},
+        {"code": "active_patients", "label": "Активные", "value": sum(1 for r in rows if r["stage"] not in TERMINAL_STAGES), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["active_patients"]},
         {"code": "completed_patients", "label": "Завершённые", "value": sum(1 for r in rows if r["stage"] == "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["completed_patients"]},
         {"code": "patients_need_attention", "label": "Явно требуют внимания", "value": len(attention_ids), "kind": "current", "detail_type": "attention_patients", "definition": SUMMARY_DEFINITIONS["patients_need_attention"]},
         {"code": "data_quality_issues", "label": "Проблемы качества данных", "value": len(critical) + len(warnings), "kind": "current", "detail_type": "quality_warning", "definition": SUMMARY_DEFINITIONS["data_quality_issues"]},
@@ -310,8 +310,10 @@ def _profile_rows(rows: list[sqlite3.Row]) -> dict:
 def _route_state_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[str]) -> dict:
     total = len(rows)
     quality_ids = _quality_issue_ids(quality) & patient_ids
-    active = sum(1 for row in rows if row["stage"] != "completed")
+    active = sum(1 for row in rows if row["stage"] not in TERMINAL_STAGES)
     completed = sum(1 for row in rows if row["stage"] == "completed")
+    dispensary = sum(1 for row in rows if row["stage"] == "dispensary-observation")
+    not_confirmed = sum(1 for row in rows if row["stage"] == "diagnosis-not-confirmed")
     attention = len(quality_ids)
     return {
         "title": "Состояние маршрутов",
@@ -319,6 +321,8 @@ def _route_state_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[s
         "rows": [
             {"code": "active", "label": "Активные", "count": active, "percent": percent(active, total), "detail_type": "patients", "filter": {}, "meta": {"overlap": False}},
             {"code": "completed", "label": "Завершённые", "count": completed, "percent": percent(completed, total), "detail_type": "patients", "filter": {"stage": "completed"}, "meta": {"overlap": False}},
+            {"code": "dispensary_observation", "label": "Диспансерное наблюдение", "count": dispensary, "percent": percent(dispensary, total), "detail_type": "patients", "filter": {"stage": "dispensary-observation"}, "meta": {"overlap": False}},
+            {"code": "diagnosis_not_confirmed", "label": "Диагноз не подтверждён", "count": not_confirmed, "percent": percent(not_confirmed, total), "detail_type": "patients", "filter": {"stage": "diagnosis-not-confirmed"}, "meta": {"overlap": False}},
             {"code": "operational_signals", "label": "Операционные сигналы", "count": attention, "percent": percent(attention, total), "detail_type": "quality_warning", "filter": {}, "meta": {"overlap": True}},
         ],
     }
@@ -632,7 +636,7 @@ def workload(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyt
             "pending_notifications": 0,
             "failed_notifications": 0,
         })
-        if row["stage"] != "completed":
+        if row["stage"] not in TERMINAL_STAGES:
             bucket["active_patients"] += 1
         if row["id"] in overdue_ids:
             bucket["overdue_patients"] += 1
