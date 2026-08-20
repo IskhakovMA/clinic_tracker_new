@@ -1316,7 +1316,7 @@ const app = {
         lung34: {
             label: 'Легкое (3-4 стадия)',
             stage1Days: 14, stage2Standard: 4, stage2StageIV: 7,
-            checklistRequired: ['Рентген ОГК или КТ ОГК (солидный очаг >9мм)', 'КТ ОГК и ОБП с контрастом', 'ВИЧ, гепатит В и С', 'Общий анализ крови', 'Биохимический анализ', 'Коагулограмма', 'ЭКГ', 'ФВД', 'Консультация терапевта/пульмонолога', 'Направление на бронхоскопию', 'УЗИ лимфоузлов', 'ЭГДС + колоноскопия', 'УЗДГ вен нижних конечностей', 'УЗИ ОБП и лимфоузлов', 'Консультации профильных специалистов', 'Гистология (после бронхоскопии)', 'ИГХ и генетические исследования'],
+            checklistRequired: ['Рентген ОГК или КТ ОГК (солидный очаг >9мм)', 'КТ ОГК и ОБП с контрастом', 'ВИЧ, гепатит В и С', 'Общий анализ крови', 'Биохимический анализ', 'Коагулограмма', 'ЭКГ', 'ФВД', 'Консультация терапевта/пульмонолога', 'Направление на бронхоскопию', 'УЗИ лимфоузлов', 'ЭГДС + колоноскопия', 'УЗДГ вен нижних конечностей', 'УЗИ ОБП и лимфоузлов', 'Консультации профильных специалистов', 'Гистология (после бронхоскопии)', 'Гистологическое исследование', 'ИГХ и генетические исследования'],
             checklistOptional: ['МРТ ГМ с контрастом', 'ПЭТ/КТ или сцинтиграфия костей', 'УЗДГ сосудов/артерий', 'Дообследование функционального статуса']
         },
         melanoma: {
@@ -1358,7 +1358,7 @@ const app = {
         thyroidSuspected: {
             label: 'Щитовидная железа (подозрение на ЗНО)',
             stage1Days: 7, stage2Standard: 4, stage2StageIV: 7,
-            checklistRequired: ['Пункция узла щитовидной железы и/или лимфоузла', 'Цитологическое исследование', 'ЭГДС', 'КТ ОГК с контрастом', 'КТ ОБП/ОМТ с контрастом (или УЗИ)', 'ЭКГ'],
+            checklistRequired: ['Пункция узла щитовидной железы и/или лимфоузла', 'Цитологическое исследование', 'Гистологическое исследование', 'ЭГДС', 'КТ ОГК с контрастом', 'КТ ОБП/ОМТ с контрастом (или УЗИ)', 'ЭКГ'],
             checklistOptional: ['Эхо-КГ', 'КТ/МРТ шеи с контрастом', 'Сцинтиграфия костей', 'Сцинтиграфия щитовидной железы']
         },
         thyroidConfirmed: {
@@ -1446,12 +1446,25 @@ const app = {
     suggestedNosologyForDiagnosis(code) {
         const normalized = String(code || '').trim().toUpperCase();
         const exact = {
+            'D00.0': 'headneckConfirmed',
+            'D00.2': 'stomach',
+            'D01.0': 'colon',
+            'D01.1': 'colon',
+            'D01.2': 'colon',
+            'D01.5': 'liver',
+            'D02.0': 'headneckConfirmed',
+            'D02.2': 'lung12',
+            'D07.0': 'uterus',
             D05: 'breast',
             D06: 'cervixCytology',
             'D07.5': 'prostate',
             'D09.0': 'bladder',
+            'D09.1': 'upperUrinary',
+            'D09.3': 'thyroidConfirmed',
         };
         if (exact[normalized]) return exact[normalized];
+        if (normalized.startsWith('D03.')) return 'melanoma';
+        if (normalized.startsWith('D04.')) return 'skin';
         if (normalized.startsWith('D05.')) return 'breast';
         if (normalized.startsWith('D06.')) return 'cervixCytology';
         return '';
@@ -2064,6 +2077,9 @@ const app = {
 
     getFiltered() {
         let filtered = this.patients.slice();
+        if (!this.stageFilter && !this.searchQuery) {
+            filtered = filtered.filter(p => !this.terminalStages.includes(p.stage));
+        }
         if (this.stageFilter) filtered = filtered.filter(p => p.stage === this.stageFilter);
         if (this.headFilter) filtered = filtered.filter(p => p.head === this.headFilter);
         if (this.deadlineFilter) {
