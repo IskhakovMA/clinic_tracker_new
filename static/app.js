@@ -318,6 +318,7 @@ const app = {
         templates: [],
         loading: false,
         error: '',
+        activeTab: 'inbox',
         filters: {
             query: '',
             status: '',
@@ -347,6 +348,8 @@ const app = {
             offset: 0,
         },
     },
+    diagnosisComboboxItems: [],
+    diagnosisComboboxActive: -1,
     ai: {
         status: { enabled: false, available: false, message: 'ИИ-помощник не настроен' },
         messages: [],
@@ -1512,6 +1515,27 @@ const app = {
         return '';
     },
 
+    clientPathForLocalization(localization) {
+        const paths = {
+            breast: 'breast',
+            prostate: 'prostate',
+            skin: 'skin',
+            melanoma: 'melanoma',
+            bladder: 'bladder',
+            kidney: 'kidney',
+            upperUrinary: 'upperUrinary',
+            thyroid: 'thyroidSuspected',
+            liver: 'liver',
+            pancreas: 'pancreas',
+            colon: 'colon',
+            stomach: 'stomach',
+            ovary: 'ovary',
+            uterus: 'uterus',
+            cervix: 'cervixCytology',
+        };
+        return paths[localization] || '';
+    },
+
     clientPathStatusNode(nosology) {
         if (nosology && this.nosologyData[nosology]) {
             return el('div', { class: 'client-path-status client-path-status--ok' }, [
@@ -1528,7 +1552,7 @@ const app = {
     updateClientPathStatus() {
         const target = $('clientPathStatus');
         if (!target) return;
-        const nosology = this.suggestedNosologyForDiagnosis($('diagnosis').value);
+        const nosology = this.clientPathForLocalization($('diagnosisLocalization').value);
         target.replaceChildren(this.clientPathStatusNode(nosology));
     },
 
@@ -1762,8 +1786,7 @@ const app = {
         if (view === 'calendar') this.renderCalendar();
         if (view === 'checklists') this.renderChecklistsView();
         if (view === 'notifications') {
-            this.renderNotifications();
-            this.renderInternalNotificationCenter();
+            this.renderNotificationsPage();
         }
         if (view === 'analytics') this.renderAnalytics();
         if (view === 'quality') this.renderDataQuality();
@@ -2348,7 +2371,7 @@ const app = {
             ...this.stageFilterOrder.map(s => option(s, this.stageNames[s])),
         ]));
         $('analyticsNosologyFilter').replaceChildren(frag([
-            option('', 'Любая локализация/клиентский путь', true),
+            option('', 'Любая локализация', true),
             ...Object.keys(this.nosologyData).map(key => option(key, this.nosologyData[key].label)),
         ]));
         $('analyticsDoctorFilter').replaceChildren(option('', 'Любой лечащий врач', true));
@@ -2571,7 +2594,10 @@ const app = {
                     el('div', { class: 'cell-when__time', text: this.formatDateTime(p.updatedAt || p.arrival) }),
                     activity ? el('div', { class: 'cell-when__what', text: activity }) : null,
                 ]),
-                el('td', { class: 'cell-head', text: p.head || '—' }),
+                el('td', { class: 'cell-head' }, el('div', { class: 'cell-head__content' }, [
+                    el('span', { text: p.head || '—' }),
+                    el('span', { class: 'patient-row__chevron', 'aria-hidden': 'true', text: '›' }),
+                ])),
             ]);
         })));
     },
@@ -3186,7 +3212,7 @@ const app = {
             class: 'select',
             on: { change: (event) => this.updatePatientField(p.id, 'diagnosis', event.target.value) },
         }, this.diagnosisOptionNodes(currentLocalization, '', p.diagnosis));
-        const status = el('div', {}, this.clientPathStatusNode(p.nosology));
+        const status = el('div', {}, this.clientPathStatusNode(this.clientPathForLocalization(currentLocalization)));
         const syncOptions = () => {
             const selected = select.value || p.diagnosis;
             select.replaceChildren(frag(this.diagnosisOptionNodes(localizationSelect.value, search.value, selected)));
@@ -3194,7 +3220,7 @@ const app = {
         localizationSelect.addEventListener('change', () => {
             select.value = '';
             syncOptions();
-            status.replaceChildren(this.clientPathStatusNode(''));
+            status.replaceChildren(this.clientPathStatusNode(this.clientPathForLocalization(localizationSelect.value)));
         });
         search.addEventListener('input', () => {
             syncOptions();
@@ -3221,10 +3247,15 @@ const app = {
             if (result && !date) {
                 error.textContent = 'Укажите дату результата ПГИ.';
                 error.classList.add('field__hint--danger');
+                dateInput.classList.add('input--invalid');
+                dateInput.setAttribute('aria-invalid', 'true');
+                dateInput.focus();
                 return;
             }
             error.textContent = 'Не переводит маршрут автоматически.';
             error.classList.remove('field__hint--danger');
+            dateInput.classList.remove('input--invalid');
+            dateInput.removeAttribute('aria-invalid');
             this.updatePatientField(p.id, 'pgiResult', { result, date });
         };
         resultSelect.addEventListener('change', () => {
@@ -4351,7 +4382,7 @@ const app = {
     closeNotificationsFiltersSheet() {
         ui.closeModal('notificationsFiltersSheet');
         $('openNotificationsFiltersSheetBtn').setAttribute('aria-expanded', 'false');
-        const toolbar = document.querySelector('#view-notifications .toolbar');
+        const toolbar = document.querySelector('#notificationsOutboundPanel .toolbar');
         toolbar.append($('notificationsToolbarFilters'));
     },
 
@@ -4368,7 +4399,7 @@ const app = {
         };
         $('notificationsSearchInput').value = '';
         this.syncNotificationsFilterControls();
-        this.renderNotifications();
+        this.renderNotificationsPage();
     },
 
     syncNotificationsFilterControls() {
@@ -4407,6 +4438,31 @@ const app = {
         this.notifications.placeholders = templates.placeholders || [];
         this.notifications.items = list.notifications || [];
         this.notifications.total = list.total || 0;
+    },
+
+    renderNotificationsPageTabs() {
+        const active = this.notifications.activeTab || 'inbox';
+        document.querySelectorAll('[data-notifications-tab]').forEach(button => {
+            const selected = button.dataset.notificationsTab === active;
+            button.classList.toggle('is-active', selected);
+            button.setAttribute('aria-selected', selected ? 'true' : 'false');
+            button.tabIndex = 0;
+        });
+        $('notificationsOutboundPanel').hidden = active !== 'outbound';
+        $('notificationsInboxPanel').hidden = active !== 'inbox';
+        $('notificationsGenerateBtn').classList.toggle('is-hidden', active !== 'outbound' || !this.can('runNotificationWorker'));
+        $('notificationsProcessBtn').classList.toggle('is-hidden', active !== 'outbound' || !this.can('runNotificationWorker'));
+        $('notificationsMockBanner').classList.toggle('is-hidden', active !== 'outbound');
+    },
+
+    async renderNotificationsPage() {
+        this.renderNotificationsPageTabs();
+        if (this.notifications.activeTab === 'outbound') {
+            await this.renderNotifications();
+        } else {
+            await this.renderInternalNotificationCenter();
+        }
+        this.renderNotificationsPageTabs();
     },
 
     async renderNotifications() {
@@ -5411,6 +5467,7 @@ const app = {
     openAddModal() {
         $('addForm').reset();
         $('addFormError').classList.add('is-hidden');
+        this.clearPgiResultDateError();
         this.resetDiagnosisSelect();
         this.updateClientPathStatus();
         this.updateStageFields();
@@ -5418,29 +5475,115 @@ const app = {
     },
 
     resetDiagnosisSelect() {
-        const select = $('diagnosis');
         const search = $('diagnosisSearch');
+        const hidden = $('diagnosis');
+        const list = $('diagnosisOptions');
         if (search) search.value = '';
-        select.replaceChildren(option('', 'Введите код/название или выберите локализацию'));
-        select.disabled = true;
+        if (hidden) hidden.value = '';
+        if (list) list.replaceChildren();
+        this.diagnosisComboboxItems = [];
+        this.diagnosisComboboxActive = -1;
+        this.setDiagnosisComboboxOpen(false);
         this.updateClientPathStatus();
     },
 
     onLocalizationChange() {
-        const locId = $('diagnosisLocalization').value;
-        const query = $('diagnosisSearch').value;
-        const select = $('diagnosis');
-        if (!locId && !query.trim()) {
-            this.resetDiagnosisSelect();
-            return;
-        }
-        select.disabled = false;
-        select.replaceChildren(frag(this.diagnosisOptionNodes(locId, query, select.value)));
+        $('diagnosis').value = '';
         this.updateClientPathStatus();
+        this.renderDiagnosisComboboxOptions();
     },
 
-    onDiagnosisChange() {
-        this.updateClientPathStatus();
+    diagnosisLabel(code) {
+        const item = this.allDiagnosisOptions().find(d => d.code === code);
+        return item ? `${item.code} — ${item.label}` : code;
+    },
+
+    setDiagnosisComboboxOpen(open) {
+        const search = $('diagnosisSearch');
+        const list = $('diagnosisOptions');
+        if (!search || !list) return;
+        search.setAttribute('aria-expanded', open ? 'true' : 'false');
+        list.classList.toggle('is-hidden', !open);
+        if (!open) {
+            search.removeAttribute('aria-activedescendant');
+        }
+    },
+
+    renderDiagnosisComboboxOptions({ open = document.activeElement === $('diagnosisSearch') } = {}) {
+        const search = $('diagnosisSearch');
+        const list = $('diagnosisOptions');
+        if (!search || !list) return;
+        const localization = $('diagnosisLocalization').value;
+        const query = search.value;
+        const items = (localization || query.trim())
+            ? this.filterDiagnosisOptions(localization, query)
+            : [];
+        this.diagnosisComboboxItems = items;
+        if (!items.length) {
+            this.diagnosisComboboxActive = -1;
+            list.replaceChildren(el('div', { class: 'diagnosis-combobox__empty', text: 'Ничего не найдено' }));
+            this.setDiagnosisComboboxOpen(open && !!query.trim());
+            return;
+        }
+        if (this.diagnosisComboboxActive < 0 || this.diagnosisComboboxActive >= items.length) {
+            this.diagnosisComboboxActive = 0;
+        }
+        list.replaceChildren(frag(items.map((item, index) => {
+            const id = `diagnosis-option-${index}`;
+            const active = index === this.diagnosisComboboxActive;
+            return el('button', {
+                type: 'button',
+                class: `diagnosis-combobox__option${active ? ' is-active' : ''}`,
+                id,
+                role: 'option',
+                'aria-selected': active ? 'true' : 'false',
+                on: {
+                    mousedown: (event) => event.preventDefault(),
+                    click: () => this.selectDiagnosisOption(item),
+                },
+            }, [
+                el('span', { class: 'diagnosis-combobox__code', text: item.code }),
+                el('span', { class: 'diagnosis-combobox__label', text: item.label }),
+            ]);
+        })));
+        $('diagnosisSearch').setAttribute('aria-activedescendant', `diagnosis-option-${this.diagnosisComboboxActive}`);
+        this.setDiagnosisComboboxOpen(open);
+    },
+
+    selectDiagnosisOption(item) {
+        $('diagnosis').value = item.code;
+        $('diagnosisSearch').value = `${item.code} — ${item.label}`;
+        this.setDiagnosisComboboxOpen(false);
+    },
+
+    onDiagnosisSearchInput() {
+        $('diagnosis').value = '';
+        this.diagnosisComboboxActive = 0;
+        this.renderDiagnosisComboboxOptions({ open: true });
+    },
+
+    onDiagnosisSearchKeydown(event) {
+        if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            this.setDiagnosisComboboxOpen(false);
+            return;
+        }
+        const items = this.diagnosisComboboxItems || [];
+        if (!items.length) {
+            this.renderDiagnosisComboboxOptions({ open: true });
+            return;
+        }
+        event.preventDefault();
+        if (event.key === 'ArrowDown') {
+            this.diagnosisComboboxActive = (this.diagnosisComboboxActive + 1) % items.length;
+            this.renderDiagnosisComboboxOptions({ open: true });
+        } else if (event.key === 'ArrowUp') {
+            this.diagnosisComboboxActive = (this.diagnosisComboboxActive - 1 + items.length) % items.length;
+            this.renderDiagnosisComboboxOptions({ open: true });
+        } else if (event.key === 'Enter') {
+            this.selectDiagnosisOption(items[this.diagnosisComboboxActive]);
+        }
     },
 
     updateStageFields() {
@@ -5481,6 +5624,27 @@ const app = {
         box.classList.remove('is-hidden');
     },
 
+    clearPgiResultDateError() {
+        const input = $('pgiResultDate');
+        const error = $('pgiResultDateError');
+        if (!input || !error) return;
+        error.textContent = '';
+        error.classList.add('is-hidden');
+        input.removeAttribute('aria-invalid');
+        input.classList.remove('input--invalid');
+    },
+
+    showPgiResultDateError(message) {
+        const input = $('pgiResultDate');
+        const error = $('pgiResultDateError');
+        if (!input || !error) return;
+        error.textContent = message;
+        error.classList.remove('is-hidden');
+        input.setAttribute('aria-invalid', 'true');
+        input.classList.add('input--invalid');
+        input.focus();
+    },
+
     async addPatient(event) {
         event.preventDefault();
         const fio = $('fio').value.trim();
@@ -5493,7 +5657,9 @@ const app = {
         if (!stage) return this.showFormError('Выберите текущий этап лечения.');
         if (!head) return this.showFormError('Выберите заведующего.');
         if ($('pgiResult').value && !$('pgiResultDate').value) {
-            return this.showFormError('Укажите дату результата ПГИ.');
+            this.showFormError('Проверьте дату результата ПГИ.');
+            this.showPgiResultDateError('Укажите дату результата ПГИ.');
+            return;
         }
         if (stage === 'primary-appointment' && !$('primaryAppointmentDate').value) {
             return this.showFormError('Для первичного приёма укажите фактическую дату — это обязательное поле.');
@@ -6512,10 +6678,21 @@ const app = {
             if (event.key === 'Enter' && event.target.tagName !== 'TEXTAREA') event.preventDefault();
         });
         on('diagnosisLocalization', 'change', () => this.onLocalizationChange());
-        on('diagnosisSearch', 'input', () => this.onLocalizationChange());
-        on('diagnosis', 'change', () => this.onDiagnosisChange());
+        on('diagnosisSearch', 'input', () => this.onDiagnosisSearchInput());
+        on('diagnosisSearch', 'focus', () => this.renderDiagnosisComboboxOptions({ open: true }));
+        on('diagnosisSearch', 'keydown', (event) => this.onDiagnosisSearchKeydown(event));
+        on('diagnosisSearch', 'blur', () => setTimeout(() => this.setDiagnosisComboboxOpen(false), 120));
         on('pgiResult', 'change', () => {
-            if (!$('pgiResult').value) $('pgiResultDate').value = '';
+            if (!$('pgiResult').value) {
+                $('pgiResultDate').value = '';
+                this.clearPgiResultDateError();
+            }
+        });
+        on('pgiResultDate', 'input', () => {
+            if ($('pgiResultDate').value) this.clearPgiResultDateError();
+        });
+        on('pgiResultDate', 'change', () => {
+            if ($('pgiResultDate').value) this.clearPgiResultDateError();
         });
         on('stage', 'change', () => this.updateStageFields());
 
@@ -6579,6 +6756,12 @@ const app = {
         on('qualityResetFiltersBtn', 'click', () => this.resetQualityFilters());
 
         // Уведомления
+        document.querySelectorAll('[data-notifications-tab]').forEach(button => {
+            button.addEventListener('click', () => {
+                this.notifications.activeTab = button.dataset.notificationsTab;
+                this.renderNotificationsPage();
+            });
+        });
         on('notificationsSearchInput', 'input', (event) => {
             this.notifications.filters.query = event.target.value;
             this.renderNotifications();

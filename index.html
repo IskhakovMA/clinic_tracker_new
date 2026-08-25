@@ -305,59 +305,66 @@
 
                 <p class="alert alert--info" id="notificationsMockBanner">Тестовый режим: реальные SMS не отправляются</p>
 
-                <div class="stats" id="notificationsStatsRow"></div>
-
-                <div class="toolbar">
-                    <div class="search">
-                        <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-                        <label class="visually-hidden" for="notificationsSearchInput">Поиск по пациенту</label>
-                        <input class="input search__input" type="search" id="notificationsSearchInput" placeholder="Поиск по пациенту…">
-                    </div>
-                    <button type="button" class="btn btn--ghost only-narrow" id="openNotificationsFiltersSheetBtn" aria-expanded="false">
-                        <span id="notificationsFiltersBtnLabel">Фильтры</span>
-                    </button>
-                    <div class="toolbar__filters" id="notificationsToolbarFilters">
-                        <label class="visually-hidden" for="notificationsStatusFilter">Статус</label>
-                        <select class="select" id="notificationsStatusFilter"></select>
-                        <label class="visually-hidden" for="notificationsTemplateFilter">Шаблон</label>
-                        <select class="select" id="notificationsTemplateFilter"></select>
-                        <label class="visually-hidden" for="notificationsDateFromFilter">Дата от</label>
-                        <input class="input" type="date" id="notificationsDateFromFilter">
-                        <label class="visually-hidden" for="notificationsDateToFilter">Дата до</label>
-                        <input class="input" type="date" id="notificationsDateToFilter">
-                        <label class="visually-hidden" for="notificationsDoctorFilter">Лечащий врач</label>
-                        <select class="select" id="notificationsDoctorFilter"></select>
-                        <label class="visually-hidden" for="notificationsDepartmentFilter">Отделение</label>
-                        <select class="select" id="notificationsDepartmentFilter"></select>
-                        <label class="visually-hidden" for="notificationsSortSelect">Сортировка</label>
-                        <select class="select" id="notificationsSortSelect"></select>
-                    </div>
+                <div class="notification-tabs notifications-page-tabs" id="notificationsPageTabs" role="tablist" aria-label="Раздел уведомлений">
+                    <button type="button" class="notification-tab is-active" id="notificationsInboxTab" role="tab" aria-selected="true" aria-controls="notificationsInboxPanel" data-notifications-tab="inbox">Входящие</button>
+                    <button type="button" class="notification-tab" id="notificationsOutboundTab" role="tab" aria-selected="false" aria-controls="notificationsOutboundPanel" data-notifications-tab="outbound">Отправка пациентам</button>
                 </div>
 
-                <div class="panel">
-                    <div class="table-wrap">
-                        <table class="table notification-table" id="notificationsTable">
-                            <thead>
-                                <tr>
-                                    <th scope="col">Пациент</th>
-                                    <th scope="col">Шаблон</th>
-                                    <th scope="col">Источник</th>
-                                    <th scope="col">Запланировано</th>
-                                    <th scope="col">Статус</th>
-                                    <th scope="col">Попытки</th>
-                                    <th scope="col">Причина</th>
-                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
-                                </tr>
-                            </thead>
-                            <tbody id="notificationsBody"></tbody>
-                        </table>
+                <div id="notificationsOutboundPanel" role="tabpanel" aria-labelledby="notificationsOutboundTab" hidden>
+                    <div class="stats" id="notificationsStatsRow"></div>
+
+                    <div class="toolbar">
+                        <div class="search">
+                            <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                            <label class="visually-hidden" for="notificationsSearchInput">Поиск по пациенту</label>
+                            <input class="input search__input" type="search" id="notificationsSearchInput" placeholder="Поиск по пациенту…">
+                        </div>
+                        <button type="button" class="btn btn--ghost only-narrow" id="openNotificationsFiltersSheetBtn" aria-expanded="false">
+                            <span id="notificationsFiltersBtnLabel">Фильтры</span>
+                        </button>
+                        <div class="toolbar__filters" id="notificationsToolbarFilters">
+                            <label class="visually-hidden" for="notificationsStatusFilter">Статус</label>
+                            <select class="select" id="notificationsStatusFilter"></select>
+                            <label class="visually-hidden" for="notificationsTemplateFilter">Шаблон</label>
+                            <select class="select" id="notificationsTemplateFilter"></select>
+                            <label class="visually-hidden" for="notificationsDateFromFilter">Дата от</label>
+                            <input class="input" type="date" id="notificationsDateFromFilter">
+                            <label class="visually-hidden" for="notificationsDateToFilter">Дата до</label>
+                            <input class="input" type="date" id="notificationsDateToFilter">
+                            <label class="visually-hidden" for="notificationsDoctorFilter">Лечащий врач</label>
+                            <select class="select" id="notificationsDoctorFilter"></select>
+                            <label class="visually-hidden" for="notificationsDepartmentFilter">Отделение</label>
+                            <select class="select" id="notificationsDepartmentFilter"></select>
+                            <label class="visually-hidden" for="notificationsSortSelect">Сортировка</label>
+                            <select class="select" id="notificationsSortSelect"></select>
+                        </div>
                     </div>
-                    <div class="empty is-hidden" id="notificationsEmpty"></div>
+
+                    <div class="panel">
+                        <div class="table-wrap">
+                            <table class="table notification-table" id="notificationsTable">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Пациент</th>
+                                        <th scope="col">Шаблон</th>
+                                        <th scope="col">Источник</th>
+                                        <th scope="col">Запланировано</th>
+                                        <th scope="col">Статус</th>
+                                        <th scope="col">Попытки</th>
+                                        <th scope="col">Причина</th>
+                                        <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="notificationsBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty is-hidden" id="notificationsEmpty"></div>
+                    </div>
+
+                    <div class="panel panel--pad is-hidden" id="notificationTemplatesPanel"></div>
                 </div>
 
-                <div class="panel panel--pad is-hidden" id="notificationTemplatesPanel"></div>
-
-                <div class="panel panel--pad notification-center-panel">
+                <div class="panel panel--pad notification-center-panel" id="notificationsInboxPanel" role="tabpanel" aria-labelledby="notificationsInboxTab">
                     <div class="section-head">
                         <div>
                             <h2 class="section-title">Системные уведомления</h2>
@@ -717,8 +724,12 @@
                 </div>
                 <div class="field">
                     <label class="field__label" for="diagnosisSearch">Диагноз <span class="req">*</span></label>
-                    <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D44.0 или щитовидная" aria-describedby="diagnosisHint">
-                    <select class="select" id="diagnosis" required disabled></select>
+                    <div class="diagnosis-combobox">
+                        <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D48.6 или молочная"
+                               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="diagnosisOptions" aria-describedby="diagnosisHint">
+                        <input type="hidden" id="diagnosis">
+                        <div class="diagnosis-combobox__list is-hidden" id="diagnosisOptions" role="listbox" aria-label="Варианты диагнозов"></div>
+                    </div>
                     <p class="field__hint" id="diagnosisHint">Список ограничен выбранной локализацией.</p>
                 </div>
                 <div class="client-path-status" id="clientPathStatus" role="status"></div>
@@ -738,7 +749,8 @@
                     </div>
                     <div class="field">
                         <label class="field__label" for="pgiResultDate">Дата результата ПГИ</label>
-                        <input class="input" type="date" id="pgiResultDate">
+                        <input class="input" type="date" id="pgiResultDate" aria-describedby="pgiResultDateError">
+                        <p class="field__hint field__hint--danger is-hidden" id="pgiResultDateError"></p>
                     </div>
                 </div>
             </fieldset>

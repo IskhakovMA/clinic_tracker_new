@@ -126,6 +126,39 @@ def test_localization_catalog_maps_suspicion_codes_without_global_d37_d48_wildca
     assert client_path_for_diagnosis("D37.7") == ""
 
 
+def test_doctor_feedback_polish_frontend_contracts_are_present():
+    index = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+    app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'role="combobox"' in index
+    assert 'id="diagnosisOptions" role="listbox"' in index
+    assert 'type="hidden" id="diagnosis"' in index
+    assert 'select class="select" id="diagnosis"' not in index
+    assert "onDiagnosisSearchKeydown" in app_js
+    assert "selectDiagnosisOption" in app_js
+    assert "clientPathForLocalization($('diagnosisLocalization').value)" in app_js
+    assert "suggestedNosologyForDiagnosis(diagnosis)" in app_js
+
+    assert 'id="pgiResultDateError"' in index
+    assert "showPgiResultDateError('Укажите дату результата ПГИ.')" in app_js
+    assert "input--invalid" in app_js
+    assert "clearPgiResultDateError" in app_js
+
+    assert 'data-notifications-tab="inbox"' in index
+    assert 'data-notifications-tab="outbound"' in index
+    assert "renderNotificationsPage" in app_js
+    assert "notificationsOutboundPanel" in app_js
+    assert "notificationsInboxPanel" in app_js
+
+    assert "Любая локализация/клиентский путь" not in app_js
+    assert "Любая локализация" in app_js
+    assert "patient-row__chevron" in app_js
+    assert "event.key === 'Enter' || event.key === ' '" in app_js
+    assert ".diagnosis-combobox__option" in css
+    assert ".patient-row__chevron" in css
+
+
 def test_active_patient_contract_has_no_disease_stage_or_future_plans_and_sets_path(auth_client):
     created = _create_patient(
         auth_client,

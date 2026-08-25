@@ -198,9 +198,14 @@ def test_internal_notification_center_frontend_contract_is_present():
     assert 'id="view-notifications"' in html
     assert 'data-view="notifications"' in html
     assert "Системные уведомления" in html
+    assert 'id="notificationsPageTabs"' in html
+    assert 'data-notifications-tab="inbox"' in html
+    assert 'data-notifications-tab="outbound"' in html
+    assert html.count('data-view="notifications"') == 1
     assert "/api/internal-notifications/summary" in js
     assert "/api/internal-notifications/read-all" in js
     assert "/api/internal-notifications/" in js
+    assert "renderNotificationsPage" in js
     assert "data.items || []" in js
     assert "internalNotificationsBadge" in js
     assert "Открыть уведомления" in js
