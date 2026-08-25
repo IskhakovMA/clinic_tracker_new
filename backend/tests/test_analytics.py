@@ -182,7 +182,7 @@ def test_summary_stages_overdue_and_details_respect_patient_scope(client):
     assert _card(summary, "unassigned_patients")["value"] == 1
     assert _card(summary, "patients_with_overdue")["value"] == 1
     assert _card(summary, "total_patients")["kind"] == "current"
-    assert "Профиль клиентского пути" in json.dumps(summary, ensure_ascii=False)
+    assert "локализации/клиентскому пути" in json.dumps(summary, ensure_ascii=False)
     assert client.get("/api/analytics/summary?date_from=2999-01-01&date_to=2999-01-31").json()["cards"][0]["value"] == 3
 
     stages = client.get("/api/analytics/stages").json()

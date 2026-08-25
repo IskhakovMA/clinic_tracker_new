@@ -149,7 +149,7 @@ def get_patient_summary(conn: sqlite3.Connection, user: policy.CurrentUser, args
             "currentStage": patient["stage"],
             "currentStageLabel": stage_label(patient["stage"]),
             "responsible": patient.get("treatingDoctorName") or patient.get("doctor") or "Не назначен",
-            "clientPathProfile": patient.get("nosology") or "Не указан",
+            "localizationOrClientPath": patient.get("nosology") or "Не настроен",
             "routeStatus": route_status,
             "checklistProgress": {"completed": completed, "total": total},
             "activeAttentionCount": len(attention.get("active") or []),

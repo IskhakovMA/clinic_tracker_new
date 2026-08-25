@@ -73,24 +73,18 @@ def test_rules_detect_assignment_completeness_phone_dates_stage_and_checklist(au
 def test_recommended_completeness_fields_and_score(auth_client):
     pid = _create_patient(None, phone="", nosology="", diagnosis="C34.1", stage="exam")
     body = auth_client.get(f"/api/data-quality/patients/{pid}").json()
-    assert body["patient"]["completeness"]["score"] == 57
+    assert body["patient"]["completeness"]["score"] == 67
     codes = _issue_codes(body)
     assert "missing_required_field" in codes  # phone
-    assert "missing_client_path_profile" in codes
     assert "missing_treating_doctor" in codes
 
 
-def test_overdue_event_and_future_plan(auth_client):
+def test_overdue_event_without_duplicate_planned_date_finding(auth_client):
     pid = _create_patient(events=[{"date": "2000-01-01"}])
-    auth_client.put(
-        f"/api/patients/{pid}/future-plans/3",
-        json={"field": "date", "value": "2000-02-01"},
-        headers=auth_client.csrf,
-    )
     body = auth_client.get(f"/api/data-quality/patients/{pid}").json()
     codes = _issue_codes(body)
     assert "overdue_event" in codes
-    assert "planned_date_in_past" in codes
+    assert "planned_date_in_past" not in codes
     assert _issue(body, "overdue_event")["details"]["days_overdue"] > 0
 
 
@@ -98,12 +92,6 @@ def test_date_rules_are_distinct_and_today_is_not_overdue(auth_client):
     today = date(2026, 8, 3)
     today_pid = _create_patient(events=[{"date": today.isoformat()}])
     completed_pid = _create_patient(stage="completed")
-    completed_client_id = completed_pid
-    auth_client.put(
-        f"/api/patients/{completed_client_id}/future-plans/3",
-        json={"field": "date", "value": "2000-02-01"},
-        headers=auth_client.csrf,
-    )
     actual_pid = _create_patient(events=[{"date": "2000-01-01", "actualDate": "2000-01-02"}])
     cancelled_plan_pid = _create_patient(events=[{"date": "2000-01-01", "noPlan": True}])
 
@@ -121,8 +109,8 @@ def test_date_rules_are_distinct_and_today_is_not_overdue(auth_client):
         by_patient.setdefault(issue["patient_id"], set()).add(issue["code"])
 
     assert "overdue_event" not in by_patient.get(today_pid, set())
-    assert "planned_date_in_past" not in by_patient.get(today_pid, set())
-    assert "planned_date_in_past" not in by_patient.get(completed_pid, set())
+    assert "overdue_event" not in by_patient.get(today_pid, set())
+    assert "overdue_event" not in by_patient.get(completed_pid, set())
     assert "overdue_event" not in by_patient.get(actual_pid, set())
     assert "overdue_event" not in by_patient.get(cancelled_plan_pid, set())
 
@@ -154,7 +142,7 @@ def test_duplicate_group_merges_reasons_for_same_patient_pair(auth_client):
         age=55,
         phone="+7 (999) 333-44-55",
         diagnosis="C50.1",
-        nosology="lung34",
+        nosology="breast",
     )
     second = _create_patient(
         name="  мульти   дубль  ",
@@ -172,11 +160,12 @@ def test_duplicate_group_merges_reasons_for_same_patient_pair(auth_client):
     assert len(groups) == 1
     group = groups[0]
     assert group["patient_ids"] == sorted({first, second})
-    assert group["reason_codes"] == ["phone", "name_age", "name_diagnosis"]
+    assert group["reason_codes"] == ["phone", "name_age", "name_diagnosis", "name_nosology"]
     assert group["reasons"] == [
         "Совпадает телефон",
         "Совпадают ФИО и возраст",
         "Совпадают ФИО и диагноз",
+        "Совпадают ФИО и локализация/клиентский путь",
     ]
     assert len(group["patient_ids"]) == len(set(group["patient_ids"]))
 
@@ -281,7 +270,7 @@ def test_reading_quality_and_crud_correction_do_not_add_audit_phi_and_readonly_c
         "+7 900 111-11-11",
         "C99.PHI-AUDIT",
         "lung34",
-        "Профиль клиентского пути",
+        "Локализация/клиентский путь",
         "Пациент не сопоставлен с учётной записью лечащего врача",
         "Совпадает телефон",
         "Совпадают ФИО и диагноз",

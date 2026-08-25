@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS patients (
     pgi_malignancy_confirmed INTEGER CHECK (
         pgi_malignancy_confirmed IN (0, 1) OR pgi_malignancy_confirmed IS NULL
     ),
+    pgi_result_date TEXT,
     nosology TEXT,
     disease_stage TEXT,
     arrival TEXT NOT NULL,
@@ -553,6 +554,17 @@ def migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
 
 
+def migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """v8 → v9: PGI result date and retired active disease/future-plan fields.
+
+    Existing disease_stage and future_plans storage is intentionally left in
+    place as deprecated compatibility storage; active API/UI no longer reads
+    or writes it. Existing PGI rows receive NULL date, never an invented date.
+    """
+    _add_column_if_missing(conn, "patients", "pgi_result_date", "pgi_result_date TEXT")
+    conn.executescript(SCHEMA_SQL)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -567,6 +579,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v4_to_v5(conn)           # создаёт read-state для внутреннего центра уведомлений
         migrate_v6_to_v7(conn)           # nullable doctor feedback columns/table
         migrate_v7_to_v8(conn)           # structured OK/PGI physician clarifications
+        migrate_v8_to_v9(conn)           # PGI date + retired active fields
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -599,6 +612,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 7:
             migrate_v7_to_v8(conn)
+            migrate_v8_to_v9(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 8:
+            migrate_v8_to_v9(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

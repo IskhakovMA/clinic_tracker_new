@@ -87,7 +87,7 @@ def test_migration_preserves_patients_and_legacy_doctor(migrated):
     from backend.app import db
     conn = db.get_connection()
     # версия поднята
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
     # медицинские данные не потеряны
     row = conn.execute("SELECT * FROM patients WHERE id = 'legacy1'").fetchone()
     assert row["name"] == "Стародавнев Пациент"
@@ -109,7 +109,7 @@ def test_migration_is_idempotent(migrated):
     # повторный запуск миграции ничего не ломает
     db.init_db(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
     assert conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0] == 1
 
 
@@ -155,7 +155,7 @@ def test_check_db_ok_after_migration(migrated):
     from backend.app import maintenance
     report = maintenance.check_database(tmp_path / "clinic.db")
     assert report["ok"] is True, report["problems"]
-    assert report["schema_version"] == 8
+    assert report["schema_version"] == 9
     assert report["missing_tables"] == []
 
 

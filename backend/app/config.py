@@ -61,12 +61,11 @@ MAX_IMPORT_PATIENTS = 500
 MAX_EVENTS_PER_HISTORY_ENTRY = 200
 MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 
-# v8: physician clarifications — structured OK decisions on events and
-# structured PGI result; v7 free-text consilium/PGI fields remain preserved
-# as deprecated compatibility fields.
-SCHEMA_VERSION = 8
+# v9: Doctor Feedback Iteration 2 — localization-first active model,
+# PGI result date; disease_stage/future_plans are retired from active contracts.
+SCHEMA_VERSION = 9
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
-IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8)
+IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9)
 
 INTERNAL_NOTIFICATION_UPCOMING_DAYS = int(os.environ.get("INTERNAL_NOTIFICATION_UPCOMING_DAYS", "3"))
 

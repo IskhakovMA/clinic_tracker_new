@@ -63,7 +63,7 @@ def test_v2_like_database_migrates_to_v3_notifications_tables(auth_client):
         conn.execute("UPDATE schema_version SET version = 2")
 
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
     tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert {"notifications", "notification_templates", "patient_notification_preferences"} <= tables
     columns = {r["name"] for r in conn.execute("PRAGMA table_info(notifications)").fetchall()}
@@ -72,7 +72,7 @@ def test_v2_like_database_migrates_to_v3_notifications_tables(auth_client):
     assert "idx_notifications_idempotency_key" in indexes
     assert conn.execute("SELECT COUNT(*) FROM notification_templates").fetchone()[0] >= 3
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
     report = maintenance.check_database(Path(conn.execute("PRAGMA database_list").fetchone()["file"]))
     assert report["ok"] is True, report["problems"]
 
@@ -488,7 +488,7 @@ def test_notification_audit_excludes_phi(auth_client):
         "lung34",
         "секретная жалоба",
         "Напоминаем о запланированном",
-        "Профиль клиентского пути",
+        "Локализация/клиентский путь",
     ):
         assert forbidden not in audit_text
     assert "notification_created" in audit_text

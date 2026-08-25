@@ -173,7 +173,7 @@ def test_data_quality_frontend_entrypoint_and_api_contract_are_present():
     assert "/api/data-quality/patients/" in js
     assert "Полнота регистрационной карточки" in js
     assert "possible_duplicate" in js
-    assert "Профиль клиентского пути" in js
+    assert "Локализация/клиентский путь" in js
     assert "'nosology'" in js
     assert "Режим просмотра — изменение данных недоступно" in js
     assert "action.can_write !== false" in js
@@ -195,12 +195,17 @@ def test_internal_notification_center_frontend_contract_is_present():
     js = JS.read_text(encoding="utf-8")
     assert 'id="internalNotificationsBell"' in html
     assert 'id="internalNotificationsDrawer"' in html
-    assert 'id="view-notification-center"' in html
-    assert 'data-view="notification-center"' in html
-    assert "Центр уведомлений" in html
+    assert 'id="view-notifications"' in html
+    assert 'data-view="notifications"' in html
+    assert "Системные уведомления" in html
+    assert 'id="notificationsPageTabs"' in html
+    assert 'data-notifications-tab="inbox"' in html
+    assert 'data-notifications-tab="outbound"' in html
+    assert html.count('data-view="notifications"') == 1
     assert "/api/internal-notifications/summary" in js
     assert "/api/internal-notifications/read-all" in js
     assert "/api/internal-notifications/" in js
+    assert "renderNotificationsPage" in js
     assert "data.items || []" in js
     assert "internalNotificationsBadge" in js
     assert "Открыть уведомления" in js

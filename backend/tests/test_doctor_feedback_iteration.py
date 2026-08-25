@@ -19,7 +19,7 @@ def _create_patient(auth_client, **overrides):
     return response.json()
 
 
-def test_schema_v6_to_v8_adds_feedback_fields_and_diagnosis_history(tmp_path):
+def test_schema_v6_to_v9_adds_feedback_fields_pgi_date_and_diagnosis_history(tmp_path):
     from backend.app import config, db, maintenance
 
     path = tmp_path / "clinic.db"
@@ -60,12 +60,13 @@ def test_schema_v6_to_v8_adds_feedback_fields_and_diagnosis_history(tmp_path):
         )
     db.init_db(conn)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 8
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
     patient_columns = {row["name"] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
-    assert {"consilium_code", "pgi_code"} <= patient_columns
-    row = conn.execute("SELECT diagnosis, policy_number FROM patients WHERE id = 'legacy_v6'").fetchone()
+    assert {"consilium_code", "pgi_code", "pgi_result_date"} <= patient_columns
+    row = conn.execute("SELECT diagnosis, policy_number, pgi_result_date FROM patients WHERE id = 'legacy_v6'").fetchone()
     assert row["diagnosis"] == "D44.0"
     assert row["policy_number"] == "7700000000000000"
+    assert row["pgi_result_date"] is None
     tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
     assert "patient_diagnosis_history" in tables
     report = maintenance.check_database(path)
@@ -97,6 +98,92 @@ def test_d37_d48_dictionary_and_search_ui_are_local_and_safe():
     assert "diagnosisSearch" in index
     assert "innerHTML" not in app_js
     assert "onchange=" not in index.lower()
+
+
+def test_localization_catalog_maps_suspicion_codes_without_global_d37_d48_wildcard():
+    from backend.app.localization_catalog import (
+        UNMAPPED_D37_D48_GAPS,
+        client_path_for_diagnosis,
+        diagnosis_allowed_for_localization,
+    )
+
+    expected = {
+        ("breast", "D48.6", "breast"),
+        ("thyroidSuspected", "D44.0", "thyroidSuspected"),
+        ("prostate", "D40.0", "prostate"),
+        ("colon", "D37.4", "colon"),
+        ("kidney", "D41.0", "kidney"),
+        ("upperUrinary", "D41.1", "upperUrinary"),
+        ("bladder", "D41.4", "bladder"),
+    }
+    for localization, code, path in expected:
+        assert diagnosis_allowed_for_localization(localization, code)
+        assert client_path_for_diagnosis(code) == path
+
+    assert not diagnosis_allowed_for_localization("breast", "D44.0")
+    assert not diagnosis_allowed_for_localization("thyroidSuspected", "D48.6")
+    assert "D37.7" in UNMAPPED_D37_D48_GAPS
+    assert client_path_for_diagnosis("D37.7") == ""
+
+
+def test_doctor_feedback_polish_frontend_contracts_are_present():
+    index = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+    app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    css = (PROJECT_ROOT / "static" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'role="combobox"' in index
+    assert 'id="diagnosisOptions" role="listbox"' in index
+    assert 'type="hidden" id="diagnosis"' in index
+    assert 'select class="select" id="diagnosis"' not in index
+    assert "onDiagnosisSearchKeydown" in app_js
+    assert "selectDiagnosisOption" in app_js
+    assert "clientPathForLocalization($('diagnosisLocalization').value)" in app_js
+    assert "suggestedNosologyForDiagnosis(diagnosis)" in app_js
+
+    assert 'id="pgiResultDateError"' in index
+    assert "showPgiResultDateError('Укажите дату результата ПГИ.')" in app_js
+    assert "input--invalid" in app_js
+    assert "clearPgiResultDateError" in app_js
+
+    assert 'data-notifications-tab="inbox"' in index
+    assert 'data-notifications-tab="outbound"' in index
+    assert "renderNotificationsPage" in app_js
+    assert "notificationsOutboundPanel" in app_js
+    assert "notificationsInboxPanel" in app_js
+
+    assert "Любая локализация/клиентский путь" not in app_js
+    assert "Любая локализация" in app_js
+    assert "patient-row__chevron" in app_js
+    assert "event.key === 'Enter' || event.key === ' '" in app_js
+    assert ".diagnosis-combobox__option" in css
+    assert ".patient-row__chevron" in css
+
+
+def test_active_patient_contract_has_no_disease_stage_or_future_plans_and_sets_path(auth_client):
+    created = _create_patient(
+        auth_client,
+        diagnosis="D48.6",
+        nosology="breast",
+        pgiResult="confirmed",
+        pgiResultDate="2026-08-20",
+    )
+    assert created["nosology"] == "breast"
+    assert created["pgiResultDate"] == "2026-08-20"
+    assert "diseaseStage" not in created
+    assert "futurePlans" not in created
+
+    exported = json.loads(auth_client.get("/api/export").text)
+    patient = next(p for p in exported["patients"] if p["id"] == created["id"])
+    assert "diseaseStage" not in patient
+    assert "futurePlans" not in patient
+    assert patient["pgiResultDate"] == "2026-08-20"
+
+    wrong = auth_client.post(
+        "/api/patients",
+        json=make_patient_payload(diagnosis="D44.0", nosology="breast"),
+        headers=auth_client.csrf,
+    )
+    assert wrong.status_code == 422
 
 
 def test_in_situ_d00_d09_mapping_has_safe_profiles_and_known_unmapped_codes():
@@ -182,7 +269,7 @@ def test_histology_templates_are_targeted_and_checklist_marks_are_preserved(auth
     assert "Гистологическое исследование" in REQUIRED_CHECKLISTS["lung34"]["exam"]
     assert "Гистологическое исследование" not in REQUIRED_CHECKLISTS["uterus"]["exam"]
 
-    patient = _create_patient(auth_client, nosology="thyroidSuspected", stage="exam")
+    patient = _create_patient(auth_client, diagnosis="D44.0", nosology="thyroidSuspected", stage="exam")
     checked_item = "Пункция узла щитовидной железы и/или лимфоузла"
     marked = auth_client.patch(
         f"/api/patients/{patient['id']}/history/0/checklist",
@@ -199,7 +286,7 @@ def test_histology_templates_are_targeted_and_checklist_marks_are_preserved(auth
 
 
 def test_diagnosis_change_history_and_audit_without_phi(auth_client):
-    created = _create_patient(auth_client, diagnosis="D44.0")
+    created = _create_patient(auth_client, diagnosis="D44.0", nosology="thyroidSuspected")
     response = auth_client.patch(
         f"/api/patients/{created['id']}",
         json={"field": "diagnosis", "value": "C73"},
@@ -432,7 +519,7 @@ def test_frontend_transition_question_removed_single_prompt_and_first_visit_sort
 
 
 def test_diagnosis_history_privacy_excludes_audit_notifications_and_ai(auth_client, monkeypatch):
-    created = _create_patient(auth_client, diagnosis="D44.0", policyNumber="7700000000007777")
+    created = _create_patient(auth_client, diagnosis="D44.0", nosology="thyroidSuspected", policyNumber="7700000000007777")
     auth_client.patch(
         f"/api/patients/{created['id']}",
         json={"field": "diagnosis", "value": "C73"},
@@ -460,7 +547,7 @@ def test_diagnosis_history_privacy_excludes_audit_notifications_and_ai(auth_clie
         assert forbidden not in text
 
 
-def test_schema_v8_encrypted_backup_restore_preserves_doctor_feedback_fields(auth_client, tmp_path, monkeypatch):
+def test_schema_v9_encrypted_backup_restore_preserves_doctor_feedback_fields(auth_client, tmp_path, monkeypatch):
     monkeypatch.setenv("CLINIC_BACKUP_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
     monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "doctor-feedback-key")
     monkeypatch.delenv("CLINIC_BACKUP_KEY_FILE", raising=False)
@@ -472,6 +559,7 @@ def test_schema_v8_encrypted_backup_restore_preserves_doctor_feedback_fields(aut
         auth_client,
         name="Backup Feedback",
         diagnosis="D44.0",
+        nosology="thyroidSuspected",
         consiliumCode="OK-BACKUP",
         pgiCode="PGI-BACKUP",
         stage="dispensary-observation",
@@ -482,15 +570,15 @@ def test_schema_v8_encrypted_backup_restore_preserves_doctor_feedback_fields(aut
         headers=auth_client.csrf,
     )
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
-    backup = maintenance.backup_database(db_path, tmp_path / "doctor-feedback-v8.cbk")
-    assert maintenance.inspect_backup(backup)["schema_version"] == 8
+    backup = maintenance.backup_database(db_path, tmp_path / "doctor-feedback-v9.cbk")
+    assert maintenance.inspect_backup(backup)["schema_version"] == 9
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
     with get_conn():
         get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
     assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
     restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
-    assert restore["schema_version"] == 8
+    assert restore["schema_version"] == 9
     restored = auth_client.get(f"/api/patients/{patient['id']}").json()
     assert restored["stage"] == "dispensary-observation"
     assert restored["consiliumCode"] == "OK-BACKUP"

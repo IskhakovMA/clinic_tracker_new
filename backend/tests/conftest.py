@@ -102,7 +102,6 @@ def make_patient_payload(**overrides):
         "stage": "exam",
         "diagnosis": "C34.1",
         "nosology": "lung34",
-        "diseaseStage": "II",
         "doctor": "Др. Проверяющий",
         "head": "Заведуев Тест Отделенович",
         "complaint": "Жалобы для теста",

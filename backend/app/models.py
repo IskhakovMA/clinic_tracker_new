@@ -12,7 +12,7 @@ import re
 from datetime import date as date_type
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PRIORITIES = ("urgent", "high", "normal")
 STAGES = (
@@ -154,11 +154,6 @@ class EventFieldUpdateIn(StrictRequestModel):
     value: str = Field("", max_length=20)
 
 
-class FuturePlanIn(StrictRequestModel):
-    field: Literal["date", "time", "treatmentType"]
-    value: str = Field("", max_length=20)
-
-
 class PatientFieldUpdateIn(StrictRequestModel):
     field: Literal[
         "name",
@@ -167,14 +162,14 @@ class PatientFieldUpdateIn(StrictRequestModel):
         "policyNumber",
         "diagnosis",
         "pgiResult",
+        "pgiResultDate",
         "nosology",
-        "diseaseStage",
         "priority",
         "doctor",
         "head",
         "complaint",
     ]
-    value: str | int
+    value: str | int | dict[str, str]
 
 
 class PatientCreateIn(StrictRequestModel):
@@ -190,10 +185,10 @@ class PatientCreateIn(StrictRequestModel):
     consiliumCode: str = Field("", max_length=100)
     pgiCode: str = Field("", max_length=100)
     pgiResult: PgiResult = ""
-    # В UI — «Профиль клиентского пути»; legacy-имя `nosology` сохранено намеренно
+    pgiResultDate: Optional[str] = Field(None, max_length=10)
+    # В UI — локализация/клиентский путь; legacy-имя `nosology` сохранено намеренно
     # для совместимости с существующей БД и форматом импорта/экспорта (см. README).
     nosology: str = Field("", max_length=100)
-    diseaseStage: str = Field("", max_length=10)
     doctor: str = Field("", max_length=200)
     head: str = Field(..., min_length=1, max_length=200)
     complaint: str = Field("", max_length=5000)
@@ -217,12 +212,24 @@ class PatientCreateIn(StrictRequestModel):
     def _norm_policy_number(cls, v):
         return normalize_policy_number(v)
 
-    @field_validator("diseaseStage")
+    @field_validator("pgiResultDate")
     @classmethod
-    def _valid_disease_stage(cls, v):
-        if v not in DISEASE_STAGES:
-            raise ValueError(f"diseaseStage must be one of {DISEASE_STAGES}")
+    def _valid_pgi_result_date(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            date_type.fromisoformat(v)
+        except ValueError:
+            raise ValueError("pgiResultDate must be YYYY-MM-DD")
         return v
+
+    @model_validator(mode="after")
+    def _valid_pgi_pair(self):
+        if self.pgiResult and not self.pgiResultDate:
+            raise ValueError("Дата результата ПГИ обязательна, если выбран результат ПГИ")
+        if not self.pgiResult and self.pgiResultDate:
+            self.pgiResultDate = None
+        return self
 
 
 class EventOut(BaseModel):
@@ -243,12 +250,6 @@ class HistoryEntryOut(BaseModel):
     events: list[EventOut] = Field(default_factory=list)
     checklist: dict[str, bool] = Field(default_factory=dict)
     note: str = ""
-
-
-class FuturePlanOut(BaseModel):
-    date: str = ""
-    time: str = ""
-    treatmentType: str = ""
 
 
 class DiagnosisHistoryOut(BaseModel):
@@ -273,14 +274,13 @@ class PatientOut(BaseModel):
     consiliumCode: str = ""
     pgiCode: str = ""
     pgiResult: str = ""
+    pgiResultDate: Optional[str] = None
     nosology: str
-    diseaseStage: str
     arrival: str
     doctor: str
     head: str
     updatedAt: Optional[str] = None
     history: list[HistoryEntryOut] = Field(default_factory=list)
-    futurePlans: dict[str, FuturePlanOut] = Field(default_factory=dict)
     diagnosisHistory: list[DiagnosisHistoryOut] = Field(default_factory=list)
     treatingDoctorUserId: Optional[str] = None
     treatingDoctorName: Optional[str] = None
@@ -394,10 +394,11 @@ class ImportPatientIn(StrictRequestModel):
     consiliumCode: str = Field("", max_length=100)
     pgiCode: str = Field("", max_length=100)
     pgiResult: PgiResult = ""
-    # legacy-имя `nosology` (UI: «Профиль клиентского пути») — часть формата
+    pgiResultDate: Optional[str] = Field(None, max_length=10)
+    # legacy-имя `nosology` (UI: локализация/клиентский путь) — часть формата
     # импорта/экспорта, менять нельзя без миграции формата (см. README).
     nosology: str = Field("", max_length=100)
-    diseaseStage: str = Field("", max_length=10)
+    diseaseStage: str = Field("", max_length=10)  # accepted only for legacy import compatibility
     arrival: Optional[str] = Field(None, max_length=40)
     doctor: str = Field("", max_length=200)
     head: str = Field("", max_length=200)
@@ -407,7 +408,7 @@ class ImportPatientIn(StrictRequestModel):
     # Legacy localStorage/create-payload shape kept events at the patient root.
     # It is a known compatibility field, not an open-ended extra.
     events: list[EventIn] = Field(default_factory=list)
-    futurePlans: dict[str, ImportFuturePlan] = Field(default_factory=dict)
+    futurePlans: dict[str, ImportFuturePlan] = Field(default_factory=dict)  # accepted, retired on import
     # Появилось в схеме v2; старые выгрузки без этого поля остаются валидными.
     # Значение никогда не принимается на веру — сервер проверяет его по scope актора.
     treatingDoctorUserId: Optional[str] = Field(None, max_length=100)
@@ -421,6 +422,7 @@ class ImportPatientIn(StrictRequestModel):
         "consiliumCode",
         "pgiCode",
         "pgiResult",
+        "pgiResultDate",
         "nosology",
         "diseaseStage",
         "doctor",
@@ -456,6 +458,25 @@ class ImportPatientIn(StrictRequestModel):
         if v not in DISEASE_STAGES:
             raise ValueError(f"diseaseStage must be one of {DISEASE_STAGES}")
         return v
+
+    @field_validator("pgiResultDate")
+    @classmethod
+    def _valid_import_pgi_result_date(cls, v):
+        if v in (None, ""):
+            return None
+        try:
+            date_type.fromisoformat(v)
+        except ValueError:
+            raise ValueError("pgiResultDate must be YYYY-MM-DD")
+        return v
+
+    @model_validator(mode="after")
+    def _valid_import_pgi_pair(self):
+        # v8 exports can contain structured PGI result before v9 introduced
+        # pgiResultDate. Import keeps them compatible and stores NULL date.
+        if not self.pgiResult and self.pgiResultDate:
+            self.pgiResultDate = None
+        return self
 
     @field_validator("history")
     @classmethod

@@ -13,7 +13,6 @@ from ..deps import get_db, require_active_password, require_csrf
 from ..models import (
     ChecklistItemIn,
     EventFieldUpdateIn,
-    FuturePlanIn,
     AttentionIssueCloseIn,
     AttentionIssueCreateIn,
     NoteIn,
@@ -102,7 +101,10 @@ def create_patient(
         audit.record(conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
                      detail="action=patient_create_doctor", **audit.actor_ctx(user))
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error)
-    pid = store.create_patient(conn, body, doctor_user_id)
+    try:
+        pid = store.create_patient(conn, body, doctor_user_id)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     audit.record(conn, audit.PATIENT_CREATED, patient_id=pid,
                  target_user_id=doctor_user_id, **audit.actor_ctx(user))
     return store.patient_to_dict(conn, pid)
@@ -193,7 +195,7 @@ def update_patient_field(
     # without detail.
     if body.field == "diagnosis":
         audit.record(conn, audit.PATIENT_DIAGNOSIS_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
-    elif body.field == "pgiResult":
+    elif body.field in {"pgiResult", "pgiResultDate"}:
         audit.record(conn, audit.PGI_RESULT_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
     else:
         audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
@@ -334,24 +336,6 @@ def update_event(
     _require_writable(conn, user, patient_id)
     try:
         ok = store.update_event(conn, patient_id, occ_index, event_index, body.field, body.value)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    if not ok:
-        _not_found()
-    return store.patient_to_dict(conn, patient_id)
-
-
-@router.put("/{patient_id}/future-plans/{template_index}", dependencies=[Depends(require_csrf)])
-def update_future_plan(
-    patient_id: str,
-    template_index: int,
-    body: FuturePlanIn,
-    conn: sqlite3.Connection = Depends(get_db),
-    user: policy.CurrentUser = Depends(require_active_password),
-):
-    _require_writable(conn, user, patient_id)
-    try:
-        ok = store.update_future_plan(conn, patient_id, template_index, body.field, body.value)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
