@@ -71,7 +71,7 @@ def test_policy_number_import_export_and_legacy_import(auth_client):
 
     exported = json.loads(auth_client.get("/api/export").text)
     by_name = {p["name"]: p for p in exported["patients"]}
-    assert exported["schemaVersion"] == 8
+    assert exported["schemaVersion"] == 9
     assert by_name["Полисов Импорт"]["policyNumber"] == "7700000000000003"
     assert by_name["Безполисов Импорт"]["policyNumber"] == ""
 

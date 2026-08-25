@@ -43,7 +43,7 @@ def test_validation_rejects_bad_types_and_lengths(auth_client):
         {"phone": "8" * 51},
         {"diagnosis": "C" * 501},
         {"complaint": "x" * 5001},
-        {"diseaseStage": "V"},
+        {"pgiResult": "confirmed"},
     ]
     for overrides in cases:
         r = auth_client.post("/api/patients", json=make_patient_payload(**overrides), headers=auth_client.csrf)
@@ -160,19 +160,39 @@ def test_note_and_checklist(auth_client):
     assert r.json()["history"][0]["checklist"] == {"Общий анализ крови": True}
 
 
-def test_future_plans(auth_client):
+def test_future_plans_endpoint_is_retired(auth_client):
     pid = _create(auth_client)["id"]
     r = auth_client.put(
         f"/api/patients/{pid}/future-plans/5",
         json={"field": "date", "value": "2026-09-01"},
         headers=auth_client.csrf,
     )
-    assert r.status_code == 200
-    assert r.json()["futurePlans"]["5"]["date"] == "2026-09-01"
+    assert r.status_code == 404
 
-    r = auth_client.put(
-        f"/api/patients/{pid}/future-plans/5",
-        json={"field": "treatmentType", "value": "chemo"},
+
+def test_pgi_result_requires_date_and_saves_atomically(auth_client):
+    pid = _create(auth_client)["id"]
+    missing = auth_client.patch(
+        f"/api/patients/{pid}",
+        json={"field": "pgiResult", "value": "confirmed"},
         headers=auth_client.csrf,
     )
-    assert r.json()["futurePlans"]["5"] == {"date": "2026-09-01", "time": "", "treatmentType": "chemo"}
+    assert missing.status_code == 422
+
+    saved = auth_client.patch(
+        f"/api/patients/{pid}",
+        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-10"}},
+        headers=auth_client.csrf,
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["pgiResult"] == "confirmed"
+    assert saved.json()["pgiResultDate"] == "2026-08-10"
+
+    cleared = auth_client.patch(
+        f"/api/patients/{pid}",
+        json={"field": "pgiResult", "value": {"result": "", "date": ""}},
+        headers=auth_client.csrf,
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["pgiResult"] == ""
+    assert cleared.json()["pgiResultDate"] is None

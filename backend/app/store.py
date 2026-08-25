@@ -11,12 +11,12 @@ from typing import Optional
 
 from .db import now_iso
 from .models import (
-    DISEASE_STAGES,
     PRIORITIES,
     EventIn,
     PatientCreateIn,
     normalize_policy_number,
 )
+from .localization_catalog import validate_new_combination
 
 FIELD_COLUMN = {
     "name": "name",
@@ -25,8 +25,8 @@ FIELD_COLUMN = {
     "policyNumber": "policy_number",
     "diagnosis": "diagnosis",
     "pgiResult": "pgi_malignancy_confirmed",
+    "pgiResultDate": "pgi_result_date",
     "nosology": "nosology",
-    "diseaseStage": "disease_stage",
     "priority": "priority",
     "doctor": "doctor",
     "head": "head",
@@ -78,6 +78,22 @@ def pgi_result_from_db(value) -> str:
     return "confirmed" if int(value) == 1 else "not_confirmed"
 
 
+def normalize_pgi_result_date(result: str | None, result_date: str | None) -> str | None:
+    result = result or ""
+    value = (result_date or "").strip()
+    if not result:
+        return None
+    if not value:
+        raise ValueError("Дата результата ПГИ обязательна, если выбран результат ПГИ")
+    from datetime import date
+
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise ValueError("pgiResultDate must be YYYY-MM-DD")
+    return value
+
+
 def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: EventIn) -> None:
     conn.execute(
         """INSERT INTO events (id, history_entry_id, seq, date, time, treatment_type,
@@ -123,17 +139,6 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
                 "note": h["note"] or "",
             }
         )
-    fp_rows = conn.execute(
-        "SELECT * FROM future_plans WHERE patient_id = ? ORDER BY template_index ASC", (patient_id,)
-    ).fetchall()
-    future_plans = {
-        str(r["template_index"]): {
-            "date": r["date"] or "",
-            "time": r["time"] or "",
-            "treatmentType": r["treatment_type"] or "",
-        }
-        for r in fp_rows
-    }
     diagnosis_history_rows = conn.execute(
         """SELECT * FROM patient_diagnosis_history
            WHERE patient_id = ? ORDER BY changed_at ASC, id ASC""",
@@ -152,14 +157,13 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "consiliumCode": p["consilium_code"] or "",
         "pgiCode": p["pgi_code"] or "",
         "pgiResult": pgi_result_from_db(p["pgi_malignancy_confirmed"]),
+        "pgiResultDate": p["pgi_result_date"],
         "nosology": p["nosology"] or "",
-        "diseaseStage": p["disease_stage"] or "",
         "arrival": p["arrival"],
         "doctor": p["doctor"] or "",
         "head": p["head"] or "",
         "updatedAt": p["updated_at"],
         "history": history,
-        "futurePlans": future_plans,
         "diagnosisHistory": [
             {
                 "id": row["id"],
@@ -235,12 +239,14 @@ def create_patient(
     # Отображаемый текст врача следует за учётной записью; свободный текст
     # остаётся только для legacy-записей без сопоставления.
     doctor_text = _treating_doctor_name(conn, treating_doctor_user_id) or data.doctor
+    nosology = validate_new_combination(data.nosology, data.diagnosis)
+    pgi_result_date = normalize_pgi_result_date(data.pgiResult, data.pgiResultDate)
     with conn:
         conn.execute(
             """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                      consilium_code, pgi_code, pgi_malignancy_confirmed, nosology, disease_stage,
+                                      consilium_code, pgi_code, pgi_malignancy_confirmed, pgi_result_date, nosology, disease_stage,
                                       arrival, doctor, head, created_at, updated_at, treating_doctor_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 pid,
                 data.name,
@@ -254,8 +260,9 @@ def create_patient(
                 data.consiliumCode,
                 data.pgiCode,
                 pgi_result_to_db(data.pgiResult),
-                data.nosology,
-                data.diseaseStage,
+                pgi_result_date,
+                nosology,
+                "",
                 now,
                 doctor_text,
                 data.head,
@@ -342,13 +349,33 @@ def update_patient_field_with_actor(
     elif field == "priority":
         if value not in PRIORITIES:
             raise ValueError(f"priority must be one of {PRIORITIES}")
-    elif field == "diseaseStage":
-        if value not in DISEASE_STAGES:
-            raise ValueError(f"diseaseStage must be one of {DISEASE_STAGES}")
     elif field == "policyNumber":
         value = normalize_policy_number(value)
     elif field == "pgiResult":
-        value = pgi_result_to_db(value)
+        if isinstance(value, dict):
+            result = value.get("result") or ""
+            pgi_date = normalize_pgi_result_date(result, value.get("date"))
+        else:
+            result = value or ""
+            row = conn.execute("SELECT pgi_result_date FROM patients WHERE id = ?", (patient_id,)).fetchone()
+            if row is None:
+                return False
+            pgi_date = normalize_pgi_result_date(result, row["pgi_result_date"])
+        value = pgi_result_to_db(result)
+    elif field == "pgiResultDate":
+        row = conn.execute("SELECT pgi_malignancy_confirmed FROM patients WHERE id = ?", (patient_id,)).fetchone()
+        if row is None:
+            return False
+        result = pgi_result_from_db(row["pgi_malignancy_confirmed"])
+        value = normalize_pgi_result_date(result, value)
+    elif field == "nosology":
+        row = conn.execute("SELECT diagnosis FROM patients WHERE id = ?", (patient_id,)).fetchone()
+        if row is None:
+            return False
+        value = validate_new_combination(str(value or ""), row["diagnosis"] or "")
+    elif field == "diagnosis":
+        value = "" if value is None else str(value)
+        value_nosology = validate_new_combination("", value)
     else:
         value = "" if value is None else str(value)
         limit = FIELD_MAX_LEN.get(field)
@@ -362,10 +389,21 @@ def update_patient_field_with_actor(
             if row is None:
                 return False
             previous = row["diagnosis"] or ""
-        cur = conn.execute(
-            f"UPDATE patients SET {column} = ?, updated_at = ? WHERE id = ?",  # nosec B608
-            (value, now_iso(), patient_id),
-        )
+        if field == "diagnosis":
+            cur = conn.execute(
+                "UPDATE patients SET diagnosis = ?, nosology = ?, updated_at = ? WHERE id = ?",
+                (value, value_nosology, now_iso(), patient_id),
+            )
+        elif field == "pgiResult":
+            cur = conn.execute(
+                "UPDATE patients SET pgi_malignancy_confirmed = ?, pgi_result_date = ?, updated_at = ? WHERE id = ?",
+                (value, pgi_date, now_iso(), patient_id),
+            )
+        else:
+            cur = conn.execute(
+                f"UPDATE patients SET {column} = ?, updated_at = ? WHERE id = ?",  # nosec B608
+                (value, now_iso(), patient_id),
+            )
         if field == "diagnosis" and cur.rowcount > 0 and previous != value:
             conn.execute(
                 """INSERT INTO patient_diagnosis_history
@@ -540,33 +578,5 @@ def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: 
     checklist[item] = bool(checked)
     with conn:
         conn.execute("UPDATE history_entries SET checklist_json = ? WHERE id = ?", (json.dumps(checklist), entry_id))
-        touch_patient(conn, patient_id)
-    return True
-
-
-def update_future_plan(conn: sqlite3.Connection, patient_id: str, template_index: int, field: str, value: str) -> bool:
-    if field not in ("date", "time", "treatmentType"):
-        raise ValueError("unknown future plan field")
-    p = conn.execute("SELECT id FROM patients WHERE id = ?", (patient_id,)).fetchone()
-    if p is None:
-        return False
-    column = {"date": "date", "time": "time", "treatmentType": "treatment_type"}[field]
-    with conn:
-        existing = conn.execute(
-            "SELECT 1 FROM future_plans WHERE patient_id = ? AND template_index = ?", (patient_id, template_index)
-        ).fetchone()
-        if existing:
-            conn.execute(
-                f"UPDATE future_plans SET {column} = ? WHERE patient_id = ? AND template_index = ?",  # nosec B608
-                (value, patient_id, template_index),
-            )
-        else:
-            values = {"date": "", "time": "", "treatment_type": ""}
-            values[column] = value
-            conn.execute(
-                "INSERT INTO future_plans (patient_id, template_index, date, time, treatment_type) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (patient_id, template_index, values["date"], values["time"], values["treatment_type"]),
-            )
         touch_patient(conn, patient_id)
     return True

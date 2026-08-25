@@ -74,11 +74,9 @@
             <button type="button" class="nav__item is-active" data-view="patients" aria-current="page">Пациенты</button>
             <button type="button" class="nav__item" data-view="calendar">Календарь</button>
             <button type="button" class="nav__item" data-view="notifications">Уведомления</button>
-            <button type="button" class="nav__item" data-view="notification-center">Центр уведомлений</button>
             <button type="button" class="nav__item" data-view="analytics">Аналитика</button>
             <button type="button" class="nav__item" data-view="checklists">Чек-листы</button>
             <button type="button" class="nav__item" data-view="quality">Качество данных</button>
-            <button type="button" class="nav__item" data-view="plans">Будущие планы</button>
             <button type="button" class="nav__item" data-view="data">Импорт / Экспорт</button>
             <button type="button" class="nav__item is-hidden" data-view="staff">Сотрудники</button>
             <button type="button" class="nav__item is-hidden" data-view="structure">Структура</button>
@@ -242,7 +240,6 @@
                                     <th scope="col">Этап лечения</th>
                                     <th scope="col">Последняя активность</th>
                                     <th scope="col">Заведующий</th>
-                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
                                 </tr>
                             </thead>
                             <tbody id="patientsBody"></tbody>
@@ -359,19 +356,15 @@
                 </div>
 
                 <div class="panel panel--pad is-hidden" id="notificationTemplatesPanel"></div>
-            </section>
 
-            <section class="view is-hidden" id="view-notification-center">
-                <div class="pagehead">
-                    <div class="pagehead__text">
-                        <h1 class="pagehead__title">Центр уведомлений</h1>
-                        <p class="pagehead__subtitle">Персональная очередь событий по доступным пациентам</p>
-                    </div>
-                    <div class="pagehead__actions">
+                <div class="panel panel--pad notification-center-panel">
+                    <div class="section-head">
+                        <div>
+                            <h2 class="section-title">Системные уведомления</h2>
+                            <p class="pagehead__subtitle">Персональная очередь событий по доступным пациентам</p>
+                        </div>
                         <button type="button" class="btn btn--ghost" id="internalNotificationsRefreshBtn">Обновить</button>
                     </div>
-                </div>
-                <div class="panel panel--pad">
                     <div class="toolbar">
                         <div class="search">
                             <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
@@ -479,7 +472,7 @@
                     <div class="analytics-controls__filters">
                         <label class="visually-hidden" for="analyticsStageFilter">Этап</label>
                         <select class="select" id="analyticsStageFilter"></select>
-                        <label class="visually-hidden" for="analyticsNosologyFilter">Профиль клиентского пути</label>
+                        <label class="visually-hidden" for="analyticsNosologyFilter">Локализация</label>
                         <select class="select" id="analyticsNosologyFilter"></select>
                         <label class="visually-hidden" for="analyticsDoctorFilter">Лечащий врач</label>
                         <select class="select" id="analyticsDoctorFilter"></select>
@@ -543,16 +536,6 @@
                     <div class="panel panel--pad analytics-panel analytics-panel--wide" id="analyticsDetailsPanel"></div>
                 </div>
 
-            </section>
-
-            <section class="view is-hidden" id="view-plans">
-                <div class="pagehead">
-                    <div class="pagehead__text">
-                        <h1 class="pagehead__title">Будущие планы</h1>
-                        <p class="pagehead__subtitle">Предварительно намеченные даты следующих этапов</p>
-                    </div>
-                </div>
-                <div class="panel" id="plansPanel"></div>
             </section>
 
             <section class="view is-hidden" id="view-data">
@@ -733,42 +716,30 @@
                     <select class="select" id="diagnosisLocalization"></select>
                 </div>
                 <div class="field">
-                    <label class="field__label" for="diagnosisSearch">Поиск диагноза</label>
-                    <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D44.0 или щитовидная">
-                </div>
-                <div class="field">
-                    <label class="field__label" for="diagnosis">Диагноз (МКБ-10) <span class="req">*</span></label>
+                    <label class="field__label" for="diagnosisSearch">Диагноз <span class="req">*</span></label>
+                    <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D44.0 или щитовидная" aria-describedby="diagnosisHint">
                     <select class="select" id="diagnosis" required disabled></select>
+                    <p class="field__hint" id="diagnosisHint">Список ограничен выбранной локализацией.</p>
+                </div>
+                <div class="client-path-status" id="clientPathStatus" role="status"></div>
+                <div class="field">
+                    <label class="field__label" for="complaint">Комментарии</label>
+                    <textarea class="textarea" id="complaint" rows="4"></textarea>
                 </div>
                 <div class="grid-2">
                     <div class="field">
-                        <label class="field__label" for="nosology">Профиль клиентского пути</label>
-                        <select class="select" id="nosology"></select>
-                        <p class="field__hint">Определяет регламентные сроки и чек-лист обследований.</p>
+                        <label class="field__label" for="pgiResult">Результат ПГИ</label>
+                        <select class="select" id="pgiResult">
+                            <option value="">Не указано</option>
+                            <option value="confirmed">ЗНО подтвердилось</option>
+                            <option value="not_confirmed">ЗНО не подтвердилось</option>
+                        </select>
+                        <p class="field__hint">Не переводит маршрут автоматически.</p>
                     </div>
                     <div class="field">
-                        <label class="field__label" for="diseaseStage">Стадия заболевания</label>
-                        <select class="select" id="diseaseStage">
-                            <option value="">Не указана</option>
-                            <option value="I">I</option>
-                            <option value="II">II</option>
-                            <option value="III">III</option>
-                            <option value="IV">IV</option>
-                        </select>
+                        <label class="field__label" for="pgiResultDate">Дата результата ПГИ</label>
+                        <input class="input" type="date" id="pgiResultDate">
                     </div>
-                </div>
-                <div class="field">
-                    <label class="field__label" for="complaint">Жалобы и симптомы</label>
-                    <textarea class="textarea" id="complaint" rows="4"></textarea>
-                </div>
-                <div class="field">
-                    <label class="field__label" for="pgiResult">Результат ПГИ</label>
-                    <select class="select" id="pgiResult">
-                        <option value="">Не указано</option>
-                        <option value="confirmed">Подтверждено</option>
-                        <option value="not_confirmed">Не подтверждено</option>
-                    </select>
-                    <p class="field__hint">Не переводит маршрут автоматически.</p>
                 </div>
             </fieldset>
 

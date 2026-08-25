@@ -17,7 +17,7 @@ PAYLOADS = [
     "'\"><b>break</b>",
 ]
 
-TEXT_FIELDS = ["name", "phone", "diagnosis", "doctor", "complaint"]
+TEXT_FIELDS = ["name", "phone", "doctor", "complaint"]
 
 
 def test_payloads_roundtrip_as_text(auth_client):

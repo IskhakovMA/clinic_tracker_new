@@ -104,14 +104,14 @@ def test_readonly_roles_see_all_but_cannot_write(client, rbac, username):
     # смена этапа запрещена
     assert client.post(f"/api/patients/{rbac['p_a1']}/stage",
                        json={"newStage": "appointment"}, headers=csrf).status_code == 403
-    # события, заметки, чек-листы, планы запрещены
+    # события, заметки, чек-листы запрещены; старый endpoint будущих планов удалён
     assert client.post(f"/api/patients/{rbac['p_a1']}/history/0/events", headers=csrf).status_code == 403
     assert client.patch(f"/api/patients/{rbac['p_a1']}/history/0/note",
                         json={"note": "x"}, headers=csrf).status_code == 403
     assert client.patch(f"/api/patients/{rbac['p_a1']}/history/0/checklist",
                         json={"item": "Тест", "checked": True}, headers=csrf).status_code == 403
     assert client.put(f"/api/patients/{rbac['p_a1']}/future-plans/0",
-                      json={"field": "date", "value": "2026-08-01"}, headers=csrf).status_code == 403
+                      json={"field": "date", "value": "2026-08-01"}, headers=csrf).status_code == 404
     # импорт запрещён
     assert client.post("/api/import/preview", json={"raw": "[]"}).status_code == 403
     assert client.post("/api/import/commit",

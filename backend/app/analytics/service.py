@@ -36,7 +36,7 @@ SUMMARY_DEFINITIONS = {
     "incomplete_required_checklists": "Обязательные пункты чек-листа, не отмеченные выполненными.",
     "pending_notifications": "Уведомления в статусе pending.",
     "failed_notifications": "Уведомления в статусе failed.",
-    "nosology_filter": "Фильтр по пользовательскому полю «Профиль клиентского пути»; внутреннее API/БД поле остаётся nosology.",
+    "nosology_filter": "Фильтр по локализации/клиентскому пути; внутреннее API/БД поле остаётся nosology.",
 }
 
 
@@ -349,12 +349,10 @@ QUALITY_CODE_LABELS = {
     "missing_treating_doctor": "Не назначен лечащий врач",
     "missing_required_field": "Не заполнено поле",
     "missing_policy_number": "Не указан номер полиса ОМС",
-    "missing_client_path_profile": "Не указан профиль клиентского пути",
     "missing_diagnosis": "Не указан диагноз",
     "missing_stage": "Не указан текущий этап",
     "invalid_phone": "Некорректный телефон",
     "actual_date_in_future": "Фактическая дата в будущем",
-    "planned_date_in_past": "Плановая дата в прошлом",
     "stage_sequence_violation": "Нарушение маршрута",
     "overdue_event": "Просроченное событие",
     "incomplete_required_checklist": "Незавершённый чек-лист",

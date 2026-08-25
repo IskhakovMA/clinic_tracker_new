@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from . import config, policy, store, users
 from .db import now_iso, transaction
+from .localization_catalog import validate_new_combination
 from .models import ImportDocument, ImportHistoryEntry, ImportPatientIn
 
 
@@ -147,9 +148,9 @@ def _insert_full_patient(
         ).fetchone()
     conn.execute(
         """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                  consilium_code, pgi_code, pgi_malignancy_confirmed, nosology, disease_stage,
+                                  consilium_code, pgi_code, pgi_malignancy_confirmed, pgi_result_date, nosology, disease_stage,
                                   arrival, doctor, head, created_at, updated_at, treating_doctor_user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             patient_id,
             p.name,
@@ -163,8 +164,9 @@ def _insert_full_patient(
             p.consiliumCode,
             p.pgiCode,
             store.pgi_result_to_db(p.pgiResult),
-            p.nosology,
-            p.diseaseStage,
+            store.normalize_pgi_result_date(p.pgiResult, p.pgiResultDate) if p.pgiResultDate else None,
+            validate_new_combination(p.nosology, p.diagnosis),
+            "",
             arrival,
             doctor_row["full_name"] if doctor_row else p.doctor,
             p.head,
@@ -183,15 +185,6 @@ def _insert_full_patient(
         )
         for ev_seq, ev in enumerate(h.events):
             store.insert_event(conn, entry_id, ev_seq, ev)
-    for idx_str, fp in p.futurePlans.items():
-        try:
-            idx = int(idx_str)
-        except ValueError:
-            continue
-        conn.execute(
-            "INSERT INTO future_plans (patient_id, template_index, date, time, treatment_type) VALUES (?, ?, ?, ?, ?)",
-            (patient_id, idx, fp.date, fp.time, fp.treatmentType),
-        )
     for item in p.diagnosisHistory:
         conn.execute(
             """INSERT INTO patient_diagnosis_history
@@ -233,7 +226,7 @@ def commit_import(
 
     with transaction(conn):
         if mode == "replace":
-            conn.execute("DELETE FROM patients")  # cascades to history/events/future_plans
+            conn.execute("DELETE FROM patients")  # cascades to history/events and retired compatibility tables
             for p, doctor_id in zip(document.patients, resolved):
                 _insert_full_patient(conn, p, store.new_id(), doctor_id)
                 added += 1

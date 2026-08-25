@@ -113,30 +113,34 @@ def test_pgi_result_persistence_no_auto_route_change_rbac_and_audit(auth_client,
 
     confirmed = auth_client.patch(
         f"/api/patients/{own['id']}",
-        json={"field": "pgiResult", "value": "confirmed"},
+        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
         headers=auth_client.csrf,
     )
     assert confirmed.status_code == 200, confirmed.text
     assert confirmed.json()["pgiResult"] == "confirmed"
+    assert confirmed.json()["pgiResultDate"] == "2026-08-20"
     assert confirmed.json()["stage"] == "consult"
     not_confirmed = auth_client.patch(
         f"/api/patients/{own['id']}",
-        json={"field": "pgiResult", "value": "not_confirmed"},
+        json={"field": "pgiResult", "value": {"result": "not_confirmed", "date": "2026-08-21"}},
         headers=auth_client.csrf,
     )
     assert not_confirmed.status_code == 200, not_confirmed.text
     assert not_confirmed.json()["pgiResult"] == "not_confirmed"
+    assert not_confirmed.json()["pgiResultDate"] == "2026-08-21"
     assert not_confirmed.json()["stage"] == "consult"
 
     audit_text = json.dumps(auth_client.get("/api/audit?limit=200").json()["events"], ensure_ascii=False)
     assert "pgi_result_changed" in audit_text
     assert "confirmed" not in audit_text
     assert "not_confirmed" not in audit_text
+    assert "2026-08-20" not in audit_text
+    assert "2026-08-21" not in audit_text
 
     assert login(client, "readonly.pgi").status_code == 200
     read_only = client.patch(
         f"/api/patients/{own['id']}",
-        json={"field": "pgiResult", "value": "confirmed"},
+        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
         headers=client.csrf,
     )
     assert read_only.status_code == 403
@@ -144,7 +148,7 @@ def test_pgi_result_persistence_no_auto_route_change_rbac_and_audit(auth_client,
     assert login(client, "doctor.pgi.a").status_code == 200
     hidden_foreign = client.patch(
         f"/api/patients/{foreign['id']}",
-        json={"field": "pgiResult", "value": "confirmed"},
+        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
         headers=client.csrf,
     )
     assert hidden_foreign.status_code == 404
@@ -198,12 +202,13 @@ def test_import_export_accepts_prev7_legacy_and_v8_structured_fields(auth_client
     assert auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf).status_code == 200
     exported = json.loads(auth_client.get("/api/export").text)
     structured = next(p for p in exported["patients"] if p["name"] == "Structured v8")
-    assert exported["schemaVersion"] == 8
+    assert exported["schemaVersion"] == 9
     assert structured["pgiResult"] == "confirmed"
+    assert structured["pgiResultDate"] is None
     assert structured["history"][0]["events"][0]["consiliumDecision"] == "treatment_strategy_defined"
 
 
-def test_schema_v7_to_v8_preserves_legacy_data_and_sets_safe_defaults(tmp_path):
+def test_schema_v7_to_v9_preserves_legacy_data_and_sets_safe_defaults(tmp_path):
     from backend.app import config, db, maintenance
 
     path = tmp_path / "clinic.db"
@@ -299,14 +304,16 @@ def test_schema_v7_to_v8_preserves_legacy_data_and_sets_safe_defaults(tmp_path):
     patient_columns = {row["name"] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
     event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
     assert "pgi_malignancy_confirmed" in patient_columns
+    assert "pgi_result_date" in patient_columns
     assert "consilium_decision" in event_columns
     row = conn.execute(
-        "SELECT policy_number, consilium_code, pgi_code, pgi_malignancy_confirmed FROM patients WHERE id = 'legacy_v7'"
+        "SELECT policy_number, consilium_code, pgi_code, pgi_malignancy_confirmed, pgi_result_date FROM patients WHERE id = 'legacy_v7'"
     ).fetchone()
     assert row["policy_number"] == "7700000000000001"
     assert row["consilium_code"] == "OK-OLD"
     assert row["pgi_code"] == "PGI-OLD"
     assert row["pgi_malignancy_confirmed"] is None
+    assert row["pgi_result_date"] is None
     assert conn.execute("SELECT consilium_decision FROM events WHERE id = 'event_v7'").fetchone()[0] is None
     report = maintenance.check_database(path)
     assert report["ok"] is True, report["problems"]
@@ -314,7 +321,7 @@ def test_schema_v7_to_v8_preserves_legacy_data_and_sets_safe_defaults(tmp_path):
     assert report["foreign_key_violations"] == 0
 
 
-def test_schema_v8_encrypted_backup_restore_preserves_structured_feedback_and_attention(
+def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_attention(
     auth_client, tmp_path, monkeypatch
 ):
     monkeypatch.setenv("CLINIC_BACKUP_KEY", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
@@ -328,10 +335,12 @@ def test_schema_v8_encrypted_backup_restore_preserves_structured_feedback_and_at
         auth_client,
         name="Backup Clarifications",
         diagnosis="D44.0",
+        nosology="thyroidSuspected",
         stage="consult",
         consiliumCode="OK-LEGACY-BACKUP",
         pgiCode="PGI-LEGACY-BACKUP",
         pgiResult="confirmed",
+        pgiResultDate="2026-08-20",
         events=[{"date": "2026-08-20"}],
     )
     auth_client.patch(
@@ -357,7 +366,7 @@ def test_schema_v8_encrypted_backup_restore_preserves_structured_feedback_and_at
     )
 
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
-    backup = maintenance.backup_database(db_path, tmp_path / "doctor-clarifications-v8.cbk")
+    backup = maintenance.backup_database(db_path, tmp_path / "doctor-clarifications-v9.cbk")
     assert maintenance.inspect_backup(backup)["schema_version"] == config.SCHEMA_VERSION
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
@@ -371,6 +380,7 @@ def test_schema_v8_encrypted_backup_restore_preserves_structured_feedback_and_at
     assert restored["consiliumCode"] == "OK-LEGACY-BACKUP"
     assert restored["pgiCode"] == "PGI-LEGACY-BACKUP"
     assert restored["pgiResult"] == "confirmed"
+    assert restored["pgiResultDate"] == "2026-08-20"
     assert restored["diagnosisHistory"][-1]["oldDiagnosis"] == "D44.0"
     assert restored["history"][0]["events"][0]["consiliumDecision"] == "treatment_strategy_defined"
     assert restored["attention"]["active"] is True

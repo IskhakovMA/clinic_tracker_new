@@ -31,7 +31,6 @@ COMPLETENESS_FIELDS = (
     ("phone", "Телефон", "warning"),
     ("policyNumber", "Номер полиса ОМС", "info"),
     ("diagnosis", "Диагноз", "critical"),
-    ("nosology", "Профиль клиентского пути", "warning"),
     ("stage", "Текущий этап", "critical"),
     ("treatingDoctorUserId", "Лечащий врач", "warning"),
 )
@@ -40,12 +39,10 @@ QUALITY_RULES = {
     "missing_treating_doctor": "Пациент не сопоставлен с учётной записью лечащего врача.",
     "missing_required_field": "Поле нужно для корректной регистрационной карточки.",
     "missing_policy_number": "Номер полиса ОМС повышает полноту регистрационной карточки.",
-    "missing_client_path_profile": "Профиль клиентского пути нужен для регламентных сроков и чек-листа.",
     "missing_diagnosis": "Диагноз обязателен для новых записей и нужен для корректной карточки.",
     "missing_stage": "Текущий этап нужен для маршрута лечения.",
     "invalid_phone": "Заполненный телефон должен быть похож на корректный номер.",
     "actual_date_in_future": "Фактическая дата не должна быть в будущем.",
-    "planned_date_in_past": "Будущий план с прошедшей датой требует актуализации.",
     "stage_sequence_violation": "История этапов противоречит маршруту лечения.",
     "overdue_event": "Плановое событие в прошлом не имеет фактического выполнения.",
     "incomplete_required_checklist": "Обязательные пункты чек-листа не отмечены выполненными.",
@@ -144,7 +141,6 @@ class PatientRecord:
     department_ids: list[str] = field(default_factory=list)
     department_names: list[str] = field(default_factory=list)
     history: list[dict[str, Any]] = field(default_factory=list)
-    future_plans: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 def _today() -> date:
@@ -285,19 +281,6 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
                 "setAt": e["set_at"] or "",
             })
 
-    plan_rows = conn.execute(
-        f"""SELECT * FROM future_plans
-            WHERE patient_id IN ({','.join('?' for _ in patient_by_id)})
-            ORDER BY patient_id, template_index ASC""",  # nosec B608 - IDs are bound through generated placeholders.
-        list(patient_by_id),
-    ).fetchall()
-    for fp in plan_rows:
-        patient_by_id[fp["patient_id"]].future_plans[str(fp["template_index"])] = {
-            "date": fp["date"] or "",
-            "time": fp["time"] or "",
-            "treatmentType": fp["treatment_type"] or "",
-        }
-
 
 def completeness(patient: PatientRecord) -> dict:
     missing = []
@@ -307,7 +290,6 @@ def completeness(patient: PatientRecord) -> dict:
         "phone": patient.phone,
         "policyNumber": patient.policy_number,
         "diagnosis": patient.diagnosis,
-        "nosology": patient.nosology,
         "stage": patient.stage,
         "treatingDoctorUserId": patient.treating_doctor_user_id,
     }
@@ -321,7 +303,7 @@ def completeness(patient: PatientRecord) -> dict:
         "present": present,
         "total": len(COMPLETENESS_FIELDS),
         "missing": missing,
-        "formula": "равные доли 7 полей: ФИО, телефон, номер полиса ОМС, диагноз, Профиль клиентского пути, текущий этап, лечащий врач",
+        "formula": "равные доли 6 полей: ФИО, телефон, номер полиса ОМС, диагноз, текущий этап, лечащий врач",
     }
 
 
@@ -365,14 +347,6 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
             description="Номер полиса ОМС можно добавить для более полной регистрационной карточки.",
             field_name="policyNumber", details={"field_label": "Номер полиса ОМС"},
             suggested_action=_action("Уточнить номер полиса ОМС во вкладке «Данные»", "data", can_write),
-        ))
-    if "nosology" in missing_by_field:
-        issues.append(_finding(
-            patient=patient, code="missing_client_path_profile", category="completeness", severity="warning",
-            title="Не указан профиль клиентского пути",
-            description="Профиль клиентского пути используется для регламентных сроков и чек-листов.",
-            field_name="nosology", details={"field_label": "Профиль клиентского пути"},
-            suggested_action=_action("Выбрать профиль во вкладке «Данные»", "data", can_write),
         ))
     if "treatingDoctorUserId" in missing_by_field:
         issues.append(_finding(
@@ -479,7 +453,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                     field_name="actualDate", details={"occurrence_index": occ_index, "event_index": event_index},
                     suggested_action=_action("Проверить даты этапа", "events", can_write),
                 ))
-            if planned and planned < today and not actual and not event.get("noPlan") and not route_closed:
+            if patient.nosology and planned and planned < today and not actual and not event.get("noPlan") and not route_closed:
                 issues.append(_finding(
                     patient=patient, code="overdue_event", category="dates", severity="warning",
                     title="Плановое событие просрочено",
@@ -487,25 +461,6 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                     field_name="date", details={"occurrence_index": occ_index, "event_index": event_index, "planned_date": planned.isoformat(), "days_overdue": (today - planned).days},
                     suggested_action=_action("Отметить факт или актуализировать план", "events", can_write),
                 ))
-
-    for index, plan in patient.future_plans.items():
-        planned = _safe_date(plan.get("date"))
-        if plan.get("date") and planned is None:
-            issues.append(_finding(
-                patient=patient, code="planned_date_in_past", category="dates", severity="warning",
-                title="Дата будущего плана некорректна",
-                description="Дата будущего плана должна быть календарной датой в формате ГГГГ-ММ-ДД.",
-                field_name="futurePlans", details={"template_index": index},
-                suggested_action=_action("Исправить будущий план", "plans", can_write),
-            ))
-        elif planned and planned < today and not route_closed:
-            issues.append(_finding(
-                patient=patient, code="planned_date_in_past", category="dates", severity="warning",
-                title="Будущий план в прошлом",
-                description="Предварительная дата уже прошла и требует ручной актуализации.",
-                field_name="futurePlans", details={"template_index": index, "days_overdue": (today - planned).days},
-                suggested_action=_action("Актуализировать будущий план", "plans", can_write),
-            ))
 
     latest = patient.history[-1] if patient.history and not route_closed else None
     if latest:
@@ -545,7 +500,7 @@ def _duplicate_groups(patients: list[PatientRecord]) -> list[dict]:
         "phone": "Совпадает телефон",
         "name_age": "Совпадают ФИО и возраст",
         "name_diagnosis": "Совпадают ФИО и диагноз",
-        "name_nosology": "Совпадают ФИО и Профиль клиентского пути",
+        "name_nosology": "Совпадают ФИО и локализация/клиентский путь",
     }
     reason_order = ("phone", "name_age", "name_diagnosis", "name_nosology")
     groups_by_ids: dict[tuple[str, ...], dict[str, Any]] = {}

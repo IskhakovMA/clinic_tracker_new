@@ -21,7 +21,7 @@ USER_FACING = (HTML, JS)
 DOCS = (README, DESIGN, PROJECT_ROOT / "PROJECT_BRIEF.md", PROJECT_ROOT / "PROJECT_BRIEF_V2.md")
 
 PRODUCT_NAME = "Система планирования"
-PATHWAY_LABEL = "Профиль клиентского пути"
+PATHWAY_LABEL = "Локализация/клиентский путь"
 
 
 def test_old_product_name_is_gone_from_frontend():
@@ -50,12 +50,12 @@ def test_sidebar_name_is_readable_by_screen_reader():
 
 
 def test_user_facing_nosology_term_is_replaced():
-    """В видимых текстах — «Профиль клиентского пути»; слова «нозология»
+    """В видимых текстах — локализация/клиентский путь; слова «нозология»
     в пользовательских строках остаться не должно."""
     for path in USER_FACING:
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"[Нн]озолог", text), f"{path.name}: остался термин «нозология»"
-    assert PATHWAY_LABEL in HTML.read_text(encoding="utf-8")
+    assert "Локализация" in HTML.read_text(encoding="utf-8")
     assert PATHWAY_LABEL in JS.read_text(encoding="utf-8")
 
 
