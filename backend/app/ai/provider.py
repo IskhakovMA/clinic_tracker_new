@@ -56,6 +56,14 @@ class OpenAICompatibleAIProvider(AIProvider):
         self.timeout = timeout
         self._opener = urllib.request.build_opener(_NoRedirectHandler)
 
+    def _messages_for_provider(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared = [dict(message) for message in messages]
+        if self.model.lower().startswith("qwen3") and prepared:
+            content = str(prepared[0].get("content") or "")
+            if "/no_think" not in content:
+                prepared[0]["content"] = "/no_think\n" + content
+        return prepared
+
     def chat(
         self,
         *,
@@ -65,7 +73,7 @@ class OpenAICompatibleAIProvider(AIProvider):
     ) -> AIProviderResult:
         payload = {
             "model": self.model,
-            "messages": messages,
+            "messages": self._messages_for_provider(messages),
             "tools": tools,
             "tool_choice": "auto",
             "max_tokens": max_output_tokens,
@@ -102,6 +110,35 @@ class OpenAICompatibleAIProvider(AIProvider):
             content=content,
             tool_calls=message.get("tool_calls") or [],
         )
+
+
+def provider_reachable(*, timeout: float = 2.0) -> bool:
+    if not provider_configured():
+        return False
+    headers = {"Accept": "application/json"}
+    if config.AI_API_KEY:
+        headers["Authorization"] = f"Bearer {config.AI_API_KEY}"
+    request = urllib.request.Request(
+        f"{config.AI_BASE_URL}/models",
+        headers=headers,
+        method="GET",
+    )
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
+    except (TimeoutError, urllib.error.URLError, OSError):
+        return False
+    if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return False
+    models = data.get("data")
+    if isinstance(models, list):
+        return any(item.get("id") == config.AI_MODEL for item in models if isinstance(item, dict))
+    return True
 
 
 def provider_configured() -> bool:

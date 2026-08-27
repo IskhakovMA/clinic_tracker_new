@@ -213,6 +213,30 @@ def test_ux_audit_cleanup_frontend_copy_is_user_friendly():
     assert "analyticsLocalizationOptions" in js
 
 
+def test_analytics_v3_and_ai_recovery_frontend_contracts_are_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    css = CSS.read_text(encoding="utf-8")
+
+    for marker in (
+        "analytics-panel--primary",
+        "analytics-stage-visual",
+        "analytics-quality-visual",
+        "renderAnalyticsStages",
+        "renderAnalyticsQualityVisual",
+        "analytics-trend__line--new_patients",
+        "analytics-trend__line--completed_patients",
+    ):
+        assert marker in "\n".join((html, js, css))
+
+    assert "ИИ-помощник временно недоступен" in js
+    assert "Для использования помощника необходимо запустить локальный AI-сервис." in js
+    assert "Проверить снова" in js
+    assert "$('aiAssistantForm').classList.toggle('is-hidden', !status.available)" in js
+    assert "analytics-bar__progress" in css
+    assert "position: sticky; top: 0; z-index: 30" in css
+
+
 def test_policy_number_frontend_contract_is_present():
     html = HTML.read_text(encoding="utf-8")
     js = JS.read_text(encoding="utf-8")

@@ -61,8 +61,10 @@ def test_ai_status_disabled_default_and_no_secrets(auth_client):
 def test_ai_status_enabled_configuration_still_hides_provider(auth_client, monkeypatch):
     _enable_ai(monkeypatch)
     from backend.app import config
+    from backend.app.routes import ai as ai_routes
 
     monkeypatch.setattr(config, "AI_API_KEY", "secret-test-key")
+    monkeypatch.setattr(ai_routes, "provider_reachable", lambda: True)
     response = auth_client.get("/api/ai/status")
     assert response.status_code == 200
     body = response.json()
@@ -72,6 +74,20 @@ def test_ai_status_enabled_configuration_still_hides_provider(auth_client, monke
     assert "secret-test-key" not in text
     assert "127.0.0.1" not in text
     assert "test-model" not in text
+
+
+def test_ai_status_configured_but_provider_unreachable(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    from backend.app.routes import ai as ai_routes
+
+    monkeypatch.setattr(ai_routes, "provider_reachable", lambda: False)
+    response = auth_client.get("/api/ai/status")
+    assert response.status_code == 200
+    assert response.json() == {
+        "enabled": True,
+        "available": False,
+        "message": "ИИ-помощник временно недоступен",
+    }
 
 
 def test_ai_chat_auth_csrf_strict_schema_and_disabled(auth_client):
@@ -155,6 +171,46 @@ def test_ai_followup_reference_hint_uses_scoped_attention_order(auth_client, mon
     assert result["references"] == [{"type": "patient", "patientId": expected_id, "label": "Открыть пациента"}]
 
 
+def test_ai_followup_executes_resolved_read_only_fallback_when_model_skips_tool(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    _create_patient(name="ИИ Первый")
+    second_id = _create_patient(name="ИИ Второй")
+    response = auth_client.post(
+        f"/api/patients/{second_id}/attention",
+        json={"reasonCode": "department_head_decision_required", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn, AIHistoryMessage
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([
+        _result("В доступных данных системы такой информации нет."),
+        _result("Второй требует решения заведующего."),
+    ])
+
+    result = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(
+            message="А второй почему?",
+            history=[
+                AIHistoryMessage(role="user", content="Какие мои пациенты требуют внимания?"),
+                AIHistoryMessage(role="assistant", content="1. ИИ Первый. 2. ИИ Второй."),
+            ],
+        ),
+        provider=provider,
+    )
+
+    assert result["answer"] == "Второй требует решения заведующего."
+    assert result["usage"]["toolCalls"] == 1
+    assert result["references"] == [{"type": "patient", "patientId": second_id, "label": "Открыть пациента"}]
+    assert "Backend read-only follow-up result inside current scope" in provider.calls[1]["messages"][-1]["content"]
+
+
 def test_openai_provider_malformed_response_and_reasoning_strip():
     from backend.app.ai.provider import OpenAICompatibleAIProvider, AIProviderError
 
@@ -183,6 +239,23 @@ def test_openai_provider_malformed_response_and_reasoning_strip():
         assert "некорректный" in str(exc)
     else:
         raise AssertionError("malformed provider response must be controlled")
+
+
+def test_openai_provider_adds_no_think_for_qwen3_models():
+    from backend.app.ai.provider import OpenAICompatibleAIProvider
+
+    provider = OpenAICompatibleAIProvider(base_url="http://127.0.0.1:1/v1", model="qwen3-8b")
+    prepared = provider._messages_for_provider([
+        {"role": "system", "content": "Use tools."},
+        {"role": "user", "content": "Сколько пациентов требуют внимания?"},
+    ])
+    assert prepared[0]["content"].startswith("/no_think\n")
+    assert "/no_think" not in prepared[1]["content"]
+
+    prepared_again = provider._messages_for_provider([
+        {"role": "system", "content": "/no_think\nUse tools."},
+    ])
+    assert prepared_again[0]["content"].count("/no_think") == 1
 
 
 def test_ai_unknown_tool_malformed_args_and_tool_cap(monkeypatch, auth_client):

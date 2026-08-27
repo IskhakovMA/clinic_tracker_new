@@ -499,44 +499,44 @@
                 <div class="analytics-dashboard">
                     <div class="stats analytics-kpis" id="analyticsStatsRow"></div>
 
-                    <div class="panel panel--pad analytics-panel analytics-panel--wide">
+                    <div class="panel panel--pad analytics-panel analytics-panel--primary">
+                        <h2 class="panel__title">Динамика пациентов</h2>
+                        <div class="analytics-trend" id="analyticsTrendChart"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel analytics-panel--primary">
+                        <h2 class="panel__title">Пациенты по этапам маршрута</h2>
+                        <div class="analytics-stage-visual" id="analyticsStageChart"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel">
+                        <h2 class="panel__title">Пациенты по локализациям</h2>
+                        <div class="analytics-bars" id="analyticsProfileChart"></div>
+                    </div>
+
+                    <div class="panel panel--pad analytics-panel">
                         <h2 class="panel__title">Причины внимания</h2>
-                        <div class="analytics-list analytics-attention" id="analyticsAttentionList"></div>
+                        <div class="analytics-bars analytics-attention" id="analyticsAttentionList"></div>
                     </div>
 
                     <div class="panel panel--pad analytics-panel">
-                        <h2 class="panel__title">Пациенты по этапам</h2>
-                        <div class="bar-list" id="analyticsStageChart"></div>
+                        <h2 class="panel__title">Нагрузка врачей</h2>
+                        <div class="analytics-bars" id="analyticsWorkloadList"></div>
                     </div>
 
                     <div class="panel panel--pad analytics-panel">
-                        <h2 class="panel__title">Пациенты по профилю клиентского пути</h2>
-                        <div class="bar-list" id="analyticsProfileChart"></div>
+                        <h2 class="panel__title">Качество данных</h2>
+                        <div class="analytics-quality-visual" id="analyticsQualityList"></div>
                     </div>
 
                     <div class="panel panel--pad analytics-panel">
                         <h2 class="panel__title">Состояние маршрутов</h2>
                         <p class="panel__text">Операционные сигналы считаются автоматически и не создают ручную отметку внимания.</p>
-                        <div class="bar-list" id="analyticsRouteStateChart"></div>
+                        <div class="analytics-bars" id="analyticsRouteStateChart"></div>
                     </div>
 
                     <div class="panel panel--pad analytics-panel">
-                        <h2 class="panel__title">Самые частые проблемы качества данных</h2>
-                        <div class="bar-list" id="analyticsQualityList"></div>
-                    </div>
-
-                    <div class="panel panel--pad analytics-panel analytics-panel--wide">
-                        <h2 class="panel__title">Новые пациенты за период</h2>
-                        <div class="analytics-trend" id="analyticsTrendChart"></div>
-                    </div>
-
-                    <div class="panel panel--pad analytics-panel">
-                        <h2 class="panel__title">Распределение рабочей нагрузки</h2>
-                        <div class="bar-list" id="analyticsWorkloadList"></div>
-                    </div>
-
-                    <div class="panel panel--pad analytics-panel">
-                        <h2 class="panel__title">Операционные показатели</h2>
+                        <h2 class="panel__title">Требуют внимания сейчас</h2>
                         <div class="analytics-list" id="analyticsOperationsList"></div>
                     </div>
 

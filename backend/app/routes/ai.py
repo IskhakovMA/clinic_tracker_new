@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from .. import config, policy
 from ..ai import orchestrator
-from ..ai.provider import AIProviderError, AIProviderUnavailable, provider_configured
+from ..ai.provider import AIProviderError, AIProviderUnavailable, provider_configured, provider_reachable
 from ..ai.schemas import AIChatIn, AIChatOut, AIStatusOut
 from ..ai.tools import ToolPermissionError
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
@@ -23,6 +23,8 @@ def status_endpoint(
         return {"enabled": False, "available": False, "message": "ИИ-помощник не настроен"}
     if not provider_configured():
         return {"enabled": True, "available": False, "message": "ИИ-помощник не настроен"}
+    if not provider_reachable():
+        return {"enabled": True, "available": False, "message": "ИИ-помощник временно недоступен"}
     return {"enabled": True, "available": True, "message": "ИИ-помощник доступен"}
 
 

@@ -39,7 +39,10 @@ CLINIC_AI_RATE_LIMIT_WINDOW_SECONDS=300
 ```
 
 `GET /api/ai/status` returns only safe state: enabled, available and a
-user-facing message. It does not expose base URL, model or API key.
+user-facing message. It does not expose base URL, model or API key. When AI is
+enabled and configured, status performs a short local `/models` reachability
+check so a stopped LM Studio server is reported as temporarily unavailable
+instead of appearing ready.
 
 ## Provider
 
@@ -59,6 +62,8 @@ server:
 3. Start the local server, usually `http://127.0.0.1:1234/v1`.
 4. Set `CLINIC_AI_ENABLED=true`, `CLINIC_AI_BASE_URL` and `CLINIC_AI_MODEL`.
 5. Start the backend.
+6. If the UI says the assistant is temporarily unavailable, start the local
+   AI service and use the drawer retry action.
 
 No model files, weights or LM Studio config belong in Git.
 
@@ -111,6 +116,13 @@ Tool results follow minimum necessary data. They do not return phone numbers,
 OMS policy numbers, full patient objects, backend secrets, or arbitrary links.
 Patient references returned to the frontend are structured and derived only from
 actual tool results.
+
+For local Qwen3 models, the provider adds a `/no_think` compatibility hint to
+the backend-owned system message so LM Studio returns usable content and tool
+calls. If a multi-turn follow-up reference is already resolved inside the
+current scope and the model skips the requested read-only tool call, the
+orchestrator can execute that scoped follow-up tool result and ask the model to
+answer from the resulting JSON only.
 
 ## Privacy
 
