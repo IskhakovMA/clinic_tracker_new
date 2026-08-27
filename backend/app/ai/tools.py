@@ -204,7 +204,12 @@ def get_patient_timeline(conn: sqlite3.Connection, user: policy.CurrentUser, arg
             "untrusted": True,
         })
     rows.sort(key=lambda item: str(item.get("at") or item.get("plannedDate") or ""), reverse=True)
-    return {"patientId": args.patientId, "items": rows[:args.limit]}
+    return {
+        "patientId": args.patientId,
+        "displayName": patient["name"],
+        "currentStageLabel": stage_label(patient["stage"]),
+        "items": rows[:args.limit],
+    }
 
 
 def list_attention_patients(conn: sqlite3.Connection, user: policy.CurrentUser, args: ListAttentionArgs) -> dict:
@@ -249,10 +254,12 @@ def list_attention_patients(conn: sqlite3.Connection, user: policy.CurrentUser, 
 
 
 def get_patient_attention(conn: sqlite3.Connection, user: policy.CurrentUser, args: PatientIdArgs) -> dict:
-    _require_patient(conn, user, args.patientId)
+    patient = _require_patient(conn, user, args.patientId)
     result = patient_attention.list_for_patient(conn, user, args.patientId, limit=50)
     return {
         "patientId": args.patientId,
+        "displayName": patient["name"],
+        "currentStageLabel": stage_label(patient["stage"]),
         "active": [
             {
                 "reasonCode": issue["reasonCode"],

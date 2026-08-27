@@ -230,10 +230,15 @@ def test_analytics_v3_and_ai_recovery_frontend_contracts_are_present():
         assert marker in "\n".join((html, js, css))
 
     assert "ИИ-помощник временно недоступен" in js
-    assert "Для использования помощника необходимо запустить локальный AI-сервис." in js
+    assert "Основная система продолжает работать." in js
     assert "Проверить снова" in js
+    assert "/api/ai/status${force ? '?refresh=true' : ''}" in js
     assert "$('aiAssistantForm').classList.toggle('is-hidden', !status.available)" in js
+    assert "ai-result-card" in js
+    assert "ref.title" in js
     assert "analytics-bar__progress" in css
+    assert "analytics-trend__point" in css
+    assert "analytics-trend__legend" in css
     assert "position: sticky; top: 0; z-index: 30" in css
 
 

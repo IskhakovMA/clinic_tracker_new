@@ -40,6 +40,8 @@ class AIReference(StrictRequestModel):
     type: Literal["patient"]
     patientId: str = Field(..., min_length=1, max_length=100)
     label: str = Field("Открыть пациента", max_length=80)
+    title: str | None = Field(None, max_length=160)
+    subtitle: str | None = Field(None, max_length=220)
 
 
 class AIUsage(StrictRequestModel):
@@ -56,4 +58,5 @@ class AIStatusOut(StrictRequestModel):
     enabled: bool
     available: bool
     message: str
-
+    state: Literal["disabled", "probing", "available", "unavailable"] = "disabled"
+    reason: str = Field("disabled", max_length=80)

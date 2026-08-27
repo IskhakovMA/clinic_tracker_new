@@ -3915,11 +3915,11 @@ const app = {
 
     /* ============================================================= ИИ-ПОМОЩНИК */
 
-    async refreshAIStatus() {
+    async refreshAIStatus(force = false) {
         try {
-            this.ai.status = await apiGetJson('/api/ai/status');
+            this.ai.status = await apiGetJson(`/api/ai/status${force ? '?refresh=true' : ''}`);
         } catch (e) {
-            this.ai.status = { enabled: false, available: false, message: 'ИИ-помощник сейчас недоступен.' };
+            this.ai.status = { enabled: true, available: false, state: 'unavailable', reason: 'provider_unreachable', message: 'ИИ-помощник временно недоступен' };
         }
         this.updateAIButtonState();
         this.renderAIDrawer();
@@ -4053,17 +4053,32 @@ const app = {
             el('div', { class: 'ai-message__text', text: message.content }),
         ];
         if (!mine && message.references && message.references.length) {
-            children.push(el('div', { class: 'ai-message__refs' }, message.references.map(ref => {
+            children.push(el('div', { class: 'ai-result-cards' }, message.references.map(ref => {
                 if (ref.type !== 'patient') return null;
-                return el('button', {
-                    type: 'button',
-                    class: 'btn btn--ghost btn--sm',
-                    text: ref.label || 'Открыть пациента',
-                    on: { click: () => this.openPatientTab(ref.patientId, 'overview') },
-                });
+                return el('article', { class: 'ai-result-card' }, [
+                    el('div', { class: 'ai-result-card__body' }, [
+                        el('strong', { text: ref.title || 'Пациент' }),
+                        ref.subtitle ? el('span', { text: ref.subtitle }) : null,
+                    ]),
+                    el('button', {
+                        type: 'button',
+                        class: 'btn btn--ghost btn--sm',
+                        text: ref.label || 'Открыть',
+                        'aria-label': `${ref.label || 'Открыть'}: ${ref.title || 'пациент'}`,
+                        on: { click: () => this.openPatientTab(ref.patientId, 'overview') },
+                    }),
+                ]);
             })));
         }
         return el('article', { class: `ai-message ${mine ? 'ai-message--user' : 'ai-message--assistant'}` }, children);
+    },
+
+    aiUnavailableText(status) {
+        if (!status || status.available) return '';
+        if (status.reason === 'model_missing') return status.message || 'Локальная модель не загружена.';
+        if (status.reason === 'timeout') return 'Локальный AI-сервис не ответил вовремя.';
+        if (status.reason === 'provider_error') return 'Локальный AI-сервис вернул некорректный ответ.';
+        return 'Локальный AI-сервис недоступен.';
     },
 
     renderAIDrawer() {
@@ -4087,12 +4102,13 @@ const app = {
         if (!status.available) {
             messages.replaceChildren(el('div', { class: 'ai-empty ai-empty--unavailable' }, [
                 el('h3', { text: 'ИИ-помощник временно недоступен' }),
-                el('p', { text: 'Основная система продолжает работать. Для использования помощника необходимо запустить локальный AI-сервис.' }),
+                el('p', { text: 'Основная система продолжает работать.' }),
+                el('p', { text: this.aiUnavailableText(status) }),
                 el('button', {
                     type: 'button',
                     class: 'btn btn--ghost btn--sm',
                     text: 'Проверить снова',
-                    on: { click: () => this.refreshAIStatus() },
+                    on: { click: () => this.refreshAIStatus(true) },
                 }),
             ]));
         } else {
@@ -4129,15 +4145,19 @@ const app = {
             });
             const refs = response.references || [];
             this.ai.references = refs;
+            this.ai.status = { ...(this.ai.status || {}), enabled: true, available: true, state: 'available', reason: 'ok', message: 'ИИ-помощник доступен' };
             this.ai.messages.push({
                 role: 'assistant',
                 content: response.answer || 'В доступных данных системы такой информации нет.',
                 references: refs,
             });
         } catch (e) {
-            this.ai.lastError = e.status === 503
-                ? 'ИИ-помощник сейчас недоступен.'
-                : `Не удалось получить ответ: ${e.message}`;
+            if (e.status === 503) {
+                this.ai.status = { ...(this.ai.status || {}), enabled: true, available: false, state: 'unavailable', reason: 'provider_unreachable', message: 'ИИ-помощник временно недоступен' };
+                this.ai.lastError = 'ИИ-помощник временно недоступен. Попробуйте ещё раз позже.';
+            } else {
+                this.ai.lastError = 'Не удалось получить ответ. Попробуйте ещё раз позже.';
+            }
         } finally {
             this.ai.loading = false;
             this.renderAIDrawer();
@@ -5023,13 +5043,14 @@ const app = {
             $('analyticsTrendChart').replaceChildren(el('div', { class: 'empty', text: 'Данных по динамике за период нет.' }));
             return;
         }
-        const max = Math.max(1, ...rows.map(row => Math.max(row.new_patients || 0, row.completed_patients || 0)));
+        const rawMax = Math.max(0, ...rows.map(row => Math.max(row.new_patients || 0, row.completed_patients || 0)));
+        const max = Math.max(3, rawMax);
         const width = 640;
-        const height = 180;
-        const plotLeft = 32;
-        const plotRight = width - 16;
-        const plotTop = 14;
-        const plotBottom = height - 34;
+        const height = 210;
+        const plotLeft = 42;
+        const plotRight = width - 22;
+        const plotTop = 18;
+        const plotBottom = height - 48;
         const chart = document.createElementNS(SVG_NS, 'svg');
         chart.setAttribute('class', 'analytics-trend__svg');
         chart.setAttribute('viewBox', `0 0 ${width} ${height}`);
@@ -5044,6 +5065,17 @@ const app = {
             const [x, y] = point(row, index, key);
             return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
         }).join(' ');
+        [0, Math.ceil(max / 2), max].filter((value, index, self) => self.indexOf(value) === index).forEach(value => {
+            const y = plotBottom - (value / max) * (plotBottom - plotTop);
+            const grid = document.createElementNS(SVG_NS, 'line');
+            grid.setAttribute('class', 'analytics-trend__grid');
+            grid.setAttribute('x1', String(plotLeft));
+            grid.setAttribute('x2', String(plotRight));
+            grid.setAttribute('y1', String(Math.round(y * 10) / 10));
+            grid.setAttribute('y2', String(Math.round(y * 10) / 10));
+            chart.append(grid);
+            chart.append(this.svgText(12, y + 4, String(value), 'analytics-trend__y-label'));
+        });
         const area = document.createElementNS(SVG_NS, 'path');
         const last = point(rows[rows.length - 1], rows.length - 1, 'new_patients');
         const first = point(rows[0], 0, 'new_patients');
@@ -5056,6 +5088,16 @@ const app = {
             path.setAttribute('d', makePath(key));
             path.setAttribute('fill', 'none');
             chart.append(path);
+            rows.forEach((row, index) => {
+                const [x, y] = point(row, index, key);
+                const circle = document.createElementNS(SVG_NS, 'circle');
+                circle.setAttribute('class', `analytics-trend__point analytics-trend__point--${key}`);
+                circle.setAttribute('cx', String(x));
+                circle.setAttribute('cy', String(y));
+                circle.setAttribute('r', row[key] ? '3.5' : '2.5');
+                circle.append(document.createElementNS(SVG_NS, 'title')).textContent = `${row.label}: ${row[key] || 0}`;
+                chart.append(circle);
+            });
         });
         const axis = document.createElementNS(SVG_NS, 'line');
         axis.setAttribute('class', 'analytics-trend__axis');
@@ -5071,6 +5113,8 @@ const app = {
         $('analyticsTrendChart').replaceChildren(
             chart,
             el('div', { class: 'analytics-trend__meta' }, [
+                el('span', { class: 'analytics-trend__legend analytics-trend__legend--new', text: 'Новые пациенты' }),
+                el('span', { class: 'analytics-trend__legend analytics-trend__legend--completed', text: 'Завершения' }),
                 el('span', { text: `${rows.reduce((sum, row) => sum + (row.new_patients || 0), 0)} новых пациентов` }),
                 el('span', { text: `${rows.reduce((sum, row) => sum + (row.completed_patients || 0), 0)} завершений по истории этапов` }),
             ]),

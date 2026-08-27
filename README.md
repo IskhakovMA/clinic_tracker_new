@@ -154,23 +154,19 @@ node --check static/app.js             # синтаксис фронтенда (
 
 ## ИИ-помощник V1
 
-По умолчанию помощник отключён: `CLINIC_AI_ENABLED=false`. Если локальный
-AI-сервис не запущен или модель недоступна, приложение работает штатно, а
-интерфейс показывает компактное состояние «ИИ-помощник временно недоступен»
-без активного поля отправки.
+В локальном development-режиме backend автоматически проверяет LM Studio на
+`http://127.0.0.1:1234/v1` и модель `qwen3-8b`. Если локальный AI-сервис не
+запущен или модель недоступна, приложение работает штатно, а интерфейс
+показывает компактное состояние «ИИ-помощник временно недоступен» без активного
+поля отправки.
 
-Для локального development smoke можно использовать OpenAI-compatible endpoint,
-например LM Studio на `http://127.0.0.1:1234/v1`:
+Для production/internal deployment используйте явную конфигурацию:
+`CLINIC_ENV=production`, `CLINIC_AI_MODE=configured`, `CLINIC_AI_BASE_URL` и
+`CLINIC_AI_MODEL`, либо `CLINIC_AI_MODE=disabled`. Silent autodiscovery
+localhost-provider в production не используется.
 
-```bash
-CLINIC_AI_ENABLED=true
-CLINIC_AI_BASE_URL=http://127.0.0.1:1234/v1
-CLINIC_AI_MODEL=<local-model-name>
-uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
-```
-
-`GET /api/ai/status` безопасно перепроверяет локальный `/models`: после запуска
-LM Studio доступность можно обновить из интерфейса без перезапуска backend.
+`GET /api/ai/status` безопасно перепроверяет `/models`: после запуска LM Studio
+доступность можно обновить кнопкой «Проверить снова» без перезапуска backend.
 API key задаётся только на backend через `CLINIC_AI_API_KEY` и не возвращается
 во frontend. Помощник не имеет write-tools, не хранит историю в SQLite или
 браузерных storage и не получает телефон/полис ОМС через V1 tools.

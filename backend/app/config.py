@@ -76,13 +76,24 @@ NOTIFICATION_BATCH_LIMIT_MAX = 200
 NOTIFICATION_MOCK_MODE = os.environ.get("NOTIFICATION_MOCK_MODE", "success").strip().lower()
 NOTIFICATION_PROCESSING_LEASE_SECONDS = int(os.environ.get("NOTIFICATION_PROCESSING_LEASE_SECONDS", "300"))
 
-# Read-only AI assistant. Disabled by default; when disabled the main app keeps
-# working and the UI shows a controlled unavailable state.
-AI_ENABLED = os.environ.get("CLINIC_AI_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+APP_ENV = os.environ.get("CLINIC_ENV", "local").strip().lower()
+
+# Read-only AI assistant. In local development, the backend may auto-detect an
+# LM Studio OpenAI-compatible server. Production deployments must use explicit
+# configuration or explicitly disable AI.
+AI_MODE = os.environ.get("CLINIC_AI_MODE", "").strip().lower()
+AI_ENABLED_RAW = os.environ.get("CLINIC_AI_ENABLED")
+AI_ENABLED = (AI_ENABLED_RAW or "").strip().lower() in ("1", "true", "yes")
+AI_BASE_URL_EXPLICIT = "CLINIC_AI_BASE_URL" in os.environ
+AI_MODEL_EXPLICIT = "CLINIC_AI_MODEL" in os.environ
 AI_BASE_URL = os.environ.get("CLINIC_AI_BASE_URL", "http://127.0.0.1:1234/v1").strip().rstrip("/")
 AI_MODEL = os.environ.get("CLINIC_AI_MODEL", "").strip()
+AI_LOCAL_BASE_URL = os.environ.get("CLINIC_AI_LOCAL_BASE_URL", "http://127.0.0.1:1234/v1").strip().rstrip("/")
+AI_LOCAL_MODEL = os.environ.get("CLINIC_AI_LOCAL_MODEL", "qwen3-8b").strip()
 AI_API_KEY = os.environ.get("CLINIC_AI_API_KEY", "")
 AI_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_TIMEOUT_SECONDS", "45")), 120))
+AI_HEALTH_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_HEALTH_TIMEOUT_SECONDS", "2")), 10))
+AI_HEALTH_CACHE_TTL_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_HEALTH_CACHE_TTL_SECONDS", "10")), 300))
 AI_MAX_OUTPUT_TOKENS = max(128, min(int(os.environ.get("CLINIC_AI_MAX_OUTPUT_TOKENS", "1200")), 4000))
 AI_MAX_TOOL_CALLS = max(1, min(int(os.environ.get("CLINIC_AI_MAX_TOOL_CALLS", "8")), 16))
 AI_MAX_HISTORY_MESSAGES = max(0, min(int(os.environ.get("CLINIC_AI_MAX_HISTORY_MESSAGES", "12")), 24))

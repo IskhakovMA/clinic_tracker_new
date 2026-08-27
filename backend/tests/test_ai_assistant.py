@@ -44,16 +44,32 @@ def _create_patient(doctor_id=None, **overrides):
 def _enable_ai(monkeypatch):
     from backend.app import config
 
+    monkeypatch.setattr(config, "AI_MODE", "")
     monkeypatch.setattr(config, "AI_ENABLED", True)
+    monkeypatch.setattr(config, "AI_ENABLED_RAW", "true")
     monkeypatch.setattr(config, "AI_MODEL", "test-model")
     monkeypatch.setattr(config, "AI_BASE_URL", "http://127.0.0.1:1234/v1")
 
 
-def test_ai_status_disabled_default_and_no_secrets(auth_client):
+def test_ai_status_disabled_default_and_no_secrets(auth_client, monkeypatch):
+    from backend.app.routes import ai as ai_routes
+    from backend.app.ai.provider import AIProviderHealth
+
+    monkeypatch.setattr(
+        ai_routes,
+        "provider_health",
+        lambda force_refresh=False: AIProviderHealth(
+            state="unavailable",
+            available=False,
+            message="ИИ-помощник временно недоступен",
+            reason="provider_unreachable",
+        ),
+    )
     response = auth_client.get("/api/ai/status")
     assert response.status_code == 200
     body = response.json()
-    assert body == {"enabled": False, "available": False, "message": "ИИ-помощник не настроен"}
+    assert body["available"] is False
+    assert body["message"] in {"ИИ-помощник временно недоступен", "Локальная модель qwen3-8b не загружена."}
     assert "base" not in json.dumps(body).lower()
     assert "key" not in json.dumps(body).lower()
 
@@ -62,9 +78,20 @@ def test_ai_status_enabled_configuration_still_hides_provider(auth_client, monke
     _enable_ai(monkeypatch)
     from backend.app import config
     from backend.app.routes import ai as ai_routes
+    from backend.app.ai.provider import AIProviderHealth, AIProviderSettings
 
     monkeypatch.setattr(config, "AI_API_KEY", "secret-test-key")
-    monkeypatch.setattr(ai_routes, "provider_reachable", lambda: True)
+    monkeypatch.setattr(
+        ai_routes,
+        "provider_health",
+        lambda force_refresh=False: AIProviderHealth(
+            state="available",
+            available=True,
+            message="ИИ-помощник доступен",
+            reason="ok",
+            settings=AIProviderSettings("configured", "http://127.0.0.1:1234/v1", "test-model", "secret-test-key"),
+        ),
+    )
     response = auth_client.get("/api/ai/status")
     assert response.status_code == 200
     body = response.json()
@@ -79,22 +106,179 @@ def test_ai_status_enabled_configuration_still_hides_provider(auth_client, monke
 def test_ai_status_configured_but_provider_unreachable(auth_client, monkeypatch):
     _enable_ai(monkeypatch)
     from backend.app.routes import ai as ai_routes
+    from backend.app.ai.provider import AIProviderHealth
 
-    monkeypatch.setattr(ai_routes, "provider_reachable", lambda: False)
+    monkeypatch.setattr(
+        ai_routes,
+        "provider_health",
+        lambda force_refresh=False: AIProviderHealth(
+            state="unavailable",
+            available=False,
+            message="ИИ-помощник временно недоступен",
+            reason="provider_unreachable",
+        ),
+    )
     response = auth_client.get("/api/ai/status")
     assert response.status_code == 200
-    assert response.json() == {
-        "enabled": True,
-        "available": False,
-        "message": "ИИ-помощник временно недоступен",
-    }
+    assert response.json()["available"] is False
+    assert response.json()["reason"] == "provider_unreachable"
+
+
+def test_ai_local_autodiscovery_available_and_explicit_disabled(monkeypatch):
+    from backend.app import config
+    from backend.app.ai import provider
+    from backend.app.ai.provider import AIProviderHealth, AIProviderSettings
+
+    provider.clear_health_cache()
+    monkeypatch.setattr(config, "APP_ENV", "local")
+    monkeypatch.setattr(config, "HOST", "127.0.0.1")
+    monkeypatch.setattr(config, "HTTPS", False)
+    monkeypatch.setattr(config, "AI_MODE", "")
+    monkeypatch.setattr(config, "AI_ENABLED_RAW", None)
+    monkeypatch.setattr(config, "AI_ENABLED", False)
+    monkeypatch.setattr(config, "AI_MODEL", "")
+    monkeypatch.setattr(config, "AI_MODEL_EXPLICIT", False)
+    monkeypatch.setattr(config, "AI_BASE_URL_EXPLICIT", False)
+    monkeypatch.setattr(
+        provider,
+        "_probe_provider",
+        lambda settings, timeout: AIProviderHealth("available", True, "ИИ-помощник доступен", "ok", settings),
+    )
+
+    health = provider.provider_health(force_refresh=True)
+    assert health.available is True
+    assert health.settings == AIProviderSettings("auto", "http://127.0.0.1:1234/v1", "qwen3-8b", "")
+
+    monkeypatch.setattr(config, "AI_MODE", "disabled")
+    assert provider.provider_health(force_refresh=True).state == "disabled"
+
+
+def test_ai_configured_provider_overrides_local_default(monkeypatch):
+    from backend.app import config
+    from backend.app.ai import provider
+
+    provider.clear_health_cache()
+    monkeypatch.setattr(config, "AI_MODE", "configured")
+    monkeypatch.setattr(config, "AI_ENABLED_RAW", None)
+    monkeypatch.setattr(config, "AI_ENABLED", False)
+    monkeypatch.setattr(config, "AI_BASE_URL", "http://127.0.0.1:7777/v1")
+    monkeypatch.setattr(config, "AI_MODEL", "configured-model")
+    settings = provider.resolve_provider_settings()
+    assert settings.mode == "configured"
+    assert settings.base_url == "http://127.0.0.1:7777/v1"
+    assert settings.model == "configured-model"
+
+
+def test_ai_provider_health_cache_and_refresh(monkeypatch):
+    from backend.app import config
+    from backend.app.ai import provider
+    from backend.app.ai.provider import AIProviderHealth
+
+    provider.clear_health_cache()
+    monkeypatch.setattr(config, "AI_MODE", "")
+    monkeypatch.setattr(config, "AI_ENABLED_RAW", None)
+    monkeypatch.setattr(config, "AI_ENABLED", False)
+    monkeypatch.setattr(config, "AI_MODEL", "")
+    monkeypatch.setattr(config, "AI_MODEL_EXPLICIT", False)
+    monkeypatch.setattr(config, "AI_BASE_URL_EXPLICIT", False)
+    calls = {"count": 0}
+
+    def probe(settings, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return AIProviderHealth("unavailable", False, "ИИ-помощник временно недоступен", "provider_unreachable", settings)
+        return AIProviderHealth("available", True, "ИИ-помощник доступен", "ok", settings)
+
+    monkeypatch.setattr(provider, "_probe_provider", probe)
+    assert provider.provider_health(force_refresh=True).available is False
+    assert provider.provider_health().available is False
+    assert calls["count"] == 1
+    assert provider.provider_health(force_refresh=True).available is True
+    assert calls["count"] == 2
+
+
+def test_ai_local_autodiscovery_model_missing_and_timeout(monkeypatch):
+    from backend.app import config
+    from backend.app.ai import provider
+    from backend.app.ai.provider import AIProviderHealth
+
+    provider.clear_health_cache()
+    monkeypatch.setattr(config, "AI_MODE", "")
+    monkeypatch.setattr(config, "AI_ENABLED_RAW", None)
+    monkeypatch.setattr(config, "AI_ENABLED", False)
+    monkeypatch.setattr(config, "AI_MODEL", "")
+    monkeypatch.setattr(config, "AI_MODEL_EXPLICIT", False)
+    monkeypatch.setattr(config, "AI_BASE_URL_EXPLICIT", False)
+    settings = provider.resolve_provider_settings()
+    monkeypatch.setattr(
+        provider,
+        "_probe_provider",
+        lambda _settings, timeout: AIProviderHealth(
+            "unavailable",
+            False,
+            f"Локальная модель {_settings.model} не загружена.",
+            "model_missing",
+            _settings,
+        ),
+    )
+    missing = provider.provider_health(force_refresh=True)
+    assert missing.reason == "model_missing"
+    assert "qwen3-8b" in missing.message
+
+    monkeypatch.setattr(
+        provider,
+        "_probe_provider",
+        lambda _settings, timeout: AIProviderHealth("unavailable", False, "ИИ-помощник временно недоступен", "timeout", _settings),
+    )
+    timeout = provider.provider_health(force_refresh=True)
+    assert timeout.reason == "timeout"
+    assert settings.model == "qwen3-8b"
+
+
+def test_ai_default_provider_recovers_after_local_provider_comes_online(monkeypatch):
+    from backend.app import config
+    from backend.app.ai import provider
+    from backend.app.ai.provider import AIProviderHealth, AIProviderUnavailable
+
+    provider.clear_health_cache()
+    monkeypatch.setattr(config, "AI_MODE", "")
+    monkeypatch.setattr(config, "AI_ENABLED_RAW", None)
+    monkeypatch.setattr(config, "AI_ENABLED", False)
+    monkeypatch.setattr(config, "AI_MODEL", "")
+    monkeypatch.setattr(config, "AI_MODEL_EXPLICIT", False)
+    monkeypatch.setattr(config, "AI_BASE_URL_EXPLICIT", False)
+    calls = {"count": 0}
+
+    def probe(settings, timeout):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return AIProviderHealth("unavailable", False, "ИИ-помощник временно недоступен", "provider_unreachable", settings)
+        return AIProviderHealth("available", True, "ИИ-помощник доступен", "ok", settings)
+
+    class FakeOpenAIProvider:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    monkeypatch.setattr(provider, "_probe_provider", probe)
+    monkeypatch.setattr(provider, "OpenAICompatibleAIProvider", FakeOpenAIProvider)
+
+    try:
+        provider.default_provider()
+    except AIProviderUnavailable:
+        pass
+    else:
+        raise AssertionError("offline provider must fail safely")
+
+    recovered = provider.default_provider()
+    assert recovered.kwargs["model"] == "qwen3-8b"
+    assert calls["count"] == 2
 
 
 def test_ai_chat_auth_csrf_strict_schema_and_disabled(auth_client):
     assert auth_client.post("/api/ai/chat", json={"message": "Привет"}).status_code == 403
     disabled = auth_client.post("/api/ai/chat", json={"message": "Привет"}, headers=auth_client.csrf)
     assert disabled.status_code == 503
-    assert disabled.json()["detail"] == "ИИ-помощник не настроен."
+    assert disabled.json()["detail"] == "ИИ-помощник временно недоступен"
     assert auth_client.post(
         "/api/ai/chat",
         json={"message": "x", "role": "system"},
@@ -122,7 +306,9 @@ def test_ai_provider_tool_call_and_references(auth_client, monkeypatch):
     result = orchestrator.answer(get_conn(), user, AIChatIn(message="Найди пациента ИИ"), provider=provider)
     assert result["answer"] == "Найден один пациент."
     assert result["usage"]["toolCalls"] == 1
-    assert result["references"] == [{"type": "patient", "patientId": patient_id, "label": "Открыть пациента"}]
+    assert result["references"][0]["patientId"] == patient_id
+    assert result["references"][0]["label"] == "Открыть"
+    assert result["references"][0]["title"] == "ИИ Пациент"
     tool_payload = json.loads(provider.calls[1]["messages"][-1]["content"])
     assert tool_payload["patients"][0]["displayName"] == "ИИ Пациент"
     assert "policyNumber" not in json.dumps(tool_payload)
@@ -168,7 +354,8 @@ def test_ai_followup_reference_hint_uses_scoped_attention_order(auth_client, mon
     assert any("patientId=" + expected_id in message["content"] for message in first_messages if message["role"] == "system")
     tool_payload = json.loads(provider.calls[1]["messages"][-1]["content"])
     assert tool_payload["patientId"] == expected_id
-    assert result["references"] == [{"type": "patient", "patientId": expected_id, "label": "Открыть пациента"}]
+    assert result["references"][0]["patientId"] == expected_id
+    assert result["references"][0]["label"] == "Открыть"
 
 
 def test_ai_followup_executes_resolved_read_only_fallback_when_model_skips_tool(auth_client, monkeypatch):
@@ -207,8 +394,64 @@ def test_ai_followup_executes_resolved_read_only_fallback_when_model_skips_tool(
 
     assert result["answer"] == "Второй требует решения заведующего."
     assert result["usage"]["toolCalls"] == 1
-    assert result["references"] == [{"type": "patient", "patientId": second_id, "label": "Открыть пациента"}]
+    assert result["references"][0]["patientId"] == second_id
+    assert result["references"][0]["label"] == "Открыть"
     assert "Backend read-only follow-up result inside current scope" in provider.calls[1]["messages"][-1]["content"]
+
+
+def test_ai_followup_fallback_rejects_ambiguous_or_invented_context(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    _create_patient(name="ИИ Единственный")
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn, AIHistoryMessage
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    for message in ("А второй?", "Покажи пациента 999999"):
+        provider = FakeProvider([_result("В доступных данных системы такой информации нет.")])
+        result = orchestrator.answer(
+            get_conn(),
+            user,
+            AIChatIn(
+                message=message,
+                history=[
+                    AIHistoryMessage(role="user", content="Расскажи общую информацию"),
+                    AIHistoryMessage(role="assistant", content="Готово."),
+                ],
+            ),
+            provider=provider,
+        )
+        assert result["usage"]["toolCalls"] == 0
+        assert result["references"] == []
+
+
+def test_ai_common_attention_reason_uses_scoped_read_context(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    patient_id = _create_patient(name="ИИ Причина")
+    response = auth_client.post(
+        f"/api/patients/{patient_id}/attention",
+        json={"reasonCode": "department_head_decision_required", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([_result("Самая частая причина — требуется решение заведующего.")])
+
+    result = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(message="Какая самая частая причина внимания?"),
+        provider=provider,
+    )
+
+    assert result["usage"]["toolCalls"] == 1
+    assert result["answer"].startswith("Самая частая причина")
+    assert "get_analytics_summary" in provider.calls[0]["messages"][-1]["content"]
 
 
 def test_openai_provider_malformed_response_and_reasoning_strip():
