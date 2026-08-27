@@ -79,6 +79,15 @@ def test_recommended_completeness_fields_and_score(auth_client):
     assert "missing_treating_doctor" in codes
 
 
+def test_complete_required_fields_can_still_have_quality_problems(auth_client):
+    doctor = create_account("quality.complete.doc", "doctor", "Врач Полной Карточки")
+    pid = _create_patient(doctor, events=[{"date": "2000-01-01"}], policyNumber="1234567890123456")
+    body = auth_client.get(f"/api/data-quality/patients/{pid}").json()
+    assert body["patient"]["completeness"]["score"] == 100
+    assert body["patient"]["completeness"]["missing"] == []
+    assert "overdue_event" in _issue_codes(body)
+
+
 def test_overdue_event_without_duplicate_planned_date_finding(auth_client):
     pid = _create_patient(events=[{"date": "2000-01-01"}])
     body = auth_client.get(f"/api/data-quality/patients/{pid}").json()

@@ -387,7 +387,7 @@ const app = {
         info: 'Информация',
     },
     QUALITY_CATEGORY_LABELS: {
-        completeness: 'Полнота карточки',
+        completeness: 'Заполненность полей',
         assignment: 'Ответственные',
         format: 'Формат данных',
         dates: 'Даты',
@@ -422,9 +422,9 @@ const app = {
 
     NOTIFICATION_STATUS_LABELS: {
         pending: 'Ожидает отправки',
-        processing: 'В обработке',
-        sent: 'Обработано тестовым провайдером',
-        failed: 'Ошибка',
+        processing: 'Отправляется',
+        sent: 'Отправлено',
+        failed: 'Ошибка отправки',
         cancelled: 'Отменено',
         skipped: 'Пропущено',
     },
@@ -438,7 +438,7 @@ const app = {
         missing_phone: 'Телефон отсутствует',
         patient_unavailable: 'Пациент недоступен',
         template_disabled: 'Шаблон отключён',
-        provider_failed: 'Ошибка тестового провайдера',
+        provider_failed: 'Ошибка отправки в тестовом режиме',
         retry_scheduled: 'Повтор запланирован',
         event_inactive: 'Событие завершено или отменено',
         event_rescheduled: 'Дата события изменена',
@@ -2350,7 +2350,7 @@ const app = {
         $('qualitySortSelect').replaceChildren(frag([
             option('severity', 'Сначала серьёзные', true),
             option('issues', 'Больше проблем выше'),
-            option('completeness', 'Ниже полнота выше'),
+            option('completeness', 'Ниже заполненность выше'),
         ]));
 
         $('notificationsStatusFilter').replaceChildren(frag([
@@ -2372,7 +2372,7 @@ const app = {
         ]));
         $('analyticsNosologyFilter').replaceChildren(frag([
             option('', 'Любая локализация', true),
-            ...Object.keys(this.nosologyData).map(key => option(key, this.nosologyData[key].label)),
+            ...this.analyticsLocalizationOptions().map(item => option(item.value, item.label)),
         ]));
         $('analyticsDoctorFilter').replaceChildren(option('', 'Любой лечащий врач', true));
         $('analyticsDepartmentFilter').replaceChildren(option('', 'Любое отделение', true));
@@ -3729,11 +3729,11 @@ const app = {
             }, children);
         };
         $('qualityStatsRow').replaceChildren(frag([
-            stat('Пациентов с проблемами', s.patients_with_issues, `${s.total_patients || 0} в scope`),
+            stat('Пациентов с проблемами', s.patients_with_issues, `${s.total_patients || 0} в области доступа`),
             stat('Критические ошибки', s.critical_count, 'требуют проверки', { severity: 'critical' }),
             stat('Предупреждения', s.warning_count, 'уточнить данные', { severity: 'warning' }),
             stat('Возможные дубли', s.possible_duplicate_groups, 'только ручная проверка', { code: 'possible_duplicate' }),
-            stat('Средняя полнота данных', `${s.average_completeness ?? 100}%`, 'регистрационная карточка'),
+            stat('Заполненность обязательных полей', `${s.average_completeness ?? 100}%`, 'не включает проблемы маршрута и дат'),
         ]));
     },
 
@@ -3771,11 +3771,11 @@ const app = {
             el('td', { class: 'cell-quality-score' }, [
                 el('div', { class: 'quality-score' }, [
                     el('span', { class: 'quality-score__value', text: `${row.completeness.score}%` }),
-                    el('span', { class: 'quality-score__label', text: 'Полнота регистрационной карточки' }),
+                    el('span', { class: 'quality-score__label', text: 'Заполненность обязательных полей' }),
                 ]),
                 row.completeness.missing.length
                     ? el('div', { class: 'muted', text: `Не заполнено: ${row.completeness.missing.map(m => m.label).join(', ')}` })
-                    : el('div', { class: 'muted', text: 'Все поля формулы заполнены' }),
+                    : el('div', { class: 'muted', text: 'Обязательные поля заполнены' }),
             ]),
             el('td', { class: 'cell-quality-issues' }, [
                 row.max_severity ? this.qualitySeverityChip(row.max_severity) : this.qualitySeverityChip(null),
@@ -3821,7 +3821,7 @@ const app = {
                     on: { click: () => this.openPatient(p.patient_id) },
                 }, [
                     el('span', { class: 'sheet-item__title', text: p.patient_name }),
-                    el('span', { class: 'sheet-item__hint', text: `Полнота карточки: ${p.completeness}%` }),
+                    el('span', { class: 'sheet-item__hint', text: `Заполненность полей: ${p.completeness}%` }),
                 ]))),
             ])),
         ]));
@@ -3843,11 +3843,11 @@ const app = {
                 el('h2', { class: 'section-title', text: 'Качество данных' }),
                 el('div', { class: 'quality-score quality-score--block' }, [
                     el('span', { class: 'quality-score__value', text: `${comp.score}%` }),
-                    el('span', { class: 'quality-score__label', text: 'Полнота регистрационной карточки' }),
+                    el('span', { class: 'quality-score__label', text: 'Заполненность обязательных полей' }),
                 ]),
                 comp.missing.length
-                    ? el('p', { class: 'muted', text: `В формуле не заполнено: ${comp.missing.map(m => m.label).join(', ')}.` })
-                    : el('p', { class: 'muted', text: 'Все поля формулы заполнены.' }),
+                    ? el('p', { class: 'muted', text: `Не заполнено: ${comp.missing.map(m => m.label).join(', ')}.` })
+                    : el('p', { class: 'muted', text: 'Обязательные поля заполнены.' }),
                 issues.length
                     ? el('div', { class: 'quality-findings' }, issues.map(issue => this.renderQualityFinding(patientId, issue)))
                     : el('div', { class: 'empty', text: 'По действующим правилам качества проблем не обнаружено.' }),
@@ -4518,11 +4518,11 @@ const app = {
             el('div', { class: 'stat__meta', text: meta }),
         ]);
         $('notificationsStatsRow').replaceChildren(frag([
-            stat('Ожидают отправки', s.pending_count, 'очередь'),
-            stat('Отправлены', s.sent_count, 'тестовый провайдер'),
+            stat('Ожидают отправки', s.pending_count, 'сообщения'),
+            stat('Отправлены', s.sent_count, 'тестовый режим'),
             stat('Ошибки', s.failed_count, 'требуют проверки'),
             stat('Отменены', s.cancelled_count, 'не будут отправлены'),
-            stat('Без согласия', s.patients_without_consent, 'пациенты в scope'),
+            stat('Без согласия', s.patients_without_consent, 'пациенты в области доступа'),
             stat('Некорректный телефон', s.patients_with_invalid_phone, 'проверить контакт'),
         ]));
     },
@@ -4550,7 +4550,7 @@ const app = {
             body.replaceChildren();
             empty.classList.remove('is-hidden');
             empty.textContent = this.notifications.total === 0
-                ? 'Очередь уведомлений пуста.'
+                ? 'Ожидающих сообщений нет.'
                 : 'По выбранным условиям уведомления не найдены.';
             return;
         }
@@ -4730,6 +4730,7 @@ const app = {
     renderAnalyticsFilterOptions() {
         const selectedDoctor = this.analytics.filters.doctor;
         const selectedDepartment = this.analytics.filters.department;
+        const selectedNosology = this.analytics.filters.nosology;
         const workloadRows = (this.analytics.workload && this.analytics.workload.rows) || [];
         const doctors = workloadRows
             .filter(row => row.doctor_user_id)
@@ -4753,10 +4754,25 @@ const app = {
             option('', 'Любое отделение', !selectedDepartment),
             ...departments.map(d => option(d.id, d.name, d.id === selectedDepartment)),
         ]));
+        $('analyticsNosologyFilter').replaceChildren(frag([
+            option('', 'Любая локализация', !selectedNosology),
+            ...this.analyticsLocalizationOptions().map(item => option(item.value, item.label, item.value === selectedNosology)),
+        ]));
         $('analyticsAttentionReasonFilter').replaceChildren(frag([
             option('', 'Любая причина внимания', !this.analytics.filters.attentionReason),
             ...Object.entries(this.ATTENTION_REASON_LABELS).map(([code, label]) => option(code, label, code === this.analytics.filters.attentionReason)),
         ]));
+    },
+
+    analyticsLocalizationOptions() {
+        const seenLabels = new Set();
+        return Object.entries(this.nosologyData).reduce((items, [value, data]) => {
+            const label = data.label || value;
+            if (seenLabels.has(label)) return items;
+            seenLabels.add(label);
+            items.push({ value, label });
+            return items;
+        }, []);
     },
 
     resetAnalyticsFilters() {
@@ -4832,14 +4848,14 @@ const app = {
     renderAnalyticsWorkload() {
         const rows = (this.analytics.workload && this.analytics.workload.rows) || [];
         if (!rows.length) {
-            $('analyticsWorkloadList').replaceChildren(el('div', { class: 'empty', text: 'Нет данных по нагрузке в текущем scope.' }));
+            $('analyticsWorkloadList').replaceChildren(el('div', { class: 'empty', text: 'Нет данных по нагрузке в текущей области доступа.' }));
             return;
         }
         const chartRows = rows.slice(0, 8).map(row => ({
             label: row.doctor_name,
             count: row.active_patients,
             percent: 0,
-            meta: `Просрочки: ${row.overdue_patients}; чек-листы: ${row.incomplete_required_checklists}; уведомления failed: ${row.failed_notifications}`,
+            meta: `Просрочки: ${row.overdue_patients}; чек-листы: ${row.incomplete_required_checklists}; ошибки отправки: ${row.failed_notifications}`,
         }));
         const max = Math.max(1, ...chartRows.map(row => row.count));
         chartRows.forEach(row => { row.percent = Math.round(row.count / max * 1000) / 10; });
@@ -5109,7 +5125,7 @@ const app = {
                 templateCode,
                 scheduledAt: scheduled.toISOString(),
             });
-            ui.toast(result.duplicate ? 'Такое напоминание уже есть в очереди.' : 'Напоминание создано.', 'success');
+            ui.toast(result.duplicate ? 'Такое напоминание уже ожидает отправки.' : 'Напоминание создано.', 'success');
             await this.renderPatientNotificationsBlock(patientId);
             if (this.currentView === 'notifications') this.renderNotifications();
         } catch (e) {
@@ -5151,10 +5167,10 @@ const app = {
     async processNotificationsDue() {
         try {
             const result = await apiPost('/api/notifications/process-due?limit=100');
-            ui.toast(`Обработано тестовым провайдером: ${result.processed || 0}.`, 'success');
+            ui.toast(`Отправлено в тестовом режиме: ${result.processed || 0}.`, 'success');
             this.renderNotifications();
         } catch (e) {
-            ui.toast(`Не удалось обработать очередь: ${e.message}`, 'danger');
+            ui.toast(`Не удалось отправить ожидающие сообщения: ${e.message}`, 'danger');
         }
     },
 

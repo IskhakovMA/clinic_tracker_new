@@ -171,12 +171,46 @@ def test_data_quality_frontend_entrypoint_and_api_contract_are_present():
     assert "/api/data-quality/summary" in js
     assert "/api/data-quality/issues" in js
     assert "/api/data-quality/patients/" in js
-    assert "Полнота регистрационной карточки" in js
+    assert "Заполненность обязательных полей" in js
     assert "possible_duplicate" in js
     assert "Локализация/клиентский путь" in js
     assert "'nosology'" in js
     assert "Режим просмотра — изменение данных недоступно" in js
     assert "action.can_write !== false" in js
+
+
+def test_ux_audit_cleanup_frontend_copy_is_user_friendly():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    visible_frontend = "\n".join((html, js))
+
+    for old_text in (
+        "Обработать очередь",
+        "Очередь уведомлений пуста",
+        "состояние очереди",
+        "Персональная очередь",
+        "уведомления failed",
+        "текущем scope",
+        "пациенты в scope",
+        "Средняя полнота данных",
+        "Полнота регистрационной карточки",
+        "Все поля формулы заполнены",
+    ):
+        assert old_text not in visible_frontend
+
+    for new_text in (
+        "Отправить ожидающие сообщения",
+        "Ожидающих сообщений нет",
+        "статусы отправки",
+        "ошибки отправки",
+        "текущей области доступа",
+        "Заполненность обязательных полей",
+        "Проблемы, которые требуют проверки или уточнения",
+        "Сформировать напоминания",
+    ):
+        assert new_text in visible_frontend
+
+    assert "analyticsLocalizationOptions" in js
 
 
 def test_policy_number_frontend_contract_is_present():

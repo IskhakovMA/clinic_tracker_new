@@ -154,7 +154,8 @@ def test_dashboard_visual_aggregates_filters_and_scope(client):
     assert stages["completed"]["count"] == 1
     assert round(sum(row["percent"] for row in body["profiles"]["rows"]), 1) in (99.9, 100.0, 100.1)
     profile_rows = {row["meta"]["nosology"]: row for row in body["profiles"]["rows"]}
-    assert profile_rows["lung34"]["count"] == 2
+    assert profile_rows["lung12"]["count"] == 2
+    assert profile_rows["lung12"]["meta"]["nosology_codes"] == ["lung12", "lung34"]
     route_rows = {row["code"]: row for row in body["route_state"]["rows"]}
     assert route_rows["operational_signals"]["meta"]["overlap"] is True
     assert route_rows["dispensary_observation"]["count"] == 0
@@ -171,6 +172,35 @@ def test_dashboard_visual_aggregates_filters_and_scope(client):
     scoped = client.get(f"/api/analytics/dashboard?doctor_user_id={ids['doc_b']}").json()
     assert scoped["summary"]["cards"][0]["value"] == 0
     assert scoped["workload"]["rows"] == []
+
+
+def test_analytics_localization_filter_groups_duplicate_profile_labels(client):
+    ids = _stand(client)
+    _create_patient(
+        ids["doc_a"],
+        name="Аналитика Пациент Лёгкое 12",
+        phone="+7 (999) 404-40-40",
+        diagnosis="C34.3 скрытый диагноз",
+        nosology="lung12",
+        events=[],
+    )
+
+    _as_user(client, "analytics.dev")
+    body = client.get("/api/analytics/dashboard").json()
+    lung_rows = [row for row in body["profiles"]["rows"] if row["label"] == "Лёгкое"]
+    assert len(lung_rows) == 1
+    assert lung_rows[0]["count"] == 2
+    assert lung_rows[0]["meta"]["nosology"] == "lung12"
+    assert lung_rows[0]["meta"]["nosology_codes"] == ["lung12", "lung34"]
+
+    filtered_by_lung12 = client.get("/api/analytics/dashboard?nosology=lung12").json()
+    filtered_by_lung34 = client.get("/api/analytics/dashboard?nosology=lung34").json()
+    assert filtered_by_lung12["summary"]["cards"][0]["value"] == 2
+    assert filtered_by_lung34["summary"]["cards"][0]["value"] == 2
+
+    _as_user(client, "analytics.doc.a")
+    outside_scope = client.get(f"/api/analytics/dashboard?nosology=lung12&doctor_user_id={ids['doc_b']}").json()
+    assert outside_scope["summary"]["cards"][0]["value"] == 0
 
 
 def test_summary_stages_overdue_and_details_respect_patient_scope(client):
@@ -209,6 +239,21 @@ def test_summary_stages_overdue_and_details_respect_patient_scope(client):
     assert _card(doctor_summary, "total_patients")["value"] == 1
     assert client.get(f"/api/analytics/summary?doctor_user_id={ids['doc_b']}").json()["cards"][0]["value"] == 0
     assert client.get(f"/api/analytics/details?type=patients&department_id={ids['dept_b']}").json()["items"] == []
+
+
+def test_analytics_user_facing_definitions_do_not_use_internal_english_terms(client):
+    _stand(client)
+    _as_user(client, "analytics.dev")
+    body = client.get("/api/analytics/dashboard").json()
+    visible = json.dumps({
+        "summary": body["summary"]["cards"],
+        "data_quality": body["data_quality"],
+        "attention": body["attention"],
+    }, ensure_ascii=False)
+    for forbidden in ("critical findings", "warning findings", "planned events", "статусе failed", "статусе pending"):
+        assert forbidden not in visible
+    assert "Критические проблемы" in visible
+    assert "Уведомления с ошибкой отправки" in visible
 
 
 def test_analytics_readonly_roles_can_read_but_not_write(client):
