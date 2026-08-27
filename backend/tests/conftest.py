@@ -17,6 +17,7 @@ DEV_FULL_NAME = "Разработчиков Тест Системович"
 def client(tmp_path, monkeypatch):
     """TestClient with an isolated temp database per test."""
     monkeypatch.setenv("CLINIC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CLINIC_AI_MODE", "disabled")
 
     for mod in list(sys.modules):
         if mod.startswith("backend."):

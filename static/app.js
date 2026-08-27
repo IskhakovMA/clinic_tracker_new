@@ -3915,11 +3915,11 @@ const app = {
 
     /* ============================================================= ИИ-ПОМОЩНИК */
 
-    async refreshAIStatus() {
+    async refreshAIStatus(force = false) {
         try {
-            this.ai.status = await apiGetJson('/api/ai/status');
+            this.ai.status = await apiGetJson(`/api/ai/status${force ? '?refresh=true' : ''}`);
         } catch (e) {
-            this.ai.status = { enabled: false, available: false, message: 'ИИ-помощник сейчас недоступен.' };
+            this.ai.status = { enabled: true, available: false, state: 'unavailable', reason: 'provider_unreachable', message: 'ИИ-помощник временно недоступен' };
         }
         this.updateAIButtonState();
         this.renderAIDrawer();
@@ -3970,7 +3970,11 @@ const app = {
         $('aiAssistantDrawer').setAttribute('aria-hidden', 'false');
         $('aiAssistantBtn').setAttribute('aria-expanded', 'true');
         this.renderAIDrawer();
-        $('aiAssistantInput').focus();
+        if (this.ai.status && this.ai.status.available) {
+            $('aiAssistantInput').focus();
+        } else {
+            $('aiAssistantClose').focus();
+        }
     },
 
     closeAIDrawer(returnFocus = true) {
@@ -4021,6 +4025,13 @@ const app = {
     renderAISuggestions() {
         const box = $('aiAssistantSuggestions');
         if (!box) return;
+        const status = this.ai.status || {};
+        if (!status.available) {
+            box.replaceChildren();
+            box.classList.add('is-hidden');
+            return;
+        }
+        box.classList.remove('is-hidden');
         const suggestions = this.roleAISuggestions();
         box.replaceChildren(frag(suggestions.map(prompt => el('button', {
             type: 'button',
@@ -4042,17 +4053,32 @@ const app = {
             el('div', { class: 'ai-message__text', text: message.content }),
         ];
         if (!mine && message.references && message.references.length) {
-            children.push(el('div', { class: 'ai-message__refs' }, message.references.map(ref => {
+            children.push(el('div', { class: 'ai-result-cards' }, message.references.map(ref => {
                 if (ref.type !== 'patient') return null;
-                return el('button', {
-                    type: 'button',
-                    class: 'btn btn--ghost btn--sm',
-                    text: ref.label || 'Открыть пациента',
-                    on: { click: () => this.openPatientTab(ref.patientId, 'overview') },
-                });
+                return el('article', { class: 'ai-result-card' }, [
+                    el('div', { class: 'ai-result-card__body' }, [
+                        el('strong', { text: ref.title || 'Пациент' }),
+                        ref.subtitle ? el('span', { text: ref.subtitle }) : null,
+                    ]),
+                    el('button', {
+                        type: 'button',
+                        class: 'btn btn--ghost btn--sm',
+                        text: ref.label || 'Открыть',
+                        'aria-label': `${ref.label || 'Открыть'}: ${ref.title || 'пациент'}`,
+                        on: { click: () => this.openPatientTab(ref.patientId, 'overview') },
+                    }),
+                ]);
             })));
         }
         return el('article', { class: `ai-message ${mine ? 'ai-message--user' : 'ai-message--assistant'}` }, children);
+    },
+
+    aiUnavailableText(status) {
+        if (!status || status.available) return '';
+        if (status.reason === 'model_missing') return status.message || 'Локальная модель не загружена.';
+        if (status.reason === 'timeout') return 'Локальный AI-сервис не ответил вовремя.';
+        if (status.reason === 'provider_error') return 'Локальный AI-сервис вернул некорректный ответ.';
+        return 'Локальный AI-сервис недоступен.';
     },
 
     renderAIDrawer() {
@@ -4061,7 +4087,7 @@ const app = {
         if (!messages) return;
         $('aiAssistantSubtitle').textContent = status.available
             ? 'Ответы по доступным данным системы'
-            : (status.message || 'ИИ-помощник недоступен');
+            : 'Основная система продолжает работать';
         this.renderAIContext();
         this.renderAISuggestions();
         const statusBox = $('aiAssistantStatus');
@@ -4072,12 +4098,27 @@ const app = {
         $('aiAssistantInput').disabled = this.ai.loading || !status.available;
         $('aiAssistantSendBtn').disabled = this.ai.loading || !status.available;
         $('aiAssistantClearBtn').disabled = this.ai.loading || this.ai.messages.length === 0;
-        messages.replaceChildren(this.ai.messages.length
-            ? frag(this.ai.messages.map(message => this.renderAIMessage(message)))
-            : el('div', { class: 'ai-empty' }, [
-                el('h3', { text: 'Спросите о доступных пациентах, внимании или просрочках' }),
-                el('p', { text: 'История чата хранится только в текущей вкладке и очищается при выходе или перезагрузке.' }),
+        $('aiAssistantForm').classList.toggle('is-hidden', !status.available);
+        if (!status.available) {
+            messages.replaceChildren(el('div', { class: 'ai-empty ai-empty--unavailable' }, [
+                el('h3', { text: 'ИИ-помощник временно недоступен' }),
+                el('p', { text: 'Основная система продолжает работать.' }),
+                el('p', { text: this.aiUnavailableText(status) }),
+                el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: 'Проверить снова',
+                    on: { click: () => this.refreshAIStatus(true) },
+                }),
             ]));
+        } else {
+            messages.replaceChildren(this.ai.messages.length
+                ? frag(this.ai.messages.map(message => this.renderAIMessage(message)))
+                : el('div', { class: 'ai-empty' }, [
+                    el('h3', { text: 'Спросите о доступных пациентах, внимании или просрочках' }),
+                    el('p', { text: 'История чата хранится только в текущей вкладке и очищается при выходе или перезагрузке.' }),
+                ]));
+        }
         messages.scrollTop = messages.scrollHeight;
     },
 
@@ -4104,15 +4145,19 @@ const app = {
             });
             const refs = response.references || [];
             this.ai.references = refs;
+            this.ai.status = { ...(this.ai.status || {}), enabled: true, available: true, state: 'available', reason: 'ok', message: 'ИИ-помощник доступен' };
             this.ai.messages.push({
                 role: 'assistant',
                 content: response.answer || 'В доступных данных системы такой информации нет.',
                 references: refs,
             });
         } catch (e) {
-            this.ai.lastError = e.status === 503
-                ? 'ИИ-помощник сейчас недоступен.'
-                : `Не удалось получить ответ: ${e.message}`;
+            if (e.status === 503) {
+                this.ai.status = { ...(this.ai.status || {}), enabled: true, available: false, state: 'unavailable', reason: 'provider_unreachable', message: 'ИИ-помощник временно недоступен' };
+                this.ai.lastError = 'ИИ-помощник временно недоступен. Попробуйте ещё раз позже.';
+            } else {
+                this.ai.lastError = 'Не удалось получить ответ. Попробуйте ещё раз позже.';
+            }
         } finally {
             this.ai.loading = false;
             this.renderAIDrawer();
@@ -4696,34 +4741,26 @@ const app = {
             this.renderAnalyticsFilterOptions();
             this.updateAnalyticsPeriodPresetState();
             this.renderAnalyticsSummary();
-            this.renderAnalyticsAttention();
-            this.renderAnalyticsBarChart('analyticsStageChart', this.analytics.stages.rows || [], {
-                labelKey: 'stage_label',
-                meta: row => `Просрочки: ${row.overdue_patients}; качество данных: ${row.quality_patients}`,
-                onClick: row => this.renderAnalyticsDetails('patients', row.stage_label, { stage: row.stage }),
-            });
-            this.renderAnalyticsBarChart('analyticsProfileChart', this.analytics.dashboard.profiles.rows || [], {
+            this.renderAnalyticsTrend();
+            this.renderAnalyticsStages();
+            this.renderAnalyticsVisualBars('analyticsProfileChart', this.analytics.dashboard.profiles.rows || [], {
                 labelKey: 'label',
                 label: row => this.nosologyData[row.meta && row.meta.nosology] ? this.nosologyData[row.meta.nosology].label : row.label,
                 empty: 'Доступных пациентов с профилем клиентского пути нет.',
                 onClick: row => row.meta && row.meta.nosology ? this.renderAnalyticsDetails('patients', this.nosologyData[row.meta.nosology]?.label || row.label, { nosology: row.meta.nosology }) : null,
             });
-            this.renderAnalyticsBarChart('analyticsRouteStateChart', this.analytics.dashboard.route_state.rows || [], {
+            this.renderAnalyticsAttention();
+            this.renderAnalyticsWorkload();
+            this.renderAnalyticsQualityVisual();
+            this.renderAnalyticsVisualBars('analyticsRouteStateChart', this.analytics.dashboard.route_state.rows || [], {
                 labelKey: 'label',
                 meta: row => row.meta && row.meta.overlap ? 'Может пересекаться с другими состояниями' : 'Текущее состояние',
                 onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, row.filter || {}) : null,
             });
-            this.renderAnalyticsBarChart('analyticsQualityList', this.analytics.dashboard.data_quality.rows || [], {
-                labelKey: 'label',
-                empty: 'Проблем качества данных по выбранным условиям нет.',
-                meta: row => row.meta && row.meta.rule ? row.meta.rule : '',
-                onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null,
-            });
-            this.renderAnalyticsTrend();
-            this.renderAnalyticsWorkload();
             this.renderAnalyticsOperations();
         } catch (e) {
-            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить аналитику: ${e.message}` }));
+            console.error('analytics render failed', e);
+            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику. Попробуйте обновить данные.' }));
         }
     },
 
@@ -4793,9 +4830,8 @@ const app = {
         const visibleCodes = new Set([
             'total_patients',
             'active_patients',
-            'completed_patients',
             'patients_need_attention',
-            'unassigned_patients',
+            'patients_with_overdue',
             'data_quality_issues',
         ]);
         const nodes = cards.filter(card => visibleCodes.has(card.code)).map(card => el('button', {
@@ -4807,6 +4843,18 @@ const app = {
             el('div', { class: 'stat__value', text: String(card.value ?? 0) }),
             el('div', { class: 'stat__meta', text: card.kind === 'period' ? 'за период' : 'текущее состояние' }),
         ]));
+        const qualitySummary = this.analytics.dataQuality && this.analytics.dataQuality.summary;
+        if (qualitySummary) {
+            nodes.push(el('button', {
+                type: 'button',
+                class: 'stat stat--button stat--quality',
+                on: { click: () => this.renderAnalyticsDetails('quality_warning', 'Проблемы качества данных') },
+            }, [
+                el('div', { class: 'stat__label', text: 'Заполненность обязательных полей' }),
+                el('div', { class: 'stat__value', text: `${qualitySummary.average_completeness ?? 100}%` }),
+                el('div', { class: 'stat__meta', text: `${qualitySummary.total_issues || 0} проблем отдельно` }),
+            ]));
+        }
         $('analyticsStatsRow').replaceChildren(frag(nodes));
     },
 
@@ -4829,20 +4877,102 @@ const app = {
         ]))));
     },
 
+    renderAnalyticsVisualBars(targetId, rows, config = {}) {
+        const labelKey = config.labelKey || 'label';
+        if (!rows.length) {
+            $(targetId).replaceChildren(el('div', { class: 'empty', text: config.empty || 'Данных по выбранным условиям нет.' }));
+            return;
+        }
+        const max = Math.max(1, ...rows.map(row => Number(row.count || 0)));
+        $(targetId).replaceChildren(frag(rows.slice(0, config.limit || 8).map((row, index) => {
+            const label = config.label ? config.label(row) : row[labelKey];
+            const count = Number(row.count || 0);
+            const meta = config.meta ? config.meta(row) : `${count} · ${row.percent || 0}%`;
+            return el('button', {
+                type: 'button',
+                class: `analytics-bar analytics-bar--${(index % 5) + 1}`,
+                title: `${label}: ${meta}`,
+                'aria-label': `${label}: ${meta}`,
+                on: { click: () => config.onClick ? config.onClick(row) : null },
+            }, [
+                el('span', { class: 'analytics-bar__top' }, [
+                    el('span', { class: 'analytics-bar__label', text: label }),
+                    el('strong', { class: 'analytics-bar__value', text: String(count) }),
+                ]),
+                el('progress', { class: 'analytics-bar__progress', max, value: count, 'aria-label': `${label}: ${count}` }),
+                el('span', { class: 'analytics-bar__meta', text: meta }),
+            ]);
+        })));
+    },
+
+    renderAnalyticsStages() {
+        const rows = (this.analytics.stages && this.analytics.stages.rows) || [];
+        if (!rows.length) {
+            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Пациентов по этапам нет.' }));
+            return;
+        }
+        const total = rows.reduce((sum, row) => sum + (row.count || 0), 0);
+        const size = 164;
+        const center = size / 2;
+        const radius = 58;
+        const circumference = 2 * Math.PI * radius;
+        let offset = 0;
+        const svg = document.createElementNS(SVG_NS, 'svg');
+        svg.setAttribute('class', 'analytics-donut');
+        svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+        svg.setAttribute('role', 'img');
+        svg.setAttribute('aria-label', `Пациенты по этапам маршрута, всего ${total}`);
+        rows.forEach((row, index) => {
+            const value = total ? row.count / total : 0;
+            const circle = document.createElementNS(SVG_NS, 'circle');
+            circle.setAttribute('class', `analytics-donut__seg analytics-donut__seg--${(index % 5) + 1}`);
+            circle.setAttribute('cx', String(center));
+            circle.setAttribute('cy', String(center));
+            circle.setAttribute('r', String(radius));
+            circle.setAttribute('fill', 'none');
+            circle.setAttribute('stroke-width', '22');
+            circle.setAttribute('stroke-dasharray', `${Math.max(0, value * circumference - 1)} ${circumference}`);
+            circle.setAttribute('stroke-dashoffset', String(-offset));
+            circle.setAttribute('transform', `rotate(-90 ${center} ${center})`);
+            svg.append(circle);
+            offset += value * circumference;
+        });
+        svg.append(
+            this.svgText(center, center - 2, String(total), 'analytics-donut__value'),
+            this.svgText(center, center + 18, 'всего', 'analytics-donut__label'),
+        );
+        const bars = el('div', { class: 'analytics-stage-list' }, rows.map(row => el('button', {
+            type: 'button',
+            class: 'analytics-stage-row',
+            on: { click: () => this.renderAnalyticsDetails('patients', row.stage_label, { stage: row.stage }) },
+        }, [
+            el('span', { text: row.stage_label }),
+            el('strong', { text: String(row.count || 0) }),
+            el('small', { text: `Просрочки: ${row.overdue_patients}; проблемы: ${row.quality_patients}` }),
+        ])));
+        $('analyticsStageChart').replaceChildren(svg, bars);
+    },
+
+    svgText(x, y, text, className) {
+        const node = document.createElementNS(SVG_NS, 'text');
+        node.setAttribute('x', String(x));
+        node.setAttribute('y', String(y));
+        node.setAttribute('class', className);
+        node.setAttribute('text-anchor', 'middle');
+        node.textContent = text;
+        return node;
+    },
+
     renderAnalyticsAttention() {
         const rows = (this.analytics.dashboard && this.analytics.dashboard.attention && this.analytics.dashboard.attention.rows) || [];
         if (!rows.length) {
             $('analyticsAttentionList').replaceChildren(el('div', { class: 'empty', text: 'Пациентов с активной ручной отметкой внимания нет.' }));
             return;
         }
-        $('analyticsAttentionList').replaceChildren(frag(rows.map(row => el('button', {
-            type: 'button',
-            class: 'analytics-row analytics-row--button analytics-row--accent',
-            on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, { attentionReason: row.code }) : null },
-        }, [
-            el('span', { text: row.label }),
-            el('strong', { text: String(row.count || 0) }),
-        ]))));
+        this.renderAnalyticsVisualBars('analyticsAttentionList', rows, {
+            labelKey: 'label',
+            onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, { attentionReason: row.code }) : null,
+        });
     },
 
     renderAnalyticsWorkload() {
@@ -4859,12 +4989,40 @@ const app = {
         }));
         const max = Math.max(1, ...chartRows.map(row => row.count));
         chartRows.forEach(row => { row.percent = Math.round(row.count / max * 1000) / 10; });
-        this.renderAnalyticsBarChart('analyticsWorkloadList', chartRows, {
+        this.renderAnalyticsVisualBars('analyticsWorkloadList', chartRows, {
             labelKey: 'label',
             meta: row => row.meta,
-            valueText: row => `${row.count} активных`,
             onClick: () => null,
         });
+    },
+
+    renderAnalyticsQualityVisual() {
+        const data = this.analytics.dataQuality || {};
+        const summary = data.summary || {};
+        const rows = (this.analytics.dashboard && this.analytics.dashboard.data_quality && this.analytics.dashboard.data_quality.rows) || [];
+        const score = Number(summary.average_completeness ?? 100);
+        const safeScore = Math.max(0, Math.min(100, score));
+        const panel = el('div', { class: 'analytics-quality-card' }, [
+            el('div', { class: 'analytics-quality-card__score', 'aria-label': `Заполненность обязательных полей ${safeScore}%` }, [
+                el('span', { text: `${safeScore}%` }),
+                el('small', { text: 'заполненность' }),
+            ]),
+            el('div', { class: 'analytics-quality-card__text' }, [
+                el('strong', { text: `${summary.total_issues || 0} проблем качества данных` }),
+                el('span', { text: `${summary.patients_with_issues || 0} пациентов требуют проверки данных` }),
+            ]),
+        ]);
+        const list = rows.length
+            ? el('div', { class: 'analytics-bars analytics-bars--compact' }, rows.slice(0, 5).map(row => el('button', {
+                type: 'button',
+                class: 'analytics-row analytics-row--button',
+                on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null },
+            }, [
+                el('span', { text: row.label }),
+                el('strong', { text: String(row.count || 0) }),
+            ])))
+            : el('div', { class: 'empty', text: 'Проблем качества данных по выбранным условиям нет.' });
+        $('analyticsQualityList').replaceChildren(panel, list);
     },
 
     renderAnalyticsOperations() {
@@ -4886,38 +5044,80 @@ const app = {
             $('analyticsTrendChart').replaceChildren(el('div', { class: 'empty', text: 'Данных по динамике за период нет.' }));
             return;
         }
-        const max = Math.max(1, ...rows.map(row => Math.max(row.new_patients || 0, row.completed_patients || 0)));
+        const rawMax = Math.max(0, ...rows.map(row => Math.max(row.new_patients || 0, row.completed_patients || 0)));
+        const max = Math.max(3, rawMax);
         const width = 640;
-        const height = 180;
+        const height = 210;
+        const plotLeft = 42;
+        const plotRight = width - 22;
+        const plotTop = 18;
+        const plotBottom = height - 48;
         const chart = document.createElementNS(SVG_NS, 'svg');
         chart.setAttribute('class', 'analytics-trend__svg');
         chart.setAttribute('viewBox', `0 0 ${width} ${height}`);
         chart.setAttribute('role', 'img');
-        chart.setAttribute('aria-label', 'Новые пациенты за выбранный период');
-        const gap = 2;
-        const barWidth = Math.max(4, Math.floor((width - 40) / rows.length) - gap);
-        rows.forEach((row, index) => {
-            const value = row.new_patients || 0;
-            const barHeight = Math.round((height - 45) * value / max);
-            const rect = document.createElementNS(SVG_NS, 'rect');
-            rect.setAttribute('class', 'analytics-trend__bar');
-            rect.setAttribute('x', String(24 + index * (barWidth + gap)));
-            rect.setAttribute('y', String(height - 24 - barHeight));
-            rect.setAttribute('width', String(barWidth));
-            rect.setAttribute('height', String(barHeight));
-            rect.setAttribute('rx', '3');
-            chart.append(rect);
+        chart.setAttribute('aria-label', 'Динамика новых и завершённых пациентов за выбранный период');
+        const point = (row, index, key) => {
+            const x = plotLeft + (rows.length === 1 ? 0 : index * ((plotRight - plotLeft) / (rows.length - 1)));
+            const y = plotBottom - ((row[key] || 0) / max) * (plotBottom - plotTop);
+            return [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
+        };
+        const makePath = (key) => rows.map((row, index) => {
+            const [x, y] = point(row, index, key);
+            return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
+        }).join(' ');
+        [0, Math.ceil(max / 2), max].filter((value, index, self) => self.indexOf(value) === index).forEach(value => {
+            const y = plotBottom - (value / max) * (plotBottom - plotTop);
+            const grid = document.createElementNS(SVG_NS, 'line');
+            grid.setAttribute('class', 'analytics-trend__grid');
+            grid.setAttribute('x1', String(plotLeft));
+            grid.setAttribute('x2', String(plotRight));
+            grid.setAttribute('y1', String(Math.round(y * 10) / 10));
+            grid.setAttribute('y2', String(Math.round(y * 10) / 10));
+            chart.append(grid);
+            chart.append(this.svgText(12, y + 4, String(value), 'analytics-trend__y-label'));
+        });
+        const area = document.createElementNS(SVG_NS, 'path');
+        const last = point(rows[rows.length - 1], rows.length - 1, 'new_patients');
+        const first = point(rows[0], 0, 'new_patients');
+        area.setAttribute('class', 'analytics-trend__area');
+        area.setAttribute('d', `${makePath('new_patients')} L ${last[0]} ${plotBottom} L ${first[0]} ${plotBottom} Z`);
+        chart.append(area);
+        ['new_patients', 'completed_patients'].forEach((key) => {
+            const path = document.createElementNS(SVG_NS, 'path');
+            path.setAttribute('class', `analytics-trend__line analytics-trend__line--${key}`);
+            path.setAttribute('d', makePath(key));
+            path.setAttribute('fill', 'none');
+            chart.append(path);
+            rows.forEach((row, index) => {
+                const [x, y] = point(row, index, key);
+                const circle = document.createElementNS(SVG_NS, 'circle');
+                circle.setAttribute('class', `analytics-trend__point analytics-trend__point--${key}`);
+                circle.setAttribute('cx', String(x));
+                circle.setAttribute('cy', String(y));
+                circle.setAttribute('r', row[key] ? '3.5' : '2.5');
+                const title = document.createElementNS(SVG_NS, 'title');
+                title.textContent = `${row.label}: ${row[key] || 0}`;
+                circle.append(title);
+                chart.append(circle);
+            });
         });
         const axis = document.createElementNS(SVG_NS, 'line');
         axis.setAttribute('class', 'analytics-trend__axis');
-        axis.setAttribute('x1', '20');
-        axis.setAttribute('x2', String(width - 12));
-        axis.setAttribute('y1', String(height - 24));
-        axis.setAttribute('y2', String(height - 24));
+        axis.setAttribute('x1', String(plotLeft));
+        axis.setAttribute('x2', String(plotRight));
+        axis.setAttribute('y1', String(plotBottom));
+        axis.setAttribute('y2', String(plotBottom));
         chart.append(axis);
+        [0, Math.floor(rows.length / 2), rows.length - 1].filter((value, index, self) => self.indexOf(value) === index).forEach(index => {
+            const [x] = point(rows[index], index, 'new_patients');
+            chart.append(this.svgText(x, height - 12, rows[index].label, 'analytics-trend__tick'));
+        });
         $('analyticsTrendChart').replaceChildren(
             chart,
             el('div', { class: 'analytics-trend__meta' }, [
+                el('span', { class: 'analytics-trend__legend analytics-trend__legend--new', text: 'Новые пациенты' }),
+                el('span', { class: 'analytics-trend__legend analytics-trend__legend--completed', text: 'Завершения' }),
                 el('span', { text: `${rows.reduce((sum, row) => sum + (row.new_patients || 0), 0)} новых пациентов` }),
                 el('span', { text: `${rows.reduce((sum, row) => sum + (row.completed_patients || 0), 0)} завершений по истории этапов` }),
             ]),

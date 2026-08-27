@@ -22,14 +22,31 @@ arbitrary HTTP access. It can only request explicitly registered backend tools.
 
 ## Configuration
 
-The assistant is disabled by default:
+AI mode precedence:
+
+1. Explicit disabled: `CLINIC_AI_MODE=disabled` or `CLINIC_AI_ENABLED=false`.
+2. Explicit configured provider: `CLINIC_AI_MODE=configured` or
+   `CLINIC_AI_ENABLED=true` with `CLINIC_AI_BASE_URL` and `CLINIC_AI_MODEL`.
+3. Local-development autodiscovery: when `CLINIC_ENV` is `local`,
+   `development`, `dev` or `test`, the backend is bound to localhost and HTTPS
+   is off, the assistant probes `http://127.0.0.1:1234/v1` for `qwen3-8b`.
+4. Otherwise unavailable.
+
+Production/internal deployments must not rely on local autodiscovery. Set
+`CLINIC_ENV=production` and configure the internal provider explicitly or set
+`CLINIC_AI_MODE=disabled`.
 
 ```bash
-CLINIC_AI_ENABLED=false
+CLINIC_ENV=local
+CLINIC_AI_MODE=auto
 CLINIC_AI_BASE_URL=http://127.0.0.1:1234/v1
 CLINIC_AI_MODEL=
+CLINIC_AI_LOCAL_BASE_URL=http://127.0.0.1:1234/v1
+CLINIC_AI_LOCAL_MODEL=qwen3-8b
 CLINIC_AI_API_KEY=
 CLINIC_AI_TIMEOUT_SECONDS=45
+CLINIC_AI_HEALTH_TIMEOUT_SECONDS=2
+CLINIC_AI_HEALTH_CACHE_TTL_SECONDS=10
 CLINIC_AI_MAX_OUTPUT_TOKENS=1200
 CLINIC_AI_MAX_TOOL_CALLS=8
 CLINIC_AI_MAX_HISTORY_MESSAGES=12
@@ -38,8 +55,10 @@ CLINIC_AI_RATE_LIMIT_REQUESTS=30
 CLINIC_AI_RATE_LIMIT_WINDOW_SECONDS=300
 ```
 
-`GET /api/ai/status` returns only safe state: enabled, available and a
-user-facing message. It does not expose base URL, model or API key.
+`GET /api/ai/status` returns only safe state: enabled, available, lifecycle
+state, reason and a user-facing message. It does not expose base URL, model or
+API key. Status uses a short `/models` health probe cached for a few seconds;
+`?refresh=true` bypasses that cache for the drawer retry button.
 
 ## Provider
 
@@ -55,10 +74,11 @@ For local development, LM Studio can be used as an OpenAI-compatible local
 server:
 
 1. Start LM Studio.
-2. Load a local OpenAI-compatible model, for example Qwen3-8B 4-bit.
+2. Load `qwen3-8b`.
 3. Start the local server, usually `http://127.0.0.1:1234/v1`.
-4. Set `CLINIC_AI_ENABLED=true`, `CLINIC_AI_BASE_URL` and `CLINIC_AI_MODEL`.
-5. Start the backend.
+4. Start the backend normally.
+5. If the UI says the assistant is temporarily unavailable, start the local
+   AI service and use the drawer retry action.
 
 No model files, weights or LM Studio config belong in Git.
 
@@ -111,6 +131,13 @@ Tool results follow minimum necessary data. They do not return phone numbers,
 OMS policy numbers, full patient objects, backend secrets, or arbitrary links.
 Patient references returned to the frontend are structured and derived only from
 actual tool results.
+
+For local Qwen3 models, the provider adds a `/no_think` compatibility hint to
+the backend-owned system message so LM Studio returns usable content and tool
+calls. If a multi-turn follow-up reference is already resolved inside the
+current scope and the model skips the requested read-only tool call, the
+orchestrator can execute that scoped follow-up tool result and ask the model to
+answer from the resulting JSON only.
 
 ## Privacy
 

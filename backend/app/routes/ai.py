@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import sqlite3
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import config, policy
 from ..ai import orchestrator
-from ..ai.provider import AIProviderError, AIProviderUnavailable, provider_configured
+from ..ai.provider import AIProviderError, AIProviderUnavailable, provider_health
 from ..ai.schemas import AIChatIn, AIChatOut, AIStatusOut
 from ..ai.tools import ToolPermissionError
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
@@ -17,13 +17,17 @@ router = APIRouter(prefix="/api/ai", tags=["ai"])
 
 @router.get("/status", response_model=AIStatusOut)
 def status_endpoint(
+    refresh: bool = Query(False),
     _user: policy.CurrentUser = Depends(require_active_password),
 ):
-    if not config.AI_ENABLED:
-        return {"enabled": False, "available": False, "message": "ИИ-помощник не настроен"}
-    if not provider_configured():
-        return {"enabled": True, "available": False, "message": "ИИ-помощник не настроен"}
-    return {"enabled": True, "available": True, "message": "ИИ-помощник доступен"}
+    health = provider_health(force_refresh=refresh)
+    return {
+        "enabled": health.state != "disabled",
+        "available": health.available,
+        "state": health.state,
+        "reason": health.reason,
+        "message": health.message,
+    }
 
 
 @router.post(
