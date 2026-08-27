@@ -4759,7 +4759,8 @@ const app = {
             });
             this.renderAnalyticsOperations();
         } catch (e) {
-            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить аналитику: ${e.message}` }));
+            console.error('analytics render failed', e);
+            $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику. Попробуйте обновить данные.' }));
         }
     },
 
@@ -5095,7 +5096,9 @@ const app = {
                 circle.setAttribute('cx', String(x));
                 circle.setAttribute('cy', String(y));
                 circle.setAttribute('r', row[key] ? '3.5' : '2.5');
-                circle.append(document.createElementNS(SVG_NS, 'title')).textContent = `${row.label}: ${row[key] || 0}`;
+                const title = document.createElementNS(SVG_NS, 'title');
+                title.textContent = `${row.label}: ${row[key] || 0}`;
+                circle.append(title);
                 chart.append(circle);
             });
         });

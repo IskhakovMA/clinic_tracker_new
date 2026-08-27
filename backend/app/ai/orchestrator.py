@@ -5,6 +5,7 @@ import json
 import logging
 import sqlite3
 import time
+import re
 from typing import Any
 
 from .. import config, policy
@@ -38,6 +39,208 @@ _FOLLOWUP_REJECT_MARKERS = (
     "все паци",
     "пациент 999",
 )
+
+
+def _normalize_intent_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip()
+
+
+def _card_value(analytics: dict, code: str) -> int:
+    for card in analytics.get("summary", {}).get("cards", []):
+        if card.get("code") == code:
+            return int(card.get("value") or 0)
+    return 0
+
+
+def _pluralize_ru(value: int, one: str, few: str, many: str) -> str:
+    if value % 10 == 1 and value % 100 != 11:
+        return one
+    if 2 <= value % 10 <= 4 and not 12 <= value % 100 <= 14:
+        return few
+    return many
+
+
+def _top_row(section: dict, *, label_keys: tuple[str, ...] = ("label",)) -> dict | None:
+    rows = section.get("rows") or []
+    if not rows:
+        return None
+    return sorted(
+        rows,
+        key=lambda row: (-int(row.get("count") or row.get("active_patients") or 0), str(row.get(label_keys[0]) or "")),
+    )[0]
+
+
+def _analytics_intent(conn: sqlite3.Connection, user: policy.CurrentUser, intent: str, text: str) -> dict:
+    analytics = tools.execute_tool("get_analytics_summary", {}, conn, user)
+    if intent == "patient_total":
+        value = _card_value(analytics, "total_patients")
+        return {"answer": f"Всего Вам доступно {value} {_pluralize_ru(value, 'пациент', 'пациента', 'пациентов')}.", "tool_result": analytics}
+    if intent == "patient_active":
+        value = _card_value(analytics, "active_patients")
+        return {"answer": f"Активных пациентов в Вашей области доступа: {value}.", "tool_result": analytics}
+    if intent == "patient_completed":
+        value = _card_value(analytics, "completed_patients")
+        return {"answer": f"Завершённых пациентов в Вашей области доступа: {value}.", "tool_result": analytics}
+    if intent == "attention_count":
+        value = _card_value(analytics, "patients_need_attention")
+        return {"answer": f"Сейчас требуют внимания {value} {_pluralize_ru(value, 'пациент', 'пациента', 'пациентов')} из доступных Вам.", "tool_result": analytics}
+    if intent == "overdue_count":
+        value = _card_value(analytics, "patients_with_overdue")
+        return {"answer": f"Пациентов с просроченными событиями в Вашей области доступа: {value}.", "tool_result": analytics}
+    if intent == "top_attention_reason":
+        row = _top_row(analytics.get("attention", {}))
+        answer = (
+            f"Самая частая причина внимания: {row['label']} — {int(row.get('count') or 0)}."
+            if row else "В доступных данных нет активных причин внимания."
+        )
+        return {"answer": answer, "tool_result": analytics}
+    if intent == "top_localization":
+        row = _top_row(analytics.get("profiles", {}))
+        answer = (
+            f"Самая частая локализация: {row['label']} — {int(row.get('count') or 0)}."
+            if row else "В доступных данных нет пациентов с указанной локализацией."
+        )
+        return {"answer": answer, "tool_result": analytics}
+    if intent == "lung_localization_count":
+        rows = analytics.get("profiles", {}).get("rows") or []
+        value = sum(int(row.get("count") or 0) for row in rows if "легк" in _normalize_intent_text(str(row.get("label") or "")))
+        return {"answer": f"Пациентов с локализацией «Лёгкое» в Вашей области доступа: {value}.", "tool_result": analytics}
+    if intent == "top_stage":
+        row = _top_row(analytics.get("stages", {}), label_keys=("stage_label",))
+        answer = (
+            f"Больше всего пациентов на этапе «{row['stage_label']}» — {int(row.get('count') or 0)}."
+            if row else "В доступных данных нет распределения пациентов по этапам."
+        )
+        return {"answer": answer, "tool_result": analytics}
+    if intent == "doctor_load":
+        rows = analytics.get("workload", {}).get("rows") or []
+        row = sorted(rows, key=lambda item: (-int(item.get("active_patients") or 0), str(item.get("doctor_name") or "")))[0] if rows else None
+        answer = (
+            f"Наибольшая текущая нагрузка: {row['doctor_name']} — {int(row.get('active_patients') or 0)} активных пациентов."
+            if row else "В доступных данных нет распределения нагрузки по врачам."
+        )
+        return {"answer": answer, "tool_result": analytics}
+    return {"answer": "Система сейчас не предоставляет этот показатель.", "tool_result": analytics}
+
+
+def _patient_summary_query(text: str) -> str | None:
+    normalized = _normalize_intent_text(text)
+    if not any(marker in normalized for marker in ("что известно", "сводк", "информац", "расскажи")):
+        return None
+    if "пациент" not in normalized:
+        return None
+    query = re.sub(
+        r"^.*?\bпациент(?:у|а|е|ом)?\b",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    query = re.sub(r"[?.!]+$", "", query).strip(" :—–-")
+    return " ".join(query.split()) or None
+
+
+def _patient_summary_intent(conn: sqlite3.Connection, user: policy.CurrentUser, text: str) -> dict | None:
+    query = _patient_summary_query(text)
+    if not query:
+        return None
+    search = tools.execute_tool("search_accessible_patients", {"query": query, "limit": 2}, conn, user)
+    patients = search.get("patients") or []
+    if not patients:
+        return {
+            "answer": "В Вашей области доступа такой пациент не найден.",
+            "references": [],
+            "usage": {"toolCalls": 1},
+        }
+    if len(patients) > 1:
+        names = "; ".join(str(patient.get("displayName") or "Пациент") for patient in patients[:2])
+        return {
+            "answer": f"Найдено несколько пациентов: {names}. Уточните ФИО или откройте карточку пациента.",
+            "references": _references_from_tool_result(search),
+            "usage": {"toolCalls": 1},
+        }
+    summary = tools.execute_tool(
+        "get_patient_summary",
+        {"patientId": patients[0]["patientId"]},
+        conn,
+        user,
+    )
+    patient = summary.get("patient") or {}
+    checklist = patient.get("checklistProgress") or {}
+    active_attention = patient.get("activeAttentionCount") or 0
+    quality_issues = patient.get("qualityIssueCount") or 0
+    answer = (
+        f"{patient.get('displayName', 'Пациент')}: этап «{patient.get('currentStageLabel', 'не указан')}». "
+        f"Ответственный: {patient.get('responsible', 'не назначен')}. "
+        f"Состояние маршрута: {patient.get('routeStatus', 'не указано')}. "
+        f"Чек-лист: {int(checklist.get('completed') or 0)} из {int(checklist.get('total') or 0)}. "
+        f"Активные отметки внимания: {active_attention}. "
+        f"Проблемы качества данных: {quality_issues}."
+    )
+    return {
+        "answer": answer,
+        "references": _references_from_tool_result(summary),
+        "usage": {"toolCalls": 2},
+    }
+
+
+def _known_operational_intent(text: str) -> str | None:
+    normalized = _normalize_intent_text(text)
+    has_patient = "пациент" in normalized or "пациентов" in normalized
+    if "этап" in normalized and any(marker in normalized for marker in ("больше всего", "на каком", "самый")):
+        return "top_stage"
+    if "локализац" in normalized and "легк" in normalized and "сколько" in normalized:
+        return "lung_localization_count"
+    if "локализац" in normalized and any(marker in normalized for marker in ("част", "больше всего", "самая")):
+        return "top_localization"
+    if has_patient and any(marker in normalized for marker in ("сколько всего", "всего пациентов", "пациентов всего", "у меня пациентов", "количество пациентов", "пациентов доступ", "сейчас пациентов", "пациентов в системе")):
+        return "patient_total"
+    if has_patient and "актив" in normalized:
+        return "patient_active"
+    if has_patient and ("заверш" in normalized or "закончил" in normalized):
+        return "patient_completed"
+    if "вниман" in normalized and any(marker in normalized for marker in ("сколько", "треб", "из них")):
+        return "attention_count"
+    if "просроч" in normalized and any(marker in normalized for marker in ("сколько", "пациент", "из них", "событ", "а просроч")):
+        return "overdue_count"
+    if "част" in normalized and "прич" in normalized and "вниман" in normalized:
+        return "top_attention_reason"
+    if "врач" in normalized and ("нагруж" in normalized or "нагруз" in normalized):
+        return "doctor_load"
+    if "сегодня" in normalized:
+        return "today_summary"
+    if "кто" in normalized and "вниман" in normalized:
+        return "attention_list"
+    return None
+
+
+def _answer_known_operational_intent(
+    conn: sqlite3.Connection,
+    user: policy.CurrentUser,
+    body: AIChatIn,
+) -> dict | None:
+    patient_summary = _patient_summary_intent(conn, user, body.message)
+    if patient_summary:
+        return patient_summary
+    intent = _known_operational_intent(body.message)
+    if not intent:
+        return None
+    if intent == "today_summary":
+        result = tools.execute_tool("get_today_work", {}, conn, user)
+        events = len(result.get("eventsToday") or [])
+        attention = len(result.get("attentionPatients") or [])
+        overdue = len(result.get("overduePatients") or [])
+        answer = f"На сегодня: плановых событий — {events}, требуют внимания — {attention}, с просрочками — {overdue}."
+        return {"answer": answer, "references": _references_from_tool_result(result), "usage": {"toolCalls": 1}}
+    if intent == "attention_list":
+        result = tools.execute_tool("list_attention_patients", {"limit": 10}, conn, user)
+        patients = result.get("patients") or []
+        answer = (
+            "Сейчас требуют внимания: " + "; ".join(p.get("displayName", "Пациент") for p in patients[:5]) + "."
+            if patients else "Пациентов с активными отметками внимания нет."
+        )
+        return {"answer": answer, "references": _references_from_tool_result(result), "usage": {"toolCalls": 1}}
+    resolved = _analytics_intent(conn, user, intent, body.message)
+    return {"answer": resolved["answer"], "references": _references_from_tool_result(resolved["tool_result"]), "usage": {"toolCalls": 1}}
 
 
 def _history_messages(body: AIChatIn) -> list[dict[str, str]]:
@@ -147,6 +350,10 @@ def answer(
         raise tools.ToolPermissionError("Пациент недоступен текущей роли.")
 
     provider = provider or default_provider()
+    known_intent_answer = _answer_known_operational_intent(conn, user, body)
+    if known_intent_answer:
+        return known_intent_answer
+
     followup_context = _followup_context(conn, user, body)
     followup_message = _followup_context_message(followup_context)
     messages: list[dict[str, Any]] = [

@@ -451,7 +451,107 @@ def test_ai_common_attention_reason_uses_scoped_read_context(auth_client, monkey
 
     assert result["usage"]["toolCalls"] == 1
     assert result["answer"].startswith("Самая частая причина")
-    assert "get_analytics_summary" in provider.calls[0]["messages"][-1]["content"]
+    assert provider.calls == []
+
+
+def test_ai_known_operational_aggregate_intents_are_tool_first(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    active_id = _create_patient(name="ИИ Активный", stage="exam", nosology="lung12")
+    _create_patient(name="ИИ Завершённый", stage="completed", nosology="lung34")
+    response = auth_client.post(
+        f"/api/patients/{active_id}/attention",
+        json={"reasonCode": "critical_overdue", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([_result("wrong")])
+
+    cases = {
+        "сколько пациентов всего": "Всего Вам доступно 2 пациента.",
+        "сколько активных пациентов?": "Активных пациентов в Вашей области доступа: 1.",
+        "сколько завершённых пациентов?": "Завершённых пациентов в Вашей области доступа: 1.",
+        "а сколько из них требуют внимания?": "Сейчас требуют внимания 1 пациент из доступных Вам.",
+        "а просроченных?": "Пациентов с просроченными событиями в Вашей области доступа:",
+        "какая самая частая причина внимания?": "Самая частая причина внимания:",
+        "какая локализация самая частая?": "Самая частая локализация:",
+        "сколько пациентов с локализацией лёгкое?": "Пациентов с локализацией «Лёгкое»",
+        "на каком этапе больше всего пациентов?": "Больше всего пациентов на этапе",
+    }
+    for question, expected in cases.items():
+        result = orchestrator.answer(get_conn(), user, AIChatIn(message=question), provider=provider)
+        assert expected in result["answer"], question
+        assert result["usage"]["toolCalls"] == 1
+    assert provider.calls == []
+
+
+def test_ai_total_count_respects_doctor_scope(client, monkeypatch):
+    _enable_ai(monkeypatch)
+    dept_a = create_department("AI Count A")
+    dept_b = create_department("AI Count B")
+    doc_a = create_account("ai.count.a", "doctor", "AI Count A", department_ids=[dept_a])
+    doc_b = create_account("ai.count.b", "doctor", "AI Count B", department_ids=[dept_b])
+    _create_patient(doc_a, name="AI Count Own")
+    _create_patient(doc_b, name="AI Count Foreign")
+
+    assert login(client, "ai.count.a", TEST_PASSWORD).status_code == 200
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), doc_a)
+    result = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(message="сколько пациентов в системе"),
+        provider=FakeProvider([_result("wrong")]),
+    )
+    assert result["answer"] == "Всего Вам доступно 1 пациент."
+    assert "В системе" not in result["answer"]
+
+
+def test_ai_patient_summary_intent_is_scoped_and_omits_sensitive_fields(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    patient_id = _create_patient(
+        name="ИИ Сводка Пациента",
+        stage="exam",
+        diagnosis="C34.1",
+        policyNumber="1234567890123456",
+    )
+    response = auth_client.post(
+        f"/api/patients/{patient_id}/attention",
+        json={"reasonCode": "documents_or_data_issue", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([_result("wrong")])
+
+    result = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(message="Что известно по пациенту ИИ Сводка Пациента?"),
+        provider=provider,
+    )
+
+    assert "ИИ Сводка Пациента" in result["answer"]
+    assert "Обследование" in result["answer"]
+    assert "Активные отметки внимания: 1" in result["answer"]
+    assert "C34.1" not in result["answer"]
+    assert "1234567890123456" not in result["answer"]
+    assert result["references"][0]["patientId"] == patient_id
+    assert result["usage"]["toolCalls"] == 2
+    assert provider.calls == []
 
 
 def test_openai_provider_malformed_response_and_reasoning_strip():

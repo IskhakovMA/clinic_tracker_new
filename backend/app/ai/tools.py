@@ -355,6 +355,7 @@ def get_analytics_summary(conn: sqlite3.Connection, user: policy.CurrentUser, ar
     dashboard = analytics_service.dashboard(conn, user, AnalyticsFilters(limit=20))
     return {
         "summary": dashboard["summary"],
+        "stages": dashboard["stages"],
         "attention": dashboard["attention"],
         "operations": dashboard["operations"],
         "profiles": dashboard["profiles"],

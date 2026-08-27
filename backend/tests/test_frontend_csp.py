@@ -136,7 +136,7 @@ def test_canonical_page_is_served(client):
     assert response.status_code == 200
     body = response.text
     assert '<link rel="stylesheet" href="/static/styles.css">' in body
-    assert '<script src="/static/app.js"></script>' in body
+    assert '<script src="/static/app.js?v=pr30-analytics-ai-recovery"></script>' in body
     # ни одного <style> и ни одного inline-скрипта в документе
     assert "<style" not in body
     assert not re.search(r"<script(?![^>]*\ssrc=)", body)
@@ -240,6 +240,14 @@ def test_analytics_v3_and_ai_recovery_frontend_contracts_are_present():
     assert "analytics-trend__point" in css
     assert "analytics-trend__legend" in css
     assert "position: sticky; top: 0; z-index: 30" in css
+
+
+def test_analytics_renderer_does_not_assign_to_append_return_value():
+    js = JS.read_text(encoding="utf-8")
+    assert ".append(document.createElementNS" not in js
+    assert "Cannot set properties of undefined" not in js
+    assert "Не удалось загрузить аналитику. Попробуйте обновить данные." in js
+    assert "Не удалось загрузить аналитику: ${e.message}" not in js
 
 
 def test_policy_number_frontend_contract_is_present():
