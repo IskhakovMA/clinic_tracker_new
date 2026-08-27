@@ -554,6 +554,81 @@ def test_ai_patient_summary_intent_is_scoped_and_omits_sensitive_fields(auth_cli
     assert provider.calls == []
 
 
+def test_ai_fallback_classifies_off_topic_unsupported_and_prohibited(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([_result("wrong")])
+
+    cases = {
+        "2+2 сколько будет": "Я помогаю только с вопросами, связанными с работой Системы планирования",
+        "какая столица Франции": "Я помогаю только с вопросами, связанными с работой Системы планирования",
+        "напиши стихотворение": "Я помогаю только с вопросами, связанными с работой Системы планирования",
+        "какой средний срок лечения по всем пациентам?": "Сейчас система не предоставляет такой показатель.",
+        "сколько пациентов было год назад?": "Сейчас система не предоставляет такой показатель.",
+        "назначь лечение": "Я не могу назначать лечение или принимать медицинские решения.",
+        "какой диагноз поставить": "Я не могу назначать лечение или принимать медицинские решения.",
+        "измени этап пациента": "Я работаю только в режиме просмотра и не изменяю данные.",
+    }
+    for question, expected in cases.items():
+        result = orchestrator.answer(get_conn(), user, AIChatIn(message=question), provider=provider)
+        assert expected in result["answer"], question
+        assert result["usage"]["toolCalls"] == 0
+    assert provider.calls == []
+
+
+def test_ai_followup_precedes_off_topic_fallback(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    patient_id = _create_patient(name="ИИ Followup", stage="exam")
+    response = auth_client.post(
+        f"/api/patients/{patient_id}/attention",
+        json={"reasonCode": "critical_overdue", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn, AIHistoryMessage
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([_result("wrong")])
+
+    first = orchestrator.answer(get_conn(), user, AIChatIn(message="сколько пациентов всего"), provider=provider)
+    second = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(
+            message="а сколько из них требуют внимания?",
+            history=[
+                AIHistoryMessage(role="user", content="сколько пациентов всего"),
+                AIHistoryMessage(role="assistant", content=first["answer"]),
+            ],
+        ),
+        provider=provider,
+    )
+    third = orchestrator.answer(
+        get_conn(),
+        user,
+        AIChatIn(
+            message="а просроченных?",
+            history=[
+                AIHistoryMessage(role="user", content="а сколько из них требуют внимания?"),
+                AIHistoryMessage(role="assistant", content=second["answer"]),
+            ],
+        ),
+        provider=provider,
+    )
+
+    assert "Всего Вам доступно" in first["answer"]
+    assert "требуют внимания" in second["answer"]
+    assert "просроченными событиями" in third["answer"]
+    assert provider.calls == []
+
+
 def test_openai_provider_malformed_response_and_reasoning_strip():
     from backend.app.ai.provider import OpenAICompatibleAIProvider, AIProviderError
 
@@ -615,7 +690,7 @@ def test_ai_unknown_tool_malformed_args_and_tool_cap(monkeypatch, auth_client):
         _result(tool_calls=[_tool_call("search_accessible_patients", {"limit": 100})]),
     ])
     try:
-        orchestrator.answer(get_conn(), user, AIChatIn(message="Удали пациента"), provider=provider)
+        orchestrator.answer(get_conn(), user, AIChatIn(message="Найди пациента"), provider=provider)
     except AIProviderError as exc:
         assert "лимит" in str(exc)
     else:

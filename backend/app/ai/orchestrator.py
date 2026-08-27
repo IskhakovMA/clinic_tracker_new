@@ -17,9 +17,11 @@ logger = logging.getLogger("clinic.ai")
 
 
 READ_ONLY_FALLBACK = (
-    "Я работаю только в режиме просмотра и не могу изменять данные. "
-    "Могу подсказать, где в системе посмотреть нужную информацию."
+    "Я работаю только в режиме просмотра и не изменяю данные."
 )
+DOMAIN_ONLY_FALLBACK = "Я помогаю только с вопросами, связанными с работой Системы планирования и доступными в ней данными."
+UNSUPPORTED_SYSTEM_FALLBACK = "Сейчас система не предоставляет такой показатель."
+MEDICAL_DECISION_FALLBACK = "Я не могу назначать лечение или принимать медицинские решения."
 
 _FOLLOWUP_MARKERS = (
     "втор",
@@ -39,6 +41,10 @@ _FOLLOWUP_REJECT_MARKERS = (
     "все паци",
     "пациент 999",
 )
+
+
+def _plain_answer(text: str) -> dict:
+    return {"answer": text, "references": [], "usage": {"toolCalls": 0}}
 
 
 def _normalize_intent_text(text: str) -> str:
@@ -213,6 +219,53 @@ def _known_operational_intent(text: str) -> str | None:
     return None
 
 
+def _fallback_classification(text: str) -> str | None:
+    normalized = _normalize_intent_text(text)
+    medical_markers = (
+        "назначь лечение", "назначить лечение", "какое лечение", "какой диагноз поставить",
+        "поставь диагноз", "назначь препарат", "назначить препарат", "схема лечения",
+    )
+    if any(marker in normalized for marker in medical_markers):
+        return "medical"
+
+    write_markers = (
+        "измени", "изменить", "удали", "удалить", "создай", "создать", "закрой",
+        "закрыть", "отметь", "отметить", "назначь врача", "переведи пациента",
+    )
+    if any(marker in normalized for marker in write_markers):
+        return "write"
+
+    system_markers = (
+        "пациент", "маршрут", "этап", "просроч", "вниман", "качество дан",
+        "заполнен", "чек-лист", "локализац", "лечащ", "врач", "отделен",
+        "систем", "аналитик", "уведомлен", "срок", "средн", "показател",
+    )
+    is_system_question = any(marker in normalized for marker in system_markers)
+    safe_tool_markers = (
+        "найди", "покажи", "какие", "кто", "у кого", "есть ли", "расскажи",
+        "что известно", "сводк", "хронолог", "таймлайн", "сегодня",
+    )
+    if is_system_question and any(marker in normalized for marker in safe_tool_markers):
+        return None
+
+    if is_system_question:
+        return "unsupported_system"
+    return "off_topic"
+
+
+def _answer_fallback_classification(text: str) -> dict:
+    classification = _fallback_classification(text)
+    if classification is None:
+        return {}
+    if classification == "medical":
+        return _plain_answer(MEDICAL_DECISION_FALLBACK)
+    if classification == "write":
+        return _plain_answer(READ_ONLY_FALLBACK)
+    if classification == "unsupported_system":
+        return _plain_answer(UNSUPPORTED_SYSTEM_FALLBACK)
+    return _plain_answer(DOMAIN_ONLY_FALLBACK)
+
+
 def _answer_known_operational_intent(
     conn: sqlite3.Connection,
     user: policy.CurrentUser,
@@ -355,6 +408,10 @@ def answer(
         return known_intent_answer
 
     followup_context = _followup_context(conn, user, body)
+    if not followup_context:
+        fallback_answer = _answer_fallback_classification(body.message)
+        if fallback_answer:
+            return fallback_answer
     followup_message = _followup_context_message(followup_context)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": prompts.SYSTEM_PROMPT},
