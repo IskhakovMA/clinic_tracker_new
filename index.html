@@ -295,11 +295,11 @@
                 <div class="pagehead">
                     <div class="pagehead__text">
                         <h1 class="pagehead__title">Уведомления</h1>
-                        <p class="pagehead__subtitle">Напоминания пациентам и состояние очереди</p>
+                        <p class="pagehead__subtitle">Напоминания пациентам и статусы отправки</p>
                     </div>
                     <div class="pagehead__actions">
-                        <button type="button" class="btn btn--ghost is-hidden" id="notificationsGenerateBtn">Сформировать</button>
-                        <button type="button" class="btn btn--primary is-hidden" id="notificationsProcessBtn">Обработать очередь</button>
+                        <button type="button" class="btn btn--ghost is-hidden" id="notificationsGenerateBtn">Сформировать напоминания</button>
+                        <button type="button" class="btn btn--primary is-hidden" id="notificationsProcessBtn">Отправить ожидающие сообщения</button>
                     </div>
                 </div>
 
@@ -368,7 +368,7 @@
                     <div class="section-head">
                         <div>
                             <h2 class="section-title">Системные уведомления</h2>
-                            <p class="pagehead__subtitle">Персональная очередь событий по доступным пациентам</p>
+                            <p class="pagehead__subtitle">Персональный список событий по доступным пациентам</p>
                         </div>
                         <button type="button" class="btn btn--ghost" id="internalNotificationsRefreshBtn">Обновить</button>
                     </div>
@@ -436,7 +436,7 @@
                             <thead>
                                 <tr>
                                     <th scope="col">Пациент</th>
-                                    <th scope="col">Полнота карточки</th>
+                                    <th scope="col">Заполненность полей</th>
                                     <th scope="col">Проблемы</th>
                                     <th scope="col">Ответственные</th>
                                     <th scope="col"><span class="visually-hidden">Действия</span></th>
@@ -493,7 +493,7 @@
 
                 <div class="analytics-note">
                     <span>Текущее состояние</span>
-                    <span class="muted">Карточки, качество данных и workload считаются на момент запроса; динамика и просрочки учитывают выбранный период.</span>
+                    <span class="muted">Карточки, качество данных и нагрузка считаются на момент запроса; динамика и просрочки учитывают выбранный период.</span>
                 </div>
 
                 <div class="analytics-dashboard">

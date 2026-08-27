@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import config, policy
+from ..localization_catalog import ALL_LOCALIZATIONS
 from ..models import STAGES, TERMINAL_STAGES
 from ..phone import phone_sendable
 from ..services import data_quality, notifications, patient_attention
@@ -27,15 +28,15 @@ SUMMARY_DEFINITIONS = {
     "completed_patients": "Доступные пациенты на этапе «Завершено».",
     "patients_need_attention": "Пациенты с минимум одной активной ручной отметкой «требует внимания».",
     "operational_signals": "Автоматические сигналы: просрочки, проблемы качества данных, незавершённые чек-листы и отсутствие закреплённого врача.",
-    "data_quality_issues": "Все текущие critical/warning findings Центра качества данных по доступным пациентам.",
+    "data_quality_issues": "Все текущие критические проблемы и предупреждения Центра качества данных по доступным пациентам.",
     "unassigned_patients": "Доступные пациенты без закреплённой учётной записи лечащего врача.",
-    "patients_with_overdue": "Пациенты с текущим finding overdue_event из Центра качества данных.",
-    "overdue_events": "Текущие planned events в прошлом без фактического выполнения по правилам Центра качества данных.",
-    "critical_quality": "Текущие critical findings Центра качества данных.",
-    "warning_quality": "Текущие warning findings Центра качества данных.",
+    "patients_with_overdue": "Пациенты с текущими просроченными событиями по правилам Центра качества данных.",
+    "overdue_events": "Текущие плановые события в прошлом без фактического выполнения по правилам Центра качества данных.",
+    "critical_quality": "Текущие критические проблемы Центра качества данных.",
+    "warning_quality": "Текущие предупреждения Центра качества данных.",
     "incomplete_required_checklists": "Обязательные пункты чек-листа, не отмеченные выполненными.",
-    "pending_notifications": "Уведомления в статусе pending.",
-    "failed_notifications": "Уведомления в статусе failed.",
+    "pending_notifications": "Уведомления, ожидающие отправки.",
+    "failed_notifications": "Уведомления с ошибкой отправки.",
     "nosology_filter": "Фильтр по локализации/клиентскому пути; внутреннее API/БД поле остаётся nosology.",
 }
 
@@ -55,6 +56,26 @@ def _scope_where(user: policy.CurrentUser) -> tuple[list[str], list[Any]]:
     return [f"({cond})"], list(params)
 
 
+def _localization_label(code: str) -> str:
+    rule = ALL_LOCALIZATIONS.get(code)
+    return rule.label if rule else code
+
+
+def _analytics_nosology_codes(value: str | None) -> list[str]:
+    code = (value or "").strip()
+    if not code:
+        return []
+    rule = ALL_LOCALIZATIONS.get(code)
+    if rule is None:
+        return [code]
+    label = rule.label
+    return sorted(
+        other_code
+        for other_code, other_rule in ALL_LOCALIZATIONS.items()
+        if other_rule.label == label and other_rule.has_client_path
+    ) or [code]
+
+
 def _base_patient_where(filters: AnalyticsFilters, user: policy.CurrentUser) -> tuple[list[str], list[Any]]:
     where, params = _scope_where(user)
     if filters.department_id:
@@ -72,9 +93,13 @@ def _base_patient_where(filters: AnalyticsFilters, user: policy.CurrentUser) -> 
     if filters.stage:
         where.append("patients.stage = ?")
         params.append(filters.stage)
-    if filters.nosology:
+    nosology_codes = _analytics_nosology_codes(filters.nosology)
+    if len(nosology_codes) == 1:
         where.append("patients.nosology = ?")
-        params.append(filters.nosology)
+        params.append(nosology_codes[0])
+    elif nosology_codes:
+        where.append(f"patients.nosology IN ({','.join('?' for _ in nosology_codes)})")  # nosec B608 - placeholders are generated from allowlisted codes.
+        params.extend(nosology_codes)
     return where, params
 
 
@@ -292,17 +317,31 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
 
 def _profile_rows(rows: list[sqlite3.Row]) -> dict:
     total = len(rows)
-    counter = Counter((row["nosology"] or "").strip() for row in rows)
+    counter = Counter()
+    meta_by_key: dict[str, dict] = {}
+    for row in rows:
+        code = (row["nosology"] or "").strip()
+        if not code:
+            key = ""
+            label = "Не указан"
+            codes: list[str] = []
+        else:
+            codes = _analytics_nosology_codes(code)
+            key = codes[0]
+            label = _localization_label(code)
+        counter[key] += 1
+        meta_by_key[key] = {"label": label, "codes": codes}
     result = []
     for code, count in sorted(counter.items(), key=lambda x: (-x[1], x[0] or "zz")):
+        meta = meta_by_key[code]
         result.append({
             "code": code or "missing",
-            "label": code or "Не указан",
+            "label": meta["label"],
             "count": count,
             "percent": percent(count, total),
             "detail_type": "patients",
             "filter": {"nosology": code} if code else {},
-            "meta": {"nosology": code},
+            "meta": {"nosology": code, "nosology_codes": meta["codes"]},
         })
     return {"title": "Пациенты по профилю клиентского пути", "total": total, "rows": result}
 
@@ -374,7 +413,7 @@ def _attention_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[str
         {"code": "quality", "label": "Пациенты с проблемами качества данных", "count": len(issue_ids), "detail_type": "quality_warning", "filter": {}, "meta": {}},
         {"code": "overdue", "label": "Пациенты с просроченными событиями", "count": len(overdue_ids), "detail_type": "overdue_events", "filter": {}, "meta": {}},
         {"code": "unassigned", "label": "Без назначенного лечащего врача", "count": unassigned, "detail_type": "unassigned_patients", "filter": {}, "meta": {}},
-        {"code": "critical", "label": "Критические findings", "count": critical, "detail_type": "quality_critical", "filter": {}, "meta": {}},
+        {"code": "critical", "label": "Критические проблемы", "count": critical, "detail_type": "quality_critical", "filter": {}, "meta": {}},
         {"code": "checklists", "label": "Незавершённые обязательные чек-листы", "count": checklist["incomplete_required"], "detail_type": "incomplete_checklists", "filter": {}, "meta": {}},
     ]
     rows_out = sorted(rows_out, key=lambda x: (-x["count"], x["label"]))
@@ -679,7 +718,7 @@ def data_quality_state(conn: sqlite3.Connection, user: policy.CurrentUser, filte
         for department in patient_map[issue["patient_id"]]["department_names"] or ["Отделение не указано"]:
             by_department[department] += 1
     return {
-        "meta": _computed_meta(user, filters, {"history": "Центр качества данных не хранит историю findings; показано текущее состояние."}),
+        "meta": _computed_meta(user, filters, {"history": "Центр качества данных не хранит историю проблем; показано текущее состояние."}),
         "title": "Текущее состояние качества данных",
         "current_state_only": True,
         "summary": {**quality["summary"], "total_patients": len(patient_ids), "total_issues": len(issues)},
@@ -1021,9 +1060,9 @@ def _csv_rows(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analy
         data = notifications_state(conn, user, filters)
         labels = {
             "pending": "Ожидает отправки",
-            "processing": "В обработке",
-            "sent": "Обработано тестовым провайдером",
-            "failed": "Ошибка",
+            "processing": "Отправляется",
+            "sent": "Отправлено",
+            "failed": "Ошибка отправки",
             "cancelled": "Отменено",
             "skipped": "Пропущено",
         }
