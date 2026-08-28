@@ -4937,10 +4937,16 @@ const app = {
             svg.append(circle);
             offset += value * circumference;
         });
-        svg.append(
-            this.svgText(center, center - 2, String(total), 'analytics-donut__value'),
-            this.svgText(center, center + 18, 'всего', 'analytics-donut__label'),
-        );
+        const ring = el('div', { class: 'analytics-ring analytics-ring--donut' }, [
+            svg,
+            el('div', { class: 'analytics-ring-center', 'aria-hidden': 'true' }, [
+                el('div', {
+                    class: `analytics-ring-value${total >= 100 ? ' analytics-ring-value--compact' : ''}`,
+                    text: String(total),
+                }),
+                el('div', { class: 'analytics-ring-label', text: this.patientCountWord(total) }),
+            ]),
+        ]);
         const bars = el('div', { class: 'analytics-stage-list' }, rows.map(row => el('button', {
             type: 'button',
             class: 'analytics-stage-row',
@@ -4950,7 +4956,17 @@ const app = {
             el('strong', { text: String(row.count || 0) }),
             el('small', { text: `Просрочки: ${row.overdue_patients}; проблемы: ${row.quality_patients}` }),
         ])));
-        $('analyticsStageChart').replaceChildren(svg, bars);
+        $('analyticsStageChart').replaceChildren(ring, bars);
+    },
+
+    patientCountWord(count) {
+        const value = Math.abs(Number(count) || 0);
+        const mod100 = value % 100;
+        const mod10 = value % 10;
+        if (mod100 >= 11 && mod100 <= 14) return 'пациентов';
+        if (mod10 === 1) return 'пациент';
+        if (mod10 >= 2 && mod10 <= 4) return 'пациента';
+        return 'пациентов';
     },
 
     svgText(x, y, text, className) {
@@ -5002,10 +5018,28 @@ const app = {
         const rows = (this.analytics.dashboard && this.analytics.dashboard.data_quality && this.analytics.dashboard.data_quality.rows) || [];
         const score = Number(summary.average_completeness ?? 100);
         const safeScore = Math.max(0, Math.min(100, score));
+        const qualityRing = document.createElementNS(SVG_NS, 'svg');
+        qualityRing.setAttribute('class', 'analytics-quality-ring');
+        qualityRing.setAttribute('viewBox', '0 0 96 96');
+        qualityRing.setAttribute('role', 'img');
+        qualityRing.setAttribute('aria-label', `Заполненность обязательных полей ${safeScore}%`);
+        const qualityCircle = document.createElementNS(SVG_NS, 'circle');
+        qualityCircle.setAttribute('class', 'analytics-quality-ring__seg');
+        qualityCircle.setAttribute('cx', '48');
+        qualityCircle.setAttribute('cy', '48');
+        qualityCircle.setAttribute('r', '39');
+        qualityCircle.setAttribute('fill', 'none');
+        qualityCircle.setAttribute('stroke-width', '10');
+        qualityRing.append(qualityCircle);
         const panel = el('div', { class: 'analytics-quality-card' }, [
-            el('div', { class: 'analytics-quality-card__score', 'aria-label': `Заполненность обязательных полей ${safeScore}%` }, [
-                el('span', { text: `${safeScore}%` }),
-                el('small', { text: 'заполненность' }),
+            el('div', { class: 'analytics-quality-card__score' }, [
+                el('div', { class: 'analytics-ring analytics-ring--quality' }, [
+                    qualityRing,
+                    el('div', { class: 'analytics-ring-center', 'aria-hidden': 'true' }, [
+                        el('div', { class: 'analytics-ring-value analytics-ring-value--quality', text: `${safeScore}%` }),
+                        el('div', { class: 'analytics-ring-label analytics-ring-label--quality', text: 'заполнено' }),
+                    ]),
+                ]),
             ]),
             el('div', { class: 'analytics-quality-card__text' }, [
                 el('strong', { text: `${summary.total_issues || 0} проблем качества данных` }),
