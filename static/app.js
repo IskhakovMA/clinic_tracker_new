@@ -4937,11 +4937,16 @@ const app = {
             svg.append(circle);
             offset += value * circumference;
         });
-        const valueClass = total >= 100 ? 'analytics-donut__value analytics-donut__value--compact' : 'analytics-donut__value';
-        svg.append(
-            this.svgText(center, center - 7, String(total), valueClass),
-            this.svgText(center, center + 25, this.patientCountWord(total), 'analytics-donut__label'),
-        );
+        const ring = el('div', { class: 'analytics-ring analytics-ring--donut' }, [
+            svg,
+            el('div', { class: 'analytics-ring-center', 'aria-hidden': 'true' }, [
+                el('div', {
+                    class: `analytics-ring-value${total >= 100 ? ' analytics-ring-value--compact' : ''}`,
+                    text: String(total),
+                }),
+                el('div', { class: 'analytics-ring-label', text: this.patientCountWord(total) }),
+            ]),
+        ]);
         const bars = el('div', { class: 'analytics-stage-list' }, rows.map(row => el('button', {
             type: 'button',
             class: 'analytics-stage-row',
@@ -4951,7 +4956,7 @@ const app = {
             el('strong', { text: String(row.count || 0) }),
             el('small', { text: `Просрочки: ${row.overdue_patients}; проблемы: ${row.quality_patients}` }),
         ])));
-        $('analyticsStageChart').replaceChildren(svg, bars);
+        $('analyticsStageChart').replaceChildren(ring, bars);
     },
 
     patientCountWord(count) {
@@ -5018,12 +5023,24 @@ const app = {
         qualityRing.setAttribute('viewBox', '0 0 96 96');
         qualityRing.setAttribute('role', 'img');
         qualityRing.setAttribute('aria-label', `Заполненность обязательных полей ${safeScore}%`);
-        qualityRing.append(
-            this.svgText(48, 43, `${safeScore}%`, 'analytics-quality-ring__value'),
-            this.svgText(48, 64, 'заполнено', 'analytics-quality-ring__label'),
-        );
+        const qualityCircle = document.createElementNS(SVG_NS, 'circle');
+        qualityCircle.setAttribute('class', 'analytics-quality-ring__seg');
+        qualityCircle.setAttribute('cx', '48');
+        qualityCircle.setAttribute('cy', '48');
+        qualityCircle.setAttribute('r', '39');
+        qualityCircle.setAttribute('fill', 'none');
+        qualityCircle.setAttribute('stroke-width', '10');
+        qualityRing.append(qualityCircle);
         const panel = el('div', { class: 'analytics-quality-card' }, [
-            el('div', { class: 'analytics-quality-card__score' }, [qualityRing]),
+            el('div', { class: 'analytics-quality-card__score' }, [
+                el('div', { class: 'analytics-ring analytics-ring--quality' }, [
+                    qualityRing,
+                    el('div', { class: 'analytics-ring-center', 'aria-hidden': 'true' }, [
+                        el('div', { class: 'analytics-ring-value analytics-ring-value--quality', text: `${safeScore}%` }),
+                        el('div', { class: 'analytics-ring-label analytics-ring-label--quality', text: 'заполнено' }),
+                    ]),
+                ]),
+            ]),
             el('div', { class: 'analytics-quality-card__text' }, [
                 el('strong', { text: `${summary.total_issues || 0} проблем качества данных` }),
                 el('span', { text: `${summary.patients_with_issues || 0} пациентов требуют проверки данных` }),

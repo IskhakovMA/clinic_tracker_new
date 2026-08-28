@@ -2163,6 +2163,66 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     height: 164px;
 }
 
+.analytics-ring {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+}
+
+.analytics-ring--donut {
+    width: 164px;
+    height: 164px;
+}
+
+.analytics-ring--quality {
+    width: 100%;
+    height: 100%;
+}
+
+.analytics-ring-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    pointer-events: none;
+    text-align: center;
+}
+
+.analytics-ring-value {
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 31px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0;
+}
+
+.analytics-ring-value--compact {
+    font-size: 25px;
+}
+
+.analytics-ring-label {
+    color: var(--text-2);
+    font-family: var(--font-sans);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.05;
+    letter-spacing: 0;
+    text-transform: none;
+}
+
+.analytics-ring-value--quality {
+    font-size: 21px;
+}
+
+.analytics-ring-label--quality {
+    font-size: 10px;
+}
+
 .analytics-donut__seg {
     stroke: var(--accent);
 }
@@ -2171,26 +2231,6 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .analytics-donut__seg--3 { stroke: var(--info); }
 .analytics-donut__seg--4 { stroke: var(--warning); }
 .analytics-donut__seg--5 { stroke: var(--good); }
-.analytics-donut__value {
-    fill: var(--text);
-    font-family: var(--font-sans);
-    font-size: 30px;
-    font-weight: 700;
-    dominant-baseline: central;
-}
-
-.analytics-donut__value--compact {
-    font-size: 25px;
-}
-
-.analytics-donut__label {
-    fill: var(--text-2);
-    font-family: var(--font-sans);
-    font-size: 12px;
-    font-weight: 500;
-    letter-spacing: 0;
-    dominant-baseline: central;
-}
 
 .analytics-stage-list {
     display: grid;
@@ -2250,7 +2290,6 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     place-items: center;
     align-content: center;
     border-radius: 50%;
-    border: 10px solid var(--accent);
     background: var(--surface);
 }
 
@@ -2259,21 +2298,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     height: 100%;
 }
 
-.analytics-quality-ring__value {
-    fill: var(--text);
-    font-family: var(--font-sans);
-    font-size: 21px;
-    font-weight: 700;
-    dominant-baseline: central;
-}
-
-.analytics-quality-ring__label {
-    fill: var(--text-2);
-    font-family: var(--font-sans);
-    font-size: 10px;
-    font-weight: 500;
-    letter-spacing: 0;
-    dominant-baseline: central;
+.analytics-quality-ring__seg {
+    stroke: var(--accent);
 }
 
 .analytics-quality-card__text span {
