@@ -4940,7 +4940,7 @@ const app = {
         const valueClass = total >= 100 ? 'analytics-donut__value analytics-donut__value--compact' : 'analytics-donut__value';
         svg.append(
             this.svgText(center, center - 7, String(total), valueClass),
-            this.svgText(center, center + 24, 'ВСЕГО', 'analytics-donut__label'),
+            this.svgText(center, center + 25, this.patientCountWord(total), 'analytics-donut__label'),
         );
         const bars = el('div', { class: 'analytics-stage-list' }, rows.map(row => el('button', {
             type: 'button',
@@ -4952,6 +4952,16 @@ const app = {
             el('small', { text: `Просрочки: ${row.overdue_patients}; проблемы: ${row.quality_patients}` }),
         ])));
         $('analyticsStageChart').replaceChildren(svg, bars);
+    },
+
+    patientCountWord(count) {
+        const value = Math.abs(Number(count) || 0);
+        const mod100 = value % 100;
+        const mod10 = value % 10;
+        if (mod100 >= 11 && mod100 <= 14) return 'пациентов';
+        if (mod10 === 1) return 'пациент';
+        if (mod10 >= 2 && mod10 <= 4) return 'пациента';
+        return 'пациентов';
     },
 
     svgText(x, y, text, className) {
@@ -5003,11 +5013,17 @@ const app = {
         const rows = (this.analytics.dashboard && this.analytics.dashboard.data_quality && this.analytics.dashboard.data_quality.rows) || [];
         const score = Number(summary.average_completeness ?? 100);
         const safeScore = Math.max(0, Math.min(100, score));
+        const qualityRing = document.createElementNS(SVG_NS, 'svg');
+        qualityRing.setAttribute('class', 'analytics-quality-ring');
+        qualityRing.setAttribute('viewBox', '0 0 96 96');
+        qualityRing.setAttribute('role', 'img');
+        qualityRing.setAttribute('aria-label', `Заполненность обязательных полей ${safeScore}%`);
+        qualityRing.append(
+            this.svgText(48, 43, `${safeScore}%`, 'analytics-quality-ring__value'),
+            this.svgText(48, 64, 'заполнено', 'analytics-quality-ring__label'),
+        );
         const panel = el('div', { class: 'analytics-quality-card' }, [
-            el('div', { class: 'analytics-quality-card__score', 'aria-label': `Заполненность обязательных полей ${safeScore}%` }, [
-                el('span', { text: `${safeScore}%` }),
-                el('small', { text: 'заполненность' }),
-            ]),
+            el('div', { class: 'analytics-quality-card__score' }, [qualityRing]),
             el('div', { class: 'analytics-quality-card__text' }, [
                 el('strong', { text: `${summary.total_issues || 0} проблем качества данных` }),
                 el('span', { text: `${summary.patients_with_issues || 0} пациентов требуют проверки данных` }),
