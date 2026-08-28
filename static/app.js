@@ -4937,9 +4937,10 @@ const app = {
             svg.append(circle);
             offset += value * circumference;
         });
+        const valueClass = total >= 100 ? 'analytics-donut__value analytics-donut__value--compact' : 'analytics-donut__value';
         svg.append(
-            this.svgText(center, center - 2, String(total), 'analytics-donut__value'),
-            this.svgText(center, center + 18, 'всего', 'analytics-donut__label'),
+            this.svgText(center, center - 7, String(total), valueClass),
+            this.svgText(center, center + 24, 'ВСЕГО', 'analytics-donut__label'),
         );
         const bars = el('div', { class: 'analytics-stage-list' }, rows.map(row => el('button', {
             type: 'button',
