@@ -1516,24 +1516,31 @@ const app = {
     },
 
     clientPathForLocalization(localization) {
-        const paths = {
-            breast: 'breast',
-            prostate: 'prostate',
-            skin: 'skin',
-            melanoma: 'melanoma',
-            bladder: 'bladder',
-            kidney: 'kidney',
-            upperUrinary: 'upperUrinary',
-            thyroid: 'thyroidSuspected',
-            liver: 'liver',
-            pancreas: 'pancreas',
-            colon: 'colon',
-            stomach: 'stomach',
-            ovary: 'ovary',
-            uterus: 'uterus',
-            cervix: 'cervixCytology',
+        const groupedPaths = {
+            lip_oral_pharynx: ['headneckConfirmed', 'headneckSuspected'],
+            esophagus_stomach_intestine: ['stomach', 'colon'],
+            liver_biliary_pancreas: ['liver', 'pancreas'],
+            respiratory_thoracic: ['lung12', 'lung34'],
+            bone_cartilage: [],
+            skin: ['skin', 'melanoma'],
+            soft_tissue_peritoneum: [],
+            breast: ['breast'],
+            female_genital: ['ovary', 'uterus', 'cervixInvasive', 'cervixCytology'],
+            male_genital: ['prostate'],
+            urinary: ['kidney', 'upperUrinary', 'bladder'],
+            eye: [],
+            nervous_system: [],
+            endocrine: ['thyroidSuspected', 'thyroidConfirmed'],
+            lymphoid_hematopoietic: [],
+            ill_defined_multiple: [],
+            uncertain_unknown_behavior: [
+                'headneckConfirmed', 'stomach', 'colon', 'liver', 'uterus', 'ovary',
+                'prostate', 'kidney', 'upperUrinary', 'bladder', 'thyroidSuspected',
+                'skin', 'breast',
+            ],
         };
-        return paths[localization] || '';
+        const profiles = groupedPaths[localization] || [];
+        return profiles.find(profile => this.nosologyData[profile]) || '';
     },
 
     clientPathStatusNode(nosology) {

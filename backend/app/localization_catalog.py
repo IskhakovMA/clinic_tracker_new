@@ -61,6 +61,52 @@ NO_PATH_LOCALIZATIONS: dict[str, LocalizationRule] = {
 
 ALL_LOCALIZATIONS = {**LOCALIZATIONS, **NO_PATH_LOCALIZATIONS}
 
+# User-facing localization groups used by the localization-first UI. Values are
+# existing configured client-path/profile codes; an empty tuple means the
+# localization has no configured route deadlines yet.
+LOCALIZATION_CLIENT_PATH_PROFILES: dict[str, tuple[str, ...]] = {
+    "lip_oral_pharynx": ("headneckConfirmed", "headneckSuspected"),
+    "esophagus_stomach_intestine": ("stomach", "colon"),
+    "liver_biliary_pancreas": ("liver", "pancreas"),
+    "respiratory_thoracic": ("lung12", "lung34"),
+    "bone_cartilage": (),
+    "skin": ("skin", "melanoma"),
+    "soft_tissue_peritoneum": (),
+    "breast": ("breast",),
+    "female_genital": ("ovary", "uterus", "cervixInvasive", "cervixCytology"),
+    "male_genital": ("prostate",),
+    "urinary": ("kidney", "upperUrinary", "bladder"),
+    "eye": (),
+    "nervous_system": (),
+    "endocrine": ("thyroidSuspected", "thyroidConfirmed"),
+    "lymphoid_hematopoietic": (),
+    "ill_defined_multiple": (),
+    "uncertain_unknown_behavior": (
+        "headneckConfirmed",
+        "stomach",
+        "colon",
+        "liver",
+        "uterus",
+        "ovary",
+        "prostate",
+        "kidney",
+        "upperUrinary",
+        "bladder",
+        "thyroidSuspected",
+        "skin",
+        "breast",
+    ),
+}
+
+
+def client_path_profiles_for_ui_localization(localization: str | None) -> tuple[str, ...]:
+    profiles = LOCALIZATION_CLIENT_PATH_PROFILES.get((localization or "").strip(), ())
+    return tuple(profile for profile in profiles if profile in LOCALIZATIONS and LOCALIZATIONS[profile].has_client_path)
+
+
+def has_client_path_for_ui_localization(localization: str | None) -> bool:
+    return bool(client_path_profiles_for_ui_localization(localization))
+
 
 def normalize_diagnosis_code(value: str | None) -> str:
     return (value or "").strip().upper()
