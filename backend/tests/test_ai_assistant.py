@@ -34,6 +34,32 @@ def _tool_call(name, args=None, call_id="call_1"):
     }
 
 
+INTERNAL_AI_IDENTIFIERS = (
+    "get_notification_summary",
+    "get_analytics_summary",
+    "search_accessible_patients",
+    "get_patient_summary",
+    "get_patient_timeline",
+    "list_attention_patients",
+    "get_patient_attention",
+    "list_overdue_patients",
+    "get_today_work",
+    "get_department_attention_summary",
+    "attention_reason",
+    "patient_scope",
+    "client_path_profile",
+    "nosology",
+    "tool_call",
+    "function_call",
+    "/api/",
+)
+
+
+def _assert_no_internal_ai_identifiers(text: str):
+    lowered = text.lower()
+    assert not [identifier for identifier in INTERNAL_AI_IDENTIFIERS if identifier.lower() in lowered]
+
+
 def _create_patient(doctor_id=None, **overrides):
     from backend.app import store
     from backend.app.models import PatientCreateIn
@@ -635,6 +661,78 @@ def test_ai_unavailable_fallback_handles_informal_system_phrases(auth_client, mo
     assert "ИИ Срочный" in urgent["answer"]
     assert urgent["references"][0]["patientId"] == patient_id
     assert overdue["usage"]["toolCalls"] == 1
+
+
+def test_ai_answers_hide_internal_tool_names_and_keys(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    patient_id = _create_patient(name="ИИ Скрытый", stage="exam")
+    response = auth_client.post(
+        f"/api/patients/{patient_id}/attention",
+        json={"reasonCode": "critical_overdue", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn, AIHistoryMessage
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([
+        _result("Откройте раздел «Уведомления» в левом меню, get_notification_summary не нужно видеть."),
+        _result("Раздел «Уведомления» находится в левом меню. Внутренний endpoint /api/internal_notifications скрыт."),
+        _result("Аналитика показывает сводные показатели, get_analytics_summary."),
+        _result(tool_calls=[_tool_call("list_attention_patients", {"limit": 10})]),
+        _result("Список получен через list_attention_patients, patient_scope соблюдён."),
+        _result(tool_calls=[_tool_call("get_patient_attention", {"patientId": patient_id})]),
+        _result("Причина из attention_reason: critical_overdue."),
+    ])
+
+    cases = [
+        AIChatIn(message="где уведомления"),
+        AIChatIn(message="где уведолмения"),
+        AIChatIn(message="что показывает аналитика"),
+        AIChatIn(message="покажи пациентов требующих внимания"),
+        AIChatIn(
+            message="а почему?",
+            history=[
+                AIHistoryMessage(role="user", content="кто требует внимания"),
+                AIHistoryMessage(role="assistant", content="ИИ Скрытый требует внимания."),
+            ],
+        ),
+    ]
+    for body in cases:
+        result = orchestrator.answer(get_conn(), user, body, provider=provider)
+        _assert_no_internal_ai_identifiers(result["answer"])
+
+    direct = [
+        orchestrator.answer(get_conn(), user, AIChatIn(message="сколько пациентов всего"), provider=provider),
+        orchestrator.answer(get_conn(), user, AIChatIn(message="что у меня сегодня"), provider=provider),
+    ]
+    for result in direct:
+        _assert_no_internal_ai_identifiers(result["answer"])
+        assert result["usage"]["toolCalls"] == 1
+
+
+def test_ai_internal_identifier_sanitizer_does_not_break_general_technical_chat(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([
+        _result("Tool calling в LLM — это механизм, при котором модель просит вызвать внешний инструмент."),
+        _result("В Python функции объявляют через def и вызывают по имени с аргументами."),
+    ])
+
+    tool_calling = orchestrator.answer(get_conn(), user, AIChatIn(message="что такое tool calling в LLM"), provider=provider)
+    functions = orchestrator.answer(get_conn(), user, AIChatIn(message="как в Python называются функции"), provider=provider)
+
+    assert "Tool calling" in tool_calling["answer"]
+    assert "функции" in functions["answer"]
+    assert tool_calling["usage"]["toolCalls"] == 0
+    assert functions["usage"]["toolCalls"] == 0
 
 
 def test_ai_fallback_classifies_unsupported_and_prohibited(auth_client, monkeypatch):
