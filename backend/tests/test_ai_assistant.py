@@ -470,7 +470,9 @@ def test_ai_known_operational_aggregate_intents_are_tool_first(auth_client, monk
     from backend.app.ai.schemas import AIChatIn
 
     user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
-    provider = FakeProvider([_result("wrong")])
+    from backend.app.ai.provider import AIProviderUnavailable
+
+    monkeypatch.setattr(orchestrator, "default_provider", lambda: (_ for _ in ()).throw(AIProviderUnavailable("offline")))
 
     cases = {
         "сколько пациентов всего": "Всего Вам доступно 2 пациента.",
@@ -484,10 +486,9 @@ def test_ai_known_operational_aggregate_intents_are_tool_first(auth_client, monk
         "на каком этапе больше всего пациентов?": "Больше всего пациентов на этапе",
     }
     for question, expected in cases.items():
-        result = orchestrator.answer(get_conn(), user, AIChatIn(message=question), provider=provider)
+        result = orchestrator.answer(get_conn(), user, AIChatIn(message=question))
         assert expected in result["answer"], question
         assert result["usage"]["toolCalls"] == 1
-    assert provider.calls == []
 
 
 def test_ai_total_count_respects_doctor_scope(client, monkeypatch):
@@ -505,12 +506,10 @@ def test_ai_total_count_respects_doctor_scope(client, monkeypatch):
     from backend.app.ai.schemas import AIChatIn
 
     user = policy.load_current_user(get_conn(), doc_a)
-    result = orchestrator.answer(
-        get_conn(),
-        user,
-        AIChatIn(message="сколько пациентов в системе"),
-        provider=FakeProvider([_result("wrong")]),
-    )
+    from backend.app.ai.provider import AIProviderUnavailable
+
+    monkeypatch.setattr(orchestrator, "default_provider", lambda: (_ for _ in ()).throw(AIProviderUnavailable("offline")))
+    result = orchestrator.answer(get_conn(), user, AIChatIn(message="сколько пациентов в системе"))
     assert result["answer"] == "Всего Вам доступно 1 пациент."
     assert "В системе" not in result["answer"]
 
@@ -535,7 +534,11 @@ def test_ai_patient_summary_intent_is_scoped_and_omits_sensitive_fields(auth_cli
     from backend.app.ai.schemas import AIChatIn
 
     user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
-    provider = FakeProvider([_result("wrong")])
+    provider = FakeProvider([
+        _result(tool_calls=[_tool_call("search_accessible_patients", {"query": "ИИ Сводка Пациента", "limit": 2})]),
+        _result(tool_calls=[_tool_call("get_patient_summary", {"patientId": patient_id})]),
+        _result("ИИ Сводка Пациента: этап «Обследование». Активные отметки внимания: 1."),
+    ])
 
     result = orchestrator.answer(
         get_conn(),
@@ -551,10 +554,90 @@ def test_ai_patient_summary_intent_is_scoped_and_omits_sensitive_fields(auth_cli
     assert "1234567890123456" not in result["answer"]
     assert result["references"][0]["patientId"] == patient_id
     assert result["usage"]["toolCalls"] == 2
-    assert provider.calls == []
 
 
-def test_ai_fallback_classifies_off_topic_unsupported_and_prohibited(auth_client, monkeypatch):
+def test_ai_general_chat_uses_provider_instead_of_domain_only_refusal(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([
+        _result("REST API — это способ взаимодействия приложений через HTTP."),
+        _result("Здравствуйте! Прошу согласовать удобное время для встречи."),
+    ])
+
+    cases = {
+        "привет": "Привет",
+        "привет какой сегодня день": "Сегодня",
+        "2+2 сколько будет": "4",
+        "объясни что такое REST API": "REST API",
+        "напиши короткое деловое письмо": "Здравствуйте",
+    }
+    for question, expected in cases.items():
+        result = orchestrator.answer(get_conn(), user, AIChatIn(message=question), provider=provider)
+        assert expected in result["answer"], question
+        assert result["usage"]["toolCalls"] == 0
+    assert len(provider.calls) == 2
+
+
+def test_ai_ambiguity_routes_today_and_attention_semantically(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    _create_patient(name="ИИ Сегодня", stage="exam")
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    provider = FakeProvider([_result("Внимание — это направленность восприятия или мыслей на объект.")])
+
+    general_today = orchestrator.answer(get_conn(), user, AIChatIn(message="какой сегодня день"), provider=provider)
+    system_today = orchestrator.answer(get_conn(), user, AIChatIn(message="какие пациенты сегодня"), provider=provider)
+    general_attention = orchestrator.answer(get_conn(), user, AIChatIn(message="что такое внимание"), provider=provider)
+    system_attention = orchestrator.answer(get_conn(), user, AIChatIn(message="кто требует внимания"), provider=provider)
+
+    assert "Сегодня" in general_today["answer"]
+    assert general_today["usage"]["toolCalls"] == 0
+    assert "На сегодня" in system_today["answer"]
+    assert system_today["usage"]["toolCalls"] == 1
+    assert "Внимание" in general_attention["answer"]
+    assert general_attention["usage"]["toolCalls"] == 0
+    assert "внимания" in system_attention["answer"]
+    assert system_attention["usage"]["toolCalls"] == 1
+    assert len(provider.calls) == 1
+
+
+def test_ai_unavailable_fallback_handles_informal_system_phrases(auth_client, monkeypatch):
+    _enable_ai(monkeypatch)
+    patient_id = _create_patient(name="ИИ Срочный", stage="exam")
+    response = auth_client.post(
+        f"/api/patients/{patient_id}/attention",
+        json={"reasonCode": "critical_overdue", "eventDate": None, "comment": "synthetic"},
+        headers=auth_client.csrf,
+    )
+    assert response.status_code == 201
+
+    from backend.app import policy
+    from backend.app.ai import orchestrator
+    from backend.app.ai.provider import AIProviderUnavailable
+    from backend.app.ai.schemas import AIChatIn
+
+    user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
+    monkeypatch.setattr(orchestrator, "default_provider", lambda: (_ for _ in ()).throw(AIProviderUnavailable("offline")))
+
+    today = orchestrator.answer(get_conn(), user, AIChatIn(message="че у меня сегодня"))
+    urgent = orchestrator.answer(get_conn(), user, AIChatIn(message="покажи самых срочных"))
+    overdue = orchestrator.answer(get_conn(), user, AIChatIn(message="кто просрочен"))
+
+    assert "На сегодня:" in today["answer"]
+    assert today["usage"]["toolCalls"] == 1
+    assert "ИИ Срочный" in urgent["answer"]
+    assert urgent["references"][0]["patientId"] == patient_id
+    assert overdue["usage"]["toolCalls"] == 1
+
+
+def test_ai_fallback_classifies_unsupported_and_prohibited(auth_client, monkeypatch):
     _enable_ai(monkeypatch)
     from backend.app import policy
     from backend.app.ai import orchestrator
@@ -564,9 +647,6 @@ def test_ai_fallback_classifies_off_topic_unsupported_and_prohibited(auth_client
     provider = FakeProvider([_result("wrong")])
 
     cases = {
-        "2+2 сколько будет": "Я помогаю только с вопросами, связанными с работой Системы планирования",
-        "какая столица Франции": "Я помогаю только с вопросами, связанными с работой Системы планирования",
-        "напиши стихотворение": "Я помогаю только с вопросами, связанными с работой Системы планирования",
         "какой средний срок лечения по всем пациентам?": "Сейчас система не предоставляет такой показатель.",
         "сколько пациентов было год назад?": "Сейчас система не предоставляет такой показатель.",
         "назначь лечение": "Я не могу назначать лечение или принимать медицинские решения.",
@@ -595,9 +675,11 @@ def test_ai_followup_precedes_off_topic_fallback(auth_client, monkeypatch):
     from backend.app.ai.schemas import AIChatIn, AIHistoryMessage
 
     user = policy.load_current_user(get_conn(), auth_client.get("/api/auth/me").json()["user"]["id"])
-    provider = FakeProvider([_result("wrong")])
+    from backend.app.ai.provider import AIProviderUnavailable
 
-    first = orchestrator.answer(get_conn(), user, AIChatIn(message="сколько пациентов всего"), provider=provider)
+    monkeypatch.setattr(orchestrator, "default_provider", lambda: (_ for _ in ()).throw(AIProviderUnavailable("offline")))
+
+    first = orchestrator.answer(get_conn(), user, AIChatIn(message="сколько пациентов всего"))
     second = orchestrator.answer(
         get_conn(),
         user,
@@ -608,7 +690,6 @@ def test_ai_followup_precedes_off_topic_fallback(auth_client, monkeypatch):
                 AIHistoryMessage(role="assistant", content=first["answer"]),
             ],
         ),
-        provider=provider,
     )
     third = orchestrator.answer(
         get_conn(),
@@ -620,13 +701,11 @@ def test_ai_followup_precedes_off_topic_fallback(auth_client, monkeypatch):
                 AIHistoryMessage(role="assistant", content=second["answer"]),
             ],
         ),
-        provider=provider,
     )
 
     assert "Всего Вам доступно" in first["answer"]
     assert "требуют внимания" in second["answer"]
     assert "просроченными событиями" in third["answer"]
-    assert provider.calls == []
 
 
 def test_openai_provider_malformed_response_and_reasoning_strip():
