@@ -6,7 +6,9 @@ import logging
 import sqlite3
 import time
 import re
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .. import config, policy
 from . import prompts, tools
@@ -19,7 +21,6 @@ logger = logging.getLogger("clinic.ai")
 READ_ONLY_FALLBACK = (
     "Я работаю только в режиме просмотра и не изменяю данные."
 )
-DOMAIN_ONLY_FALLBACK = "Я помогаю только с вопросами, связанными с работой Системы планирования и доступными в ней данными."
 UNSUPPORTED_SYSTEM_FALLBACK = "Сейчас система не предоставляет такой показатель."
 MEDICAL_DECISION_FALLBACK = "Я не могу назначать лечение или принимать медицинские решения."
 
@@ -64,6 +65,30 @@ def _pluralize_ru(value: int, one: str, few: str, many: str) -> str:
     if 2 <= value % 10 <= 4 and not 12 <= value % 100 <= 14:
         return few
     return many
+
+
+def _today_text() -> str:
+    weekdays = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
+    try:
+        now = datetime.now(ZoneInfo(config.APP_TIMEZONE))
+    except ZoneInfoNotFoundError:
+        now = datetime.now()
+    return f"Сегодня {now.strftime('%d.%m.%Y')}, {weekdays[now.weekday()]}."
+
+
+def _general_builtin_answer(text: str) -> dict | None:
+    normalized = _normalize_intent_text(text)
+    if re.fullmatch(r"(привет|здравствуй|здравствуйте|добрый день|доброе утро|добрый вечер)[!. ]*", normalized):
+        return _plain_answer("Привет! Чем помочь?")
+    if re.fullmatch(r"(спасибо|благодарю|спс)[!. ]*", normalized):
+        return _plain_answer("Пожалуйста.")
+    if normalized in {"как дела", "как дела?", "как ты", "как ты?"}:
+        return _plain_answer("Работаю штатно. Могу помочь с вопросом или данными системы.")
+    if re.fullmatch(r"(привет[ ,]*)?(какой|какая) сегодня (день|дата)\??", normalized):
+        return _plain_answer(_today_text())
+    if re.fullmatch(r"(2\s*\+\s*2)(\s+сколько будет|\s*=)?\??", normalized):
+        return _plain_answer("2 + 2 = 4.")
+    return None
 
 
 def _top_row(section: dict, *, label_keys: tuple[str, ...] = ("label",)) -> dict | None:
@@ -208,15 +233,39 @@ def _known_operational_intent(text: str) -> str | None:
         return "attention_count"
     if "просроч" in normalized and any(marker in normalized for marker in ("сколько", "пациент", "из них", "событ", "а просроч")):
         return "overdue_count"
+    if "просроч" in normalized and any(marker in normalized for marker in ("кто", "у кого", "покажи", "какие")):
+        return "overdue_list"
     if "част" in normalized and "прич" in normalized and "вниман" in normalized:
         return "top_attention_reason"
     if "врач" in normalized and ("нагруж" in normalized or "нагруз" in normalized):
         return "doctor_load"
-    if "сегодня" in normalized:
+    if "сроч" in normalized and any(marker in normalized for marker in ("покажи", "какие", "кто", "пациент")):
+        return "attention_list"
+    if "сегодня" in normalized and (
+        any(marker in normalized for marker in ("что у меня", "че у меня", "чё у меня", "какие пациент", "событ", "план", "прием", "приём", "запланирован"))
+        or (has_patient and any(marker in normalized for marker in ("какие", "кто", "у кого", "есть ли")))
+    ):
         return "today_summary"
     if "кто" in normalized and "вниман" in normalized:
         return "attention_list"
     return None
+
+
+def _system_unsupported_intent(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    has_patient = "пациент" in normalized or "пациентов" in normalized
+    unsupported_aggregate_markers = (
+        "средний срок",
+        "год назад",
+        "за прошлый год",
+        "прогноз",
+        "предикт",
+    )
+    if has_patient and any(marker in normalized for marker in unsupported_aggregate_markers):
+        return True
+    if "систем" in normalized and any(marker in normalized for marker in ("показател", "метрик", "данн")):
+        return True
+    return False
 
 
 def _fallback_classification(text: str) -> str | None:
@@ -235,22 +284,9 @@ def _fallback_classification(text: str) -> str | None:
     if any(marker in normalized for marker in write_markers):
         return "write"
 
-    system_markers = (
-        "пациент", "маршрут", "этап", "просроч", "вниман", "качество дан",
-        "заполнен", "чек-лист", "локализац", "лечащ", "врач", "отделен",
-        "систем", "аналитик", "уведомлен", "срок", "средн", "показател",
-    )
-    is_system_question = any(marker in normalized for marker in system_markers)
-    safe_tool_markers = (
-        "найди", "покажи", "какие", "кто", "у кого", "есть ли", "расскажи",
-        "что известно", "сводк", "хронолог", "таймлайн", "сегодня",
-    )
-    if is_system_question and any(marker in normalized for marker in safe_tool_markers):
-        return None
-
-    if is_system_question:
+    if _system_unsupported_intent(text):
         return "unsupported_system"
-    return "off_topic"
+    return None
 
 
 def _answer_fallback_classification(text: str) -> dict:
@@ -263,7 +299,7 @@ def _answer_fallback_classification(text: str) -> dict:
         return _plain_answer(READ_ONLY_FALLBACK)
     if classification == "unsupported_system":
         return _plain_answer(UNSUPPORTED_SYSTEM_FALLBACK)
-    return _plain_answer(DOMAIN_ONLY_FALLBACK)
+    return {}
 
 
 def _answer_known_operational_intent(
@@ -290,6 +326,14 @@ def _answer_known_operational_intent(
         answer = (
             "Сейчас требуют внимания: " + "; ".join(p.get("displayName", "Пациент") for p in patients[:5]) + "."
             if patients else "Пациентов с активными отметками внимания нет."
+        )
+        return {"answer": answer, "references": _references_from_tool_result(result), "usage": {"toolCalls": 1}}
+    if intent == "overdue_list":
+        result = tools.execute_tool("list_overdue_patients", {"limit": 10}, conn, user)
+        patients = result.get("patients") or []
+        answer = (
+            "Пациенты с просрочками: " + "; ".join(p.get("displayName", "Пациент") for p in patients[:5]) + "."
+            if patients else "Пациентов с просроченными событиями нет."
         )
         return {"answer": answer, "references": _references_from_tool_result(result), "usage": {"toolCalls": 1}}
     resolved = _analytics_intent(conn, user, intent, body.message)
@@ -402,19 +446,32 @@ def answer(
     if body.patientContextId and not policy.can_read_patient(conn, user, body.patientContextId):
         raise tools.ToolPermissionError("Пациент недоступен текущей роли.")
 
-    provider = provider or default_provider()
-    known_intent_answer = _answer_known_operational_intent(conn, user, body)
-    if known_intent_answer:
-        return known_intent_answer
-
     followup_context = _followup_context(conn, user, body)
     if not followup_context:
         fallback_answer = _answer_fallback_classification(body.message)
         if fallback_answer:
             return fallback_answer
+        known_intent_answer = _answer_known_operational_intent(conn, user, body)
+        if known_intent_answer:
+            return known_intent_answer
+
+    try:
+        provider = provider or default_provider()
+    except AIProviderUnavailable:
+        known_intent_answer = _answer_known_operational_intent(conn, user, body)
+        if known_intent_answer:
+            return known_intent_answer
+        raise
+
+    if not followup_context:
+        general_answer = _general_builtin_answer(body.message)
+        if general_answer:
+            return general_answer
+
     followup_message = _followup_context_message(followup_context)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": prompts.SYSTEM_PROMPT},
+        {"role": "system", "content": prompts.PRODUCT_KNOWLEDGE_PROMPT},
         {"role": "system", "content": prompts.context_prompt(user, body.patientContextId)},
         *([followup_message] if followup_message else []),
         *_history_messages(body),
