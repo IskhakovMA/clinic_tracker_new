@@ -1487,6 +1487,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .severity-dot--critical::before { background: var(--danger); }
 .severity-dot--warning::before { background: var(--warning); }
 .severity-dot--info::before { background: var(--info); }
+.severity-dot--danger { color: var(--danger); }
+.severity-dot--danger::before { background: var(--danger); }
 .quality-finding {
     padding: var(--sp-3);
     border: 1px solid var(--border);
@@ -1498,6 +1500,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .quality-finding--critical { border-left-color: var(--danger); }
 .quality-finding--warning { border-left-color: var(--warning); }
 .quality-finding--info { border-left-color: var(--info); }
+.quality-finding--danger { border-left-color: var(--danger); }
 .quality-finding__head {
     display: flex;
     align-items: center;
