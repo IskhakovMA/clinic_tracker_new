@@ -28,7 +28,7 @@ STAGES = (
 )
 TERMINAL_STAGES = ("completed", "dispensary-observation", "diagnosis-not-confirmed")
 DISEASE_STAGES = ("", "I", "II", "III", "IV")
-TREATMENT_TYPES = ("", "surgery", "radiation", "chemo")
+TREATMENT_TYPES = ("", "surgery", "radiation", "chemo", "hormone")
 CONSILIUM_DECISIONS = ("treatment_strategy_defined", "treatment_strategy_changed", "dispensary_observation")
 PGI_RESULTS = ("", "confirmed", "not_confirmed")
 POLICY_NUMBER_MAX_LENGTH = 32

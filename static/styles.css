@@ -790,6 +790,14 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .stat__meta { font-size: var(--text-sm); color: var(--text-3); margin-top: var(--sp-1); }
 .stat__meta--good { color: var(--good); }
 .stat__meta--accent { color: var(--accent-text); }
+.stat--good { border-color: color-mix(in srgb, var(--good) 34%, var(--border)); }
+.stat--warning { border-color: color-mix(in srgb, var(--warning) 38%, var(--border)); }
+.stat--danger { border-color: color-mix(in srgb, var(--danger) 42%, var(--border)); }
+.stat--info { border-color: color-mix(in srgb, var(--info) 32%, var(--border)); }
+.stat--good .stat__value { color: var(--good); }
+.stat--warning .stat__value { color: var(--warning); }
+.stat--danger .stat__value { color: var(--danger); }
+.stat--info .stat__value { color: var(--info); }
 .stat--button {
     width: 100%;
     text-align: left;
@@ -1139,8 +1147,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 }
 
 .attention-issue--emergency {
-    border-color: color-mix(in srgb, var(--warning) 48%, var(--border));
-    background: color-mix(in srgb, var(--warning) 8%, var(--surface-2));
+    border-color: color-mix(in srgb, var(--danger) 48%, var(--border));
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface-2));
 }
 
 .attention-issue__head {
@@ -1479,6 +1487,8 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .severity-dot--critical::before { background: var(--danger); }
 .severity-dot--warning::before { background: var(--warning); }
 .severity-dot--info::before { background: var(--info); }
+.severity-dot--danger { color: var(--danger); }
+.severity-dot--danger::before { background: var(--danger); }
 .quality-finding {
     padding: var(--sp-3);
     border: 1px solid var(--border);
@@ -1490,6 +1500,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .quality-finding--critical { border-left-color: var(--danger); }
 .quality-finding--warning { border-left-color: var(--warning); }
 .quality-finding--info { border-left-color: var(--info); }
+.quality-finding--danger { border-left-color: var(--danger); }
 .quality-finding__head {
     display: flex;
     align-items: center;
@@ -1964,6 +1975,14 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
 }
 
+.analytics-row--danger {
+    border-color: color-mix(in srgb, var(--danger) 42%, var(--border));
+}
+
+.analytics-row--danger strong {
+    color: var(--danger);
+}
+
 .analytics-row small {
     color: var(--text-2);
 }
@@ -2140,10 +2159,18 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .analytics-bar--3 .analytics-bar__progress::-webkit-progress-value { background: var(--info); }
 .analytics-bar--4 .analytics-bar__progress::-webkit-progress-value { background: var(--warning); }
 .analytics-bar--5 .analytics-bar__progress::-webkit-progress-value { background: var(--good); }
+.analytics-bar--danger .analytics-bar__progress::-webkit-progress-value { background: var(--danger); }
+.analytics-bar--warning .analytics-bar__progress::-webkit-progress-value { background: var(--warning); }
+.analytics-bar--good .analytics-bar__progress::-webkit-progress-value { background: var(--good); }
+.analytics-bar--info .analytics-bar__progress::-webkit-progress-value { background: var(--info); }
 .analytics-bar--2 .analytics-bar__progress::-moz-progress-bar { background: var(--teal); }
 .analytics-bar--3 .analytics-bar__progress::-moz-progress-bar { background: var(--info); }
 .analytics-bar--4 .analytics-bar__progress::-moz-progress-bar { background: var(--warning); }
 .analytics-bar--5 .analytics-bar__progress::-moz-progress-bar { background: var(--good); }
+.analytics-bar--danger .analytics-bar__progress::-moz-progress-bar { background: var(--danger); }
+.analytics-bar--warning .analytics-bar__progress::-moz-progress-bar { background: var(--warning); }
+.analytics-bar--good .analytics-bar__progress::-moz-progress-bar { background: var(--good); }
+.analytics-bar--info .analytics-bar__progress::-moz-progress-bar { background: var(--info); }
 
 .analytics-bar__meta {
     color: var(--text-2);
@@ -2299,7 +2326,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 }
 
 .analytics-quality-ring__seg {
-    stroke: var(--accent);
+    stroke: var(--good);
 }
 
 .analytics-quality-card__text span {

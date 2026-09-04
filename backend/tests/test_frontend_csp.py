@@ -136,7 +136,7 @@ def test_canonical_page_is_served(client):
     assert response.status_code == 200
     body = response.text
     assert '<link rel="stylesheet" href="/static/styles.css">' in body
-    assert '<script src="/static/app.js?v=pr30-analytics-ai-recovery"></script>' in body
+    assert '<script src="/static/app.js?v=pr35-treatment-quality-polish"></script>' in body
     # ни одного <style> и ни одного inline-скрипта в документе
     assert "<style" not in body
     assert not re.search(r"<script(?![^>]*\ssrc=)", body)
@@ -240,6 +240,38 @@ def test_analytics_v3_and_ai_recovery_frontend_contracts_are_present():
     assert "analytics-trend__point" in css
     assert "analytics-trend__legend" in css
     assert "position: sticky; top: 0; z-index: 30" in css
+
+
+def test_route_treatment_and_semantic_color_frontend_contracts_are_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    css = CSS.read_text(encoding="utf-8")
+
+    assert 'option value="hormone">Гормонотерапия' in html
+    assert "hormone: 'Гормонотерапия'" in js
+    assert "TREATMENT_OPTIONS: ['', 'surgery', 'radiation', 'chemo', 'hormone']" in js
+    assert "$('treatmentType').replaceChildren(frag(this.treatmentTypeOptions()))" in js
+    assert "this.treatmentTypeOptions(ev.treatmentType || '')" in js
+    assert "Направить на дообследование" in js
+    assert "this.advanceToStage(patientId, 'exam', this.stageNames.exam)" in js
+    assert "pr35-treatment-quality-polish" in html
+
+    for marker in (
+        "analyticsCardToneClass",
+        "stat--danger",
+        "stat--warning",
+        "analytics-bar--danger",
+        "analytics-row--danger",
+        "qualityProblemChip",
+        "severity-dot--danger",
+        "quality-finding--danger",
+        "stroke: var(--good)",
+    ):
+        assert marker in "\n".join((js, css))
+
+    assert "row.issue_count ? this.qualityProblemChip" in js
+    assert "quality-finding quality-finding--danger" in js
+    assert "chip--warning patient-attention-badge" in js
 
 
 def test_analytics_renderer_does_not_assign_to_append_return_value():

@@ -108,6 +108,41 @@ def test_stage_change_flow(auth_client):
     assert r.status_code == 409
 
 
+def test_consult_can_return_to_exam_for_additional_assessment(auth_client):
+    pid = _create(auth_client, stage="consult", events=[{"date": "2026-07-02", "time": "11:00"}])["id"]
+    r = auth_client.post(
+        f"/api/patients/{pid}/stage",
+        json={
+            "newStage": "exam",
+            "lastEventUpdate": {"actualDate": "2026-07-02", "actualTime": "11:00", "matchedPlan": True},
+        },
+        headers=auth_client.csrf,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stage"] == "exam"
+    assert body["history"][-1]["stage"] == "exam"
+    assert body["history"][0]["events"][0].get("consiliumDecision") is None
+
+
+def test_hormone_treatment_type_roundtrips(auth_client):
+    pid = _create(
+        auth_client,
+        stage="treatment",
+        events=[{"date": "2026-08-01", "time": "09:00", "treatmentType": "hormone"}],
+    )["id"]
+    body = auth_client.get(f"/api/patients/{pid}").json()
+    assert body["history"][0]["events"][0]["treatmentType"] == "hormone"
+
+    r = auth_client.patch(
+        f"/api/patients/{pid}/history/0/events/0",
+        json={"field": "treatmentType", "value": "hormone"},
+        headers=auth_client.csrf,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["history"][0]["events"][0]["treatmentType"] == "hormone"
+
+
 def test_events_lifecycle(auth_client):
     pid = _create(auth_client)["id"]
     r = auth_client.post(f"/api/patients/{pid}/history/0/events", headers=auth_client.csrf)

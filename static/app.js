@@ -1603,7 +1603,8 @@ const app = {
     ],
 
     PRIORITY_LABELS: { urgent: 'Срочно', high: 'Высокий', normal: 'Обычный' },
-    TREATMENT_LABELS: { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия' },
+    TREATMENT_LABELS: { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия', hormone: 'Гормонотерапия' },
+    TREATMENT_OPTIONS: ['', 'surgery', 'radiation', 'chemo', 'hormone'],
     CONSILIUM_DECISION_LABELS: {
         treatment_strategy_defined: 'Определение тактики лечения',
         treatment_strategy_changed: 'Изменение тактики лечения',
@@ -2399,7 +2400,13 @@ const app = {
             ...this.HEAD_OPTIONS.map(h => option(h, h)),
         ]));
 
+        $('treatmentType').replaceChildren(frag(this.treatmentTypeOptions()));
+
         this.fillDoctorSelect();
+    },
+
+    treatmentTypeOptions(selected = '') {
+        return this.TREATMENT_OPTIONS.map(value => option(value, value ? this.TREATMENT_LABELS[value] : 'Не указан', value === selected));
     },
 
     /** Селект «Лечащий врач» в форме создания зависит от роли:
@@ -2765,6 +2772,14 @@ const app = {
                     click: () => this.advanceToStage(patientId, 'treatment-prep', this.stageNames['treatment-prep'], {
                         consiliumDecision: 'treatment_strategy_changed',
                     }),
+                },
+            }),
+            el('button', {
+                type: 'button',
+                class: 'btn btn--ghost',
+                text: 'Направить на дообследование',
+                on: {
+                    click: () => this.advanceToStage(patientId, 'exam', this.stageNames.exam),
                 },
             }),
             el('button', {
@@ -3479,12 +3494,7 @@ const app = {
                         el('select', {
                             class: 'select', 'aria-label': 'Тип лечения',
                             on: { change: (event) => this.updateEvent(p.id, occIndex, idx, 'treatmentType', event.target.value) },
-                        }, [
-                            option('', 'Не указан', !ev.treatmentType),
-                            option('surgery', this.TREATMENT_LABELS.surgery, ev.treatmentType === 'surgery'),
-                            option('radiation', this.TREATMENT_LABELS.radiation, ev.treatmentType === 'radiation'),
-                            option('chemo', this.TREATMENT_LABELS.chemo, ev.treatmentType === 'chemo'),
-                        ]),
+                        }, this.treatmentTypeOptions(ev.treatmentType || '')),
                     ]) : null,
                 ]);
             }),
@@ -3643,6 +3653,10 @@ const app = {
         return el('span', { class: `chip chip--${tone}`, text: label });
     },
 
+    qualityProblemChip(label = 'Проблема') {
+        return el('span', { class: 'chip chip--danger', text: label });
+    },
+
     qualityParams() {
         const f = this.quality.filters;
         const params = new URLSearchParams();
@@ -3709,8 +3723,9 @@ const app = {
 
     renderQualityStats() {
         const s = this.quality.summary || {};
-        const stat = (label, value, meta, filter) => {
-            const props = { class: filter ? 'stat stat--button' : 'stat' };
+        const stat = (label, value, meta, filter, tone = '') => {
+            const className = `stat ${filter ? 'stat--button' : ''} ${tone ? 'stat--' + tone : ''}`;
+            const props = { class: className };
             const children = [
                 el('div', { class: 'stat__label', text: label }),
                 el('div', { class: 'stat__value', text: String(value ?? 0) }),
@@ -3719,7 +3734,7 @@ const app = {
             if (!filter) return el('div', props, children);
             return el('button', {
                 type: 'button',
-                class: 'stat stat--button',
+                class: className,
                 on: { click: () => {
                     Object.assign(this.quality.filters, {
                         severity: '',
@@ -3736,11 +3751,11 @@ const app = {
             }, children);
         };
         $('qualityStatsRow').replaceChildren(frag([
-            stat('Пациентов с проблемами', s.patients_with_issues, `${s.total_patients || 0} в области доступа`),
-            stat('Критические ошибки', s.critical_count, 'требуют проверки', { severity: 'critical' }),
-            stat('Предупреждения', s.warning_count, 'уточнить данные', { severity: 'warning' }),
-            stat('Возможные дубли', s.possible_duplicate_groups, 'только ручная проверка', { code: 'possible_duplicate' }),
-            stat('Заполненность обязательных полей', `${s.average_completeness ?? 100}%`, 'не включает проблемы маршрута и дат'),
+            stat('Пациентов с проблемами', s.patients_with_issues, `${s.total_patients || 0} в области доступа`, null, s.patients_with_issues ? 'danger' : 'good'),
+            stat('Критические ошибки', s.critical_count, 'требуют проверки', { severity: 'critical' }, s.critical_count ? 'danger' : 'good'),
+            stat('Предупреждения', s.warning_count, 'уточнить данные', { severity: 'warning' }, s.warning_count ? 'danger' : 'good'),
+            stat('Возможные дубли', s.possible_duplicate_groups, 'только ручная проверка', { code: 'possible_duplicate' }, s.possible_duplicate_groups ? 'danger' : 'good'),
+            stat('Заполненность обязательных полей', `${s.average_completeness ?? 100}%`, 'не включает проблемы маршрута и дат', null, 'good'),
         ]));
     },
 
@@ -3785,9 +3800,9 @@ const app = {
                     : el('div', { class: 'muted', text: 'Обязательные поля заполнены' }),
             ]),
             el('td', { class: 'cell-quality-issues' }, [
-                row.max_severity ? this.qualitySeverityChip(row.max_severity) : this.qualitySeverityChip(null),
+                row.issue_count ? this.qualityProblemChip(`${row.issue_count} ${this.pluralize(row.issue_count, 'проблема', 'проблемы', 'проблем')}`) : this.qualitySeverityChip(null),
                 ...(row.top_issues || []).map(issue => el('div', { class: 'quality-issue-line' }, [
-                    el('span', { class: `severity-dot severity-dot--${issue.severity}`, text: this.QUALITY_SEVERITY_LABELS[issue.severity] || 'Информация' }),
+                    el('span', { class: 'severity-dot severity-dot--danger', text: 'Проблема' }),
                     el('span', { text: issue.title }),
                 ])),
             ]),
@@ -3879,9 +3894,9 @@ const app = {
         const action = issue.suggested_action || {};
         const canWriteAction = action.can_write !== false;
         const readonlyMessage = 'Режим просмотра — изменение данных недоступно';
-        return el('div', { class: `quality-finding quality-finding--${issue.severity}` }, [
+        return el('div', { class: 'quality-finding quality-finding--danger' }, [
             el('div', { class: 'quality-finding__head' }, [
-                this.qualitySeverityChip(issue.severity),
+                this.qualityProblemChip('Проблема'),
                 el('span', { class: 'quality-finding__category', text: this.QUALITY_CATEGORY_LABELS[issue.category] || issue.category }),
             ]),
             el('div', { class: 'quality-finding__title', text: issue.title }),
@@ -4843,7 +4858,7 @@ const app = {
         ]);
         const nodes = cards.filter(card => visibleCodes.has(card.code)).map(card => el('button', {
             type: 'button',
-            class: 'stat stat--button',
+            class: `stat stat--button ${this.analyticsCardToneClass(card.code)}`,
             on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
         }, [
             el('div', { class: 'stat__label', text: card.label }),
@@ -4854,7 +4869,7 @@ const app = {
         if (qualitySummary) {
             nodes.push(el('button', {
                 type: 'button',
-                class: 'stat stat--button stat--quality',
+                class: `stat stat--button stat--quality ${qualitySummary.total_issues ? 'stat--danger' : 'stat--good'}`,
                 on: { click: () => this.renderAnalyticsDetails('quality_warning', 'Проблемы качества данных') },
             }, [
                 el('div', { class: 'stat__label', text: 'Заполненность обязательных полей' }),
@@ -4863,6 +4878,14 @@ const app = {
             ]));
         }
         $('analyticsStatsRow').replaceChildren(frag(nodes));
+    },
+
+    analyticsCardToneClass(code) {
+        if (code === 'patients_with_overdue' || code === 'data_quality_issues') return 'stat--danger';
+        if (code === 'patients_need_attention') return 'stat--warning';
+        if (code === 'active_patients') return 'stat--info';
+        if (code === 'completed_patients') return 'stat--good';
+        return '';
     },
 
     renderAnalyticsBarChart(targetId, rows, config) {
@@ -4897,7 +4920,7 @@ const app = {
             const meta = config.meta ? config.meta(row) : `${count} · ${row.percent || 0}%`;
             return el('button', {
                 type: 'button',
-                class: `analytics-bar analytics-bar--${(index % 5) + 1}`,
+                class: `analytics-bar analytics-bar--${(index % 5) + 1} ${config.tone ? 'analytics-bar--' + config.tone(row) : ''}`,
                 title: `${label}: ${meta}`,
                 'aria-label': `${label}: ${meta}`,
                 on: { click: () => config.onClick ? config.onClick(row) : null },
@@ -4994,6 +5017,7 @@ const app = {
         }
         this.renderAnalyticsVisualBars('analyticsAttentionList', rows, {
             labelKey: 'label',
+            tone: row => (row.code === 'critical_overdue' || row.code === 'emergency_hospitalization') ? 'danger' : 'warning',
             onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, { attentionReason: row.code }) : null,
         });
     },
@@ -5014,6 +5038,7 @@ const app = {
         chartRows.forEach(row => { row.percent = Math.round(row.count / max * 1000) / 10; });
         this.renderAnalyticsVisualBars('analyticsWorkloadList', chartRows, {
             labelKey: 'label',
+            tone: () => 'info',
             meta: row => row.meta,
             onClick: () => null,
         });
@@ -5056,7 +5081,7 @@ const app = {
         const list = rows.length
             ? el('div', { class: 'analytics-bars analytics-bars--compact' }, rows.slice(0, 5).map(row => el('button', {
                 type: 'button',
-                class: 'analytics-row analytics-row--button',
+                class: 'analytics-row analytics-row--button analytics-row--danger',
                 on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null },
             }, [
                 el('span', { text: row.label }),
