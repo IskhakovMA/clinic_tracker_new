@@ -1603,7 +1603,7 @@ const app = {
     ],
 
     PRIORITY_LABELS: { urgent: 'Срочно', high: 'Высокий', normal: 'Обычный' },
-    TREATMENT_LABELS: { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия' },
+    TREATMENT_LABELS: { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия', hormone: 'Гормонотерапия' },
     CONSILIUM_DECISION_LABELS: {
         treatment_strategy_defined: 'Определение тактики лечения',
         treatment_strategy_changed: 'Изменение тактики лечения',
@@ -2770,6 +2770,14 @@ const app = {
             el('button', {
                 type: 'button',
                 class: 'btn btn--ghost',
+                text: 'Направить на дообследование',
+                on: {
+                    click: () => this.advanceToStage(patientId, 'exam', this.stageNames.exam),
+                },
+            }),
+            el('button', {
+                type: 'button',
+                class: 'btn btn--ghost',
                 text: 'Диспансерное наблюдение',
                 on: {
                     click: () => this.advanceToStage(patientId, 'dispensary-observation', this.stageNames['dispensary-observation'], {
@@ -3484,6 +3492,7 @@ const app = {
                             option('surgery', this.TREATMENT_LABELS.surgery, ev.treatmentType === 'surgery'),
                             option('radiation', this.TREATMENT_LABELS.radiation, ev.treatmentType === 'radiation'),
                             option('chemo', this.TREATMENT_LABELS.chemo, ev.treatmentType === 'chemo'),
+                            option('hormone', this.TREATMENT_LABELS.hormone, ev.treatmentType === 'hormone'),
                         ]),
                     ]) : null,
                 ]);
@@ -4843,7 +4852,7 @@ const app = {
         ]);
         const nodes = cards.filter(card => visibleCodes.has(card.code)).map(card => el('button', {
             type: 'button',
-            class: 'stat stat--button',
+            class: `stat stat--button ${this.analyticsCardToneClass(card.code)}`,
             on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
         }, [
             el('div', { class: 'stat__label', text: card.label }),
@@ -4854,7 +4863,7 @@ const app = {
         if (qualitySummary) {
             nodes.push(el('button', {
                 type: 'button',
-                class: 'stat stat--button stat--quality',
+                class: `stat stat--button stat--quality ${qualitySummary.total_issues ? 'stat--danger' : 'stat--good'}`,
                 on: { click: () => this.renderAnalyticsDetails('quality_warning', 'Проблемы качества данных') },
             }, [
                 el('div', { class: 'stat__label', text: 'Заполненность обязательных полей' }),
@@ -4863,6 +4872,14 @@ const app = {
             ]));
         }
         $('analyticsStatsRow').replaceChildren(frag(nodes));
+    },
+
+    analyticsCardToneClass(code) {
+        if (code === 'patients_with_overdue' || code === 'data_quality_issues') return 'stat--danger';
+        if (code === 'patients_need_attention') return 'stat--warning';
+        if (code === 'active_patients') return 'stat--info';
+        if (code === 'completed_patients') return 'stat--good';
+        return '';
     },
 
     renderAnalyticsBarChart(targetId, rows, config) {
@@ -4897,7 +4914,7 @@ const app = {
             const meta = config.meta ? config.meta(row) : `${count} · ${row.percent || 0}%`;
             return el('button', {
                 type: 'button',
-                class: `analytics-bar analytics-bar--${(index % 5) + 1}`,
+                class: `analytics-bar analytics-bar--${(index % 5) + 1} ${config.tone ? 'analytics-bar--' + config.tone(row) : ''}`,
                 title: `${label}: ${meta}`,
                 'aria-label': `${label}: ${meta}`,
                 on: { click: () => config.onClick ? config.onClick(row) : null },
@@ -4994,6 +5011,7 @@ const app = {
         }
         this.renderAnalyticsVisualBars('analyticsAttentionList', rows, {
             labelKey: 'label',
+            tone: row => (row.code === 'critical_overdue' || row.code === 'emergency_hospitalization') ? 'danger' : 'warning',
             onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, { attentionReason: row.code }) : null,
         });
     },
@@ -5014,6 +5032,7 @@ const app = {
         chartRows.forEach(row => { row.percent = Math.round(row.count / max * 1000) / 10; });
         this.renderAnalyticsVisualBars('analyticsWorkloadList', chartRows, {
             labelKey: 'label',
+            tone: () => 'info',
             meta: row => row.meta,
             onClick: () => null,
         });
@@ -5056,7 +5075,7 @@ const app = {
         const list = rows.length
             ? el('div', { class: 'analytics-bars analytics-bars--compact' }, rows.slice(0, 5).map(row => el('button', {
                 type: 'button',
-                class: 'analytics-row analytics-row--button',
+                class: 'analytics-row analytics-row--button analytics-row--danger',
                 on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null },
             }, [
                 el('span', { text: row.label }),

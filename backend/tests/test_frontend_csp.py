@@ -242,6 +242,28 @@ def test_analytics_v3_and_ai_recovery_frontend_contracts_are_present():
     assert "position: sticky; top: 0; z-index: 30" in css
 
 
+def test_route_treatment_and_semantic_color_frontend_contracts_are_present():
+    html = HTML.read_text(encoding="utf-8")
+    js = JS.read_text(encoding="utf-8")
+    css = CSS.read_text(encoding="utf-8")
+
+    assert 'option value="hormone">Гормонотерапия' in html
+    assert "hormone: 'Гормонотерапия'" in js
+    assert "option('hormone', this.TREATMENT_LABELS.hormone" in js
+    assert "Направить на дообследование" in js
+    assert "this.advanceToStage(patientId, 'exam', this.stageNames.exam)" in js
+
+    for marker in (
+        "analyticsCardToneClass",
+        "stat--danger",
+        "stat--warning",
+        "analytics-bar--danger",
+        "analytics-row--danger",
+        "stroke: var(--good)",
+    ):
+        assert marker in "\n".join((js, css))
+
+
 def test_analytics_renderer_does_not_assign_to_append_return_value():
     js = JS.read_text(encoding="utf-8")
     assert ".append(document.createElementNS" not in js
