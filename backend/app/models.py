@@ -96,6 +96,25 @@ def normalize_policy_number(v: Optional[str]) -> str:
     return value
 
 
+_EVENT_TIME_RE = re.compile(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$")
+
+
+def validate_event_value(field: str, value: str | None) -> str | None:
+    """Проверка значения поля события: дата — YYYY-MM-DD, время — HH:MM
+    в пределах суток. Пустое значение допустимо (поле очищается)."""
+    if value is None or value == "":
+        return value
+    if field in ("date", "actualDate"):
+        try:
+            date_type.fromisoformat(value)
+        except ValueError:
+            raise ValueError("date must be YYYY-MM-DD")
+    elif field in ("time", "actualTime"):
+        if not _EVENT_TIME_RE.match(value):
+            raise ValueError("time must be HH:MM (00:00-23:59)")
+    return value
+
+
 class EventIn(StrictRequestModel):
     date: Optional[str] = Field(None, max_length=10)
     time: Optional[str] = Field(None, max_length=5)
@@ -112,13 +131,12 @@ class EventIn(StrictRequestModel):
     @field_validator("date", "actualDate")
     @classmethod
     def _valid_date(cls, v):
-        if v is None or v == "":
-            return v
-        try:
-            date_type.fromisoformat(v)
-        except ValueError:
-            raise ValueError("date must be YYYY-MM-DD")
-        return v
+        return validate_event_value("date", v)
+
+    @field_validator("time", "actualTime")
+    @classmethod
+    def _valid_time(cls, v):
+        return validate_event_value("time", v)
 
     @field_validator("treatmentType")
     @classmethod

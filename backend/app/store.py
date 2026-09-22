@@ -15,6 +15,7 @@ from .models import (
     EventIn,
     PatientCreateIn,
     normalize_policy_number,
+    validate_event_value,
 )
 from .localization_catalog import validate_new_combination
 
@@ -542,6 +543,7 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
     value = "" if value is None else str(value)
     if len(value) > 20:
         raise ValueError("value too long")
+    validate_event_value(field, value)
     column = EVENT_FIELD_COLUMN[field]
     with conn:
         conn.execute(

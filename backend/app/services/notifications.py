@@ -58,6 +58,8 @@ def event_dt(date_value: str | None, time_value: str | None) -> datetime | None:
         hour, minute = [int(x) for x in time_text.split(":", 1)]
     except (ValueError, TypeError):
         hour, minute = 9, 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc)
 
 
@@ -555,7 +557,13 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
         if event_at is None:
             skipped += 1
             continue
-        scheduled = event_at - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
+        try:
+            scheduled = event_at - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
+        except OverflowError:
+            # Дата у нижней границы календаря: одна такая запись не должна
+            # останавливать генерацию для всех остальных пациентов.
+            skipped += 1
+            continue
         template_code = "appointment_reminder"
         with conn:
             cur = conn.execute(
