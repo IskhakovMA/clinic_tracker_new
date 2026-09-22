@@ -147,6 +147,12 @@ _request_attempts: dict[str, list[float]] = {}
 _rate_limit_lock = threading.RLock()
 
 
+def _now() -> float:
+    """Единая точка времени для лимитеров (монотонные часы). Тесты подменяют
+    её, чтобы проверять backoff без зависимости от скорости машины."""
+    return time.monotonic()
+
+
 def rate_limit_subject(value: str) -> str:
     """Opaque stable bucket suffix for user-controlled rate-limit subjects."""
     return hashlib.sha256(value.strip().lower().encode("utf-8")).hexdigest()
@@ -197,7 +203,7 @@ def _login_wait(key: str, now: float) -> float:
 def check_rate_limit(key: str = "global") -> float:
     """Returns seconds to wait before the next attempt is allowed (0 if OK now)."""
     with _rate_limit_lock:
-        now = time.monotonic()
+        now = _now()
         _prune_buckets(
             _failed_attempts,
             now=now,
@@ -214,7 +220,7 @@ def reserve_login_attempt(*keys: str) -> float:
     reset_attempts, so concurrent requests cannot all pass the check before
     any failure is recorded."""
     with _rate_limit_lock:
-        now = time.monotonic()
+        now = _now()
         _prune_buckets(
             _failed_attempts,
             now=now,
@@ -233,7 +239,7 @@ def should_audit_rate_limited(key: str) -> bool:
     """At most one LOGIN_RATE_LIMITED audit row per key per interval, so a
     flood of rejected requests cannot grow the audit table without bound."""
     with _rate_limit_lock:
-        now = time.monotonic()
+        now = _now()
         for k, t in list(_rate_limited_audit_at.items()):
             if now - t >= RATE_LIMITED_AUDIT_INTERVAL_SECONDS:
                 _rate_limited_audit_at.pop(k, None)
@@ -247,7 +253,7 @@ def should_audit_rate_limited(key: str) -> bool:
 
 def record_failed_attempt(key: str = "global") -> None:
     with _rate_limit_lock:
-        now = time.monotonic()
+        now = _now()
         _prune_buckets(
             _failed_attempts,
             now=now,
@@ -281,7 +287,7 @@ def check_request_rate_limit(key: str, max_requests: int, window_seconds: int) -
     throttling remains an operational control from SEC-2026-003.
     """
     with _rate_limit_lock:
-        now = time.monotonic()
+        now = _now()
         _prune_buckets(
             _request_attempts,
             now=now,

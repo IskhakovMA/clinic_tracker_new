@@ -81,13 +81,37 @@ def test_successful_login_still_works_and_resets(client):
     assert client.post("/api/auth/login", json={"username": "doc.ok", "password": TEST_PASSWORD}).status_code == 200
 
 
-def test_rate_limited_logins_are_audited_once_per_backoff(client):
-    from backend.app import config, db
-    for _ in range(config.LOGIN_MAX_ATTEMPTS):
-        client.post("/api/auth/login", json={"username": "nobody", "password": "wrong-password"})
-    for _ in range(20):
-        assert client.post("/api/auth/login", json={"username": "nobody", "password": "wrong-password"}).status_code == 429
-    count = db.get_connection().execute(
+def _login_attempt(client):
+    return client.post("/api/auth/login", json={"username": "nobody", "password": "wrong-password"})
+
+
+def _rate_limited_rows(db):
+    return db.get_connection().execute(
         "SELECT COUNT(*) FROM audit_events WHERE event_type = 'login_rate_limited'"
     ).fetchone()[0]
-    assert 1 <= count <= 2
+
+
+def test_rate_limited_logins_are_audited_once_per_backoff(client, monkeypatch):
+    """The limiter is driven by a controlled clock: the result must not depend
+    on how long Argon2 takes on the machine running the test."""
+    from backend.app import config, db, security
+    clock = _Clock()
+    monkeypatch.setattr(security, "_now", clock)
+    with security._rate_limit_lock:
+        security._rate_limited_audit_at.clear()
+
+    for _ in range(config.LOGIN_MAX_ATTEMPTS):
+        assert _login_attempt(client).status_code == 401
+
+    # Time does not advance, so the backoff cannot expire between attempts.
+    for _ in range(20):
+        assert _login_attempt(client).status_code == 429
+    assert _rate_limited_rows(db) == 1
+
+    # Past the backoff and the audit interval: one attempt is allowed again
+    # (the limiter is not weakened), it is recorded, and the next attempt is
+    # rejected with a longer backoff and a second audit row.
+    clock.now += security.RATE_LIMITED_AUDIT_INTERVAL_SECONDS + 1
+    assert _login_attempt(client).status_code == 401
+    assert _login_attempt(client).status_code == 429
+    assert _rate_limited_rows(db) == 2

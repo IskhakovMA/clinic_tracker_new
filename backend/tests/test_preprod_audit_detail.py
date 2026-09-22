@@ -19,7 +19,8 @@ def test_analytics_filter_ids_must_be_plain_ids(auth_client):
     assert r.status_code == 422
     r = _export(auth_client, "doctor_user_id=y%0D")
     assert r.status_code == 422
-    assert _export(auth_client, "department_id=abc123def").status_code == 200
+    # Plain dummy filter id: nothing secret, and nothing that reads like a key.
+    assert _export(auth_client, "department_id=testdept").status_code == 200
 
 
 def test_audit_tail_neutralises_control_characters(auth_client, capsys):
