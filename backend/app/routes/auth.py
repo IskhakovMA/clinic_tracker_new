@@ -87,7 +87,16 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     security.reset_attempts(rate_key)
     security.release_login_attempt(client_host)
     security.purge_expired_sessions(conn)
-    session_token, csrf_token, _expires = security.create_session(conn, row["id"])
+    try:
+        session_token, csrf_token, _expires = security.create_session(
+            conn, row["id"], verified_password_hash=row["password_hash"]
+        )
+    except security.CredentialChanged:
+        audit.record(
+            conn, audit.LOGIN_FAILURE, result=audit.RESULT_DENIED, request_id=request_id,
+            target_user_id=row["id"],
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     users.touch_last_login(conn, row["id"])
     _set_auth_cookies(response, session_token, csrf_token)
     user = policy.load_current_user(conn, row["id"])

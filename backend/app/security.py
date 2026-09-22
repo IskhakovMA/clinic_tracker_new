@@ -72,20 +72,40 @@ def revoke_all_sessions(conn: sqlite3.Connection) -> int:
         return cur.rowcount
 
 
-def create_session(conn: sqlite3.Connection, user_id: str) -> tuple[str, str, datetime]:
+class CredentialChanged(Exception):
+    """Учётка изменилась между проверкой пароля и выдачей сессии."""
+
+
+def create_session(
+    conn: sqlite3.Connection, user_id: str, *, verified_password_hash: str | None = None
+) -> tuple[str, str, datetime]:
     """Returns (raw_session_token, csrf_token, expires_at). Every session
-    belongs to a concrete user account — there are no anonymous sessions."""
+    belongs to a concrete user account — there are no anonymous sessions.
+
+    При входе передаётся хеш, по которому проверен пароль: в той же
+    транзакции, что и вставка, хеш и статус перечитываются. Если пароль
+    сменили или учётку заблокировали, пока шла проверка, сессия не
+    создаётся — иначе она пережила бы уже выполненный отзыв сессий."""
     raw_token = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(seconds=config.SESSION_TTL_SECONDS)
-    with conn:
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if verified_password_hash is not None:
+            row = conn.execute("SELECT password_hash, status FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row is None or row["status"] != "active" or row["password_hash"] != verified_password_hash:
+                raise CredentialChanged()
         conn.execute(
             "INSERT INTO sessions (token_hash, csrf_token, created_at, last_seen_at, expires_at, user_id) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (_hash_token(raw_token), csrf_token, now.isoformat(), now.isoformat(),
              expires_at.isoformat(), user_id),
         )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
     return raw_token, csrf_token, expires_at
 
 
