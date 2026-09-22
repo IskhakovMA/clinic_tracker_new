@@ -84,6 +84,7 @@ def create_user(
     admin: policy.CurrentUser = Depends(require_user_admin),
 ):
     try:
+        _validate_departments(conn, body.departmentIds)
         uid = users.create_user(
             conn, username=body.username, full_name=body.fullName, role_id=body.roleId,
             password=body.password, must_change_password=body.mustChangePassword,
@@ -94,6 +95,15 @@ def create_user(
     audit.record(conn, audit.USER_CREATED, detail=f"role={body.roleId}",
                  target_user_id=uid, **audit.actor_ctx(admin))
     return users.user_to_dict(conn, users.get_user(conn, uid))
+
+
+def _validate_departments(conn: sqlite3.Connection, dept_ids: list[str] | None) -> None:
+    """Проверить отделения до любой записи: иначе ошибка после уже
+    сохранённого изменения учётной записи оставила бы его без аудита."""
+    for dept_id in dept_ids or []:
+        dept = users.get_department(conn, dept_id)
+        if dept is None or dept["status"] != "active":
+            raise users.UserError("Отделение не найдено или архивировано.")
 
 
 def _apply_departments(conn: sqlite3.Connection, user_id: str, role_id: str, dept_ids: list[str]) -> None:
@@ -125,6 +135,7 @@ def update_user(
     row = _user_or_404(conn, user_id)
     old_role, old_status = row["role_id"], row["status"]
     try:
+        _validate_departments(conn, body.departmentIds)
         users.update_user_fields(
             conn, user_id, full_name=body.fullName, role_id=body.roleId, status=body.status,
         )
