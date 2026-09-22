@@ -57,9 +57,12 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     rate_key = f"{client_host}:{subject}"
     request_id = audit.new_request_id()
 
-    wait = security.check_rate_limit(rate_key) or security.check_rate_limit(client_host)
+    # Попытка резервируется (учитывается как неудачная) до проверки пароля:
+    # параллельная серия запросов с одного хоста не проходит лимит целиком.
+    wait = security.reserve_login_attempt(rate_key, client_host)
     if wait > 0:
-        audit.record(conn, audit.LOGIN_RATE_LIMITED, result=audit.RESULT_DENIED, request_id=request_id)
+        if security.should_audit_rate_limited(client_host):
+            audit.record(conn, audit.LOGIN_RATE_LIMITED, result=audit.RESULT_DENIED, request_id=request_id)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many attempts. Please wait before trying again.",
@@ -70,11 +73,9 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     # Единый ответ для «нет такого логина», «неверный пароль» и «не active» —
     # без сигнала перебора учётных записей. Хеширование выполняется всегда.
     password_ok = security.verify_password(
-        body.password, row["password_hash"] if row else security.hash_password("timing-equalizer")
+        body.password, row["password_hash"] if row else security.dummy_password_hash()
     )
     if row is None or not password_ok or row["status"] != "active":
-        security.record_failed_attempt(rate_key)
-        security.record_failed_attempt(client_host)
         audit.record(
             conn, audit.LOGIN_FAILURE, result=audit.RESULT_DENIED, request_id=request_id,
             target_user_id=row["id"] if row else None,
