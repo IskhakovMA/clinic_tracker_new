@@ -20,6 +20,7 @@ Nothing here prints patient data, passwords or session tokens.
 """
 import argparse
 import getpass
+import secrets
 import json
 import sys
 from pathlib import Path
@@ -87,8 +88,10 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
       ],
       "users": [{"username": "...", "fullName": "...", "role": "doctor"}]
     }
-    Пользователи создаются со временным паролем, запрошенным один раз
-    скрытым вводом, и обязательной сменой при первом входе.
+    Каждой новой учётной записи генерируется собственный случайный временный
+    пароль (печатается один раз в stdout, в журналы не пишется) с обязательной
+    сменой при первом входе. Общий пароль на всех не используется: иначе любой
+    импортированный сотрудник мог бы войти за коллегу до его первого входа.
     """
     path = Path(args.file)
     if not path.exists():
@@ -101,14 +104,8 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
         return 1
 
     conn = db.get_connection()
-    temp_password = getpass.getpass("Временный пароль для создаваемых учётных записей (ввод скрыт): ")
-    try:
-        security.validate_password_strength(temp_password)
-    except security.WeakPasswordError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-
     created_users = created_depts = 0
+    issued: list[tuple[str, str]] = []
 
     def ensure_user(spec: dict, default_role: str) -> str | None:
         nonlocal created_users
@@ -121,6 +118,7 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
         existing = users.get_user_by_username(conn, username)
         if existing is not None:
             return existing["id"]
+        temp_password = secrets.token_urlsafe(12)
         try:
             uid = users.create_user(
                 conn, username=username, full_name=full_name, role_id=role,
@@ -130,6 +128,7 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
             print(f"Пользователь «{username}» не создан: {e}", file=sys.stderr)
             return None
         created_users += 1
+        issued.append((username, temp_password))
         audit.record(conn, audit.USER_CREATED, detail=f"via=cli-structure role={role}", target_user_id=uid)
         return uid
 
@@ -164,6 +163,11 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
                 users.add_doctor_to_department(conn, doc_id, dept_id)
 
     print(f"Готово: создано пользователей — {created_users}, отделений — {created_depts}.")
+    if issued:
+        print("Временные пароли (у каждого свой; передайте лично, повторно не выводятся):")
+        width = max(len(u) for u, _ in issued)
+        for username, temp_password in issued:
+            print(f"  {username.ljust(width)}  {temp_password}")
     print("Все новые учётные записи требуют смены временного пароля при первом входе.")
     return 0
 
