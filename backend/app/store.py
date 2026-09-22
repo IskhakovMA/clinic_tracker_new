@@ -11,8 +11,10 @@ from typing import Optional
 
 from .db import now_iso
 from .models import (
+    DANGEROUS_KEYS,
     PRIORITIES,
     TERMINAL_STAGES,
+    TREATMENT_TYPES,
     EventIn,
     PatientCreateIn,
     normalize_policy_number,
@@ -386,6 +388,9 @@ def update_patient_field_with_actor(
         limit = FIELD_MAX_LEN.get(field)
         if limit and len(value) > limit:
             raise ValueError(f"{field} exceeds max length {limit}")
+        if field == "name" and not value.strip():
+            # Create и import требуют непустое ФИО — правка не должна его снимать.
+            raise ValueError("name must not be empty")
 
     with conn:
         previous = None
@@ -572,6 +577,8 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
     if len(value) > 20:
         raise ValueError("value too long")
     validate_event_value(field, value)
+    if field == "treatmentType" and value not in TREATMENT_TYPES:
+        raise ValueError(f"treatmentType must be one of {TREATMENT_TYPES}")
     column = EVENT_FIELD_COLUMN[field]
     previous = conn.execute(f"SELECT {column} FROM events WHERE id = ?", (event_id,)).fetchone()[0]  # nosec B608
     with conn:
@@ -611,7 +618,9 @@ def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: 
         return False
     row = conn.execute("SELECT checklist_json FROM history_entries WHERE id = ?", (entry_id,)).fetchone()
     checklist = json.loads(row["checklist_json"]) if row["checklist_json"] else {}
-    if len(checklist) > 100 and item not in checklist:
+    if item in DANGEROUS_KEYS:
+        raise ValueError("checklist contains disallowed keys")
+    if len(checklist) >= 100 and item not in checklist:
         raise ValueError("too many checklist items")
     checklist[item] = bool(checked)
     with conn:
