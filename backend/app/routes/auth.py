@@ -82,8 +82,10 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
+    # Сбрасывается только бакет этой учётки: успешный вход доказывает знание
+    # своего пароля, но не отменяет неудачные попытки с хоста к чужим логинам.
     security.reset_attempts(rate_key)
-    security.reset_attempts(client_host)
+    security.release_login_attempt(client_host)
     security.purge_expired_sessions(conn)
     session_token, csrf_token, _expires = security.create_session(conn, row["id"])
     users.touch_last_login(conn, row["id"])
@@ -134,11 +136,25 @@ def change_password(
 
     После смены все сессии пользователя завершаются (включая открытые по
     временному паролю), а вызывающему выдаётся новая сессия и CSRF-токен."""
+    # Проверка текущего пароля — такой же оракул подбора, как вход: попытки
+    # ограничены на учётку (не на сессию или хост) по той же политике.
+    reauth_key = f"reauth:{user.id}"
+    wait = security.reserve_login_attempt(reauth_key)
+    if wait > 0:
+        if security.should_audit_rate_limited(reauth_key):
+            audit.record(conn, audit.PASSWORD_CHANGED, result=audit.RESULT_DENIED,
+                         detail="rate_limited", **audit.actor_ctx(user))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please wait before trying again.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
     row = users.get_user(conn, user.id)
     if not security.verify_password(body.currentPassword, row["password_hash"]):
         audit.record(conn, audit.PASSWORD_CHANGED, result=audit.RESULT_DENIED,
                      **audit.actor_ctx(user))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    security.reset_attempts(reauth_key)
     try:
         users.change_own_password(conn, user.id, body.newPassword)
     except security.WeakPasswordError as e:

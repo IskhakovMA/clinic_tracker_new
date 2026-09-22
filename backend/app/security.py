@@ -237,6 +237,18 @@ def record_failed_attempt(key: str = "global") -> None:
         _failed_attempts.setdefault(key, []).append(now)
 
 
+def release_login_attempt(key: str) -> None:
+    """Undo one reservation made by reserve_login_attempt for a request that
+    turned out to be a successful login, without clearing other failures
+    recorded under the same key (e.g. other usernames from this host)."""
+    with _rate_limit_lock:
+        attempts = _failed_attempts.get(key)
+        if attempts:
+            attempts.pop()
+            if not attempts:
+                _failed_attempts.pop(key, None)
+
+
 def reset_attempts(key: str = "global") -> None:
     with _rate_limit_lock:
         _failed_attempts.pop(key, None)
