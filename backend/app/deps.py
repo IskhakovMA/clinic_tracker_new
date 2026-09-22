@@ -1,4 +1,5 @@
 """Shared FastAPI dependencies: DB connection, session auth, CSRF, current user."""
+import secrets
 import sqlite3
 
 from fastapi import Depends, HTTPException, Request, status
@@ -78,7 +79,7 @@ def require_csrf(request: Request, session: sqlite3.Row = Depends(require_sessio
         if referer and not referer.startswith(current_origin + "/"):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request rejected")
     header_token = request.headers.get("x-csrf-token")
-    if not header_token or header_token != session["csrf_token"]:
+    if not header_token or not secrets.compare_digest(header_token, session["csrf_token"]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token missing or invalid")
     return session
 
