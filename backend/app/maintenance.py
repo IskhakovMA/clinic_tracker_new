@@ -550,7 +550,10 @@ def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool 
     tmp_output = dest.with_name(f".{dest.name}.{secrets.token_hex(8)}.tmp")
     _reject_symlink(tmp_output, "temporary output")
 
-    with tempfile.TemporaryDirectory(prefix="clinic-backup-", dir=str(dest.parent)) as tmp_name:
+    # Открытый снимок готовится рядом с живой базой (тот же том и те же права),
+    # а не в каталоге назначения: --dest может быть NAS, USB или
+    # синхронизируемой папкой, куда должен попадать только шифротекст.
+    with tempfile.TemporaryDirectory(prefix="clinic-backup-", dir=str(Path(db_path).resolve().parent)) as tmp_name:
         temp_dir = Path(tmp_name)
         _ensure_private_dir(temp_dir)
         plaintext = temp_dir / "snapshot.sqlite"
@@ -592,7 +595,11 @@ def _restrict_permissions(path: Path) -> None:
 
 def validate_backup(backup_path: Path) -> dict:
     """Verify a candidate backup before it is allowed anywhere near the live DB."""
-    with tempfile.TemporaryDirectory(prefix="clinic-verify-") as tmp_name:
+    # Расшифровка — рядом с рабочей базой (тот же том и права), как в
+    # backup_database/restore_database, а не в системном /tmp.
+    verify_parent = config.DB_PATH.resolve().parent
+    _ensure_private_dir(verify_parent)
+    with tempfile.TemporaryDirectory(prefix="clinic-verify-", dir=str(verify_parent)) as tmp_name:
         temp_dir = Path(tmp_name)
         _ensure_private_dir(temp_dir)
         plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
@@ -652,10 +659,17 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
 
             try:
                 _sqlite_backup_to_file(plaintext, staging)
+                _revoke_restored_sessions(staging)
+                if lock_conn is not None:
+                    report["accounts_reconciled"] = _reconcile_account_security(staging, lock_conn)
                 _fsync_file(staging)
             except OSError as exc:
                 staging.unlink(missing_ok=True)
                 raise MaintenanceError("Не удалось подготовить восстановленную базу") from exc
+            except BaseException:
+                # Любая другая ошибка тоже не оставляет расшифрованную копию.
+                staging.unlink(missing_ok=True)
+                raise
     finally:
         if lock_conn is not None:
             lock_conn.rollback()
@@ -679,7 +693,87 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
         "schema_version": report.get("schema_version"),
         "format_version": report.get("version"),
         "key_id": report.get("key_id"),
+        "accounts_reconciled": report.get("accounts_reconciled", 0),
     }
+
+
+def _revoke_restored_sessions(db_file: Path) -> None:
+    """Сессии из снимка не переживают restore: их отзыв после снимка
+    (logout, блокировка, сброс пароля) иначе был бы отменён."""
+    conn = sqlite3.connect(str(db_file))
+    try:
+        with conn:
+            conn.execute("DELETE FROM sessions")
+    finally:
+        conn.close()
+
+
+_STATUS_RESTRICTIVENESS = {"active": 0, "blocked": 1, "deactivated": 2}
+
+
+def _reconcile_account_security(staging: Path, live: sqlite3.Connection) -> int:
+    """Restore не возвращает учёткам менее безопасное состояние, чем текущее.
+
+    Для каждого пользователя, который есть и в снимке, и в текущей базе:
+    статус — более строгий из двух (снимок может заблокировать, но не
+    разблокировать); пароль — более новый по password_changed_at (сброс после
+    снимка сохраняется); роль и связи с отделениями — текущие (снимок не может
+    вернуть роль или область видимости). Отделение, архивированное после
+    снимка, остаётся в архиве: статус отделения тоже часть области видимости
+    заведующего. Пользователи, которых нет в текущей базе, не трогаются, чтобы
+    restore на пустую установку не блокировал всех.
+    Возвращает число пользователей и отделений, у которых что-то изменилось."""
+    live.row_factory = sqlite3.Row
+    archived_live = {r["id"] for r in live.execute("SELECT id FROM departments WHERE status = 'archived'")}
+    current = {r["id"]: r for r in live.execute(
+        "SELECT id, status, role_id, password_hash, must_change_password, password_changed_at FROM users"
+    )}
+    links = {"user_departments": {}, "department_heads": {}}
+    for table in links:
+        for r in live.execute(f"SELECT user_id, department_id, created_at FROM {table}"):  # nosec B608 - fixed table names
+            links[table].setdefault(r["user_id"], []).append((r["department_id"], r["created_at"]))
+
+    conn = sqlite3.connect(str(staging))
+    conn.row_factory = sqlite3.Row
+    changed = 0
+    try:
+        with conn:
+            dept_ids = {r[0] for r in conn.execute("SELECT id FROM departments")}
+            for dept_id in sorted(archived_live & dept_ids):
+                changed += conn.execute(
+                    "UPDATE departments SET status = 'archived' WHERE id = ? AND status != 'archived'", (dept_id,)
+                ).rowcount
+            for snap in conn.execute(
+                "SELECT id, status, role_id, password_hash, must_change_password, password_changed_at FROM users"
+            ).fetchall():
+                cur = current.get(snap["id"])
+                if cur is None:
+                    continue
+                status = max((snap["status"], cur["status"]), key=lambda v: _STATUS_RESTRICTIVENESS.get(v, 2))
+                pw = cur if (cur["password_changed_at"] or "") > (snap["password_changed_at"] or "") else snap
+                new = (status, cur["role_id"], pw["password_hash"], pw["must_change_password"], pw["password_changed_at"])
+                old = (snap["status"], snap["role_id"], snap["password_hash"], snap["must_change_password"], snap["password_changed_at"])
+                snap_links = {t: sorted((r[0], r[1]) for r in conn.execute(
+                    f"SELECT department_id, created_at FROM {t} WHERE user_id = ?", (snap["id"],)))  # nosec B608 - fixed table names
+                    for t in links}
+                cur_links = {t: sorted(d for d in links[t].get(snap["id"], []) if d[0] in dept_ids) for t in links}
+                if new == old and snap_links == cur_links:
+                    continue
+                changed += 1
+                conn.execute(
+                    """UPDATE users SET status = ?, role_id = ?, password_hash = ?,
+                              must_change_password = ?, password_changed_at = ? WHERE id = ?""",
+                    (*new, snap["id"]),
+                )
+                for t in links:
+                    conn.execute(f"DELETE FROM {t} WHERE user_id = ?", (snap["id"],))  # nosec B608 - fixed table names
+                    conn.executemany(
+                        f"INSERT INTO {t} (user_id, department_id, created_at) VALUES (?, ?, ?)",  # nosec B608 - fixed table names
+                        [(snap["id"], d, c) for d, c in cur_links[t]],
+                    )
+    finally:
+        conn.close()
+    return changed
 
 
 def _acquire_exclusive_restore_lock(db_path: Path) -> sqlite3.Connection:

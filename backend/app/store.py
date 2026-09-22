@@ -11,10 +11,14 @@ from typing import Optional
 
 from .db import now_iso
 from .models import (
+    DANGEROUS_KEYS,
     PRIORITIES,
+    TERMINAL_STAGES,
+    TREATMENT_TYPES,
     EventIn,
     PatientCreateIn,
     normalize_policy_number,
+    validate_event_value,
 )
 from .localization_catalog import validate_new_combination
 
@@ -375,12 +379,18 @@ def update_patient_field_with_actor(
         value = validate_new_combination(str(value or ""), row["diagnosis"] or "")
     elif field == "diagnosis":
         value = "" if value is None else str(value)
+        limit = FIELD_MAX_LEN.get(field)
+        if limit and len(value) > limit:
+            raise ValueError(f"{field} exceeds max length {limit}")
         value_nosology = validate_new_combination("", value)
     else:
         value = "" if value is None else str(value)
         limit = FIELD_MAX_LEN.get(field)
         if limit and len(value) > limit:
             raise ValueError(f"{field} exceeds max length {limit}")
+        if field == "name" and not value.strip():
+            # Create и import требуют непустое ФИО — правка не должна его снимать.
+            raise ValueError("name must not be empty")
 
     with conn:
         previous = None
@@ -444,6 +454,9 @@ def change_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str, last
                 raise ValueError("dispensary_observation decision must end in dispensary-observation")
         elif new_stage not in {"treatment-prep", "treatment"}:
             raise ValueError("treatment OK decisions must continue the treatment flow")
+    from . import config
+    if _count_history(conn, patient_id) >= config.MAX_HISTORY_ENTRIES_PER_PATIENT:
+        raise ValueError(f"no more than {config.MAX_HISTORY_ENTRIES_PER_PATIENT} history entries per patient")
     with conn:
         history_count = _count_history(conn, patient_id)
         current_entry_id = _history_entry_id(conn, patient_id, history_count - 1) if history_count > 0 else None
@@ -478,6 +491,11 @@ def change_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str, last
             (new_id(), patient_id, next_seq, new_stage, now),
         )
         conn.execute("UPDATE patients SET stage = ?, updated_at = ? WHERE id = ?", (new_stage, now, patient_id))
+        if new_stage in TERMINAL_STAGES:
+            _cancel_event_reminders(conn, "patient_id = ?", (patient_id,), "event_inactive")
+        elif last_event_update is not None and current_entry_id:
+            _cancel_event_reminders(
+                conn, "source_id IN (SELECT id FROM events WHERE history_entry_id = ?)", (current_entry_id,), "event_inactive")
     return True
 
 
@@ -486,10 +504,25 @@ def _count_history(conn: sqlite3.Connection, patient_id: str) -> int:
     return row["c"]
 
 
+def _cancel_event_reminders(conn: sqlite3.Connection, where: str, params: tuple, reason: str) -> None:
+    """Отменить ожидающие напоминания о событиях (в транзакции вызывающего):
+    изменённое, удалённое или завершённое событие не должно порождать SMS."""
+    now = now_iso()
+    conn.execute(
+        f"""UPDATE notifications SET status = 'cancelled', cancelled_at = ?, updated_at = ?, error_code = ?
+            WHERE source_type = 'event' AND status = 'pending' AND {where}""",  # nosec B608 - fixed fragments
+        (now, now, reason, *params),
+    )
+
+
 def add_event(conn: sqlite3.Connection, patient_id: str, occ_index: int) -> bool:
+    from . import config
     entry_id = _history_entry_id(conn, patient_id, occ_index)
     if entry_id is None:
         return False
+    count = conn.execute("SELECT COUNT(*) FROM events WHERE history_entry_id = ?", (entry_id,)).fetchone()[0]
+    if count >= config.MAX_EVENTS_PER_HISTORY_ENTRY:
+        raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
     with conn:
         next_seq_row = conn.execute(
             "SELECT COALESCE(MAX(seq), -1) + 1 AS s FROM events WHERE history_entry_id = ?", (entry_id,)
@@ -507,6 +540,7 @@ def remove_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
     if event_id is None:
         return False
     with conn:
+        _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_removed")
         conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
         touch_patient(conn, patient_id)
     return True
@@ -542,12 +576,23 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
     value = "" if value is None else str(value)
     if len(value) > 20:
         raise ValueError("value too long")
+    validate_event_value(field, value)
+    if field == "treatmentType" and value not in TREATMENT_TYPES:
+        raise ValueError(f"treatmentType must be one of {TREATMENT_TYPES}")
     column = EVENT_FIELD_COLUMN[field]
+    previous = conn.execute(f"SELECT {column} FROM events WHERE id = ?", (event_id,)).fetchone()[0]  # nosec B608
     with conn:
         conn.execute(
             f"UPDATE events SET {column} = ? WHERE id = ?",  # nosec B608
             (value or None, event_id),
         )
+        # Перенос или факт визита: старое напоминание недействительно;
+        # следующий generate-due создаст новое, если событие ещё актуально.
+        # Правка, не меняющая время напоминания или активность, его не трогает.
+        if field in ("date", "time") and (previous or "") != value:
+            _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_rescheduled")
+        elif field == "actualDate" and value:
+            _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_inactive")
         if field in ("actualDate", "actualTime"):
             row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
             if not row["no_plan"]:
@@ -573,7 +618,9 @@ def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: 
         return False
     row = conn.execute("SELECT checklist_json FROM history_entries WHERE id = ?", (entry_id,)).fetchone()
     checklist = json.loads(row["checklist_json"]) if row["checklist_json"] else {}
-    if len(checklist) > 100 and item not in checklist:
+    if item in DANGEROUS_KEYS:
+        raise ValueError("checklist contains disallowed keys")
+    if len(checklist) >= 100 and item not in checklist:
         raise ValueError("too many checklist items")
     checklist[item] = bool(checked)
     with conn:

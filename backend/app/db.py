@@ -1,6 +1,8 @@
 """SQLite storage layer: connection handling, schema init, migrations."""
 import hashlib
+import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -277,7 +279,12 @@ CREATE INDEX IF NOT EXISTS idx_notifications_status_due ON notifications(status,
 CREATE INDEX IF NOT EXISTS idx_notifications_patient ON notifications(patient_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_source ON notifications(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_scheduled ON notifications(scheduled_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notifications(idempotency_key);
+-- Ключ держат живые строки и строки, отменённые сотрудником вручную. Строка,
+-- отменённая системой (перенос, факт визита, отзыв согласия) или пропущенная,
+-- не мешает заново поставить напоминание на то же время.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notifications(idempotency_key)
+    WHERE status IN ('pending', 'processing', 'sent', 'failed')
+       OR (status = 'cancelled' AND error_code IS NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_active
     ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
     WHERE status IN ('pending', 'processing', 'sent');
@@ -357,8 +364,54 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def in_chunks(conn: sqlite3.Connection, values, reserve: int = 8):
+    """Split values for `IN (?, ...)` lists so a query never binds more
+    variables than this connection's SQLite limit allows (reserve leaves
+    room for other parameters of the same statement)."""
+    values = list(values)
+    limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    size = max(1, min(30000, limit - reserve))
+    for i in range(0, len(values), size):
+        yield values[i:i + size]
+
+
+def temp_id_table(conn: sqlite3.Connection, values) -> str:
+    """Load values into a fresh per-connection TEMP table and return its
+    qualified name, for `x IN (SELECT id FROM <name>)` / `NOT IN (...)` over
+    sets that may exceed SQLITE_LIMIT_VARIABLE_NUMBER. TEMP tables live in the
+    connection's temp database, so no lock is taken on the main database."""
+    name = f"temp.ids_{uuid.uuid4().hex}"
+    conn.execute(f"CREATE TABLE {name} (id TEXT PRIMARY KEY)")  # nosec B608 - generated identifier
+    conn.executemany(f"INSERT OR IGNORE INTO {name} (id) VALUES (?)", ((v,) for v in values))  # nosec B608
+    return name
+
+
+_hardened_paths: set[str] = set()
+
+
+def _harden_permissions(db_path: Path) -> None:
+    """Каталог данных 0700, файл БД 0600 (SQLite создаёт -wal/-shm с правами
+    основного файла). Best effort, один раз на путь в процессе: не зависит
+    от umask сервиса и чинит права существующей установки при старте."""
+    key = str(db_path)
+    if key in _hardened_paths:
+        return
+    db_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if not db_path.exists():
+        os.close(os.open(str(db_path), os.O_CREAT | os.O_WRONLY, 0o600))
+    for path, mode in ((db_path.parent, 0o700), (db_path, 0o600),
+                       (db_path.with_name(db_path.name + "-wal"), 0o600),
+                       (db_path.with_name(db_path.name + "-shm"), 0o600)):
+        try:
+            if path.exists():
+                path.chmod(mode)
+        except (OSError, NotImplementedError):
+            pass
+    _hardened_paths.add(key)
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _harden_permissions(db_path)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -417,6 +470,13 @@ def _ensure_notification_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "notifications")
     if not columns:
         return
+    index_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_notifications_idempotency_key'"
+    ).fetchone()
+    if index_sql and index_sql[0] and "error_code" not in index_sql[0]:
+        # Старый полный индекс держал ключ и за отменёнными строками; INDEX_SQL
+        # создаст частичный заново.
+        conn.execute("DROP INDEX idx_notifications_idempotency_key")
     if "idempotency_key" not in columns:
         conn.execute("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT")
     if "processing_started_at" not in columns:
@@ -426,6 +486,9 @@ def _ensure_notification_schema(conn: sqlite3.Connection) -> None:
            FROM notifications
            WHERE idempotency_key IS NULL OR idempotency_key = ''"""
     ).fetchall()
+    if not rows:
+        # Нечего заполнять: не читать все ключи очереди на каждом запросе.
+        return
     used = {
         row["idempotency_key"]
         for row in conn.execute(

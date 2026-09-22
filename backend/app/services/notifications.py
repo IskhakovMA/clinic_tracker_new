@@ -43,7 +43,10 @@ def parse_dt(value: str) -> datetime | None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    try:
+        return dt.astimezone(timezone.utc)
+    except OverflowError:
+        return None
 
 
 def event_dt(date_value: str | None, time_value: str | None) -> datetime | None:
@@ -58,6 +61,8 @@ def event_dt(date_value: str | None, time_value: str | None) -> datetime | None:
         hour, minute = [int(x) for x in time_text.split(":", 1)]
     except (ValueError, TypeError):
         hour, minute = 9, 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=timezone.utc)
 
 
@@ -93,8 +98,10 @@ def validate_template_body(body: str) -> str:
     return body
 
 
-def render_template(body: str, *, scheduled_at: str) -> str:
-    scheduled = parse_dt(scheduled_at)
+def render_template(body: str, *, scheduled_at: str, event_at: datetime | None = None) -> str:
+    # Для напоминаний о событиях в текст подставляется время самого визита,
+    # а не время отправки (scheduled_at = визит минус NOTIFICATION_DEFAULT_REMINDER_HOURS).
+    scheduled = event_at or parse_dt(scheduled_at)
     if scheduled is None:
         raise ValueError("invalid scheduled_at")
     values = {
@@ -430,7 +437,9 @@ def create_notification(
             )
     except sqlite3.IntegrityError:
         row = conn.execute(
-            "SELECT * FROM notifications WHERE idempotency_key = ?",
+            """SELECT * FROM notifications WHERE idempotency_key = ?
+               AND (status IN ('pending', 'processing', 'sent', 'failed')
+                    OR (status = 'cancelled' AND error_code IS NULL))""",
             (idempotency_key,),
         ).fetchone()
         return (dict(row) if row else None), "duplicate"
@@ -526,6 +535,7 @@ def planned_events(conn: sqlite3.Connection, user: policy.CurrentUser | None = N
         cond, params = policy.patient_scope_filter(user)
     return conn.execute(
         f"""SELECT patients.id AS patient_id, patients.stage AS patient_stage,
+                   patients.treating_doctor_user_id AS treating_doctor_user_id,
                    events.id AS event_id, events.date, events.time, events.actual_date, events.no_plan
             FROM events
             JOIN history_entries h ON h.id = events.history_entry_id
@@ -536,9 +546,27 @@ def planned_events(conn: sqlite3.Connection, user: policy.CurrentUser | None = N
     ).fetchall()
 
 
+def _pending_event_rows_for_doctor(conn: sqlite3.Connection, doctor_id: str | None) -> int:
+    """Сколько ожидающих напоминаний уже стоит в очереди за пациентами этого
+    лечащего врача (пациенты без врача считаются одной группой)."""
+    if doctor_id is None:
+        return conn.execute(
+            """SELECT COUNT(*) FROM notifications n JOIN patients p ON p.id = n.patient_id
+               WHERE n.status = 'pending' AND n.source_type = 'event'
+                 AND p.treating_doctor_user_id IS NULL"""
+        ).fetchone()[0]
+    return conn.execute(
+        """SELECT COUNT(*) FROM notifications n JOIN patients p ON p.id = n.patient_id
+           WHERE n.status = 'pending' AND n.source_type = 'event'
+             AND p.treating_doctor_user_id = ?""",
+        (doctor_id,),
+    ).fetchone()[0]
+
+
 def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | None = None) -> dict:
     ensure_known_provider()
     created = skipped = cancelled = duplicates = 0
+    per_doctor: dict[str | None, int] = {}
     for row in planned_events(conn, user):
         if row["actual_date"] or row["no_plan"] or row["patient_stage"] in TERMINAL_STAGES:
             with conn:
@@ -555,7 +583,32 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
         if event_at is None:
             skipped += 1
             continue
-        scheduled = event_at - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
+        now_dt = utcnow()
+        if event_at <= now_dt or event_at > now_dt + timedelta(days=config.NOTIFICATION_MAX_SCHEDULE_DAYS):
+            # Прошедшие и слишком далёкие события не ставятся в общую очередь.
+            skipped += 1
+            continue
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE patient_id = ? AND source_type = 'event' AND status = 'pending'",
+            (row["patient_id"],),
+        ).fetchone()[0]
+        if pending >= config.NOTIFICATION_MAX_PENDING_EVENT_PER_PATIENT:
+            skipped += 1
+            continue
+        doctor_id = row["treating_doctor_user_id"]
+        if doctor_id not in per_doctor:
+            per_doctor[doctor_id] = _pending_event_rows_for_doctor(conn, doctor_id)
+        if per_doctor[doctor_id] >= config.NOTIFICATION_MAX_PENDING_EVENT_PER_DOCTOR:
+            # Очередь общая: один врач не занимает её целиком.
+            skipped += 1
+            continue
+        try:
+            scheduled = event_at - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
+        except OverflowError:
+            # Дата у нижней границы календаря: одна такая запись не должна
+            # останавливать генерацию для всех остальных пациентов.
+            skipped += 1
+            continue
         template_code = "appointment_reminder"
         with conn:
             cur = conn.execute(
@@ -582,6 +635,7 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
             skipped += 1
         elif notification:
             created += 1
+            per_doctor[doctor_id] = per_doctor.get(doctor_id, 0) + 1
     return {"created": created, "skipped": skipped, "cancelled": cancelled, "duplicates": duplicates}
 
 
@@ -591,10 +645,36 @@ def claim_next(conn: sqlite3.Connection, *, now: datetime | None = None) -> dict
     claim_started_at = now_dt.isoformat()
     try:
         conn.execute("BEGIN IMMEDIATE")
+        # Справедливый выбор между врачами: первым берётся врач, чьё
+        # напоминание забирали раньше всех (или ещё ни разу), внутри врача —
+        # самое раннее. Накопленный backlog одного врача не задерживает
+        # напоминания пациентов остальных врачей.
         row = conn.execute(
-            """SELECT * FROM notifications
-               WHERE status = 'pending' AND next_attempt_at <= ?
-               ORDER BY scheduled_at ASC, id ASC LIMIT 1""",
+            """WITH pending_rows AS (
+                   SELECT notifications.*,
+                          COALESCE(patients.treating_doctor_user_id, '') AS doctor_key
+                   FROM notifications
+                   JOIN patients ON patients.id = notifications.patient_id
+                   WHERE notifications.status = 'pending' AND notifications.next_attempt_at <= ?
+               ),
+               last_claim AS (
+                   -- Когда воркер в последний раз занимался пациентом этого
+                   -- врача. processing_started_at обнуляется по завершении,
+                   -- поэтому берётся и время отправки/последнего изменения.
+                   SELECT COALESCE(patients.treating_doctor_user_id, '') AS doctor_key,
+                          MAX(COALESCE(notifications.processing_started_at,
+                                       notifications.sent_at,
+                                       notifications.updated_at)) AS claimed_at
+                   FROM notifications
+                   JOIN patients ON patients.id = notifications.patient_id
+                   WHERE notifications.status IN ('processing', 'sent', 'failed', 'skipped')
+                   GROUP BY doctor_key
+               )
+               SELECT pending_rows.* FROM pending_rows
+               LEFT JOIN last_claim ON last_claim.doctor_key = pending_rows.doctor_key
+               ORDER BY COALESCE(last_claim.claimed_at, '') ASC,
+                        pending_rows.scheduled_at ASC, pending_rows.id ASC
+               LIMIT 1""",
             (due,),
         ).fetchone()
         if row is None:
@@ -678,6 +758,28 @@ def mark_skipped(conn: sqlite3.Connection, row: dict, reason: str) -> None:
     )
 
 
+def _current_event_time(conn: sqlite3.Connection, row) -> tuple[datetime | None, str | None]:
+    ev = conn.execute(
+        """SELECT events.date, events.time, events.actual_date, events.no_plan, patients.stage
+           FROM events
+           JOIN history_entries h ON h.id = events.history_entry_id
+           JOIN patients ON patients.id = h.patient_id
+           WHERE events.id = ? AND patients.id = ?""",
+        (row["source_id"], row["patient_id"]),
+    ).fetchone()
+    if ev is None:
+        return None, "event_removed"
+    if ev["actual_date"] or ev["no_plan"] or ev["stage"] in TERMINAL_STAGES:
+        return None, "event_inactive"
+    event_at = event_dt(ev["date"], ev["time"])
+    if event_at is None:
+        return None, "event_invalid"
+    if event_at <= utcnow():
+        # Напоминание из накопившейся очереди не отправляется после приёма.
+        return None, "event_passed"
+    return event_at, None
+
+
 def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None = None) -> dict | None:
     ensure_known_provider()
     row = claim_next(conn)
@@ -701,7 +803,15 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
     if template is None or not template["enabled"]:
         mark_skipped(conn, row, "template_disabled")
         return {"id": row["id"], "status": "skipped", "error_code": "template_disabled"}
-    body = render_template(template["body"], scheduled_at=row["scheduled_at"])
+    event_at = None
+    if row["source_type"] == "event":
+        # Последняя проверка перед отправкой: событие существует, не выполнено,
+        # не отменено, пациент не закрыт (перенос отменяет напоминание в store).
+        event_at, reason = _current_event_time(conn, row)
+        if reason:
+            mark_skipped(conn, row, reason)
+            return {"id": row["id"], "status": "skipped", "error_code": reason}
+    body = render_template(template["body"], scheduled_at=row["scheduled_at"], event_at=event_at)
     provider = provider or provider_from_config()
     result = provider.send(NotificationContext(
         notification_id=row["id"],

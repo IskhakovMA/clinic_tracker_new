@@ -57,9 +57,12 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     rate_key = f"{client_host}:{subject}"
     request_id = audit.new_request_id()
 
-    wait = security.check_rate_limit(rate_key) or security.check_rate_limit(client_host)
+    # Попытка резервируется (учитывается как неудачная) до проверки пароля:
+    # параллельная серия запросов с одного хоста не проходит лимит целиком.
+    wait = security.reserve_login_attempt(rate_key, client_host)
     if wait > 0:
-        audit.record(conn, audit.LOGIN_RATE_LIMITED, result=audit.RESULT_DENIED, request_id=request_id)
+        if security.should_audit_rate_limited(client_host):
+            audit.record(conn, audit.LOGIN_RATE_LIMITED, result=audit.RESULT_DENIED, request_id=request_id)
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many attempts. Please wait before trying again.",
@@ -70,21 +73,30 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     # Единый ответ для «нет такого логина», «неверный пароль» и «не active» —
     # без сигнала перебора учётных записей. Хеширование выполняется всегда.
     password_ok = security.verify_password(
-        body.password, row["password_hash"] if row else security.hash_password("timing-equalizer")
+        body.password, row["password_hash"] if row else security.dummy_password_hash()
     )
     if row is None or not password_ok or row["status"] != "active":
-        security.record_failed_attempt(rate_key)
-        security.record_failed_attempt(client_host)
         audit.record(
             conn, audit.LOGIN_FAILURE, result=audit.RESULT_DENIED, request_id=request_id,
             target_user_id=row["id"] if row else None,
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
+    # Сбрасывается только бакет этой учётки: успешный вход доказывает знание
+    # своего пароля, но не отменяет неудачные попытки с хоста к чужим логинам.
     security.reset_attempts(rate_key)
-    security.reset_attempts(client_host)
+    security.release_login_attempt(client_host)
     security.purge_expired_sessions(conn)
-    session_token, csrf_token, _expires = security.create_session(conn, row["id"])
+    try:
+        session_token, csrf_token, _expires = security.create_session(
+            conn, row["id"], verified_password_hash=row["password_hash"]
+        )
+    except security.CredentialChanged:
+        audit.record(
+            conn, audit.LOGIN_FAILURE, result=audit.RESULT_DENIED, request_id=request_id,
+            target_user_id=row["id"],
+        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     users.touch_last_login(conn, row["id"])
     _set_auth_cookies(response, session_token, csrf_token)
     user = policy.load_current_user(conn, row["id"])
@@ -124,19 +136,40 @@ def me(request: Request, conn: sqlite3.Connection = Depends(get_db)):
 @router.post("/change-password", dependencies=[Depends(require_csrf)])
 def change_password(
     body: ChangePasswordIn,
+    response: Response,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_user),
 ):
     """Смена собственного пароля. Доступна и при must_change_password —
-    это единственный разрешённый в таком состоянии endpoint."""
+    это единственный разрешённый в таком состоянии endpoint.
+
+    После смены все сессии пользователя завершаются (включая открытые по
+    временному паролю), а вызывающему выдаётся новая сессия и CSRF-токен."""
+    # Проверка текущего пароля — такой же оракул подбора, как вход: попытки
+    # ограничены на учётку (не на сессию или хост) по той же политике.
+    reauth_key = f"reauth:{user.id}"
+    wait = security.reserve_login_attempt(reauth_key)
+    if wait > 0:
+        if security.should_audit_rate_limited(reauth_key):
+            audit.record(conn, audit.PASSWORD_CHANGED, result=audit.RESULT_DENIED,
+                         detail="rate_limited", **audit.actor_ctx(user))
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please wait before trying again.",
+            headers={"Retry-After": str(int(wait) + 1)},
+        )
     row = users.get_user(conn, user.id)
     if not security.verify_password(body.currentPassword, row["password_hash"]):
         audit.record(conn, audit.PASSWORD_CHANGED, result=audit.RESULT_DENIED,
                      **audit.actor_ctx(user))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    security.reset_attempts(reauth_key)
     try:
         users.change_own_password(conn, user.id, body.newPassword)
     except security.WeakPasswordError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+    users.terminate_sessions(conn, user.id)
+    session_token, csrf_token, _expires = security.create_session(conn, user.id)
+    _set_auth_cookies(response, session_token, csrf_token)
     audit.record(conn, audit.PASSWORD_CHANGED, **audit.actor_ctx(user))
     return {"changed": True}

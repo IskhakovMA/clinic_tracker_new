@@ -31,7 +31,10 @@ def migrate_preview(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     if document is None:
         return {"valid": False, "errors": errors, "serverHasData": _patient_count(conn) > 0}
-    report = importexport.preview_report(conn, document)
+    scope_errors = importexport.scope_errors(conn, document, user)
+    if scope_errors:
+        return {"valid": False, "errors": scope_errors, "serverHasData": _patient_count(conn) > 0}
+    report = importexport.preview_report(conn, document, user)
     return {"valid": True, "errors": [], "serverHasData": _patient_count(conn) > 0, **report}
 
 

@@ -10,7 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import policy
-from ..deps import abuse_rate_limit, get_db, require_active_password
+from ..deps import abuse_rate_limit, get_db, require_active_password, search_text
 from ..services import data_quality
 
 router = APIRouter(prefix="/api/data-quality", tags=["data-quality"])
@@ -47,7 +47,7 @@ def issues(
     patient_id: str | None = Query(None, max_length=100),
     treating_doctor: str | None = Query(None, max_length=120),
     department: str | None = Query(None, max_length=120),
-    search: str | None = Query(None, max_length=120),
+    search: str | None = Depends(search_text),
     sort: Literal["severity", "issues", "completeness"] = "severity",
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),

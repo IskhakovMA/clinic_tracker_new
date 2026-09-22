@@ -96,6 +96,25 @@ def normalize_policy_number(v: Optional[str]) -> str:
     return value
 
 
+_EVENT_TIME_RE = re.compile(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$")
+
+
+def validate_event_value(field: str, value: str | None) -> str | None:
+    """Проверка значения поля события: дата — YYYY-MM-DD, время — HH:MM
+    в пределах суток. Пустое значение допустимо (поле очищается)."""
+    if value is None or value == "":
+        return value
+    if field in ("date", "actualDate"):
+        try:
+            date_type.fromisoformat(value)
+        except ValueError:
+            raise ValueError("date must be YYYY-MM-DD")
+    elif field in ("time", "actualTime"):
+        if not _EVENT_TIME_RE.match(value):
+            raise ValueError("time must be HH:MM (00:00-23:59)")
+    return value
+
+
 class EventIn(StrictRequestModel):
     date: Optional[str] = Field(None, max_length=10)
     time: Optional[str] = Field(None, max_length=5)
@@ -112,13 +131,12 @@ class EventIn(StrictRequestModel):
     @field_validator("date", "actualDate")
     @classmethod
     def _valid_date(cls, v):
-        if v is None or v == "":
-            return v
-        try:
-            date_type.fromisoformat(v)
-        except ValueError:
-            raise ValueError("date must be YYYY-MM-DD")
-        return v
+        return validate_event_value("date", v)
+
+    @field_validator("time", "actualTime")
+    @classmethod
+    def _valid_time(cls, v):
+        return validate_event_value("time", v)
 
     @field_validator("treatmentType")
     @classmethod
@@ -193,6 +211,14 @@ class PatientCreateIn(StrictRequestModel):
     head: str = Field(..., min_length=1, max_length=200)
     complaint: str = Field("", max_length=5000)
     events: list[EventIn] = Field(default_factory=list)
+
+    @field_validator("events")
+    @classmethod
+    def _bounded_create_events(cls, v):
+        from . import config
+        if len(v) > config.MAX_EVENTS_PER_HISTORY_ENTRY:
+            raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
+        return v
     # Стабильная связь с учётной записью врача; правила назначения — в policy.py
     # (врач — только себя, заведующий — врача своего отделения, Разработчик — любого).
     treatingDoctorUserId: Optional[str] = Field(None, max_length=100)

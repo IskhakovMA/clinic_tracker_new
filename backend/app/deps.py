@@ -1,15 +1,26 @@
 """Shared FastAPI dependencies: DB connection, session auth, CSRF, current user."""
+import secrets
 import sqlite3
 
-from fastapi import Depends, HTTPException, Request, status
+from urllib.parse import unquote
+
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from . import audit, config, policy, security
 from .db import _connect, init_db
 
 
+_initialized_db_paths: set[str] = set()
+
+
 def get_db():
     conn = _connect(config.DB_PATH)
-    init_db(conn)
+    # Схема и сиды применяются один раз на путь в процессе (lifespan тоже
+    # вызывает init_db), а не отдельной пишущей транзакцией на каждый запрос.
+    key = str(config.DB_PATH)
+    if key not in _initialized_db_paths:
+        init_db(conn)
+        _initialized_db_paths.add(key)
     try:
         yield conn
     finally:
@@ -70,7 +81,7 @@ def require_csrf(request: Request, session: sqlite3.Row = Depends(require_sessio
         if referer and not referer.startswith(current_origin + "/"):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-site request rejected")
     header_token = request.headers.get("x-csrf-token")
-    if not header_token or header_token != session["csrf_token"]:
+    if not header_token or not secrets.compare_digest(header_token, session["csrf_token"]):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="CSRF token missing or invalid")
     return session
 
@@ -87,3 +98,25 @@ def abuse_rate_limit(name: str, max_requests: int, window_seconds: int = 60):
                 headers={"Retry-After": str(int(wait) + 1)},
             )
     return dependency
+
+
+def search_text(
+    request: Request,
+    x_search: str | None = Header(None, alias="X-Search", max_length=512),
+) -> str | None:
+    """Текст поиска по пациенту принимается только в заголовке X-Search
+    (percent-encoded UTF-8), а не в строке запроса: URL целиком пишут
+    журналы reverse proxy, и ФИО пациента не должно в них попадать."""
+    if "search" in request.query_params:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="search must be sent in the X-Search header")
+    if not x_search:
+        return None
+    try:
+        value = unquote(x_search, errors="strict")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid X-Search encoding")
+    value = value.strip()
+    if len(value) > 120:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="search too long")
+    return value or None

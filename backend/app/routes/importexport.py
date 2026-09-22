@@ -38,7 +38,7 @@ def import_preview(
     scope_errors = importexport.scope_errors(conn, document, user)
     if scope_errors:
         return {"valid": False, "errors": scope_errors}
-    report = importexport.preview_report(conn, document)
+    report = importexport.preview_report(conn, document, user)
     return {"valid": True, "errors": [], **report}
 
 
@@ -80,7 +80,9 @@ def _safe_export_filename() -> str:
     return f"patients_export_{date.today().isoformat()}.json"
 
 
-@router.get("/export")
+# GET, но с обязательным X-CSRF-Token: SameSite=Lax cookie отправляется и при
+# межсайтовой навигации верхнего уровня, а навигация не может задать заголовок.
+@router.get("/export", dependencies=[Depends(require_csrf)])
 def export_patients(
     ids: str | None = Query(None, description="Comma-separated patient ids; omit for all"),
     conn: sqlite3.Connection = Depends(get_db),

@@ -5,6 +5,7 @@ import json
 import re
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -65,10 +66,33 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         raise urllib.error.HTTPError(req.full_url, code, "redirects are not allowed", headers, fp)
 
 
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
+
+
+def _require_safe_transport(base_url: str) -> None:
+    """Вне loopback провайдер доступен только по https: иначе ключ и данные
+    пациентов уходят открытым текстом. Явное разрешение —
+    CLINIC_AI_ALLOW_INSECURE_TRANSPORT=true (только для изолированного канала)."""
+    parsed = urllib.parse.urlsplit(base_url)
+    if parsed.scheme == "https":
+        return
+    if parsed.scheme != "http":
+        raise AIProviderUnavailable("ИИ-помощник не настроен: поддерживаются только http(s).")
+    host = (parsed.hostname or "").lower()
+    if host in LOOPBACK_HOSTS or host.startswith("127."):
+        return
+    if config.AI_ALLOW_INSECURE_TRANSPORT:
+        return
+    raise AIProviderUnavailable(
+        "ИИ-помощник отключён: адрес провайдера вне loopback требует https."
+    )
+
+
 class OpenAICompatibleAIProvider(AIProvider):
     def __init__(self, *, base_url: str, model: str, api_key: str = "", timeout: int = 45):
         if not base_url or not model:
             raise AIProviderUnavailable("ИИ-помощник не настроен.")
+        _require_safe_transport(base_url)
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key

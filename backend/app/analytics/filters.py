@@ -1,6 +1,8 @@
 """Shared analytics query filters."""
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Literal
@@ -110,6 +112,11 @@ class AnalyticsFilters:
         }
 
 
+# Серверные ID (uuid hex и подобные): без пробелов, '=' и управляющих символов,
+# чтобы значение не подделывало поля в key=value деталях аудита.
+_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
 def analytics_filters(
     date_from: str | None = Query(None, max_length=10),
     date_to: str | None = Query(None, max_length=10),
@@ -131,6 +138,9 @@ def analytics_filters(
     end = parse_date_param(date_to, "date_to")
     if start and end and start > end:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="date_from must be <= date_to")
+    for name, value in (("department_id", department_id), ("doctor_user_id", doctor_user_id)):
+        if value and not _ID_RE.match(value):
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=f"invalid {name}")
     if stage and stage not in STAGES:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown stage")
     if data_quality_severity and data_quality_severity not in data_quality.SEVERITIES:

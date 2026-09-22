@@ -5,6 +5,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, policy, security, users
+from ..db import transaction
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ResetPasswordIn, UserCreateIn, UserUpdateIn
 
@@ -84,11 +85,16 @@ def create_user(
     admin: policy.CurrentUser = Depends(require_user_admin),
 ):
     try:
-        uid = users.create_user(
-            conn, username=body.username, full_name=body.fullName, role_id=body.roleId,
-            password=body.password, must_change_password=body.mustChangePassword,
-        )
-        _apply_departments(conn, uid, body.roleId, body.departmentIds)
+        # Учётка и её связи с отделениями пишутся одной транзакцией
+        # (BEGIN IMMEDIATE): параллельная архивация отделения либо ждёт, либо
+        # откатывает всё целиком, без сохранённого изменения без аудита.
+        with transaction(conn):
+            _validate_departments(conn, body.departmentIds)
+            uid = users.create_user(
+                conn, username=body.username, full_name=body.fullName, role_id=body.roleId,
+                password=body.password, must_change_password=body.mustChangePassword, commit=False,
+            )
+            _apply_departments(conn, uid, body.roleId, body.departmentIds)
     except (users.UserError, security.WeakPasswordError) as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     audit.record(conn, audit.USER_CREATED, detail=f"role={body.roleId}",
@@ -96,23 +102,31 @@ def create_user(
     return users.user_to_dict(conn, users.get_user(conn, uid))
 
 
+def _validate_departments(conn: sqlite3.Connection, dept_ids: list[str] | None) -> None:
+    """Проверить отделения до любой записи: иначе ошибка после уже
+    сохранённого изменения учётной записи оставила бы его без аудита."""
+    for dept_id in dept_ids or []:
+        dept = users.get_department(conn, dept_id)
+        if dept is None or dept["status"] != "active":
+            raise users.UserError("Отделение не найдено или архивировано.")
+
+
 def _apply_departments(conn: sqlite3.Connection, user_id: str, role_id: str, dept_ids: list[str]) -> None:
     """Синхронизировать связи с отделениями: врач — членство, заведующий —
     управление (несколько отделений допустимы)."""
     table = "department_heads" if role_id == "department_head" else "user_departments"
     other = "user_departments" if table == "department_heads" else "department_heads"
-    with conn:
-        conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
-        conn.execute(f"DELETE FROM {other} WHERE user_id = ?", (user_id,))
+    # Вызывается внутри db.transaction вызывающего маршрута — без своих commit.
+    conn.execute(f"DELETE FROM {table} WHERE user_id = ?", (user_id,))
+    conn.execute(f"DELETE FROM {other} WHERE user_id = ?", (user_id,))
     for dept_id in dept_ids:
         dept = users.get_department(conn, dept_id)
         if dept is None or dept["status"] != "active":
             raise users.UserError("Отделение не найдено или архивировано.")
-        with conn:
-            conn.execute(
-                f"INSERT OR IGNORE INTO {table} (user_id, department_id, created_at) VALUES (?, ?, ?)",
-                (user_id, dept_id, users.now_iso()),
-            )
+        conn.execute(
+            f"INSERT OR IGNORE INTO {table} (user_id, department_id, created_at) VALUES (?, ?, ?)",
+            (user_id, dept_id, users.now_iso()),
+        )
 
 
 @router.patch("/{user_id}", dependencies=[Depends(require_csrf)])
@@ -124,25 +138,29 @@ def update_user(
 ):
     row = _user_or_404(conn, user_id)
     old_role, old_status = row["role_id"], row["status"]
+    role_changed = bool(body.roleId and body.roleId != old_role)
+    status_changed = bool(body.status and body.status != old_status)
     try:
-        users.update_user_fields(
-            conn, user_id, full_name=body.fullName, role_id=body.roleId, status=body.status,
-        )
-        if body.departmentIds is not None:
-            role_now = body.roleId or old_role
-            _apply_departments(conn, user_id, role_now, body.departmentIds)
+        with transaction(conn):
+            _validate_departments(conn, body.departmentIds)
+            users.update_user_fields(
+                conn, user_id, full_name=body.fullName, role_id=body.roleId, status=body.status, commit=False,
+            )
+            if body.departmentIds is not None:
+                role_now = body.roleId or old_role
+                _apply_departments(conn, user_id, role_now, body.departmentIds)
+            # Критическое изменение роли или блокировка — сессии завершаются
+            # в той же транзакции, что и само изменение.
+            if role_changed or (status_changed and body.status in ("blocked", "deactivated")):
+                users.terminate_sessions(conn, user_id, commit=False)
     except users.UserError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
 
     ctx = audit.actor_ctx(admin)
-    if body.roleId and body.roleId != old_role:
-        # Критическое изменение роли — завершить активные сессии немедленно.
-        users.terminate_sessions(conn, user_id)
+    if role_changed:
         audit.record(conn, audit.ROLE_CHANGED, detail=f"from={old_role} to={body.roleId}",
                      target_user_id=user_id, **ctx)
-    if body.status and body.status != old_status:
-        if body.status in ("blocked", "deactivated"):
-            users.terminate_sessions(conn, user_id)
+    if status_changed:
         event = {"blocked": audit.USER_BLOCKED, "deactivated": audit.USER_DEACTIVATED,
                  "active": audit.USER_RESTORED}[body.status]
         audit.record(conn, event, target_user_id=user_id, **ctx)

@@ -17,6 +17,67 @@ python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 
 For production-like pilot deployment, run behind a reverse proxy and do not expose the app directly without approved controls.
 
+### Reverse proxy requirements
+
+The login limiter keys on the client address that uvicorn reports. uvicorn
+trusts `X-Forwarded-For` from `127.0.0.1` by default, so the proxy decides
+what that address is:
+
+- The proxy must **overwrite** `X-Forwarded-For` with the real peer address
+  and must not pass a client-supplied value through. nginx:
+  `proxy_set_header X-Forwarded-For $remote_addr;` (not `$http_x_forwarded_for`).
+  Caddy: keep `trusted_proxies` empty so client headers are replaced.
+- If the proxy sends no `X-Forwarded-For`, every user shares one login
+  limiter bucket (`127.0.0.1`) and five failed logins from anyone slow down
+  all logins. Always send it.
+- Start uvicorn with an explicit trust list:
+  `--proxy-headers --forwarded-allow-ips=127.0.0.1`.
+- The proxy access log must not record query strings. The application no
+  longer sends patient-name search text in URLs (it uses the `X-Search`
+  request header, which default access-log formats do not record), but keep
+  query strings out of the log anyway. nginx: log `$uri`, not `$request` or
+  `$request_uri`. The application also strips query strings from the uvicorn
+  access log.
+- The proxy must forward `X-Forwarded-Proto` and the public `Host`, and
+  `CLINIC_HOST` must be set to the public hostname; otherwise the CSRF
+  origin check rejects every state-changing request.
+- Limit request bodies at the proxy as well, for example nginx
+  `client_max_body_size 16m;` (the application enforces
+  `CLINIC_MAX_REQUEST_BODY_BYTES`, default 16 MiB).
+- Keep uvicorn bound to `127.0.0.1` so it cannot be reached around the proxy.
+- Rate-limit `/api/auth/login` at the proxy (per-IP and a global cap). The
+  application keeps a per-attempt audit trail by owner decision, so the proxy
+  is the control that bounds unauthenticated attempts and the audit rows they
+  produce. nginx: `limit_req_zone $binary_remote_addr zone=login:10m rate=10r/m;`
+  plus `limit_req zone=login burst=5 nodelay;` on that location.
+
+### Notification queue limits
+
+The reminder queue is shared by the whole clinic. Admission is capped per
+patient and per treating doctor, and the worker claims fairly between doctors
+(owner decision, Audit 3; see `NOTIFICATIONS.md`).
+
+```bash
+export NOTIFICATION_MAX_PENDING_EVENT_PER_PATIENT=50    # default
+export NOTIFICATION_MAX_PENDING_EVENT_PER_DOCTOR=1000   # default
+```
+
+Set the per-doctor cap above the normal number of planned events across one
+doctor's patients within the scheduling horizon, and below what the worker can
+deliver. Watch the `skipped` counter returned by generate-due and the depth of
+`status = 'pending'`: rising `skipped` under normal load means the cap is too
+low; rising queue depth means it is not.
+
+### Scheduled maintenance
+
+```bash
+python -m backend.cli audit-prune --days <retention>   # per retention policy
+```
+
+Schedule it with the service account, and alert on free space for the volume
+that holds `CLINIC_DATA_DIR`. A full volume stops clinical writes and silently
+drops later audit events.
+
 ## Stop
 
 1. Stop user access at the reverse proxy or maintenance window.
@@ -170,9 +231,16 @@ Mode B, internal AI enabled:
 
 ```bash
 export CLINIC_AI_ENABLED=true
-export CLINIC_AI_BASE_URL=http://internal-ai-host:1234/v1
+export CLINIC_AI_BASE_URL=https://internal-ai-host:8443/v1
 export CLINIC_AI_MODEL=qwen3-8b
 ```
+
+The assistant sends patient names and comments, and the API key when set, to
+this address. Outside loopback (`127.0.0.1`, `localhost`) only `https://` is
+accepted; with `http://` the assistant refuses to start. If the inference host
+has no TLS, either run it on the application host (loopback) or put it behind a
+TLS terminator or tunnel. `CLINIC_AI_ALLOW_INSECURE_TRANSPORT=true` overrides
+this and must be used only on a channel that is isolated by other means.
 
 Optional:
 
@@ -250,6 +318,11 @@ Logs must not contain:
 - AI conversation content
 - policy numbers
 - notification bodies
+- patient names, including search text in request URLs
+- request query strings
+
+Set a retention period for application and proxy logs and restrict their
+readers to the same operators who may read the database.
 
 Technical patient IDs may appear in audit/security logs according to current policy.
 
@@ -276,3 +349,26 @@ Fill before pilot:
 - Incident coordinator:
 
 Do not put personal contact details in Git unless approved.
+
+## Pre-Pilot Server Checks
+
+Run through this list once before the pilot starts; each item is outside the
+repository and cannot be verified from source.
+
+1. Proxy overwrites `X-Forwarded-For`; uvicorn started with
+   `--proxy-headers --forwarded-allow-ips=127.0.0.1`.
+2. Proxy rate-limits `/api/auth/login` (per-IP and global).
+3. `CLINIC_HTTPS=true`, TLS terminated at the proxy, `CLINIC_HOST` set to the
+   public hostname, security headers preserved end to end.
+4. `CLINIC_DEBUG=false` (no `/api/docs`, no `/openapi.json`).
+5. Proxy access log records no query strings; `client_max_body_size 16m`.
+6. AI assistant: disabled, or `CLINIC_AI_BASE_URL` is `https://` or loopback;
+   `CLINIC_AI_MAX_CONCURRENT_REQUESTS` sized for the host.
+7. `CLINIC_DATA_DIR` and the temporary directory used by `backup-verify`
+   (the application data directory) are on the same encrypted volume.
+8. Backup key stored outside the repository and outside `CLINIC_DATA_DIR`,
+   mode `0600`; restores tested from a copy.
+9. `audit-prune` scheduled; free-space alerting configured for the data volume.
+10. Notification queue limits reviewed against the clinic's real volume, and
+    queue depth monitored.
+

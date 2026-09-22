@@ -13,6 +13,13 @@ import pytest
 from .conftest import create_account, create_department, get_conn, login, make_patient_payload
 
 
+
+def _future(month: int, day: int) -> str:
+    """A distinct event date inside the reminder horizon (the queue skips
+    past and far-future events)."""
+    from datetime import date as _date, timedelta as _td
+    return (_date.today() + _td(days=month * 31 + day)).isoformat()
+
 def _now_plus(hours: int = 1) -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
 
@@ -123,7 +130,7 @@ def test_manual_create_validation_template_and_csrf(auth_client, client):
 
 
 def test_automatic_generation_is_idempotent_and_reschedules(auth_client):
-    event = {"date": "2099-01-02", "time": "10:00", "treatmentType": "", "actualDate": None, "actualTime": None}
+    event = {"date": _future(1, 2), "time": "10:00", "treatmentType": "", "actualDate": None, "actualTime": None}
     pid = _create_patient_direct(events=[event])
     _grant(auth_client, pid)
 
@@ -138,7 +145,7 @@ def test_automatic_generation_is_idempotent_and_reschedules(auth_client):
 
     event_id = conn.execute("SELECT id FROM events").fetchone()["id"]
     with conn:
-        conn.execute("UPDATE events SET date = '2099-01-03' WHERE id = ?", (event_id,))
+        conn.execute("UPDATE events SET date = '" + _future(1, 3) + "' WHERE id = ?", (event_id,))
     changed = auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()
     assert changed["created"] == 1
     statuses = [r["status"] for r in conn.execute("SELECT status FROM notifications WHERE patient_id = ? ORDER BY created_at", (pid,))]
@@ -151,7 +158,7 @@ def test_generation_idempotent_after_sent_cancelled_and_failed(auth_client):
 
     conn = get_conn()
 
-    sent_pid = _create_patient_direct(name="Sent Event", events=[{"date": "2099-03-01", "time": "10:00"}])
+    sent_pid = _create_patient_direct(name="Sent Event", events=[{"date": _future(3, 1), "time": "10:00"}])
     _grant(auth_client, sent_pid)
     assert auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()["created"] == 1
     _due_all(conn)
@@ -161,7 +168,7 @@ def test_generation_idempotent_after_sent_cancelled_and_failed(auth_client):
     assert sent_again["duplicates"] >= 1
     assert conn.execute("SELECT COUNT(*) FROM notifications WHERE patient_id = ?", (sent_pid,)).fetchone()[0] == 1
 
-    cancelled_pid = _create_patient_direct(name="Cancelled Event", events=[{"date": "2099-03-02", "time": "10:00"}])
+    cancelled_pid = _create_patient_direct(name="Cancelled Event", events=[{"date": _future(3, 2), "time": "10:00"}])
     _grant(auth_client, cancelled_pid)
     assert auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()["created"] >= 1
     cancelled_id = conn.execute("SELECT id FROM notifications WHERE patient_id = ?", (cancelled_pid,)).fetchone()["id"]
@@ -170,7 +177,7 @@ def test_generation_idempotent_after_sent_cancelled_and_failed(auth_client):
     assert cancelled_again["created"] == 0
     assert conn.execute("SELECT COUNT(*) FROM notifications WHERE patient_id = ?", (cancelled_pid,)).fetchone()[0] == 1
 
-    failed_pid = _create_patient_direct(name="Failed Event", events=[{"date": "2099-03-03", "time": "10:00"}])
+    failed_pid = _create_patient_direct(name="Failed Event", events=[{"date": _future(3, 3), "time": "10:00"}])
     _grant(auth_client, failed_pid)
     assert auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()["created"] >= 1
     _due_all(conn)
@@ -183,7 +190,7 @@ def test_generation_idempotent_after_sent_cancelled_and_failed(auth_client):
 def test_generation_repeated_runs_and_parallel_create_share_business_key(auth_client):
     from backend.app.services import notifications
 
-    pid = _create_patient_direct(events=[{"date": "2099-04-01", "time": "10:00"}])
+    pid = _create_patient_direct(events=[{"date": _future(4, 1), "time": "10:00"}])
     _grant(auth_client, pid)
     results = [auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json() for _ in range(10)]
     assert results[0]["created"] == 1
@@ -218,10 +225,10 @@ def test_generation_repeated_runs_and_parallel_create_share_business_key(auth_cl
 
 
 def test_generation_skips_finished_cancelled_invalid_phone_no_consent_and_disabled_template(auth_client):
-    _create_patient_direct(name="Нет Согласия", events=[{"date": "2099-02-01", "time": "09:00"}])
-    invalid = _create_patient_direct(name="Плохой Телефон", phone="not-a-phone", events=[{"date": "2099-02-01", "time": "09:00"}])
-    completed = _create_patient_direct(name="Завершённый", events=[{"date": "2099-02-01", "time": "09:00", "actualDate": "2099-02-01"}])
-    cancelled = _create_patient_direct(name="Без Плана", events=[{"date": "2099-02-01", "time": "09:00", "noPlan": True}])
+    _create_patient_direct(name="Нет Согласия", events=[{"date": _future(2, 1), "time": "09:00"}])
+    invalid = _create_patient_direct(name="Плохой Телефон", phone="not-a-phone", events=[{"date": _future(2, 1), "time": "09:00"}])
+    completed = _create_patient_direct(name="Завершённый", events=[{"date": _future(2, 1), "time": "09:00", "actualDate": _future(2, 1)}])
+    cancelled = _create_patient_direct(name="Без Плана", events=[{"date": _future(2, 1), "time": "09:00", "noPlan": True}])
     for pid in (invalid, completed, cancelled):
         _grant(auth_client, pid)
 
@@ -234,7 +241,7 @@ def test_generation_skips_finished_cancelled_invalid_phone_no_consent_and_disabl
         json={"enabled": False},
         headers=auth_client.csrf,
     )
-    ok = _create_patient_direct(name="Шаблон Отключён", events=[{"date": "2099-02-02", "time": "09:00"}])
+    ok = _create_patient_direct(name="Шаблон Отключён", events=[{"date": _future(2, 2), "time": "09:00"}])
     _grant(auth_client, ok)
     disabled = auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf).json()
     assert disabled["skipped"] >= 1
@@ -423,7 +430,8 @@ def test_notifications_api_filters_pagination_and_scope(client):
     assert client.get("/api/notifications?status=pending").json()["total"] == 2
     assert client.get("/api/notifications?template_code=custom_reminder").json()["total"] == 1
     assert client.get(f"/api/notifications?patient_id={p_a}").json()["total"] == 1
-    assert client.get("/api/notifications?search=Пациент А").json()["total"] == 1
+    from urllib.parse import quote
+    assert client.get("/api/notifications", headers={"X-Search": quote("Пациент А")}).json()["total"] == 1
     page = client.get("/api/notifications?limit=1&offset=0&sort=scheduled_asc").json()
     assert page["limit"] == 1
     assert len(page["notifications"]) == 1

@@ -7,7 +7,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import policy
-from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf, search_text
 from ..models import StrictRequestModel
 from ..services import internal_notifications
 
@@ -34,7 +34,7 @@ def list_items(
     unread_only: bool = False,
     type: NotificationType | None = None,
     drawer_filter: DrawerFilter = "all",
-    search: str | None = Query(None, max_length=120),
+    search: str | None = Depends(search_text),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     conn: sqlite3.Connection = Depends(get_db),

@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import config, policy
+from ..db import in_chunks, temp_id_table
 from ..localization_catalog import ALL_LOCALIZATIONS
 from ..models import STAGES, TERMINAL_STAGES
 from ..phone import phone_sendable
@@ -103,12 +104,15 @@ def _base_patient_where(filters: AnalyticsFilters, user: policy.CurrentUser) -> 
     return where, params
 
 
-def _ids_clause(ids: set[str] | list[str] | None) -> tuple[str, list[str]]:
-    if ids is None:
-        return "1 = 1", []
+def _ids_clause(conn: sqlite3.Connection, ids: set[str] | list[str] | None) -> tuple[str, list[str]]:
+    # None — ошибка вызывающего кода: без явного набора пациентов scope не
+    # применяется, поэтому отказ закрыт (ничего не выбирается).
     if not ids:
         return "0 = 1", []
     ordered = sorted(ids)
+    if len(ordered) > conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER) - 16:
+        # Большой scope: набор id через TEMP-таблицу, а не по переменной на id.
+        return f"patients.id IN (SELECT id FROM {temp_id_table(conn, ordered)})", []  # nosec B608 - generated identifier
     return f"patients.id IN ({','.join('?' for _ in ordered)})", ordered
 
 
@@ -142,22 +146,25 @@ def _filtered_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, fi
     if filters.data_quality_severity:
         ids &= _quality_issue_ids(q, severity=filters.data_quality_severity)
     if filters.notification_status:
-        marks = ",".join("?" for _ in ids)
-        nrows = conn.execute(
-            f"""SELECT DISTINCT notifications.patient_id
-                FROM notifications
-                JOIN patients ON patients.id = notifications.patient_id
-                WHERE notifications.status = ? AND patients.id IN ({marks})""",  # nosec B608
-            [filters.notification_status, *sorted(ids)],
-        ).fetchall()
-        ids &= {r["patient_id"] for r in nrows}
+        matched: set[str] = set()
+        for chunk in in_chunks(conn, sorted(ids)):
+            marks = ",".join("?" for _ in chunk)
+            nrows = conn.execute(
+                f"""SELECT DISTINCT notifications.patient_id
+                    FROM notifications
+                    JOIN patients ON patients.id = notifications.patient_id
+                    WHERE notifications.status = ? AND patients.id IN ({marks})""",  # nosec B608
+                [filters.notification_status, *chunk],
+            ).fetchall()
+            matched.update(r["patient_id"] for r in nrows)
+        ids &= matched
     if filters.attention_reason:
         ids &= patient_attention.active_patient_ids(conn, ids, filters.attention_reason)
     return ids
 
 
 def _patient_rows(conn: sqlite3.Connection, patient_ids: set[str] | None = None) -> list[sqlite3.Row]:
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     return conn.execute(
         f"""SELECT patients.id, patients.name, patients.stage, patients.nosology, patients.arrival,
                    patients.treating_doctor_user_id, patients.doctor,
@@ -190,7 +197,7 @@ def _patient_ref(row: sqlite3.Row) -> dict:
 def _notification_counts(conn: sqlite3.Connection, patient_ids: set[str]) -> dict[str, int]:
     if not patient_ids:
         return {status: 0 for status in notifications.QUEUE_STATUSES}
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     rows = conn.execute(
         f"""SELECT notifications.status, COUNT(*) AS c
             FROM notifications JOIN patients ON patients.id = notifications.patient_id
@@ -214,7 +221,7 @@ def _checklist_state(conn: sqlite3.Connection, patient_ids: set[str]) -> dict:
             "by_doctor": {},
             "by_department": {},
         }
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     rows = conn.execute(
         f"""SELECT patients.id AS patient_id, patients.name, patients.stage, patients.nosology,
                    patients.treating_doctor_user_id, patients.doctor,
@@ -431,7 +438,7 @@ def _trend_rows(conn: sqlite3.Connection, patient_ids: set[str], filters: Analyt
     created = Counter()
     completed = Counter()
     if patient_ids:
-        cond, params = _ids_clause(patient_ids)
+        cond, params = _ids_clause(conn, patient_ids)
         rows = conn.execute(  # nosec B608 - patient scope fragment is generated as placeholders by _ids_clause.
             f"SELECT patients.arrival FROM patients WHERE {cond}", params  # nosec B608
         ).fetchall()
@@ -581,7 +588,7 @@ def stage_durations(conn: sqlite3.Connection, user: policy.CurrentUser, filters:
             "stats": [],
             "current_stage_age": [],
         }
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     history_rows = conn.execute(
         f"""SELECT patients.id AS patient_id, patients.name, patients.stage AS current_stage,
                    h.stage, h.entered_at, h.seq
@@ -692,7 +699,7 @@ def _notification_status_by_patient(conn: sqlite3.Connection, patient_ids: set[s
     result: dict[str, Counter] = defaultdict(Counter)
     if not patient_ids:
         return result
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     rows = conn.execute(
         f"""SELECT notifications.patient_id, notifications.status, COUNT(*) AS c
             FROM notifications JOIN patients ON patients.id = notifications.patient_id
@@ -774,7 +781,7 @@ def notifications_state(conn: sqlite3.Connection, user: policy.CurrentUser, filt
     if not patient_ids:
         rows = []
     else:
-        cond, params = _ids_clause(patient_ids)
+        cond, params = _ids_clause(conn, patient_ids)
         rows = conn.execute(
             f"""SELECT notifications.status, notifications.template_code, notifications.source_type,
                        notifications.error_code, t.name AS template_name, COUNT(*) AS c
@@ -815,7 +822,7 @@ def notifications_state(conn: sqlite3.Connection, user: policy.CurrentUser, filt
 def _notification_patient_preconditions(conn: sqlite3.Connection, patient_ids: set[str]) -> tuple[int, int]:
     if not patient_ids:
         return 0, 0
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     rows = conn.execute(
         f"""SELECT patients.phone, COALESCE(pref.consent_status, 'not_recorded') AS consent_status,
                    COALESCE(pref.sms_enabled, 0) AS sms_enabled
@@ -892,7 +899,7 @@ def details(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
 def _notification_details(conn: sqlite3.Connection, patient_ids: set[str], status_value: str, filters: AnalyticsFilters) -> list[dict]:
     if not patient_ids:
         return []
-    cond, params = _ids_clause(patient_ids)
+    cond, params = _ids_clause(conn, patient_ids)
     rows = conn.execute(
         f"""SELECT notifications.id, notifications.patient_id, notifications.template_code,
                    notifications.source_type, notifications.scheduled_at, notifications.status,

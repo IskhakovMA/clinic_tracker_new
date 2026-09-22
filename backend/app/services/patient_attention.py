@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any
 
 from .. import audit, policy, store
-from ..db import now_iso
+from ..db import in_chunks, now_iso
 from ..models import ATTENTION_COMMENT_MAX_LENGTH, ATTENTION_REASON_CODES, AttentionIssueCloseIn, AttentionIssueCreateIn
 
 STATUS_OPEN = "open"
@@ -121,14 +121,16 @@ def bulk_summary(conn: sqlite3.Connection, patient_ids: list[str]) -> dict[str, 
     if not patient_ids:
         return {}
     ordered = sorted(set(patient_ids))
-    marks = ",".join("?" for _ in ordered)
-    rows = conn.execute(
-        f"""SELECT patient_id, reason_code, created_at, id
-            FROM patient_attention_issues
-            WHERE status = 'open' AND patient_id IN ({marks})
-            ORDER BY patient_id ASC, created_at DESC, id ASC""",  # nosec B608 - placeholders generated server-side.
-        ordered,
-    ).fetchall()
+    rows = []
+    for chunk in in_chunks(conn, ordered):
+        marks = ",".join("?" for _ in chunk)
+        rows.extend(conn.execute(
+            f"""SELECT patient_id, reason_code, created_at, id
+                FROM patient_attention_issues
+                WHERE status = 'open' AND patient_id IN ({marks})
+                ORDER BY patient_id ASC, created_at DESC, id ASC""",  # nosec B608 - placeholders generated server-side.
+            chunk,
+        ).fetchall())
     result = {
         pid: {
             "active": False,
@@ -207,15 +209,18 @@ def close_issue(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: 
 def active_reason_breakdown(conn: sqlite3.Connection, patient_ids: set[str]) -> dict:
     if not patient_ids:
         return {"title": "Причины внимания", "total": 0, "rows": []}
-    ordered = sorted(patient_ids)
-    marks = ",".join("?" for _ in ordered)
-    rows = conn.execute(
-        f"""SELECT reason_code, COUNT(*) AS c
-            FROM patient_attention_issues
-            WHERE status = 'open' AND patient_id IN ({marks})
-            GROUP BY reason_code""",  # nosec B608
-        ordered,
-    ).fetchall()
+    counts: dict[str, int] = {}
+    for chunk in in_chunks(conn, sorted(patient_ids)):
+        marks = ",".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"""SELECT reason_code, COUNT(*) AS c
+                FROM patient_attention_issues
+                WHERE status = 'open' AND patient_id IN ({marks})
+                GROUP BY reason_code""",  # nosec B608
+            chunk,
+        ).fetchall():
+            counts[row["reason_code"]] = counts.get(row["reason_code"], 0) + int(row["c"])
+    rows = [{"reason_code": code, "c": c} for code, c in counts.items()]
     total = sum(int(row["c"]) for row in rows)
     out = [
         {
@@ -236,20 +241,19 @@ def active_reason_breakdown(conn: sqlite3.Connection, patient_ids: set[str]) -> 
 def active_patient_ids(conn: sqlite3.Connection, patient_ids: set[str], reason_code: str | None = None) -> set[str]:
     if not patient_ids:
         return set()
-    ordered = sorted(patient_ids)
-    marks = ",".join("?" for _ in ordered)
-    params: list[Any] = ordered
-    reason_clause = ""
-    if reason_code:
-        reason_clause = " AND reason_code = ?"
-        params.append(reason_code)
-    rows = conn.execute(
-        f"""SELECT DISTINCT patient_id
-            FROM patient_attention_issues
-            WHERE status = 'open' AND patient_id IN ({marks}){reason_clause}""",  # nosec B608
-        params,
-    ).fetchall()
-    return {row["patient_id"] for row in rows}
+    reason_clause = " AND reason_code = ?" if reason_code else ""
+    found: set[str] = set()
+    for chunk in in_chunks(conn, sorted(patient_ids)):
+        marks = ",".join("?" for _ in chunk)
+        params: list[Any] = list(chunk) + ([reason_code] if reason_code else [])
+        rows = conn.execute(
+            f"""SELECT DISTINCT patient_id
+                FROM patient_attention_issues
+                WHERE status = 'open' AND patient_id IN ({marks}){reason_clause}""",  # nosec B608
+            params,
+        ).fetchall()
+        found.update(row["patient_id"] for row in rows)
+    return found
 
 
 def active_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[sqlite3.Row]:

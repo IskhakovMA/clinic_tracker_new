@@ -125,8 +125,15 @@ def scope_errors(
     return errors[:200]
 
 
-def preview_report(conn: sqlite3.Connection, document: ImportDocument) -> dict:
-    existing_ids = {r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()}
+def preview_report(
+    conn: sqlite3.Connection, document: ImportDocument, actor: "policy.CurrentUser"
+) -> dict:
+    # Совпадения считаются только в scope актора: пациент вне scope должен
+    # быть неотличим от несуществующего (как 404 на чтении).
+    cond, params = policy.patient_scope_filter(actor)
+    existing_ids = {
+        r["id"] for r in conn.execute(f"SELECT id FROM patients WHERE {cond}", params).fetchall()  # nosec B608
+    }
     matches = sum(1 for p in document.patients if p.id and p.id in existing_ids)
     return {
         "totalRecords": len(document.patients),
@@ -135,9 +142,24 @@ def preview_report(conn: sqlite3.Connection, document: ImportDocument) -> dict:
     }
 
 
+def _diagnosis_actor(
+    conn: sqlite3.Connection, requested: Optional[str], actor: Optional["policy.CurrentUser"]
+) -> Optional[str]:
+    """Автор записи истории диагноза. Врач и заведующий не могут приписать
+    изменение другому сотруднику — автором становится импортирующий. У
+    Разработчика (roundtrip/restore) сохраняется существующий ID из файла,
+    неизвестный ID обнуляется вместо ошибки внешнего ключа."""
+    if actor is not None and actor.scope_strategy != policy.SCOPE_GLOBAL:
+        return actor.id
+    if requested and users.get_user(conn, requested) is not None:
+        return requested
+    return None
+
+
 def _insert_full_patient(
     conn: sqlite3.Connection, p: ImportPatientIn, patient_id: str,
     treating_doctor_user_id: Optional[str] = None,
+    actor: Optional["policy.CurrentUser"] = None,
 ) -> None:
     now = now_iso()
     arrival = p.arrival or now
@@ -194,7 +216,7 @@ def _insert_full_patient(
                 store.new_id(),
                 patient_id,
                 item.changedAt,
-                item.actorUserId,
+                _diagnosis_actor(conn, item.actorUserId, actor),
                 item.oldDiagnosis,
                 item.newDiagnosis,
             ),
@@ -228,19 +250,19 @@ def commit_import(
         if mode == "replace":
             conn.execute("DELETE FROM patients")  # cascades to history/events and retired compatibility tables
             for p, doctor_id in zip(document.patients, resolved):
-                _insert_full_patient(conn, p, store.new_id(), doctor_id)
+                _insert_full_patient(conn, p, store.new_id(), doctor_id, actor)
                 added += 1
         elif mode == "update":
             for p, doctor_id in zip(document.patients, resolved):
                 if p.id and p.id in existing_ids:
                     conn.execute("DELETE FROM patients WHERE id = ?", (p.id,))
-                    _insert_full_patient(conn, p, p.id, doctor_id)
+                    _insert_full_patient(conn, p, p.id, doctor_id, actor)
                     updated += 1
                 else:
                     skipped += 1
         else:  # add
             for p, doctor_id in zip(document.patients, resolved):
-                _insert_full_patient(conn, p, store.new_id(), doctor_id)
+                _insert_full_patient(conn, p, store.new_id(), doctor_id, actor)
                 added += 1
 
     return {"added": added, "updated": updated, "skipped": skipped}

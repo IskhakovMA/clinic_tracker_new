@@ -56,9 +56,14 @@ These controls are deliberately per-process and do not replace a persistent
 or reverse-proxy-backed limiter for multi-process production deployments.
 Buckets are pruned on access, capped by `LOGIN_RATE_LIMIT_MAX_BUCKETS` and
 `REQUEST_RATE_LIMIT_MAX_BUCKETS`, protected by an in-process lock, and keyed
-without PHI. Login username subjects are SHA-256 hashes of normalized usernames;
-proxy headers such as `X-Forwarded-For`, `X-Real-IP`, and `Forwarded` are
-ignored unless a trusted proxy layer is implemented separately.
+without PHI. Login username subjects are SHA-256 hashes of normalized usernames.
+The application reads the client address from `request.client.host`. uvicorn
+rewrites that from `X-Forwarded-For` when the direct peer is in
+`--forwarded-allow-ips` (default `127.0.0.1`), so behind the documented
+localhost reverse proxy the proxy must overwrite `X-Forwarded-For` with the
+real peer (see PILOT_RUNBOOK.md, "Reverse proxy requirements"). Login attempts
+are reserved under the limiter lock before password verification, so a
+concurrent burst cannot pass the limit.
 
 ## Strict Request Schemas
 

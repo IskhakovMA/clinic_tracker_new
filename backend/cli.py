@@ -20,6 +20,7 @@ Nothing here prints patient data, passwords or session tokens.
 """
 import argparse
 import getpass
+import secrets
 import json
 import sys
 from pathlib import Path
@@ -87,8 +88,10 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
       ],
       "users": [{"username": "...", "fullName": "...", "role": "doctor"}]
     }
-    Пользователи создаются со временным паролем, запрошенным один раз
-    скрытым вводом, и обязательной сменой при первом входе.
+    Каждой новой учётной записи генерируется собственный случайный временный
+    пароль (печатается один раз в stdout, в журналы не пишется) с обязательной
+    сменой при первом входе. Общий пароль на всех не используется: иначе любой
+    импортированный сотрудник мог бы войти за коллегу до его первого входа.
     """
     path = Path(args.file)
     if not path.exists():
@@ -101,14 +104,8 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
         return 1
 
     conn = db.get_connection()
-    temp_password = getpass.getpass("Временный пароль для создаваемых учётных записей (ввод скрыт): ")
-    try:
-        security.validate_password_strength(temp_password)
-    except security.WeakPasswordError as e:
-        print(str(e), file=sys.stderr)
-        return 1
-
     created_users = created_depts = 0
+    issued: list[tuple[str, str]] = []
 
     def ensure_user(spec: dict, default_role: str) -> str | None:
         nonlocal created_users
@@ -116,20 +113,22 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
         full_name = (spec.get("fullName") or "").strip()
         role = spec.get("role") or default_role
         if not username or not full_name:
-            print(f"Пропущено (нет логина или ФИО): {spec}", file=sys.stderr)
+            print(f"Пропущено (нет логина или ФИО): {_safe(spec)}", file=sys.stderr)
             return None
         existing = users.get_user_by_username(conn, username)
         if existing is not None:
             return existing["id"]
+        temp_password = secrets.token_urlsafe(12)
         try:
             uid = users.create_user(
                 conn, username=username, full_name=full_name, role_id=role,
                 password=temp_password, must_change_password=True,
             )
         except (users.UserError, security.WeakPasswordError) as e:
-            print(f"Пользователь «{username}» не создан: {e}", file=sys.stderr)
+            print(f"Пользователь «{_safe(username)}» не создан: {_safe(e)}", file=sys.stderr)
             return None
         created_users += 1
+        issued.append((username, temp_password))
         audit.record(conn, audit.USER_CREATED, detail=f"via=cli-structure role={role}", target_user_id=uid)
         return uid
 
@@ -164,6 +163,11 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
                 users.add_doctor_to_department(conn, doc_id, dept_id)
 
     print(f"Готово: создано пользователей — {created_users}, отделений — {created_depts}.")
+    if issued:
+        print("Временные пароли (у каждого свой; передайте лично, повторно не выводятся):")
+        width = max(len(u) for u, _ in issued)
+        for username, temp_password in issued:
+            print(f"  {username.ljust(width)}  {temp_password}")
     print("Все новые учётные записи требуют смены временного пароля при первом входе.")
     return 0
 
@@ -221,6 +225,13 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _safe(value) -> str:
+    """Экранирует непечатаемые символы перед выводом в терминал оператора:
+    данные из базы или неаутентифицированного заголовка backup не должны
+    управлять терминалом или имитировать отдельные строки вывода."""
+    return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in str(value))
+
+
 def cmd_backup_inspect(args: argparse.Namespace) -> int:
     try:
         metadata = maintenance.inspect_backup(args.backup_file)
@@ -228,12 +239,12 @@ def cmd_backup_inspect(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
     print("Метаданные резервной копии (header не аутентифицирован без verify):")
-    print(f"  формат:          {metadata['format']} v{metadata['version']}")
-    print(f"  алгоритм:        {metadata['algorithm']}")
-    print(f"  key_id:          {metadata['key_id']}")
-    print(f"  создано:         {metadata['created_at']}")
-    print(f"  версия схемы:    {metadata['schema_version']}")
-    print(f"  ciphertext bytes: {metadata['ciphertext_length']}")
+    print(f"  формат:          {_safe(metadata['format'])} v{_safe(metadata['version'])}")
+    print(f"  алгоритм:        {_safe(metadata['algorithm'])}")
+    print(f"  key_id:          {_safe(metadata['key_id'])}")
+    print(f"  создано:         {_safe(metadata['created_at'])}")
+    print(f"  версия схемы:    {_safe(metadata['schema_version'])}")
+    print(f"  ciphertext bytes: {_safe(metadata['ciphertext_length'])}")
     return 0
 
 
@@ -287,13 +298,15 @@ def cmd_restore(args: argparse.Namespace) -> int:
     audit.record(
         db.get_connection(),
         audit.RESTORE_PERFORMED,
-        detail=f"via=cli format=v{result['format_version']} key_id={result['key_id']}",
+        detail=f"via=cli format=v{result['format_version']} key_id={result['key_id']} accounts_reconciled={result['accounts_reconciled']}",
     )
     print("Восстановление завершено.")
     print(f"  backup filename:             {result['restored_from']}")
     print(f"  recovery copy:               {Path(result['pre_restore_backup']).name if result['pre_restore_backup'] else '-'}")
     print(f"  записей пациентов:           {result['patient_count']}")
+    print(f"  учёток с текущим состоянием: {result['accounts_reconciled']}")
     print("Все прежние сессии недействительны — войдите заново.")
+    print("Статусы блокировки, пароли, роли и отделения сотрудников оставлены не менее строгими, чем до restore.")
     return 0
 
 
@@ -318,7 +331,9 @@ def cmd_audit_tail(args: argparse.Namespace) -> int:
         print("Журнал аудита пуст.")
         return 0
     print(f"{'время':<28} {'событие':<22} {'результат':<8} {'актор':<18} patient_id")
+
     for e in reversed(events):
+        e = {k: (_safe(v) if isinstance(v, str) else v) for k, v in dict(e).items()}
         print(
             f"{e['created_at']:<28} {e['event_type']:<22} {e['result']:<8} "
             f"{(e['actor'] or '-'):<18} {e['patient_id'] or '-'}"
