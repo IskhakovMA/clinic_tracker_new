@@ -2,6 +2,7 @@
 import hashlib
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -367,6 +368,17 @@ def in_chunks(conn: sqlite3.Connection, values, reserve: int = 8):
     size = max(1, min(30000, limit - reserve))
     for i in range(0, len(values), size):
         yield values[i:i + size]
+
+
+def temp_id_table(conn: sqlite3.Connection, values) -> str:
+    """Load values into a fresh per-connection TEMP table and return its
+    qualified name, for `x IN (SELECT id FROM <name>)` / `NOT IN (...)` over
+    sets that may exceed SQLITE_LIMIT_VARIABLE_NUMBER. TEMP tables live in the
+    connection's temp database, so no lock is taken on the main database."""
+    name = f"temp.ids_{uuid.uuid4().hex}"
+    conn.execute(f"CREATE TABLE {name} (id TEXT PRIMARY KEY)")  # nosec B608 - generated identifier
+    conn.executemany(f"INSERT OR IGNORE INTO {name} (id) VALUES (?)", ((v,) for v in values))  # nosec B608
+    return name
 
 
 _hardened_paths: set[str] = set()

@@ -14,7 +14,7 @@ from typing import Any
 
 from .. import audit, config, policy
 from ..analytics.filters import app_timezone, today_local
-from ..db import now_iso
+from ..db import in_chunks, now_iso, temp_id_table
 from . import data_quality, patient_attention
 from ..models import TERMINAL_STAGES
 
@@ -241,12 +241,12 @@ def _sync_state(conn: sqlite3.Connection, user: policy.CurrentUser, conditions: 
                 (sid, user.id, c.stable_key, c.patient_id, c.notification_type, c.source_type, c.source_id, now, now),
             )
         if active_keys:
-            marks = ",".join("?" for _ in active_keys)
+            keys = temp_id_table(conn, sorted(active_keys))
             conn.execute(
                 f"""UPDATE internal_notification_state
                     SET resolved_at = COALESCE(resolved_at, ?)
-                    WHERE user_id = ? AND resolved_at IS NULL AND stable_key NOT IN ({marks})""",  # nosec B608
-                [now, user.id, *sorted(active_keys)],
+                    WHERE user_id = ? AND resolved_at IS NULL AND stable_key NOT IN (SELECT id FROM {keys})""",  # nosec B608 - generated identifier
+                [now, user.id],
             )
         else:
             conn.execute(
@@ -258,12 +258,14 @@ def _sync_state(conn: sqlite3.Connection, user: policy.CurrentUser, conditions: 
     ids = [_state_id(user.id, c.stable_key) for c in conditions]
     if not ids:
         return {}
-    marks = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"""SELECT * FROM internal_notification_state
-            WHERE user_id = ? AND id IN ({marks})""",  # nosec B608 - ids are generated server-side and bound.
-        [user.id, *ids],
-    ).fetchall()
+    rows = []
+    for chunk in in_chunks(conn, ids):
+        marks = ",".join("?" for _ in chunk)
+        rows.extend(conn.execute(
+            f"""SELECT * FROM internal_notification_state
+                WHERE user_id = ? AND id IN ({marks})""",  # nosec B608 - ids are generated server-side and bound.
+            [user.id, *chunk],
+        ).fetchall())
     return {row["stable_key"]: row for row in rows}
 
 
@@ -416,14 +418,15 @@ def mark_all_read(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     unread_ids = [i["id"] for i in items if not i["read"]]
     if unread_ids:
         now = now_iso()
-        marks = ",".join("?" for _ in unread_ids)
         with conn:
-            conn.execute(
-                f"""UPDATE internal_notification_state
-                    SET read_at = COALESCE(read_at, ?)
-                    WHERE user_id = ? AND id IN ({marks})""",  # nosec B608 - ids are generated server-side and bound.
-                [now, user.id, *unread_ids],
-            )
+            for chunk in in_chunks(conn, unread_ids):
+                marks = ",".join("?" for _ in chunk)
+                conn.execute(
+                    f"""UPDATE internal_notification_state
+                        SET read_at = COALESCE(read_at, ?)
+                        WHERE user_id = ? AND id IN ({marks})""",  # nosec B608 - ids are generated server-side and bound.
+                    [now, user.id, *chunk],
+                )
         audit.record(
             conn,
             audit.INTERNAL_NOTIFICATION_READ_ALL,
