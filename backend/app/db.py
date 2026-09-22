@@ -279,7 +279,12 @@ CREATE INDEX IF NOT EXISTS idx_notifications_status_due ON notifications(status,
 CREATE INDEX IF NOT EXISTS idx_notifications_patient ON notifications(patient_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_source ON notifications(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_scheduled ON notifications(scheduled_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notifications(idempotency_key);
+-- Ключ держат живые строки и строки, отменённые сотрудником вручную. Строка,
+-- отменённая системой (перенос, факт визита, отзыв согласия) или пропущенная,
+-- не мешает заново поставить напоминание на то же время.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notifications(idempotency_key)
+    WHERE status IN ('pending', 'processing', 'sent', 'failed')
+       OR (status = 'cancelled' AND error_code IS NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_active
     ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
     WHERE status IN ('pending', 'processing', 'sent');
@@ -465,6 +470,13 @@ def _ensure_notification_schema(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "notifications")
     if not columns:
         return
+    index_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_notifications_idempotency_key'"
+    ).fetchone()
+    if index_sql and index_sql[0] and "error_code" not in index_sql[0]:
+        # Старый полный индекс держал ключ и за отменёнными строками; INDEX_SQL
+        # создаст частичный заново.
+        conn.execute("DROP INDEX idx_notifications_idempotency_key")
     if "idempotency_key" not in columns:
         conn.execute("ALTER TABLE notifications ADD COLUMN idempotency_key TEXT")
     if "processing_started_at" not in columns:

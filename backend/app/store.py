@@ -573,16 +573,19 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
         raise ValueError("value too long")
     validate_event_value(field, value)
     column = EVENT_FIELD_COLUMN[field]
+    previous = conn.execute(f"SELECT {column} FROM events WHERE id = ?", (event_id,)).fetchone()[0]  # nosec B608
     with conn:
         conn.execute(
             f"UPDATE events SET {column} = ? WHERE id = ?",  # nosec B608
             (value or None, event_id),
         )
-        if field in ("date", "time", "actualDate", "actualTime"):
-            # Перенос или факт визита: старое напоминание недействительно;
-            # следующий generate-due создаст новое, если событие ещё актуально.
-            _cancel_event_reminders(conn, "source_id = ?", (event_id,),
-                                    "event_rescheduled" if field in ("date", "time") else "event_inactive")
+        # Перенос или факт визита: старое напоминание недействительно;
+        # следующий generate-due создаст новое, если событие ещё актуально.
+        # Правка, не меняющая время напоминания или активность, его не трогает.
+        if field in ("date", "time") and (previous or "") != value:
+            _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_rescheduled")
+        elif field == "actualDate" and value:
+            _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_inactive")
         if field in ("actualDate", "actualTime"):
             row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
             if not row["no_plan"]:

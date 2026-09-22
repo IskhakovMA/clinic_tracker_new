@@ -437,7 +437,9 @@ def create_notification(
             )
     except sqlite3.IntegrityError:
         row = conn.execute(
-            "SELECT * FROM notifications WHERE idempotency_key = ?",
+            """SELECT * FROM notifications WHERE idempotency_key = ?
+               AND (status IN ('pending', 'processing', 'sent', 'failed')
+                    OR (status = 'cancelled' AND error_code IS NULL))""",
             (idempotency_key,),
         ).fetchone()
         return (dict(row) if row else None), "duplicate"
