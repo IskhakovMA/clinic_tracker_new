@@ -318,7 +318,14 @@ def cmd_audit_tail(args: argparse.Namespace) -> int:
         print("Журнал аудита пуст.")
         return 0
     print(f"{'время':<28} {'событие':<22} {'результат':<8} {'актор':<18} patient_id")
+
+    def safe(value) -> str:
+        # Управляющие символы из деталей не должны управлять терминалом
+        # оператора или имитировать отдельные строки журнала.
+        return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in str(value))
+
     for e in reversed(events):
+        e = {k: (safe(v) if isinstance(v, str) else v) for k, v in dict(e).items()}
         print(
             f"{e['created_at']:<28} {e['event_type']:<22} {e['result']:<8} "
             f"{(e['actor'] or '-'):<18} {e['patient_id'] or '-'}"
