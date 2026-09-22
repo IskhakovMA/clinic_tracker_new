@@ -85,6 +85,9 @@ NOTIFICATION_MAX_PENDING_MANUAL_PER_PATIENT = int(os.environ.get("NOTIFICATION_M
 NOTIFICATION_CREATE_RATE_LIMIT = int(os.environ.get("NOTIFICATION_CREATE_RATE_LIMIT", "30"))
 # Напоминания о событиях: не больше N ожидающих на пациента (защита общей очереди).
 NOTIFICATION_MAX_PENDING_EVENT_PER_PATIENT = int(os.environ.get("NOTIFICATION_MAX_PENDING_EVENT_PER_PATIENT", "50"))
+# Верхняя граница на одного лечащего врача: один врач не может занять всю
+# общую очередь напоминаниями своих пациентов (owner decision, Audit 3).
+NOTIFICATION_MAX_PENDING_EVENT_PER_DOCTOR = int(os.environ.get("NOTIFICATION_MAX_PENDING_EVENT_PER_DOCTOR", "1000"))
 
 APP_ENV = os.environ.get("CLINIC_ENV", "local").strip().lower()
 
