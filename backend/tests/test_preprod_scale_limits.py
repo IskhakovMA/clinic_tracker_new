@@ -50,3 +50,13 @@ def test_init_db_skips_key_scan_when_nothing_needs_backfill(auth_client, monkeyp
     db.init_db(conn)
     conn.close()
     assert not any("SELECT idempotency_key FROM notifications" in s for s in statements)
+
+
+def test_requests_do_not_rerun_init_db(auth_client, monkeypatch):
+    from backend.app import deps
+    calls = []
+    real = deps.init_db
+    monkeypatch.setattr(deps, "init_db", lambda conn: (calls.append(1), real(conn)))
+    for _ in range(3):
+        assert auth_client.get("/api/auth/me").status_code == 200
+    assert calls == []
