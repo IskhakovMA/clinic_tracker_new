@@ -265,6 +265,19 @@ def change_stage(
     return store.patient_to_dict(conn, patient_id)
 
 
+def _audit_history(conn, user, patient_id: str, occ_index: int, action: str, *,
+                   event_index: int | None = None, field: str | None = None) -> None:
+    """Изменение истории маршрута — как и правка полей пациента — пишется в
+    аудит: только индексы, действие и имя поля, без значений."""
+    detail = f"history={occ_index}"
+    if event_index is not None:
+        detail += f";event={event_index}"
+    detail += f";action={action}"
+    if field is not None:
+        detail += f";field={field}"
+    audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id, detail=detail, **audit.actor_ctx(user))
+
+
 @router.patch("/{patient_id}/history/{occ_index}/note", dependencies=[Depends(require_csrf)])
 def update_note(
     patient_id: str,
@@ -276,6 +289,7 @@ def update_note(
     _require_writable(conn, user, patient_id)
     if not store.update_note(conn, patient_id, occ_index, body.note):
         _not_found()
+    _audit_history(conn, user, patient_id, occ_index, "note")
     return store.patient_to_dict(conn, patient_id)
 
 
@@ -294,6 +308,7 @@ def update_checklist(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
         _not_found()
+    _audit_history(conn, user, patient_id, occ_index, "checklist")
     return store.patient_to_dict(conn, patient_id)
 
 
@@ -311,6 +326,7 @@ def add_event(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
         _not_found()
+    _audit_history(conn, user, patient_id, occ_index, "event_add")
     return store.patient_to_dict(conn, patient_id)
 
 
@@ -325,6 +341,7 @@ def remove_event(
     _require_writable(conn, user, patient_id)
     if not store.remove_event(conn, patient_id, occ_index, event_index):
         _not_found()
+    _audit_history(conn, user, patient_id, occ_index, "event_delete", event_index=event_index)
     return store.patient_to_dict(conn, patient_id)
 
 
@@ -344,4 +361,5 @@ def update_event(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
         _not_found()
+    _audit_history(conn, user, patient_id, occ_index, "event_update", event_index=event_index, field=body.field)
     return store.patient_to_dict(conn, patient_id)
