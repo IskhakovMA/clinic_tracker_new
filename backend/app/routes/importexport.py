@@ -38,7 +38,7 @@ def import_preview(
     scope_errors = importexport.scope_errors(conn, document, user)
     if scope_errors:
         return {"valid": False, "errors": scope_errors}
-    report = importexport.preview_report(conn, document)
+    report = importexport.preview_report(conn, document, user)
     return {"valid": True, "errors": [], **report}
 
 
