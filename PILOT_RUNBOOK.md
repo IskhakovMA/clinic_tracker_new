@@ -199,9 +199,16 @@ Mode B, internal AI enabled:
 
 ```bash
 export CLINIC_AI_ENABLED=true
-export CLINIC_AI_BASE_URL=http://internal-ai-host:1234/v1
+export CLINIC_AI_BASE_URL=https://internal-ai-host:8443/v1
 export CLINIC_AI_MODEL=qwen3-8b
 ```
+
+The assistant sends patient names and comments, and the API key when set, to
+this address. Outside loopback (`127.0.0.1`, `localhost`) only `https://` is
+accepted; with `http://` the assistant refuses to start. If the inference host
+has no TLS, either run it on the application host (loopback) or put it behind a
+TLS terminator or tunnel. `CLINIC_AI_ALLOW_INSECURE_TRANSPORT=true` overrides
+this and must be used only on a channel that is isolated by other means.
 
 Optional:
 

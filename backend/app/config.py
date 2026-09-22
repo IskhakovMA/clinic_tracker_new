@@ -101,6 +101,8 @@ AI_MODEL = os.environ.get("CLINIC_AI_MODEL", "").strip()
 AI_LOCAL_BASE_URL = os.environ.get("CLINIC_AI_LOCAL_BASE_URL", "http://127.0.0.1:1234/v1").strip().rstrip("/")
 AI_LOCAL_MODEL = os.environ.get("CLINIC_AI_LOCAL_MODEL", "qwen3-8b").strip()
 AI_API_KEY = os.environ.get("CLINIC_AI_API_KEY", "")
+# Разрешить http:// к неloopback-хосту ИИ (PHI и ключ пойдут открытым текстом).
+AI_ALLOW_INSECURE_TRANSPORT = os.environ.get("CLINIC_AI_ALLOW_INSECURE_TRANSPORT", "").strip().lower() in ("1", "true", "yes")
 AI_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_TIMEOUT_SECONDS", "45")), 120))
 AI_HEALTH_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_HEALTH_TIMEOUT_SECONDS", "2")), 10))
 AI_HEALTH_CACHE_TTL_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_HEALTH_CACHE_TTL_SECONDS", "10")), 300))
