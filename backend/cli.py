@@ -287,13 +287,15 @@ def cmd_restore(args: argparse.Namespace) -> int:
     audit.record(
         db.get_connection(),
         audit.RESTORE_PERFORMED,
-        detail=f"via=cli format=v{result['format_version']} key_id={result['key_id']}",
+        detail=f"via=cli format=v{result['format_version']} key_id={result['key_id']} accounts_reconciled={result['accounts_reconciled']}",
     )
     print("Восстановление завершено.")
     print(f"  backup filename:             {result['restored_from']}")
     print(f"  recovery copy:               {Path(result['pre_restore_backup']).name if result['pre_restore_backup'] else '-'}")
     print(f"  записей пациентов:           {result['patient_count']}")
+    print(f"  учёток с текущим состоянием: {result['accounts_reconciled']}")
     print("Все прежние сессии недействительны — войдите заново.")
+    print("Статусы блокировки, пароли, роли и отделения сотрудников оставлены не менее строгими, чем до restore.")
     return 0
 
 
