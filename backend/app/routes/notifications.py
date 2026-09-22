@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from .. import audit, config, policy
-from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf, search_text
 from ..models import NotificationCreateIn, NotificationPreferenceIn, NotificationTemplateUpdateIn
 from ..services import notifications
 
@@ -63,7 +63,7 @@ def list_queue(
     date_to: str | None = Query(None, max_length=40),
     template_code: str | None = Query(None, max_length=80),
     source_type: SourceParam | None = None,
-    search: str | None = Query(None, max_length=120),
+    search: str | None = Depends(search_text),
     treating_doctor: str | None = Query(None, max_length=120),
     department: str | None = Query(None, max_length=120),
     sort: SortParam = "scheduled_desc",

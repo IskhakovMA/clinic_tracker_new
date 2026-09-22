@@ -91,6 +91,13 @@ function getCookie(name) {
     return match ? decodeURIComponent(match[1]) : null;
 }
 
+// Текст поиска по пациенту уходит в заголовке, а не в URL: строку запроса
+// целиком пишут журналы reverse proxy.
+function searchHeaders(text) {
+    const q = (text || '').trim();
+    return q ? { 'X-Search': encodeURIComponent(q) } : {};
+}
+
 async function apiFetch(path, options) {
     options = options || {};
     const opts = Object.assign({ credentials: 'include' }, options);
@@ -3660,7 +3667,6 @@ const app = {
     qualityParams() {
         const f = this.quality.filters;
         const params = new URLSearchParams();
-        if (f.query) params.set('search', f.query);
         if (f.severity) params.set('severity', f.severity);
         if (f.category) params.set('category', f.category);
         if (f.code) params.set('code', f.code);
@@ -3674,7 +3680,7 @@ const app = {
     async loadDataQuality() {
         const query = this.qualityParams();
         const summary = await apiGetJson('/api/data-quality/summary');
-        const issues = await apiGetJson(`/api/data-quality/issues?${query}`);
+        const issues = await apiFetch(`/api/data-quality/issues?${query}`, { headers: searchHeaders(this.quality.filters.query) });
         this.quality.summary = summary;
         this.quality.issues = issues.issues || [];
         this.quality.patients = issues.patients || [];
@@ -4203,7 +4209,6 @@ const app = {
         const filters = state.filters;
         const type = target === 'drawer' ? '' : filters.type;
         const unread = target === 'drawer' ? '' : filters.unread;
-        const query = target === 'drawer' ? '' : filters.query;
 
         if (tab === 'unread' || unread === 'unread') params.set('unread_only', 'true');
         if (tab === 'today' || tab === 'overdue') params.set('drawer_filter', tab);
@@ -4211,7 +4216,6 @@ const app = {
             params.set('type', tab);
         }
         if (type) params.set('type', type);
-        if (query) params.set('search', query);
         params.set('limit', String(target === 'drawer' ? 5 : filters.limit));
         params.set('offset', String(target === 'drawer' ? 0 : filters.offset));
         return params.toString();
@@ -4240,7 +4244,8 @@ const app = {
     },
 
     async loadInternalNotifications(target) {
-        const data = await apiGetJson(`/api/internal-notifications?${this.internalNotificationParams(target)}`);
+        const searchText = target === 'drawer' ? '' : (this.internalNotifications.filters || {}).query;
+        const data = await apiFetch(`/api/internal-notifications?${this.internalNotificationParams(target)}`, { headers: searchHeaders(searchText) });
         if (target === 'drawer') this.internalNotifications.drawerItems = data.items || [];
         else {
             this.internalNotifications.fullItems = data.items || [];
@@ -4483,7 +4488,6 @@ const app = {
     notificationParams(extra = {}) {
         const f = Object.assign({}, this.notifications.filters, extra);
         const params = new URLSearchParams();
-        if (f.query) params.set('search', f.query);
         if (f.status) params.set('status', f.status);
         if (f.template) params.set('template_code', f.template);
         if (f.dateFrom) params.set('date_from', f.dateFrom);
@@ -4499,7 +4503,7 @@ const app = {
     async loadNotifications() {
         const summary = await apiGetJson('/api/notifications/summary');
         const templates = await apiGetJson('/api/notifications/templates');
-        const list = await apiGetJson(`/api/notifications?${this.notificationParams()}`);
+        const list = await apiFetch(`/api/notifications?${this.notificationParams()}`, { headers: searchHeaders(this.notifications.filters.query) });
         this.notifications.summary = summary;
         this.notifications.templates = templates.templates || [];
         this.notifications.placeholders = templates.placeholders || [];

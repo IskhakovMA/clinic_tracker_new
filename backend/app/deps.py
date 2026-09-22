@@ -2,7 +2,9 @@
 import secrets
 import sqlite3
 
-from fastapi import Depends, HTTPException, Request, status
+from urllib.parse import unquote
+
+from fastapi import Depends, Header, HTTPException, Request, status
 
 from . import audit, config, policy, security
 from .db import _connect, init_db
@@ -96,3 +98,25 @@ def abuse_rate_limit(name: str, max_requests: int, window_seconds: int = 60):
                 headers={"Retry-After": str(int(wait) + 1)},
             )
     return dependency
+
+
+def search_text(
+    request: Request,
+    x_search: str | None = Header(None, alias="X-Search", max_length=512),
+) -> str | None:
+    """Текст поиска по пациенту принимается только в заголовке X-Search
+    (percent-encoded UTF-8), а не в строке запроса: URL целиком пишут
+    журналы reverse proxy, и ФИО пациента не должно в них попадать."""
+    if "search" in request.query_params:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="search must be sent in the X-Search header")
+    if not x_search:
+        return None
+    try:
+        value = unquote(x_search, errors="strict")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="invalid X-Search encoding")
+    value = value.strip()
+    if len(value) > 120:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="search too long")
+    return value or None

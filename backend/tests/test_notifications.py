@@ -430,7 +430,8 @@ def test_notifications_api_filters_pagination_and_scope(client):
     assert client.get("/api/notifications?status=pending").json()["total"] == 2
     assert client.get("/api/notifications?template_code=custom_reminder").json()["total"] == 1
     assert client.get(f"/api/notifications?patient_id={p_a}").json()["total"] == 1
-    assert client.get("/api/notifications?search=Пациент А").json()["total"] == 1
+    from urllib.parse import quote
+    assert client.get("/api/notifications", headers={"X-Search": quote("Пациент А")}).json()["total"] == 1
     page = client.get("/api/notifications?limit=1&offset=0&sort=scheduled_asc").json()
     assert page["limit"] == 1
     assert len(page["notifications"]) == 1

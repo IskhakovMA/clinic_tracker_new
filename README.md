@@ -199,7 +199,9 @@ API key задаётся только на backend через `CLINIC_AI_API_KEY
 - Login, analytics export, import/migration, data-quality, notification worker
   and staff search endpoints have bounded in-memory abuse controls. These are
   pruned on access, capped, and protected by an in-process lock. Login bucket
-  subjects hash normalized usernames and ignore proxy-supplied IP headers. These
+  subjects hash normalized usernames. The client address comes from uvicorn,
+  which trusts `X-Forwarded-For` from `127.0.0.1` by default, so the reverse
+  proxy must overwrite that header (see PILOT_RUNBOOK.md). These
   controls are not a replacement for reverse-proxy or persistent rate limiting
   in a multi-process production deployment.
 
@@ -298,8 +300,10 @@ API key задаётся только на backend через `CLINIC_AI_API_KEY
 1. Поставьте перед приложением HTTPS reverse proxy (nginx/caddy) с TLS-терминацией.
 2. Установите `CLINIC_HTTPS=true` — включит `Secure` на cookie и HSTS.
 3. Оставьте uvicorn слушать 127.0.0.1; наружу смотрит только proxy.
-4. Ограничьте доступ на уровне сети (VPN/файрвол) — приложение однопользовательское,
-   в нём нет ролей и разграничения доступа.
+4. Выполните требования к proxy из PILOT_RUNBOOK.md («Reverse proxy
+   requirements»): перезапись `X-Forwarded-For`, `X-Forwarded-Proto`,
+   журнал без строки запроса, `client_max_body_size 16m`.
+5. Ограничьте доступ на уровне сети (VPN/файрвол).
 
 Подробный разбор модели безопасности и остаточных ограничений — в `SECURITY_AUDIT.md`.
 Правила центра качества данных и его ограничения — в `DATA_QUALITY.md`.

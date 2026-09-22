@@ -32,10 +32,15 @@ what that address is:
   all logins. Always send it.
 - Start uvicorn with an explicit trust list:
   `--proxy-headers --forwarded-allow-ips=127.0.0.1`.
-- The proxy access log must not record query strings: some list searches
-  carry patient names in `?search=`. nginx: log `$uri`, not `$request` or
-  `$request_uri`. The application already strips query strings from the
-  uvicorn access log.
+- The proxy access log must not record query strings. The application no
+  longer sends patient-name search text in URLs (it uses the `X-Search`
+  request header, which default access-log formats do not record), but keep
+  query strings out of the log anyway. nginx: log `$uri`, not `$request` or
+  `$request_uri`. The application also strips query strings from the uvicorn
+  access log.
+- The proxy must forward `X-Forwarded-Proto` and the public `Host`, and
+  `CLINIC_HOST` must be set to the public hostname; otherwise the CSRF
+  origin check rejects every state-changing request.
 - Limit request bodies at the proxy as well, for example nginx
   `client_max_body_size 16m;` (the application enforces
   `CLINIC_MAX_REQUEST_BODY_BYTES`, default 16 MiB).

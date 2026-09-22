@@ -345,10 +345,14 @@ def test_issues_filters_validate_params_scope_pagination_and_ordering(client):
         f"patient_id={alpha}": alpha,
         "treating_doctor=Врач Фильтр А": alpha,
         "department=Фильтры А": alpha,
-        "search=Альфа": alpha,
+        "X-Search:Альфа": alpha,
     }
     for query, expected_patient_id in cases.items():
-        body = client.get(f"/api/data-quality/issues?{query}").json()
+        if query.startswith("X-Search:"):
+            from urllib.parse import quote
+            body = client.get("/api/data-quality/issues", headers={"X-Search": quote(query.split(":", 1)[1])}).json()
+        else:
+            body = client.get(f"/api/data-quality/issues?{query}").json()
         assert body["total"] >= 1, query
         assert {issue["patient_id"] for issue in body["issues"]} == {expected_patient_id}
         assert {patient["patient_id"] for patient in body["patients"]} == {expected_patient_id}
