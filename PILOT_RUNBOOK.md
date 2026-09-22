@@ -17,6 +17,30 @@ python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 
 For production-like pilot deployment, run behind a reverse proxy and do not expose the app directly without approved controls.
 
+### Reverse proxy requirements
+
+The login limiter keys on the client address that uvicorn reports. uvicorn
+trusts `X-Forwarded-For` from `127.0.0.1` by default, so the proxy decides
+what that address is:
+
+- The proxy must **overwrite** `X-Forwarded-For` with the real peer address
+  and must not pass a client-supplied value through. nginx:
+  `proxy_set_header X-Forwarded-For $remote_addr;` (not `$http_x_forwarded_for`).
+  Caddy: keep `trusted_proxies` empty so client headers are replaced.
+- If the proxy sends no `X-Forwarded-For`, every user shares one login
+  limiter bucket (`127.0.0.1`) and five failed logins from anyone slow down
+  all logins. Always send it.
+- Start uvicorn with an explicit trust list:
+  `--proxy-headers --forwarded-allow-ips=127.0.0.1`.
+- The proxy access log must not record query strings: some list searches
+  carry patient names in `?search=`. nginx: log `$uri`, not `$request` or
+  `$request_uri`. The application already strips query strings from the
+  uvicorn access log.
+- Limit request bodies at the proxy as well, for example nginx
+  `client_max_body_size 16m;` (the application enforces
+  `CLINIC_MAX_REQUEST_BODY_BYTES`, default 16 MiB).
+- Keep uvicorn bound to `127.0.0.1` so it cannot be reached around the proxy.
+
 ## Stop
 
 1. Stop user access at the reverse proxy or maintenance window.
@@ -250,6 +274,11 @@ Logs must not contain:
 - AI conversation content
 - policy numbers
 - notification bodies
+- patient names, including search text in request URLs
+- request query strings
+
+Set a retention period for application and proxy logs and restrict their
+readers to the same operators who may read the database.
 
 Technical patient IDs may appear in audit/security logs according to current policy.
 
