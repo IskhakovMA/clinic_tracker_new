@@ -550,7 +550,10 @@ def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool 
     tmp_output = dest.with_name(f".{dest.name}.{secrets.token_hex(8)}.tmp")
     _reject_symlink(tmp_output, "temporary output")
 
-    with tempfile.TemporaryDirectory(prefix="clinic-backup-", dir=str(dest.parent)) as tmp_name:
+    # Открытый снимок готовится рядом с живой базой (тот же том и те же права),
+    # а не в каталоге назначения: --dest может быть NAS, USB или
+    # синхронизируемой папкой, куда должен попадать только шифротекст.
+    with tempfile.TemporaryDirectory(prefix="clinic-backup-", dir=str(Path(db_path).resolve().parent)) as tmp_name:
         temp_dir = Path(tmp_name)
         _ensure_private_dir(temp_dir)
         plaintext = temp_dir / "snapshot.sqlite"

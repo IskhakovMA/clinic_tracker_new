@@ -376,6 +376,9 @@ def update_patient_field_with_actor(
         value = validate_new_combination(str(value or ""), row["diagnosis"] or "")
     elif field == "diagnosis":
         value = "" if value is None else str(value)
+        limit = FIELD_MAX_LEN.get(field)
+        if limit and len(value) > limit:
+            raise ValueError(f"{field} exceeds max length {limit}")
         value_nosology = validate_new_combination("", value)
     else:
         value = "" if value is None else str(value)

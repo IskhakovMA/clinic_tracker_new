@@ -113,7 +113,7 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
         full_name = (spec.get("fullName") or "").strip()
         role = spec.get("role") or default_role
         if not username or not full_name:
-            print(f"Пропущено (нет логина или ФИО): {spec}", file=sys.stderr)
+            print(f"Пропущено (нет логина или ФИО): {_safe(spec)}", file=sys.stderr)
             return None
         existing = users.get_user_by_username(conn, username)
         if existing is not None:
@@ -125,7 +125,7 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
                 password=temp_password, must_change_password=True,
             )
         except (users.UserError, security.WeakPasswordError) as e:
-            print(f"Пользователь «{username}» не создан: {e}", file=sys.stderr)
+            print(f"Пользователь «{_safe(username)}» не создан: {_safe(e)}", file=sys.stderr)
             return None
         created_users += 1
         issued.append((username, temp_password))
@@ -225,6 +225,13 @@ def cmd_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _safe(value) -> str:
+    """Экранирует непечатаемые символы перед выводом в терминал оператора:
+    данные из базы или неаутентифицированного заголовка backup не должны
+    управлять терминалом или имитировать отдельные строки вывода."""
+    return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in str(value))
+
+
 def cmd_backup_inspect(args: argparse.Namespace) -> int:
     try:
         metadata = maintenance.inspect_backup(args.backup_file)
@@ -232,12 +239,12 @@ def cmd_backup_inspect(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
     print("Метаданные резервной копии (header не аутентифицирован без verify):")
-    print(f"  формат:          {metadata['format']} v{metadata['version']}")
-    print(f"  алгоритм:        {metadata['algorithm']}")
-    print(f"  key_id:          {metadata['key_id']}")
-    print(f"  создано:         {metadata['created_at']}")
-    print(f"  версия схемы:    {metadata['schema_version']}")
-    print(f"  ciphertext bytes: {metadata['ciphertext_length']}")
+    print(f"  формат:          {_safe(metadata['format'])} v{_safe(metadata['version'])}")
+    print(f"  алгоритм:        {_safe(metadata['algorithm'])}")
+    print(f"  key_id:          {_safe(metadata['key_id'])}")
+    print(f"  создано:         {_safe(metadata['created_at'])}")
+    print(f"  версия схемы:    {_safe(metadata['schema_version'])}")
+    print(f"  ciphertext bytes: {_safe(metadata['ciphertext_length'])}")
     return 0
 
 
@@ -325,13 +332,8 @@ def cmd_audit_tail(args: argparse.Namespace) -> int:
         return 0
     print(f"{'время':<28} {'событие':<22} {'результат':<8} {'актор':<18} patient_id")
 
-    def safe(value) -> str:
-        # Управляющие символы из деталей не должны управлять терминалом
-        # оператора или имитировать отдельные строки журнала.
-        return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in str(value))
-
     for e in reversed(events):
-        e = {k: (safe(v) if isinstance(v, str) else v) for k, v in dict(e).items()}
+        e = {k: (_safe(v) if isinstance(v, str) else v) for k, v in dict(e).items()}
         print(
             f"{e['created_at']:<28} {e['event_type']:<22} {e['result']:<8} "
             f"{(e['actor'] or '-'):<18} {e['patient_id'] or '-'}"
