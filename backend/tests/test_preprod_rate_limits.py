@@ -53,7 +53,7 @@ def test_concurrent_login_burst_is_bounded_per_host(client, monkeypatch):
     monkeypatch.setattr(security, "verify_password", counting_verify)
     create_account("doc.burst", "doctor")
     n = config.LOGIN_MAX_ATTEMPTS + 5
-    barrier = threading.Barrier(n)
+    barrier = threading.Barrier(n, timeout=30)
     statuses = []
 
     def attempt():
