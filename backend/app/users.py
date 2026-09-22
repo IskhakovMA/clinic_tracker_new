@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import re
+import contextlib
 import sqlite3
 import uuid
 from typing import Optional
@@ -60,6 +61,12 @@ def get_user_by_username(conn: sqlite3.Connection, username: str) -> Optional[sq
     ).fetchone()
 
 
+def _write_scope(conn: sqlite3.Connection, commit: bool):
+    """`with conn:` commits on exit; inside an outer db.transaction the caller
+    passes commit=False so the statement joins that transaction instead."""
+    return conn if commit else contextlib.nullcontext()
+
+
 def create_user(
     conn: sqlite3.Connection,
     *,
@@ -68,6 +75,7 @@ def create_user(
     role_id: str,
     password: str,
     must_change_password: bool = False,
+    commit: bool = True,
 ) -> str:
     username = _validate_username(username)
     full_name = _validate_full_name(full_name)
@@ -78,7 +86,7 @@ def create_user(
         raise UserError("Логин уже занят.")
     uid = new_id()
     now = now_iso()
-    with conn:
+    with _write_scope(conn, commit):
         conn.execute(
             """INSERT INTO users (id, username, full_name, role_id, status, password_hash,
                                   must_change_password, created_at, updated_at, password_changed_at)
@@ -96,6 +104,7 @@ def update_user_fields(
     full_name: Optional[str] = None,
     role_id: Optional[str] = None,
     status: Optional[str] = None,
+    commit: bool = True,
 ) -> None:
     user = get_user(conn, user_id)
     if user is None:
@@ -119,7 +128,7 @@ def update_user_fields(
     sets.append("updated_at = ?")
     params.append(now_iso())
     params.append(user_id)
-    with conn:
+    with _write_scope(conn, commit):
         conn.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = ?", params)
 
 
@@ -153,8 +162,8 @@ def touch_last_login(conn: sqlite3.Connection, user_id: str) -> None:
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now_iso(), user_id))
 
 
-def terminate_sessions(conn: sqlite3.Connection, user_id: str) -> int:
-    with conn:
+def terminate_sessions(conn: sqlite3.Connection, user_id: str, *, commit: bool = True) -> int:
+    with _write_scope(conn, commit):
         return conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount
 
 
