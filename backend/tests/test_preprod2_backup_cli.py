@@ -82,3 +82,35 @@ def test_patch_diagnosis_respects_length_cap(auth_client):
     assert r.status_code == 422
     r = auth_client.patch(f"/api/patients/{pid}", json={"field": "diagnosis", "value": "C73"}, headers=auth_client.csrf)
     assert r.status_code == 200
+
+
+def test_verify_decrypts_beside_the_live_database(auth_client, tmp_path, monkeypatch, backup_key):
+    """preprod-run-3 validate_backup:plaintext-decrypt-in-system-tempdir."""
+    from backend.app import config, maintenance
+    good = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "v.cbk")
+    seen = []
+    real = maintenance.tempfile.TemporaryDirectory
+
+    def recording(*a, **kw):
+        seen.append(kw.get("dir"))
+        return real(*a, **kw)
+
+    monkeypatch.setattr(maintenance.tempfile, "TemporaryDirectory", recording)
+    maintenance.validate_backup(good)
+    parent = str(config.DB_PATH.resolve().parent)
+    assert seen and all(d is not None and str(d) == parent for d in seen), (seen, parent)
+
+
+def test_failed_restore_leaves_no_plaintext_staging_copy(auth_client, tmp_path, monkeypatch, backup_key):
+    import sqlite3
+    from backend.app import db, maintenance
+    good = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "r.cbk")
+
+    def boom(*a, **kw):
+        raise sqlite3.OperationalError("simulated")
+
+    monkeypatch.setattr(maintenance, "_reconcile_account_security", boom)
+    db.reset_singleton_for_tests()
+    with pytest.raises(Exception):
+        maintenance.restore_database(good, tmp_path / "clinic.db", confirm_offline=True)
+    assert not [p.name for p in tmp_path.iterdir() if p.name.endswith(".restore-tmp")]

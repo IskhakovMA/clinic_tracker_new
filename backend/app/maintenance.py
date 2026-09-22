@@ -595,7 +595,11 @@ def _restrict_permissions(path: Path) -> None:
 
 def validate_backup(backup_path: Path) -> dict:
     """Verify a candidate backup before it is allowed anywhere near the live DB."""
-    with tempfile.TemporaryDirectory(prefix="clinic-verify-") as tmp_name:
+    # Расшифровка — рядом с рабочей базой (тот же том и права), как в
+    # backup_database/restore_database, а не в системном /tmp.
+    verify_parent = config.DB_PATH.resolve().parent
+    _ensure_private_dir(verify_parent)
+    with tempfile.TemporaryDirectory(prefix="clinic-verify-", dir=str(verify_parent)) as tmp_name:
         temp_dir = Path(tmp_name)
         _ensure_private_dir(temp_dir)
         plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
@@ -662,6 +666,10 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
             except OSError as exc:
                 staging.unlink(missing_ok=True)
                 raise MaintenanceError("Не удалось подготовить восстановленную базу") from exc
+            except BaseException:
+                # Любая другая ошибка тоже не оставляет расшифрованную копию.
+                staging.unlink(missing_ok=True)
+                raise
     finally:
         if lock_conn is not None:
             lock_conn.rollback()
