@@ -305,7 +305,11 @@ def add_event(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
-    if not store.add_event(conn, patient_id, occ_index):
+    try:
+        ok = store.add_event(conn, patient_id, occ_index)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+    if not ok:
         _not_found()
     return store.patient_to_dict(conn, patient_id)
 

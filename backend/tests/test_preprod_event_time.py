@@ -7,7 +7,14 @@ before reaching other doctors' patients.
 """
 from .test_notifications import _create_patient_direct, _grant
 
-GOOD_EVENT = {"date": "2099-01-02", "time": "10:00", "treatmentType": "", "actualDate": None, "actualTime": None}
+
+def _future(month: int, day: int) -> str:
+    """A distinct event date inside the reminder horizon (the queue skips
+    past and far-future events)."""
+    from datetime import date as _date, timedelta as _td
+    return (_date.today() + _td(days=month * 31 + day)).isoformat()
+
+GOOD_EVENT = {"date": _future(1, 2), "time": "10:00", "treatmentType": "", "actualDate": None, "actualTime": None}
 
 
 def test_event_patch_rejects_out_of_range_time(auth_client):

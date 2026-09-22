@@ -211,6 +211,14 @@ class PatientCreateIn(StrictRequestModel):
     head: str = Field(..., min_length=1, max_length=200)
     complaint: str = Field("", max_length=5000)
     events: list[EventIn] = Field(default_factory=list)
+
+    @field_validator("events")
+    @classmethod
+    def _bounded_create_events(cls, v):
+        from . import config
+        if len(v) > config.MAX_EVENTS_PER_HISTORY_ENTRY:
+            raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
+        return v
     # Стабильная связь с учётной записью врача; правила назначения — в policy.py
     # (врач — только себя, заведующий — врача своего отделения, Разработчик — любого).
     treatingDoctorUserId: Optional[str] = Field(None, max_length=100)

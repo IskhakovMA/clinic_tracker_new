@@ -98,8 +98,10 @@ def validate_template_body(body: str) -> str:
     return body
 
 
-def render_template(body: str, *, scheduled_at: str) -> str:
-    scheduled = parse_dt(scheduled_at)
+def render_template(body: str, *, scheduled_at: str, event_at: datetime | None = None) -> str:
+    # Для напоминаний о событиях в текст подставляется время самого визита,
+    # а не время отправки (scheduled_at = визит минус NOTIFICATION_DEFAULT_REMINDER_HOURS).
+    scheduled = event_at or parse_dt(scheduled_at)
     if scheduled is None:
         raise ValueError("invalid scheduled_at")
     values = {
@@ -560,6 +562,18 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
         if event_at is None:
             skipped += 1
             continue
+        now_dt = utcnow()
+        if event_at <= now_dt or event_at > now_dt + timedelta(days=config.NOTIFICATION_MAX_SCHEDULE_DAYS):
+            # Прошедшие и слишком далёкие события не ставятся в общую очередь.
+            skipped += 1
+            continue
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE patient_id = ? AND source_type = 'event' AND status = 'pending'",
+            (row["patient_id"],),
+        ).fetchone()[0]
+        if pending >= config.NOTIFICATION_MAX_PENDING_EVENT_PER_PATIENT:
+            skipped += 1
+            continue
         try:
             scheduled = event_at - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
         except OverflowError:
@@ -689,6 +703,25 @@ def mark_skipped(conn: sqlite3.Connection, row: dict, reason: str) -> None:
     )
 
 
+def _current_event_time(conn: sqlite3.Connection, row) -> tuple[datetime | None, str | None]:
+    ev = conn.execute(
+        """SELECT events.date, events.time, events.actual_date, events.no_plan, patients.stage
+           FROM events
+           JOIN history_entries h ON h.id = events.history_entry_id
+           JOIN patients ON patients.id = h.patient_id
+           WHERE events.id = ? AND patients.id = ?""",
+        (row["source_id"], row["patient_id"]),
+    ).fetchone()
+    if ev is None:
+        return None, "event_removed"
+    if ev["actual_date"] or ev["no_plan"] or ev["stage"] in TERMINAL_STAGES:
+        return None, "event_inactive"
+    event_at = event_dt(ev["date"], ev["time"])
+    if event_at is None:
+        return None, "event_invalid"
+    return event_at, None
+
+
 def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None = None) -> dict | None:
     ensure_known_provider()
     row = claim_next(conn)
@@ -712,7 +745,15 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
     if template is None or not template["enabled"]:
         mark_skipped(conn, row, "template_disabled")
         return {"id": row["id"], "status": "skipped", "error_code": "template_disabled"}
-    body = render_template(template["body"], scheduled_at=row["scheduled_at"])
+    event_at = None
+    if row["source_type"] == "event":
+        # Последняя проверка перед отправкой: событие существует, не выполнено,
+        # не отменено, пациент не закрыт (перенос отменяет напоминание в store).
+        event_at, reason = _current_event_time(conn, row)
+        if reason:
+            mark_skipped(conn, row, reason)
+            return {"id": row["id"], "status": "skipped", "error_code": reason}
+    body = render_template(template["body"], scheduled_at=row["scheduled_at"], event_at=event_at)
     provider = provider or provider_from_config()
     result = provider.send(NotificationContext(
         notification_id=row["id"],
