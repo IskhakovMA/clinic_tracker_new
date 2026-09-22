@@ -43,7 +43,10 @@ def parse_dt(value: str) -> datetime | None:
         return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    try:
+        return dt.astimezone(timezone.utc)
+    except OverflowError:
+        return None
 
 
 def event_dt(date_value: str | None, time_value: str | None) -> datetime | None:

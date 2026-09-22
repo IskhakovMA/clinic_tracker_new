@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from .. import audit, policy
+from .. import audit, config, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import NotificationCreateIn, NotificationPreferenceIn, NotificationTemplateUpdateIn
 from ..services import notifications
@@ -178,7 +179,11 @@ def detail(
     return item
 
 
-@router.post("", dependencies=[Depends(require_csrf)], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("notification_create", config.NOTIFICATION_CREATE_RATE_LIMIT))],
+    status_code=status.HTTP_201_CREATED,
+)
 def create_manual(
     body: NotificationCreateIn,
     conn: sqlite3.Connection = Depends(get_db),
@@ -190,6 +195,14 @@ def create_manual(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="scheduledAt must be ISO datetime")
     if scheduled < notifications.utcnow():
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="scheduledAt must not be in the past")
+    if scheduled > notifications.utcnow() + timedelta(days=config.NOTIFICATION_MAX_SCHEDULE_DAYS):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="scheduledAt is too far in the future")
+    pending = conn.execute(
+        "SELECT COUNT(*) FROM notifications WHERE patient_id = ? AND source_type = 'manual' AND status = 'pending'",
+        (body.patientId,),
+    ).fetchone()[0]
+    if pending >= config.NOTIFICATION_MAX_PENDING_MANUAL_PER_PATIENT:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Too many pending manual notifications for this patient")
     try:
         item, reason = notifications.create_notification(
             conn,

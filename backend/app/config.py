@@ -75,6 +75,11 @@ NOTIFICATION_MAX_ATTEMPTS = int(os.environ.get("NOTIFICATION_MAX_ATTEMPTS", "3")
 NOTIFICATION_BATCH_LIMIT_MAX = 200
 NOTIFICATION_MOCK_MODE = os.environ.get("NOTIFICATION_MOCK_MODE", "success").strip().lower()
 NOTIFICATION_PROCESSING_LEASE_SECONDS = int(os.environ.get("NOTIFICATION_PROCESSING_LEASE_SECONDS", "300"))
+# Ручные SMS: не дальше года вперёд и не больше N ожидающих на пациента,
+# чтобы один автор не мог заполнить общую очередь.
+NOTIFICATION_MAX_SCHEDULE_DAYS = int(os.environ.get("NOTIFICATION_MAX_SCHEDULE_DAYS", "366"))
+NOTIFICATION_MAX_PENDING_MANUAL_PER_PATIENT = int(os.environ.get("NOTIFICATION_MAX_PENDING_MANUAL_PER_PATIENT", "20"))
+NOTIFICATION_CREATE_RATE_LIMIT = int(os.environ.get("NOTIFICATION_CREATE_RATE_LIMIT", "30"))
 
 APP_ENV = os.environ.get("CLINIC_ENV", "local").strip().lower()
 
