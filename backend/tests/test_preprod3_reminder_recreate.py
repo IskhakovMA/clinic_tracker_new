@@ -95,3 +95,20 @@ def test_existing_database_index_is_migrated(auth_client):
     db.init_db(conn)
     sql = conn.execute("SELECT sql FROM sqlite_master WHERE name = 'idx_notifications_idempotency_key'").fetchone()[0]
     assert "error_code" in sql
+
+
+def test_reminder_for_an_appointment_already_past_is_not_sent(auth_client):
+    """preprod-run-3 create_manual:unbounded-manual-queue-rows (send side): a
+    backlog drained after the appointment must not still send the reminder."""
+    from datetime import datetime, timedelta, timezone
+    from .test_preprod2_reminders import _process
+    pid = _setup(auth_client)
+    conn = get_conn()
+    past = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    conn.execute("UPDATE events SET date = ? WHERE id IN (SELECT source_id FROM notifications WHERE patient_id = ?)",
+                 (past, pid))
+    conn.commit()
+    _process(conn)
+    rows = _queued(conn, pid)
+    assert [r["status"] for r in rows] == ["skipped"]
+    assert rows[0]["error_code"] == "event_passed"

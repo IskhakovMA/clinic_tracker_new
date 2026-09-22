@@ -721,6 +721,9 @@ def _current_event_time(conn: sqlite3.Connection, row) -> tuple[datetime | None,
     event_at = event_dt(ev["date"], ev["time"])
     if event_at is None:
         return None, "event_invalid"
+    if event_at <= utcnow():
+        # Напоминание из накопившейся очереди не отправляется после приёма.
+        return None, "event_passed"
     return event_at, None
 
 
