@@ -358,6 +358,17 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def in_chunks(conn: sqlite3.Connection, values, reserve: int = 8):
+    """Split values for `IN (?, ...)` lists so a query never binds more
+    variables than this connection's SQLite limit allows (reserve leaves
+    room for other parameters of the same statement)."""
+    values = list(values)
+    limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    size = max(1, min(30000, limit - reserve))
+    for i in range(0, len(values), size):
+        yield values[i:i + size]
+
+
 _hardened_paths: set[str] = set()
 
 
@@ -451,6 +462,9 @@ def _ensure_notification_schema(conn: sqlite3.Connection) -> None:
            FROM notifications
            WHERE idempotency_key IS NULL OR idempotency_key = ''"""
     ).fetchall()
+    if not rows:
+        # Нечего заполнять: не читать все ключи очереди на каждом запросе.
+        return
     used = {
         row["idempotency_key"]
         for row in conn.execute(

@@ -15,6 +15,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from .. import policy
+from ..db import in_chunks
 from ..models import STAGES, TERMINAL_STAGES
 from ..phone import normalize_phone as _normalize_phone
 from ..phone import phone_is_valid
@@ -244,12 +245,14 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
     if not patients:
         return
     patient_by_id = {p.id: p for p in patients}
-    marks = ",".join("?" for _ in patient_by_id)
-    history_rows = conn.execute(
-        f"""SELECT * FROM history_entries
-            WHERE patient_id IN ({marks}) ORDER BY patient_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
-        list(patient_by_id),
-    ).fetchall()
+    history_rows = []
+    for chunk in in_chunks(conn, patient_by_id):
+        marks = ",".join("?" for _ in chunk)
+        history_rows.extend(conn.execute(
+            f"""SELECT * FROM history_entries
+                WHERE patient_id IN ({marks}) ORDER BY patient_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
+            chunk,
+        ).fetchall())
     history_by_entry = {}
     for h in history_rows:
         entry = {
@@ -264,12 +267,14 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
         history_by_entry[h["id"]] = entry
 
     if history_by_entry:
-        marks = ",".join("?" for _ in history_by_entry)
-        event_rows = conn.execute(
-            f"""SELECT * FROM events
-                WHERE history_entry_id IN ({marks}) ORDER BY history_entry_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
-            list(history_by_entry),
-        ).fetchall()
+        event_rows = []
+        for chunk in in_chunks(conn, history_by_entry):
+            marks = ",".join("?" for _ in chunk)
+            event_rows.extend(conn.execute(
+                f"""SELECT * FROM events
+                    WHERE history_entry_id IN ({marks}) ORDER BY history_entry_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
+                chunk,
+            ).fetchall())
         for e in event_rows:
             history_by_entry[e["history_entry_id"]]["events"].append({
                 "seq": e["seq"],

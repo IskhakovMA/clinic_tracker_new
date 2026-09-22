@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 from .. import config, policy
+from ..db import in_chunks
 from ..localization_catalog import ALL_LOCALIZATIONS
 from ..models import STAGES, TERMINAL_STAGES
 from ..phone import phone_sendable
@@ -142,15 +143,18 @@ def _filtered_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, fi
     if filters.data_quality_severity:
         ids &= _quality_issue_ids(q, severity=filters.data_quality_severity)
     if filters.notification_status:
-        marks = ",".join("?" for _ in ids)
-        nrows = conn.execute(
-            f"""SELECT DISTINCT notifications.patient_id
-                FROM notifications
-                JOIN patients ON patients.id = notifications.patient_id
-                WHERE notifications.status = ? AND patients.id IN ({marks})""",  # nosec B608
-            [filters.notification_status, *sorted(ids)],
-        ).fetchall()
-        ids &= {r["patient_id"] for r in nrows}
+        matched: set[str] = set()
+        for chunk in in_chunks(conn, sorted(ids)):
+            marks = ",".join("?" for _ in chunk)
+            nrows = conn.execute(
+                f"""SELECT DISTINCT notifications.patient_id
+                    FROM notifications
+                    JOIN patients ON patients.id = notifications.patient_id
+                    WHERE notifications.status = ? AND patients.id IN ({marks})""",  # nosec B608
+                [filters.notification_status, *chunk],
+            ).fetchall()
+            matched.update(r["patient_id"] for r in nrows)
+        ids &= matched
     if filters.attention_reason:
         ids &= patient_attention.active_patient_ids(conn, ids, filters.attention_reason)
     return ids
