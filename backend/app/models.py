@@ -14,6 +14,8 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from .email_address import EMAIL_MAX_LENGTH, email_is_valid, normalize_email
+
 PRIORITIES = ("urgent", "high", "normal")
 STAGES = (
     "primary-appointment",
@@ -311,6 +313,24 @@ class PatientOut(BaseModel):
     treatingDoctorUserId: Optional[str] = None
     treatingDoctorName: Optional[str] = None
     attention: dict = Field(default_factory=dict)
+
+
+class PortalAccessLinkIn(StrictRequestModel):
+    """Привязка адреса мобильного доступа к существующей карточке.
+
+    Адрес нормализуется до валидации, чтобы проверка и хранение работали с
+    одной и той же строкой, а UNIQUE-индекс выражал «один email — одна карточка».
+    """
+
+    email: str = Field(..., min_length=3, max_length=EMAIL_MAX_LENGTH)
+
+    @field_validator("email")
+    @classmethod
+    def _norm_email(cls, v):
+        address = normalize_email(v)
+        if not email_is_valid(address):
+            raise ValueError("invalid email")
+        return address
 
 
 class AttentionIssueCreateIn(StrictRequestModel):

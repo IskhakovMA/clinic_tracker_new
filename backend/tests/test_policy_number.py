@@ -1,4 +1,5 @@
 import json
+from backend.app import config
 
 from .conftest import make_patient_payload
 
@@ -71,7 +72,7 @@ def test_policy_number_import_export_and_legacy_import(auth_client):
 
     exported = json.loads(auth_client.get("/api/export", headers=auth_client.csrf).text)
     by_name = {p["name"]: p for p in exported["patients"]}
-    assert exported["schemaVersion"] == 9
+    assert exported["schemaVersion"] == config.SCHEMA_VERSION
     assert by_name["Полисов Импорт"]["policyNumber"] == "7700000000000003"
     assert by_name["Безполисов Импорт"]["policyNumber"] == ""
 

@@ -1,4 +1,5 @@
 import json
+from backend.app import config
 import re
 import sqlite3
 from pathlib import Path
@@ -60,7 +61,7 @@ def test_schema_v6_to_v9_adds_feedback_fields_pgi_date_and_diagnosis_history(tmp
         )
     db.init_db(conn)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION
     patient_columns = {row["name"] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
     assert {"consilium_code", "pgi_code", "pgi_result_date"} <= patient_columns
     row = conn.execute("SELECT diagnosis, policy_number, pgi_result_date FROM patients WHERE id = 'legacy_v6'").fetchone()
@@ -571,14 +572,14 @@ def test_schema_v9_encrypted_backup_restore_preserves_doctor_feedback_fields(aut
     )
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
     backup = maintenance.backup_database(db_path, tmp_path / "doctor-feedback-v9.cbk")
-    assert maintenance.inspect_backup(backup)["schema_version"] == 9
+    assert maintenance.inspect_backup(backup)["schema_version"] == config.SCHEMA_VERSION
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
     with get_conn():
         get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
     assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
     restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
-    assert restore["schema_version"] == 9
+    assert restore["schema_version"] == config.SCHEMA_VERSION
     # Restore revokes every session from the snapshot; sign in again.
     assert login(auth_client, DEV_USERNAME).status_code == 200
     restored = auth_client.get(f"/api/patients/{patient['id']}").json()

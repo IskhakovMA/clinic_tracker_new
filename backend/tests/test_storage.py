@@ -1,4 +1,5 @@
 import sqlite3
+from backend.app import config
 
 from .conftest import make_patient_payload
 
@@ -34,7 +35,7 @@ def test_foreign_keys_cascade(auth_client, tmp_path):
 
 def test_schema_version_row_present(auth_client, tmp_path):
     conn = sqlite3.connect(str(tmp_path / "clinic.db"))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 9
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION
     columns = {row[1] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
     assert "policy_number" in columns
     conn.close()

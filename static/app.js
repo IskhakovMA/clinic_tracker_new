@@ -2637,7 +2637,10 @@ const app = {
         this.renderTabPanel(p);
         this.applyReadOnlyToPatientView();
         this.renderPatientQualityBlock(p.id);
-        if (this.currentTab === 'overview') this.renderPatientAttentionBlock(p.id);
+        if (this.currentTab === 'overview') {
+            this.renderPatientAttentionBlock(p.id);
+            this.renderPatientPortalAccessBlock(p.id);
+        }
         if (this.currentTab === 'notifications') this.renderPatientNotificationsBlock(p.id);
     },
 
@@ -2849,7 +2852,10 @@ const app = {
                     this.renderTabs();
                     this.renderTabPanel(this.getPatient(this.currentPatientId));
                     this.applyReadOnlyToPatientView();
-                    if (tab.key === 'overview') this.renderPatientAttentionBlock(this.currentPatientId);
+                    if (tab.key === 'overview') {
+                        this.renderPatientAttentionBlock(this.currentPatientId);
+                        this.renderPatientPortalAccessBlock(this.currentPatientId);
+                    }
                     if (tab.key === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
                 },
             },
@@ -2885,6 +2891,7 @@ const app = {
             ]),
             el('div', {}, [
                 this.patientAttentionCard(p),
+                this.patientPortalAccessCard(p),
                 el('div', { class: 'panel panel--pad', id: 'patientQualityBlock' }, [
                     el('h2', { class: 'section-title', text: 'Качество данных' }),
                     el('div', { class: 'empty', text: 'Загрузка…' }),
@@ -2938,6 +2945,147 @@ const app = {
                 on: { click: () => this.openCloseAttentionIssueModal(issue.patientId, issue.id) },
             }) : null,
         ]);
+    },
+
+    /* --- Мобильное приложение пациента ------------------------------------- */
+
+    patientPortalAccessCard(p) {
+        return el('div', { class: 'panel panel--pad', id: 'patientPortalAccessBlock' }, [
+            el('h2', { class: 'section-title', text: 'Мобильное приложение' }),
+            el('div', { class: 'empty', text: 'Загрузка…' }),
+        ]);
+    },
+
+    /** Состояние мобильного доступа и действия. Права приходят с сервера:
+     *  кнопки скрываются по ним, но решение всё равно принимает backend. */
+    async renderPatientPortalAccessBlock(patientId) {
+        const target = $('patientPortalAccessBlock');
+        if (!target) return;
+        const title = el('h2', { class: 'section-title', text: 'Мобильное приложение' });
+        try {
+            const data = await apiGetJson(`/api/patients/${encodeURIComponent(patientId)}/portal-access`);
+            const access = data.access || {};
+            const rows = [];
+
+            rows.push(el('div', { class: 'checkline' }, [
+                el('span', { class: `chip ${this.portalAccessChipClass(access.status)}` }, [
+                    el('span', { class: 'chip__dot' }),
+                    access.statusLabel || 'Мобильный доступ не настроен',
+                ]),
+            ]));
+
+            if (access.linked) {
+                rows.push(el('div', { class: 'person__meta', text: `Адрес: ${access.emailMasked}` }));
+                if (access.linkedByName) {
+                    rows.push(el('div', {
+                        class: 'person__meta',
+                        text: `Привязал: ${access.linkedByName} · ${this.formatDateTime(access.linkedAt)}`,
+                    }));
+                }
+                if (access.status === 'revoked' && access.revokedAt) {
+                    rows.push(el('div', {
+                        class: 'person__meta',
+                        text: `Отключён: ${access.revokedByName || 'Сотрудник'} · ${this.formatDateTime(access.revokedAt)}`,
+                    }));
+                }
+                if (access.lastLoginAt) {
+                    rows.push(el('div', { class: 'person__meta', text: `Последний вход: ${this.formatDateTime(access.lastLoginAt)}` }));
+                }
+            } else {
+                rows.push(el('div', { class: 'person__meta', text: 'Пациент не может войти в мобильное приложение' }));
+            }
+
+            const actions = [];
+            if (data.canManage) {
+                actions.push(el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: access.linked ? 'Изменить email' : 'Привязать email',
+                    on: { click: () => this.linkPortalAccess(patientId, access.linked) },
+                }));
+            }
+            if (data.canRevoke && access.linked && access.status !== 'revoked') {
+                actions.push(el('button', {
+                    type: 'button',
+                    class: 'btn btn--quiet btn--sm',
+                    text: 'Отключить доступ',
+                    on: { click: () => this.revokePortalAccess(patientId) },
+                }));
+            }
+            if (actions.length) rows.push(el('div', { class: 'checkline' }, actions));
+
+            target.replaceChildren(frag([title, ...rows]));
+        } catch (e) {
+            target.replaceChildren(frag([
+                title,
+                el('div', { class: 'empty', text: `Не удалось загрузить состояние доступа: ${e.message}` }),
+            ]));
+        }
+    },
+
+    portalAccessChipClass(status) {
+        if (status === 'active') return 'chip--good';
+        if (status === 'linked') return 'chip--warning';
+        if (status === 'revoked') return 'chip--danger';
+        return 'chip--neutral';
+    },
+
+    /** Проверка формата до отправки: опечатка — самый частый исход этой формы,
+     *  и оператор должен видеть подсказку, а не ответ валидатора. Сервер
+     *  проверяет адрес заново, клиентская проверка защитой не является. */
+    looksLikeEmail(value) {
+        const address = (value || '').trim();
+        if (!address || address.length > 254 || /\s/.test(address)) return false;
+        return /^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+@[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*\.[A-Za-z]{2,}$/.test(address)
+            && !address.startsWith('.') && !address.includes('..');
+    },
+
+    /** Человеческий текст вместо структурированного ответа API. Машинный
+     *  клиент по-прежнему получает исходный 422 со списком полей. */
+    portalAccessErrorText(error) {
+        if (error && error.status === 409) return error.message;
+        if (error && error.status === 422) return 'Введите корректный адрес электронной почты.';
+        if (error && error.status === 429) return 'Слишком много попыток подряд. Подождите немного и повторите.';
+        if (error && error.status === 403) return 'Недостаточно прав для этого действия.';
+        const message = (error && error.message) || '';
+        // Ответ валидатора начинается со списка полей — показывать его нельзя.
+        if (message.startsWith('[') || message.startsWith('{')) return 'Не удалось сохранить адрес. Проверьте данные и повторите.';
+        return message || 'Не удалось сохранить адрес.';
+    },
+
+    async linkPortalAccess(patientId, isChange) {
+        const email = await ui.textPrompt({
+            title: isChange ? 'Изменить email мобильного доступа' : 'Привязать email мобильного доступа',
+            label: 'Email пациента',
+        });
+        if (!email) return;
+        if (!this.looksLikeEmail(email)) {
+            ui.toast('Введите корректный адрес электронной почты.', 'error');
+            return;
+        }
+        try {
+            await apiPut(`/api/patients/${encodeURIComponent(patientId)}/portal-access`, { email });
+            ui.toast(isChange ? 'Адрес мобильного доступа изменён' : 'Мобильный доступ привязан', 'success');
+            await this.renderPatientPortalAccessBlock(patientId);
+        } catch (e) {
+            ui.toast(this.portalAccessErrorText(e), 'error');
+        }
+    },
+
+    async revokePortalAccess(patientId) {
+        const confirmed = await ui.confirm({
+            title: 'Отключить мобильный доступ?',
+            text: 'Пациент потеряет доступ к приложению. Чтобы вернуть доступ, адрес нужно будет привязать заново.',
+            okLabel: 'Отключить',
+        });
+        if (!confirmed) return;
+        try {
+            await apiDelete(`/api/patients/${encodeURIComponent(patientId)}/portal-access`);
+            ui.toast('Мобильный доступ отключён', 'success');
+            await this.renderPatientPortalAccessBlock(patientId);
+        } catch (e) {
+            ui.toast(this.portalAccessErrorText(e), 'error');
+        }
     },
 
     async renderPatientAttentionBlock(patientId) {

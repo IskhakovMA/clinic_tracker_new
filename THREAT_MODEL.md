@@ -8,8 +8,9 @@ application at base commit `6019436b967ac26b1b106f445c4f83921ea6cb18`.
 Patient records, accounts, password hashes, server-side sessions, CSRF tokens,
 roles, department structure, audit events, SQLite database, WAL/SHM files,
 backups, CSV exports, notification queue, analytics aggregates, configuration,
-source code, GitHub repository, CI/CD baseline, future SMS provider boundary,
-and future local AI-server boundary.
+source code, GitHub repository, CI/CD baseline, patient mobile-access links
+(`patient_portal_access`, including the patient email address), future SMS
+provider boundary, and future local AI-server boundary.
 
 ## Trust Boundaries
 
@@ -40,8 +41,17 @@ dependency ecosystem, future real SMS provider, and future local AI server.
 | TM-013 | Information Disclosure | Notification data | Scoped user | Queue/detail enumeration | Guess notification ID | Scoped queries and 404 on inaccessible ID | Future real provider delivery ambiguity remains | PASS | Add provider idempotency before real SMS | `NOTIFICATIONS.md`, tests `test_notifications.py` |
 | TM-014 | Information Disclosure | Analytics | Scoped user | Filter foreign doctor/department | Aggregate hidden patients | Scope before aggregation and pagination | No external BI integration yet | PASS | Keep aggregate scope tests on new reports | `backend/tests/test_analytics.py` |
 | TM-015 | Spoofing/Tampering | Future AI | Future integration | Local AI endpoint added | Prompt/data leakage | Out of scope; no AI code present | Future boundary unimplemented | N/A | Threat-model before implementation | Source inventory |
+| TM-016 | Information disclosure | Patient mobile-access links | Staff member with patient-write rights | Authenticated session, write access to at least one patient | Probe `PUT /api/patients/{id}/portal-access` with a guessed address: 409 means the address belongs to some card, 200 means it does not — including cards outside the actor's scope | `UNIQUE` kept for integrity; rate limit `portal_access_link` 10/min per user and host; `portal_access_conflict` audit event on every conflict; response names neither patient nor address | One bit per probe still leaks to an authenticated, audited, rate-limited actor | PARTIAL | Revisit if a patient-facing eligibility endpoint is added in Stage 2 — there the same signal would be reachable unauthenticated and must not be | `backend/app/services/portal_access.py`, `backend/tests/test_portal_access.py` |
+| TM-017 | Elevation of privilege | Patient mobile-access links | Doctor or read-only role | Authenticated session | Attempt to grant mobile access outside the intended role set | `can_manage_portal_access` restricted to developer/department_head and re-checked per object; `can_revoke_portal_access` = `can_write_patient`; out-of-scope patient returns 404 | None identified; covered by negative tests across all five roles | OK | Keep the role check in `policy.py`, not in the route | `backend/app/policy.py`, `backend/tests/test_portal_access.py` |
 
 ## Future Boundaries
+
+Patient authentication (Stage 2) is not implemented: there is no OTP, no patient
+session, no TOTP and no enrollment. The mobile application is not connected to
+this backend and declares no network permission. The eligibility check that
+Stage 2 will expose to unauthenticated callers is the point where the existence
+oracle described in TM-016 becomes materially more dangerous, and it must be
+designed so that the response does not depend on whether the address is known.
 
 Real SMS provider and local AI server are not active. They must be reviewed in
 separate stages before implementation. For SMS, the notable future risk is:

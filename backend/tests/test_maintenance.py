@@ -1,4 +1,5 @@
 import base64
+from backend.app import config
 import json
 import os
 import sqlite3
@@ -28,7 +29,7 @@ def test_check_db_passes_on_live_database(auth_client, tmp_path):
     assert report["integrity_check"] == ["ok"]
     assert report["foreign_key_violations"] == 0
     assert report["missing_tables"] == []
-    assert report["schema_version"] == 9
+    assert report["schema_version"] == config.SCHEMA_VERSION
 
 
 def test_check_db_reports_missing_file(tmp_path):

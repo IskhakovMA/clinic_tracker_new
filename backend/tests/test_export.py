@@ -1,4 +1,5 @@
 import json
+from backend.app import config
 
 from .conftest import make_patient_payload
 
@@ -14,7 +15,7 @@ def test_export_shape_and_content(auth_client):
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     doc = json.loads(r.content.decode("utf-8"))
-    assert doc["schemaVersion"] == 9
+    assert doc["schemaVersion"] == config.SCHEMA_VERSION
     assert "generatedAt" in doc
     assert len(doc["patients"]) == 1
     assert doc["patients"][0]["name"] == "Кириллица Юникодовна"

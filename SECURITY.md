@@ -40,6 +40,28 @@ filesystem snapshots. Production deployments must use full-disk or volume
 encryption and restricted OS permissions as documented in `BACKUP_SECURITY.md`
 and `OPERATIONS.md`.
 
+## Patient Mobile Access (Stage 1)
+
+`patient_portal_access` links an email address to an existing patient card so
+that the patient can later activate the mobile application. Stage 1 covers only
+the management of that link; there is no patient authentication, no OTP, no
+session and no enrollment yet.
+
+- The address is stored normalised (trimmed, lowercased) and is a new piece of
+  personal data in the live database, comparable to the existing `phone` field.
+  It is covered by the same at-rest controls: encrypted backups, and live-file
+  protection that depends on the deployment volume.
+- The address never leaves the server in full: the staff API returns only a
+  masked form (`p••••@example.com`).
+- Audit events `portal_access_linked`, `portal_access_email_changed`,
+  `portal_access_revoked` and `portal_access_conflict` record the outcome only —
+  no address, no phone, no name, no medical data.
+- Write endpoints are rate limited (`portal_access_link` 10/min,
+  `portal_access_revoke` 20/min per user and host) because a conflict response
+  distinguishes a taken address from a free one.
+- Uniqueness is enforced by the database (`UNIQUE COLLATE NOCASE`), not only by
+  application-level normalisation.
+
 ## Owner Decisions (Audit 3, preprod)
 
 Эти решения приняты владельцем по итогам расширенного security-прохода

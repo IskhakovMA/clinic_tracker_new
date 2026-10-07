@@ -169,6 +169,27 @@ def can_change_treating_doctor(user: CurrentUser) -> bool:
     return user.role_id == ROLE_DEVELOPER
 
 
+def can_manage_portal_access(conn: sqlite3.Connection, user: CurrentUser, patient_id: str) -> bool:
+    """Выдать или сменить адрес мобильного доступа.
+
+    Это административное действие по идентификации человека, а не часть
+    лечения, поэтому внутри прав записи оно дополнительно ограничено ролями
+    Разработчика и заведующего отделением. Новая роль и новая стратегия
+    scope не вводятся: область по-прежнему считает can_write_patient.
+    """
+    return user.role_id in (ROLE_DEVELOPER, ROLE_DEPARTMENT_HEAD) and can_write_patient(conn, user, patient_id)
+
+
+def can_revoke_portal_access(conn: sqlite3.Connection, user: CurrentUser, patient_id: str) -> bool:
+    """Отключить мобильный доступ.
+
+    Защитное действие: прекращение доступа должно быть доступно быстрее, чем
+    выдача, поэтому его может выполнить любая роль с правом записи на этого
+    пациента — включая лечащего врача для своих пациентов.
+    """
+    return can_write_patient(conn, user, patient_id)
+
+
 def can_view_unresolved(user: CurrentUser) -> bool:
     """Список несопоставленных пациентов: Разработчик (для сопоставления)
     и глобальные read-only роли (чтение — они и так видят этих пациентов
@@ -225,6 +246,9 @@ def permissions_payload(user: CurrentUser) -> dict:
         "editPatients": _writes_allowed(user),
         "deletePatients": _writes_allowed(user),
         "changeTreatingDoctor": can_change_treating_doctor(user),
+        # Подсказка интерфейсу: объектная проверка всё равно выполняется на сервере.
+        "managePortalAccess": user.role_id in (ROLE_DEVELOPER, ROLE_DEPARTMENT_HEAD),
+        "revokePortalAccess": _writes_allowed(user),
         "manageUsers": can_manage_users(user),
         "manageDepartments": can_manage_departments(user),
         "viewAudit": can_view_audit(user),
