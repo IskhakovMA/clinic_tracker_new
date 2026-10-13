@@ -970,10 +970,10 @@ def test_ai_chat_does_not_write_audit_or_notification_read_state(auth_client, mo
     assert get_conn().execute("SELECT COUNT(*) FROM internal_notification_state").fetchone()[0] == before_state
 
 
-def test_ai_schema_stays_v9_and_no_ai_tables(auth_client):
+def test_ai_schema_has_no_ai_tables(auth_client):
     from backend.app import config
 
-    assert config.SCHEMA_VERSION == 9
+    assert config.SCHEMA_VERSION == 17
     tables = {
         row["name"]
         for row in get_conn().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()

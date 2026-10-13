@@ -13,7 +13,7 @@ from ..services import internal_notifications
 
 router = APIRouter(prefix="/api/internal-notifications", tags=["internal-notifications"])
 
-NotificationType = Literal["overdue", "today", "upcoming", "checklist", "data_quality", "attention"]
+NotificationType = Literal["overdue", "today", "upcoming", "checklist", "data_quality", "attention", "consilium_revision"]
 DrawerFilter = Literal["all", "unread", "today", "overdue", "attention"]
 
 

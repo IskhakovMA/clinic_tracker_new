@@ -351,6 +351,167 @@ class AttentionIssueCloseIn(StrictRequestModel):
         return _normalize_multiline(v) or ""
 
 
+# --- Oncology consilium -------------------------------------------------
+
+CONSILIUM_GROUPS = (
+    "general",
+    "thoracic",
+    "abdominal",
+    "colorectal",
+    "breast",
+    "urology",
+    "gynecology",
+    "head_neck",
+)
+
+_CONSILIUM_DIAGNOSIS_RE = re.compile(r"^C(?:0[0-9]|[1-8][0-9]|9[0-7])(?:\.[0-9A-Z]{1,2})?$")
+
+
+def _validate_consilium_diagnosis(value: str, *, required: bool) -> str:
+    normalized = (value or "").strip().upper()
+    if not normalized and not required:
+        return ""
+    if not _CONSILIUM_DIAGNOSIS_RE.fullmatch(normalized):
+        raise ValueError("diagnosis must be an ICD-10 code from C00 to C97")
+    return normalized
+
+
+class ConsiliumAppointmentIn(StrictRequestModel):
+    patientId: str = Field(..., min_length=1, max_length=100)
+    scheduledDate: str = Field(..., min_length=10, max_length=10)
+    scheduledTime: str = Field(..., min_length=5, max_length=5)
+    consiliumGroup: str = Field(..., min_length=1, max_length=200)
+    hasBenefit: bool
+    policyNumber: str = Field("", max_length=POLICY_NUMBER_INPUT_MAX_LENGTH)
+    diagnosisLocalization: str = Field("", max_length=200)
+    primaryDiagnosis: str = Field(..., min_length=3, max_length=10)
+    additionalDiagnosis: str = Field("", max_length=10)
+    comment: str = Field("", max_length=4000)
+    additionalParticipant: str = Field("", max_length=200)
+    needsSurgeon: bool
+    needsRadiotherapist: bool
+    uvRuv: bool = False
+
+    @field_validator("scheduledDate")
+    @classmethod
+    def _valid_scheduled_date(cls, v):
+        try:
+            date_type.fromisoformat(v)
+        except ValueError:
+            raise ValueError("scheduledDate must be YYYY-MM-DD")
+        return v
+
+    @field_validator("scheduledTime")
+    @classmethod
+    def _valid_scheduled_time(cls, v):
+        if not _EVENT_TIME_RE.fullmatch(v):
+            raise ValueError("scheduledTime must be HH:MM")
+        return v
+
+    @field_validator("primaryDiagnosis")
+    @classmethod
+    def _valid_primary_diagnosis(cls, v):
+        return _validate_consilium_diagnosis(v, required=True)
+
+    @field_validator("additionalDiagnosis")
+    @classmethod
+    def _valid_additional_diagnosis(cls, v):
+        return _validate_consilium_diagnosis(v, required=False)
+
+    @field_validator("comment")
+    @classmethod
+    def _norm_consilium_comment(cls, v):
+        return _normalize_multiline(v) or ""
+
+    @field_validator("policyNumber", mode="before")
+    @classmethod
+    def _norm_consilium_policy_number(cls, v):
+        return normalize_policy_number(v)
+
+    @field_validator("additionalParticipant")
+    @classmethod
+    def _norm_additional_participant(cls, v):
+        return _normalize_text(v) or ""
+
+    @field_validator("consiliumGroup", "diagnosisLocalization")
+    @classmethod
+    def _norm_consilium_reference(cls, v):
+        return _normalize_text(v) or ""
+
+
+ConsiliumTreatmentType = Literal[
+    "radiotherapy", "chemotherapy", "surgery",
+    "active_observation", "dispensary_observation",
+]
+
+
+class ConsiliumDecisionIn(StrictRequestModel):
+    treatmentType: ConsiliumTreatmentType
+    treatmentScheme: str = Field("", max_length=1000)
+    treatmentSchemeCode: str = Field("", max_length=32)
+    goc: bool = False
+    goc65Plus: bool = False
+
+    @field_validator("treatmentScheme", "treatmentSchemeCode")
+    @classmethod
+    def _norm_scheme(cls, v):
+        return _normalize_multiline(v) or ""
+
+    @model_validator(mode="after")
+    def _require_chemo_scheme(self):
+        if self.treatmentType == "chemotherapy" and not self.treatmentScheme:
+            raise ValueError("treatmentScheme is required for chemotherapy")
+        if self.treatmentType != "chemotherapy":
+            self.treatmentScheme = ""
+            self.treatmentSchemeCode = ""
+        return self
+
+
+class ConsiliumRevisionIn(StrictRequestModel):
+    comment: str = Field(..., min_length=1, max_length=4000)
+
+    @field_validator("comment")
+    @classmethod
+    def _norm_comment(cls, v):
+        value = _normalize_multiline(v) or ""
+        if not value:
+            raise ValueError("comment is required")
+        return value
+
+
+class ConsiliumRegistryCompletionIn(StrictRequestModel):
+    completed: bool
+
+
+class ConsiliumScheduleGenerateIn(StrictRequestModel):
+    scheduledDate: str = Field(..., min_length=10, max_length=10)
+    consiliumGroup: str = Field(..., min_length=1, max_length=200)
+    startTime: str = Field(..., min_length=5, max_length=5)
+    endTime: str = Field(..., min_length=5, max_length=5)
+    intervalMinutes: Literal[15, 30, 60] = 30
+
+    @field_validator("scheduledDate")
+    @classmethod
+    def _valid_schedule_date(cls, v):
+        try:
+            date_type.fromisoformat(v)
+        except ValueError:
+            raise ValueError("scheduledDate must be YYYY-MM-DD")
+        return v
+
+    @field_validator("startTime", "endTime")
+    @classmethod
+    def _valid_schedule_time(cls, v):
+        if not _EVENT_TIME_RE.fullmatch(v):
+            raise ValueError("time must be HH:MM")
+        return v
+
+    @field_validator("consiliumGroup")
+    @classmethod
+    def _norm_schedule_group(cls, v):
+        return _normalize_text(v) or ""
+
+
 # --- Import/export -------------------------------------------------------
 
 ImportMode = Literal["add", "update", "replace"]
@@ -576,7 +737,7 @@ class ChangePasswordIn(StrictRequestModel):
 
 # --- RBAC: сотрудники и структура ----------------------------------------
 
-RoleId = Literal["developer", "deputy_chief_oncology", "caop_head", "department_head", "doctor"]
+RoleId = Literal["developer", "deputy_chief_oncology", "caop_head", "department_head", "doctor", "consilium_chair"]
 
 
 class UserCreateIn(StrictRequestModel):

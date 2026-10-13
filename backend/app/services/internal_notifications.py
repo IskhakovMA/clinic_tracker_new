@@ -18,7 +18,7 @@ from ..db import in_chunks, now_iso, temp_id_table
 from . import data_quality, patient_attention
 from ..models import TERMINAL_STAGES
 
-TYPES = ("overdue", "today", "upcoming", "checklist", "data_quality", "attention")
+TYPES = ("overdue", "today", "upcoming", "checklist", "data_quality", "attention", "consilium_revision")
 DRAWER_FILTERS = ("all", "unread", "today", "overdue", "attention")
 QUALITY_SEVERITIES = {"critical", "warning"}
 UPCOMING_DAYS = max(1, min(config.INTERNAL_NOTIFICATION_UPCOMING_DAYS, 30))
@@ -208,6 +208,36 @@ def _attention_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) ->
     return result
 
 
+def _consilium_revision_conditions(
+    conn: sqlite3.Connection, user: policy.CurrentUser
+) -> list[Condition]:
+    rows = conn.execute(
+        """SELECT a.id AS appointment_id, a.patient_id, a.updated_at,
+                  patients.name AS patient_name, patients.stage
+           FROM oncology_consilium_appointments a
+           JOIN patients ON patients.id = a.patient_id
+           WHERE a.created_by_user_id = ?
+             AND a.status = 'recorded'
+             AND COALESCE(a.revision_comment, '') != ''
+             AND a.archived_at IS NULL
+           ORDER BY a.updated_at ASC, a.id ASC""",
+        (user.id,),
+    ).fetchall()
+    return [Condition(
+        stable_key=f"consilium_revision:appointment:{row['appointment_id']}:{row['updated_at']}",
+        patient_id=row["patient_id"],
+        notification_type="consilium_revision",
+        source_type="consilium_revision",
+        source_id=row["appointment_id"],
+        title="Консилиум возвращён на доработку",
+        description="Председатель оставил комментарий. Откройте запись, внесите изменения и отправьте её повторно.",
+        event_at=row["updated_at"],
+        priority="high",
+        patient_name=row["patient_name"] or "Пациент",
+        stage=row["stage"] or "",
+    ) for row in rows]
+
+
 def _compute_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[Condition]:
     today = today_local()
     merged: dict[str, Condition] = {}
@@ -215,6 +245,7 @@ def _compute_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> l
         *_event_conditions(conn, user, today),
         *_quality_conditions(conn, user, today),
         *_attention_conditions(conn, user),
+        *_consilium_revision_conditions(conn, user),
     ]:
         merged.setdefault(condition.stable_key, condition)
     return [merged[key] for key in sorted(merged)]
@@ -277,6 +308,7 @@ def _type_label(kind: str) -> str:
         "checklist": "Чек-листы",
         "data_quality": "Качество данных",
         "attention": "Требует внимания",
+        "consilium_revision": "Доработка консилиума",
     }.get(kind, kind)
 
 
@@ -324,6 +356,7 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
         "checklist_count": sum(1 for i in items if i["type"] == "checklist"),
         "quality_count": sum(1 for i in items if i["type"] == "data_quality"),
         "attention_count": sum(1 for i in items if i["type"] == "attention"),
+        "consilium_revision_count": sum(1 for i in items if i["type"] == "consilium_revision"),
     }
 
 
@@ -347,6 +380,7 @@ def preview_summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
         "checklist_count": sum(1 for i in conditions if i.notification_type == "checklist"),
         "quality_count": sum(1 for i in conditions if i.notification_type == "data_quality"),
         "attention_count": sum(1 for i in conditions if i.notification_type == "attention"),
+        "consilium_revision_count": sum(1 for i in conditions if i.notification_type == "consilium_revision"),
         "read_state": "not_changed",
     }
 

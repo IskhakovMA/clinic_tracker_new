@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-schedule-workflow-v30">
 </head>
 <body>
 
@@ -72,6 +72,7 @@
 
         <nav class="nav" aria-label="Основная навигация">
             <button type="button" class="nav__item is-active" data-view="patients" aria-current="page">Пациенты</button>
+            <button type="button" class="nav__item" data-view="consilium">Онкологический консилиум</button>
             <button type="button" class="nav__item" data-view="calendar">Календарь</button>
             <button type="button" class="nav__item" data-view="notifications">Уведомления</button>
             <button type="button" class="nav__item" data-view="analytics">Аналитика</button>
@@ -246,6 +247,193 @@
                         </table>
                     </div>
                     <div class="empty is-hidden" id="patientsEmpty"></div>
+                </div>
+            </section>
+
+            <!-- ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ -->
+            <section class="view is-hidden" id="view-consilium">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Онкологический консилиум</h1>
+                        <p class="pagehead__subtitle" id="consiliumSubtitle">Ваши пациенты, записанные на рассмотрение консилиумной группой</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost is-hidden" id="openConsiliumArchiveBtn">Архив</button>
+                        <button type="button" class="btn btn--primary is-hidden" id="openConsiliumBookingBtn">Запись</button>
+                    </div>
+                </div>
+
+                <div class="alert alert--info consilium-schedule-note" id="consiliumScheduleNote" role="note">
+                    Свободные слоты пока работают в тестовом режиме. В дальнейшем расписание и доступность времени будет определять председатель онкологического консилиума.
+                </div>
+
+                <div class="panel panel--pad consilium-calendar" id="consiliumChairCalendar">
+                    <div>
+                        <span class="field__label" id="consiliumCalendarLabel">Календарь записей</span>
+                        <p class="field__hint" id="consiliumCalendarHint">Выберите период, чтобы увидеть ближайшие записи.</p>
+                    </div>
+                    <label class="field consilium-search" for="consiliumSearchInput">
+                        <span class="field__label">Поиск по ФИО или полису</span>
+                        <input class="input search__input" type="search" id="consiliumSearchInput" placeholder="ФИО или полис…" autocomplete="off">
+                    </label>
+                    <div class="consilium-calendar__actions" id="consiliumChairDateActions">
+                        <label class="visually-hidden" for="consiliumDateFilter">Дата записей</label>
+                        <input class="input" type="date" id="consiliumDateFilter" aria-label="День расписания">
+                        <details class="consilium-group-picker" id="consiliumChairGroupPicker">
+                            <summary class="select consilium-group-picker__summary" id="consiliumChairGroupSummary">Все консилиумные группы</summary>
+                            <div class="consilium-group-picker__menu" id="consiliumChairGroupOptions" aria-label="Консилиумные группы"></div>
+                        </details>
+                        <button type="button" class="btn btn--ghost btn--sm" id="consiliumTodayBtn">Сегодня</button>
+                    </div>
+                    <div class="consilium-calendar__actions is-hidden" id="consiliumDoctorDateActions">
+                        <label class="visually-hidden" for="consiliumDoctorDate">День расписания</label>
+                        <input class="input" type="date" id="consiliumDoctorDate" aria-label="День расписания">
+                        <details class="consilium-group-picker" id="consiliumDoctorGroupPicker">
+                            <summary class="select consilium-group-picker__summary" id="consiliumDoctorGroupSummary">Все консилиумные группы</summary>
+                            <div class="consilium-group-picker__menu" id="consiliumDoctorGroupOptions" aria-label="Консилиумные группы"></div>
+                        </details>
+                        <button type="button" class="btn btn--ghost btn--sm" id="consiliumDoctorTodayBtn">Сегодня</button>
+                    </div>
+                </div>
+
+                <section class="panel panel--pad consilium-schedule-editor is-hidden" id="consiliumScheduleEditor">
+                    <div class="section-head">
+                        <div>
+                            <h2 class="panel__title">Сетка расписания консилиума</h2>
+                            <p class="panel__text" id="consiliumScheduleDescription">Создайте свободные слоты — они сразу появятся в форме записи у врача.</p>
+                        </div>
+                        <div class="consilium-schedule-toolbar" id="consiliumChairScheduleToolbar">
+                            <button type="button" class="btn btn--primary btn--sm consilium-schedule-filter-btn consilium-free-filter" id="consiliumChairOnlyFreeBtn">Только свободные слоты</button>
+                        </div>
+                        <div class="consilium-schedule-toolbar is-hidden" id="consiliumDoctorScheduleToolbar">
+                            <button type="button" class="btn btn--primary btn--sm consilium-schedule-filter-btn consilium-free-filter" id="consiliumDoctorOnlyFreeBtn">Только свободные слоты</button>
+                            <button type="button" class="btn btn--primary btn--sm consilium-schedule-filter-btn consilium-mine-filter-btn" id="consiliumMineOnly">Мои записи</button>
+                        </div>
+                    </div>
+                    <div id="consiliumScheduleManagement">
+                        <form class="consilium-schedule-form" id="consiliumScheduleForm">
+                            <div class="field consilium-schedule-date-field">
+                                <span class="field__label">Дата</span>
+                                <button class="input consilium-schedule-date-button" type="button" id="consiliumScheduleDateButton" aria-expanded="false">Выберите дату</button>
+                                <input type="hidden" id="consiliumScheduleDate">
+                                <span class="consilium-date-picker is-hidden" id="consiliumScheduleDatePicker">
+                                    <span class="consilium-date-picker__head">
+                                        <button type="button" class="btn btn--icon" id="consiliumSchedulePrevMonthBtn" aria-label="Предыдущий месяц">‹</button>
+                                        <strong id="consiliumScheduleMonthLabel"></strong>
+                                        <button type="button" class="btn btn--icon" id="consiliumScheduleNextMonthBtn" aria-label="Следующий месяц">›</button>
+                                    </span>
+                                    <span class="consilium-date-picker__weekdays" aria-hidden="true"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></span>
+                                    <span class="consilium-date-picker__days" id="consiliumScheduleCalendarDays"></span>
+                                    <span class="field__hint">Серым отмечены прошедшие дни и даты с уже открытым расписанием для выбранной группы.</span>
+                                </span>
+                            </div>
+                            <label class="field"><span class="field__label">Группа</span><select class="select" id="consiliumScheduleGroup" required></select></label>
+                            <label class="field"><span class="field__label">Начало</span><input class="input" type="time" id="consiliumScheduleStart" value="09:00" required></label>
+                            <label class="field"><span class="field__label">Окончание</span><input class="input" type="time" id="consiliumScheduleEnd" value="17:00" required></label>
+                            <label class="field"><span class="field__label">Интервал</span><select class="select" id="consiliumScheduleInterval"><option value="15" selected>15 минут</option><option value="30">30 минут</option><option value="60">60 минут</option></select></label>
+                            <button type="submit" class="btn btn--primary" id="consiliumScheduleGenerateBtn">Создать слоты</button>
+                        </form>
+                        <p class="alert alert--danger is-hidden" id="consiliumScheduleError" role="alert"></p>
+                    </div>
+                    <div id="consiliumChairScheduleWrap">
+                        <div class="consilium-schedule-groups" id="consiliumChairScheduleTables"></div>
+                        <div class="empty is-hidden" id="consiliumScheduleEmpty">Сетка пока не создана.</div>
+                    </div>
+                    <div class="is-hidden" id="consiliumDoctorScheduleWrap">
+                        <div class="consilium-schedule-groups" id="consiliumDoctorScheduleTables"></div>
+                        <div class="empty is-hidden" id="consiliumDoctorScheduleEmpty">На выбранный день расписание не сформировано.</div>
+                    </div>
+                </section>
+
+                <div class="stats" id="consiliumStatsRow"></div>
+
+                <div class="panel is-hidden" id="consiliumAppointmentsPanel">
+                    <div class="table-wrap">
+                        <table class="table" id="consiliumTable">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Дата и время</th>
+                                    <th scope="col">Пациент</th>
+                                    <th scope="col">Консилиумная группа</th>
+                                    <th scope="col">Диагноз</th>
+                                    <th scope="col">Участники</th>
+                                    <th scope="col">Статус</th>
+                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                </tr>
+                            </thead>
+                            <tbody id="consiliumBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="empty is-hidden" id="consiliumEmpty"></div>
+                </div>
+
+                <div class="consilium-registries is-hidden" id="consiliumRegistries">
+                    <section class="panel panel--pad">
+                        <div class="section-head">
+                            <div>
+                                <h2 class="panel__title">Реестр хирургического лечения</h2>
+                                <p class="panel__text">Формируется автоматически после подписания решения о хирургическом лечении.</p>
+                            </div>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="table consilium-registry-table">
+                                <thead><tr><th>Дата и время</th><th>Пациент</th><th>Полис</th><th>Диагноз</th><th>Направление создано</th></tr></thead>
+                                <tbody id="surgicalRegistryBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty is-hidden" id="surgicalRegistryEmpty">В выбранном периоде хирургических назначений нет.</div>
+                    </section>
+
+                    <section class="panel panel--pad">
+                        <div class="section-head">
+                            <div>
+                                <h2 class="panel__title">Реестр химиотерапевтического лечения</h2>
+                                <p class="panel__text">Содержит подписанные назначения и выбранные схемы лечения.</p>
+                            </div>
+                            <button type="button" class="btn btn--ghost btn--sm" id="exportChemoRegistryBtn">Экспорт в Excel</button>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="table consilium-registry-table">
+                                <thead><tr><th>Дата и время</th><th>Пациент</th><th>Полис</th><th>Диагноз</th><th>Схема лечения</th></tr></thead>
+                                <tbody id="chemoRegistryBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty is-hidden" id="chemoRegistryEmpty">В выбранном периоде химиотерапевтических назначений нет.</div>
+                    </section>
+
+                    <section class="panel panel--pad">
+                        <div class="section-head">
+                            <div>
+                                <h2 class="panel__title">Реестр ГОК</h2>
+                                <p class="panel__text">Формируется автоматически из подписанных решений с отметкой «ГОК».</p>
+                            </div>
+                            <button type="button" class="btn btn--ghost btn--sm" id="exportGocRegistryBtn">Экспорт в Excel</button>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="table consilium-registry-table">
+                                <thead><tr><th>Дата и время</th><th>Пациент</th><th>Полис</th><th>Диагноз</th><th>Лечение</th></tr></thead>
+                                <tbody id="gocRegistryBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty is-hidden" id="gocRegistryEmpty">В выбранном периоде случаев ГОК нет.</div>
+                    </section>
+
+                    <section class="panel panel--pad">
+                        <div class="section-head">
+                            <div>
+                                <h2 class="panel__title">Реестр ГОК 65+</h2>
+                                <p class="panel__text">Формируется автоматически из подписанных решений с отметкой «ГОК 65+».</p>
+                            </div>
+                            <button type="button" class="btn btn--ghost btn--sm" id="exportGoc65RegistryBtn">Экспорт в Excel</button>
+                        </div>
+                        <div class="table-wrap">
+                            <table class="table consilium-registry-table">
+                                <thead><tr><th>Дата и время</th><th>Пациент</th><th>Полис</th><th>Диагноз</th><th>Лечение</th></tr></thead>
+                                <tbody id="goc65RegistryBody"></tbody>
+                            </table>
+                        </div>
+                        <div class="empty is-hidden" id="goc65RegistryEmpty">В выбранном периоде случаев ГОК 65+ нет.</div>
+                    </section>
                 </div>
             </section>
 
@@ -455,7 +643,7 @@
                 <div class="pagehead">
                     <div class="pagehead__text">
                         <h1 class="pagehead__title">Аналитика</h1>
-                        <p class="pagehead__subtitle">Организационные показатели маршрутов, просрочек и заполненности данных</p>
+                        <p class="pagehead__subtitle" id="analyticsSubtitle">Организационные показатели маршрутов, просрочек и заполненности данных</p>
                     </div>
                 </div>
 
@@ -541,6 +729,24 @@
                     </div>
 
                     <div class="panel panel--pad analytics-panel analytics-panel--wide" id="analyticsDetailsPanel"></div>
+                </div>
+
+                <div class="is-hidden" id="chairAnalyticsDashboard">
+                    <div class="stats analytics-kpis" id="chairAnalyticsStats"></div>
+                    <div class="cards-2">
+                        <div class="panel panel--pad">
+                            <h2 class="panel__title">Назначенное лечение</h2>
+                            <div class="analytics-bars" id="chairTreatmentAnalytics"></div>
+                        </div>
+                        <div class="panel panel--pad">
+                            <h2 class="panel__title">Загруженность расписания</h2>
+                            <div id="chairScheduleAnalytics"></div>
+                        </div>
+                    </div>
+                    <div class="panel panel--pad analytics-panel--wide">
+                        <h2 class="panel__title">Назначенные схемы лечения</h2>
+                        <div class="analytics-bars" id="chairSchemeAnalytics"></div>
+                    </div>
                 </div>
 
             </section>
@@ -831,6 +1037,258 @@
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="closeAddBtn">Отмена</button>
             <button type="submit" class="btn btn--primary" form="addForm" id="submitAddBtn">Добавить пациента</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ЗАПИСЬ НА ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ -->
+<div class="modal" id="consiliumModal" role="dialog" aria-modal="true" aria-labelledby="consiliumModalTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="consiliumModalTitle">Запись на онкологический консилиум</h2>
+            <button type="button" class="btn btn--icon" id="closeConsiliumIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+
+        <form class="modal__body form" id="consiliumForm">
+            <p class="alert alert--danger is-hidden" id="consiliumFormError" role="alert"></p>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Пациент и группа</legend>
+                <div class="field">
+                    <label class="field__label" for="consiliumPatient">ФИО пациента <span class="req">*</span></label>
+                    <select class="select" id="consiliumPatient" required></select>
+                    <p class="field__hint" id="consiliumPatientHint">Список содержит пациентов, подходящих выбранной консилиумной группе по коду МКБ‑10.</p>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="consiliumPolicyNumber">Номер полиса ОМС</label>
+                    <input class="input" type="text" id="consiliumPolicyNumber" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="Предзаполняется из карточки пациента">
+                </div>
+                <div class="field">
+                    <label class="field__label" for="consiliumGroup">Консилиумная группа <span class="req">*</span></label>
+                    <input class="input" type="search" id="consiliumGroup" list="consiliumGroupOptions" required autocomplete="off" placeholder="Начните вводить название группы">
+                    <datalist id="consiliumGroupOptions"></datalist>
+                </div>
+            </fieldset>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Свободный слот</legend>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="consiliumDate">Дата <span class="req">*</span></label>
+                        <input class="input" type="date" id="consiliumDate" required disabled aria-describedby="consiliumLockedSlotHint">
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="consiliumTime">Время <span class="req">*</span></label>
+                        <select class="select" id="consiliumTime" required disabled aria-describedby="consiliumLockedSlotHint"></select>
+                    </div>
+                </div>
+                <p class="field__hint" id="consiliumSlotHint">Выберите свободный слот из расписания председателя.</p>
+                <p class="field__hint" id="consiliumLockedSlotHint">При создании слот закреплён. В режиме изменения можно перенести запись на другую дату и только на свободное время той же группы.</p>
+            </fieldset>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Сведения для консилиума</legend>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="consiliumBenefit">Наличие льготы <span class="req">*</span></label>
+                        <select class="select" id="consiliumBenefit" required>
+                            <option value="no">Нет</option>
+                            <option value="yes">Да</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="consiliumDoctor">ФИО лечащего врача</label>
+                        <input class="input" type="text" id="consiliumDoctor" readonly>
+                        <p class="field__hint">Заполняется из текущей учётной записи.</p>
+                    </div>
+                </div>
+
+                <div class="field">
+                    <label class="field__label" for="consiliumLocalization">Локализация <span class="req">*</span></label>
+                    <input class="input" type="search" id="consiliumLocalization" list="consiliumLocalizationOptions" required autocomplete="off" placeholder="Начните вводить локализацию">
+                    <datalist id="consiliumLocalizationOptions"></datalist>
+                    <p class="field__hint">После выбора список кодов МКБ‑10 будет отфильтрован по локализации.</p>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="consiliumPrimaryDiagnosis">Основной диагноз МКБ‑10 (C00–C97) <span class="req">*</span></label>
+                    <input class="input" type="search" id="consiliumPrimaryDiagnosis" list="consiliumDiagnosisOptions" required autocomplete="off" placeholder="Начните вводить код или выберите из списка">
+                </div>
+                <div class="field">
+                    <button type="button" class="btn btn--ghost btn--sm" id="addConsiliumDiagnosisBtn" aria-expanded="false">+ Добавить дополнительный диагноз</button>
+                </div>
+                <div class="field is-hidden" id="consiliumAdditionalDiagnosisField">
+                    <label class="field__label" for="consiliumAdditionalDiagnosis">Дополнительный диагноз МКБ‑10</label>
+                    <div class="consilium-optional-row">
+                        <input class="input" type="search" id="consiliumAdditionalDiagnosis" list="consiliumDiagnosisOptions" autocomplete="off" placeholder="Начните вводить код">
+                        <button type="button" class="btn btn--ghost btn--sm" id="removeConsiliumDiagnosisBtn" aria-label="Удалить дополнительный диагноз">×</button>
+                    </div>
+                </div>
+                <datalist id="consiliumDiagnosisOptions"></datalist>
+
+                <div class="field">
+                    <label class="field__label" for="consiliumComment">Комментарий</label>
+                    <textarea class="textarea" id="consiliumComment" rows="4" maxlength="4000" placeholder="Любая дополнительная информация для консилиума"></textarea>
+                </div>
+                    <div class="field">
+                        <label class="field__label" for="consiliumAdditionalParticipant">Дополнительный участник</label>
+                        <input class="input" type="text" id="consiliumAdditionalParticipant" maxlength="200" placeholder="ФИО или роль участника">
+                    </div>
+                    <label class="registry-check consilium-uv-field">
+                        <input type="checkbox" id="consiliumUvRuv">
+                        <span>УВ/РУВ</span>
+                    </label>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="consiliumNeedsSurgeon">Нужен хирург <span class="req">*</span></label>
+                        <select class="select" id="consiliumNeedsSurgeon" required>
+                            <option value="no">Нет</option>
+                            <option value="yes">Да</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="consiliumNeedsRadiotherapist">Нужен лучевой терапевт <span class="req">*</span></label>
+                        <select class="select" id="consiliumNeedsRadiotherapist" required>
+                            <option value="no">Нет</option>
+                            <option value="yes">Да</option>
+                        </select>
+                    </div>
+                </div>
+            </fieldset>
+        </form>
+
+        <div class="modal__foot modal__foot--split">
+            <button type="button" class="btn btn--danger is-hidden" id="deleteConsiliumBtn">Удалить</button>
+            <div class="modal__foot-actions">
+                <button type="button" class="btn btn--ghost" id="closeConsiliumBtn">Отмена</button>
+                <button type="submit" class="btn btn--primary" form="consiliumForm" id="submitConsiliumBtn">Создать запись</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: АРХИВ ПОДПИСАННЫХ КОНСИЛИУМОВ ВРАЧА -->
+<div class="modal" id="consiliumArchiveModal" role="dialog" aria-modal="true" aria-labelledby="consiliumArchiveTitle" hidden>
+    <div class="modal__box consilium-archive-modal">
+        <div class="modal__head">
+            <div>
+                <h2 class="modal__title" id="consiliumArchiveTitle">Архив консилиумов</h2>
+                <p class="modal__subtitle">Все подписанные консилиумы пациентов, записанных вами. Нажмите на случай, чтобы открыть полную информацию.</p>
+            </div>
+            <button type="button" class="btn btn--icon" id="closeConsiliumArchiveIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body">
+            <div class="consilium-archive-filters">
+                <label class="field">
+                    <span class="field__label">Дата консилиума</span>
+                    <input class="input" type="date" id="consiliumArchiveDate">
+                </label>
+                <label class="field consilium-search">
+                    <span class="field__label">Поиск по ФИО или полису</span>
+                    <input class="input" type="search" id="consiliumArchiveSearch" placeholder="ФИО или полис…" autocomplete="off">
+                </label>
+            </div>
+            <div class="table-wrap" id="consiliumArchiveTableWrap">
+                <table class="table">
+                    <thead><tr><th>Дата и время</th><th>Пациент</th><th>Группа</th><th>МКБ-10</th><th>Назначение</th><th>Статус</th></tr></thead>
+                    <tbody id="consiliumArchiveBody"></tbody>
+                </table>
+            </div>
+            <div class="empty is-hidden" id="consiliumArchiveEmpty">Подписанные консилиумы по заданным условиям не найдены.</div>
+        </div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--primary" id="closeConsiliumArchiveBtn">Закрыть</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: РЕШЕНИЕ ПРЕДСЕДАТЕЛЯ КОНСИЛИУМА -->
+<div class="modal" id="consiliumDecisionModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDecisionTitle" hidden>
+    <div class="modal__box modal__box--narrow">
+        <div class="modal__head">
+            <h2 class="modal__title" id="consiliumDecisionTitle">Подписание консилиума</h2>
+            <button type="button" class="btn btn--icon" id="closeConsiliumDecisionIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <form class="modal__body form" id="consiliumDecisionForm">
+            <p class="alert alert--info" id="consiliumDecisionPatient"></p>
+            <p class="alert alert--danger is-hidden" id="consiliumDecisionError" role="alert"></p>
+            <div class="field">
+                <label class="field__label" for="consiliumTreatmentType">Назначенное лечение <span class="req">*</span></label>
+                <select class="select" id="consiliumTreatmentType" required>
+                    <option value="">Выберите лечение</option>
+                    <option value="radiotherapy">Лучевая терапия</option>
+                    <option value="chemotherapy">Химиотерапевтическое лечение</option>
+                    <option value="surgery">Хирургическое лечение</option>
+                    <option value="active_observation">Активное наблюдение</option>
+                    <option value="dispensary_observation">Диспансерное наблюдение</option>
+                </select>
+            </div>
+            <div class="field is-hidden" id="consiliumSchemeField">
+                <label class="field__label" for="consiliumTreatmentScheme">Схема лечения <span class="req">*</span></label>
+                <input class="input" type="search" id="consiliumTreatmentScheme" list="consiliumTreatmentSchemeOptions" maxlength="1000" autocomplete="off" placeholder="Введите название или код схемы">
+                <datalist id="consiliumTreatmentSchemeOptions"></datalist>
+                <p class="field__hint">Можно найти схему по названию или коду sh…, либо ввести собственный вариант.</p>
+                <label class="field__label" for="consiliumTreatmentSchemeCode">Код схемы</label>
+                <input class="input" type="text" id="consiliumTreatmentSchemeCode" maxlength="32" readonly placeholder="Заполнится автоматически">
+            </div>
+            <fieldset class="fieldset consilium-decision-marks">
+                <legend class="fieldset__legend">Отметки для реестров</legend>
+                <div class="consilium-mark-options">
+                    <label class="registry-check consilium-mark-check">
+                        <input type="checkbox" id="consiliumGoc">
+                        <span>ГОК</span>
+                    </label>
+                    <label class="registry-check consilium-mark-check">
+                        <input type="checkbox" id="consiliumGoc65Plus">
+                        <span>ГОК 65+</span>
+                    </label>
+                </div>
+            </fieldset>
+        </form>
+        <div class="modal__foot consilium-decision-actions">
+            <button type="button" class="btn btn--ghost" id="returnConsiliumBtn">Вернуть на доработку</button>
+            <button type="submit" class="btn btn--primary" form="consiliumDecisionForm" id="signConsiliumBtn">Подписать</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: КОММЕНТАРИЙ ПРИ ВОЗВРАТЕ -->
+<div class="modal modal--sm" id="consiliumRevisionModal" role="dialog" aria-modal="true" aria-labelledby="consiliumRevisionTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="consiliumRevisionTitle">Вернуть на доработку</h2>
+        </div>
+        <form class="modal__body form" id="consiliumRevisionForm">
+            <div class="field">
+                <label class="field__label" for="consiliumRevisionComment">Комментарий врачу <span class="req">*</span></label>
+                <textarea class="textarea" id="consiliumRevisionComment" rows="5" maxlength="4000" required placeholder="Укажите, что необходимо уточнить или исправить"></textarea>
+            </div>
+            <p class="alert alert--danger is-hidden" id="consiliumRevisionError" role="alert"></p>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="cancelConsiliumRevisionBtn">Отмена</button>
+            <button type="submit" class="btn btn--danger" form="consiliumRevisionForm" id="confirmConsiliumRevisionBtn">Вернуть врачу</button>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА: ПРОСМОТР ЗАПИСИ НА КОНСИЛИУМ -->
+<div class="modal" id="consiliumDetailsModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDetailsTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="consiliumDetailsTitle">Запись на онкологический консилиум</h2>
+            <button type="button" class="btn btn--icon" id="closeConsiliumDetailsIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+        <div class="modal__body form" id="consiliumDetailsBody"></div>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--primary" id="closeConsiliumDetailsBtn">Закрыть</button>
         </div>
     </div>
 </div>
@@ -1159,6 +1617,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=pr35-treatment-quality-polish"></script>
+<script src="/static/app.js?v=consilium-schedule-workflow-v30"></script>
 </body>
 </html>

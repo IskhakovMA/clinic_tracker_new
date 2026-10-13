@@ -219,8 +219,8 @@ CREATE TABLE IF NOT EXISTS internal_notification_state (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     stable_key TEXT NOT NULL,
     patient_id TEXT REFERENCES patients(id) ON DELETE CASCADE,
-    notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality', 'attention')),
-    source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality', 'attention')),
+    notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality', 'attention', 'consilium_revision')),
+    source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality', 'attention', 'consilium_revision')),
     source_id TEXT NOT NULL,
     first_seen_at TEXT NOT NULL,
     last_seen_at TEXT NOT NULL,
@@ -252,6 +252,60 @@ CREATE TABLE IF NOT EXISTS patient_attention_issues (
     closed_by_user_id TEXT REFERENCES users(id),
     resolution_comment TEXT,
     CHECK (status = 'open' OR (closed_at IS NOT NULL AND closed_by_user_id IS NOT NULL))
+);
+
+CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
+    id TEXT PRIMARY KEY,
+    patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    scheduled_date TEXT NOT NULL,
+    scheduled_time TEXT NOT NULL,
+    consilium_group TEXT NOT NULL,
+    has_benefit INTEGER NOT NULL CHECK (has_benefit IN (0, 1)),
+    treating_doctor_name TEXT NOT NULL,
+    policy_number TEXT,
+    diagnosis_localization TEXT,
+    primary_diagnosis TEXT NOT NULL,
+    additional_diagnosis TEXT,
+    comment TEXT,
+    additional_participant TEXT,
+    needs_surgeon INTEGER NOT NULL CHECK (needs_surgeon IN (0, 1)),
+    needs_radiotherapist INTEGER NOT NULL CHECK (needs_radiotherapist IN (0, 1)),
+    status TEXT NOT NULL DEFAULT 'recorded'
+        CHECK (status IN ('recorded', 'in_review', 'signed')),
+    treatment_type TEXT,
+    treatment_scheme TEXT,
+    treatment_scheme_code TEXT,
+    goc INTEGER NOT NULL DEFAULT 0 CHECK (goc IN (0, 1)),
+    goc_65_plus INTEGER NOT NULL DEFAULT 0 CHECK (goc_65_plus IN (0, 1)),
+    uv_ruv INTEGER NOT NULL DEFAULT 0 CHECK (uv_ruv IN (0, 1)),
+    revision_comment TEXT,
+    review_started_at TEXT,
+    signed_at TEXT,
+    signed_by_user_id TEXT REFERENCES users(id),
+    referral_completed_at TEXT,
+    referral_completed_by_user_id TEXT REFERENCES users(id),
+    archived_at TEXT,
+    archived_by_user_id TEXT REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS consilium_chair_favorites (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, patient_id)
+);
+
+CREATE TABLE IF NOT EXISTS consilium_schedule_slots (
+    id TEXT PRIMARY KEY,
+    scheduled_date TEXT NOT NULL,
+    scheduled_time TEXT NOT NULL,
+    consilium_group TEXT NOT NULL,
+    created_by_user_id TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    UNIQUE (scheduled_date, scheduled_time, consilium_group)
 );
 
 """
@@ -302,6 +356,20 @@ CREATE INDEX IF NOT EXISTS idx_attention_reason
     ON patient_attention_issues(reason_code);
 CREATE INDEX IF NOT EXISTS idx_attention_created_at
     ON patient_attention_issues(created_at);
+CREATE INDEX IF NOT EXISTS idx_consilium_owner_date
+    ON oncology_consilium_appointments(created_by_user_id, scheduled_date, scheduled_time);
+CREATE INDEX IF NOT EXISTS idx_consilium_patient
+    ON oncology_consilium_appointments(patient_id);
+CREATE INDEX IF NOT EXISTS idx_consilium_treatment_registry
+    ON oncology_consilium_appointments(treatment_type, status, scheduled_date);
+CREATE INDEX IF NOT EXISTS idx_consilium_owner_archive_date
+    ON oncology_consilium_appointments(created_by_user_id, archived_at, scheduled_date, scheduled_time);
+CREATE INDEX IF NOT EXISTS idx_consilium_favorites_patient
+    ON consilium_chair_favorites(patient_id);
+CREATE INDEX IF NOT EXISTS idx_consilium_schedule_date
+    ON consilium_schedule_slots(scheduled_date, scheduled_time, consilium_group);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_consilium_appointment_slot
+    ON oncology_consilium_appointments(scheduled_date, scheduled_time, consilium_group);
 """
 
 # Роли — справочник, а не бизнес-конфигурация: наполняется всегда.
@@ -314,6 +382,7 @@ ROLE_SEED = (
     ("caop_head", "Заведующий ЦАОП", "global_readonly"),
     ("department_head", "Заведующий отделением", "by_department"),
     ("doctor", "Врач", "by_treating_doctor"),
+    ("consilium_chair", "Председатель онкологического консилиума", "by_treating_doctor"),
 )
 
 REQUIRED_TABLES = (
@@ -336,6 +405,8 @@ REQUIRED_TABLES = (
     "notifications",
     "internal_notification_state",
     "patient_attention_issues",
+    "oncology_consilium_appointments",
+    "consilium_chair_favorites",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -628,6 +699,120 @@ def migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA_SQL)
 
 
+def migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """v9 → v10: персональные записи на онкологический консилиум."""
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """v10 → v11: workflow председателя, подписание и возврат на доработку."""
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "status", "status TEXT NOT NULL DEFAULT 'recorded' CHECK (status IN ('recorded', 'in_review', 'signed'))")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "treatment_type", "treatment_type TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "treatment_scheme", "treatment_scheme TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "revision_comment", "revision_comment TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "review_started_at", "review_started_at TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "signed_at", "signed_at TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "signed_by_user_id", "signed_by_user_id TEXT REFERENCES users(id)")
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
+    """v11 → v12: полис, избранное председателя и реестры лечения."""
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "policy_number", "policy_number TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "referral_completed_at", "referral_completed_at TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "referral_completed_by_user_id", "referral_completed_by_user_id TEXT REFERENCES users(id)")
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
+    """v12 → v13: локализация диагноза и код схемы лечения."""
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "diagnosis_localization", "diagnosis_localization TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "treatment_scheme_code", "treatment_scheme_code TEXT")
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
+    """v13 → v14: отметки ГОК и ГОК 65+ в решении консилиума."""
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "goc", "goc INTEGER NOT NULL DEFAULT 0 CHECK (goc IN (0, 1))")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "goc_65_plus", "goc_65_plus INTEGER NOT NULL DEFAULT 0 CHECK (goc_65_plus IN (0, 1))")
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
+    """v14 → v15: personal archive for signed consilium appointments."""
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "archived_at", "archived_at TEXT")
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "archived_by_user_id", "archived_by_user_id TEXT REFERENCES users(id)")
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
+    """v15 → v16: chair schedule grid and consilium revision notifications."""
+    current_sql_row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'internal_notification_state'"
+    ).fetchone()
+    current_sql = (current_sql_row["sql"] or "") if current_sql_row else ""
+    if current_sql_row and "consilium_revision" not in current_sql:
+        conn.executescript("""
+            CREATE TABLE internal_notification_state_v16 (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                stable_key TEXT NOT NULL,
+                patient_id TEXT REFERENCES patients(id) ON DELETE CASCADE,
+                notification_type TEXT NOT NULL CHECK (notification_type IN ('overdue', 'today', 'upcoming', 'checklist', 'data_quality', 'attention', 'consilium_revision')),
+                source_type TEXT NOT NULL CHECK (source_type IN ('event', 'future_plan', 'checklist', 'data_quality', 'attention', 'consilium_revision')),
+                source_id TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                read_at TEXT,
+                resolved_at TEXT,
+                UNIQUE (user_id, stable_key)
+            );
+            INSERT OR IGNORE INTO internal_notification_state_v16
+                (id, user_id, stable_key, patient_id, notification_type, source_type, source_id,
+                 first_seen_at, last_seen_at, read_at, resolved_at)
+            SELECT id, user_id, stable_key, patient_id, notification_type, source_type, source_id,
+                   first_seen_at, last_seen_at, read_at, resolved_at
+            FROM internal_notification_state;
+            DROP TABLE internal_notification_state;
+            ALTER TABLE internal_notification_state_v16 RENAME TO internal_notification_state;
+        """)
+    _add_column_if_missing(conn, "oncology_consilium_appointments", "uv_ruv", "uv_ruv INTEGER NOT NULL DEFAULT 0 CHECK (uv_ruv IN (0, 1))")
+    conn.executescript(SCHEMA_SQL)
+
+
+def migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
+    """v16 → v17: strict slot and patient booking invariants.
+
+    The patient guard is a trigger rather than a unique index so an existing
+    local installation that already contains historical duplicates can start
+    without deleting medical records. Every new booking is still rejected as
+    soon as any appointment for that patient exists.
+    """
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_insert
+        BEFORE INSERT ON oncology_consilium_appointments
+        WHEN EXISTS (
+            SELECT 1 FROM oncology_consilium_appointments
+            WHERE patient_id = NEW.patient_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_update
+        BEFORE UPDATE OF patient_id ON oncology_consilium_appointments
+        WHEN NEW.patient_id != OLD.patient_id AND EXISTS (
+            SELECT 1 FROM oncology_consilium_appointments
+            WHERE patient_id = NEW.patient_id AND id != OLD.id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
+        END;
+        """
+    )
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -643,6 +828,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v6_to_v7(conn)           # nullable doctor feedback columns/table
         migrate_v7_to_v8(conn)           # structured OK/PGI physician clarifications
         migrate_v8_to_v9(conn)           # PGI date + retired active fields
+        migrate_v9_to_v10(conn)          # oncology consilium appointments
+        migrate_v10_to_v11(conn)         # chair workflow and signatures
+        migrate_v11_to_v12(conn)         # policy, favorites and treatment registries
+        migrate_v12_to_v13(conn)         # localization and treatment scheme code
+        migrate_v13_to_v14(conn)         # GOC registry markers
+        migrate_v14_to_v15(conn)         # physician archive for signed consiliums
+        migrate_v15_to_v16(conn)         # chair schedule and revision notifications
+        migrate_v16_to_v17(conn)         # strict slot and patient uniqueness
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -679,6 +872,31 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 8:
             migrate_v8_to_v9(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 9:
+            migrate_v9_to_v10(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 10:
+            migrate_v10_to_v11(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 11:
+            migrate_v11_to_v12(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 12:
+            migrate_v12_to_v13(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 13:
+            migrate_v13_to_v14(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 14:
+            migrate_v14_to_v15(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 15:
+            migrate_v15_to_v16(conn)
+            migrate_v16_to_v17(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 16:
+            migrate_v16_to_v17(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

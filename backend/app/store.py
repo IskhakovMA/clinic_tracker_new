@@ -499,6 +499,44 @@ def change_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str, last
     return True
 
 
+def ensure_patient_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str) -> bool:
+    """Move a patient to ``new_stage`` while preserving route history.
+
+    This helper is intended for workflows that change the route as a side
+    effect (for example, booking an oncology consilium).  The caller owns the
+    surrounding transaction so the workflow record and the stage transition
+    are committed together.
+    """
+    patient = conn.execute(
+        "SELECT stage FROM patients WHERE id = ?", (patient_id,)
+    ).fetchone()
+    if patient is None:
+        return False
+    if patient["stage"] == new_stage:
+        return False
+
+    from . import config
+    history_count = _count_history(conn, patient_id)
+    if history_count >= config.MAX_HISTORY_ENTRIES_PER_PATIENT:
+        raise ValueError(
+            f"no more than {config.MAX_HISTORY_ENTRIES_PER_PATIENT} history entries per patient"
+        )
+
+    now = now_iso()
+    conn.execute(
+        "INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note) "
+        "VALUES (?, ?, ?, ?, ?, NULL, '')",
+        (new_id(), patient_id, history_count, new_stage, now),
+    )
+    conn.execute(
+        "UPDATE patients SET stage = ?, updated_at = ? WHERE id = ?",
+        (new_stage, now, patient_id),
+    )
+    if new_stage in TERMINAL_STAGES:
+        _cancel_event_reminders(conn, "patient_id = ?", (patient_id,), "event_inactive")
+    return True
+
+
 def _count_history(conn: sqlite3.Connection, patient_id: str) -> int:
     row = conn.execute("SELECT COUNT(*) AS c FROM history_entries WHERE patient_id = ?", (patient_id,)).fetchone()
     return row["c"]

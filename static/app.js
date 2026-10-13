@@ -347,6 +347,7 @@ const app = {
         loading: false,
         error: '',
         lastFocusId: '',
+        pollTimer: null,
         filters: {
             query: '',
             type: '',
@@ -357,6 +358,27 @@ const app = {
     },
     diagnosisComboboxItems: [],
     diagnosisComboboxActive: -1,
+    consilium: {
+        appointments: [],
+        meta: null,
+        editingId: null,
+        decisionId: null,
+        dateFilter: '',
+        chairGroupFilters: null,
+        doctorDate: '',
+        groupFilters: null,
+        onlyFree: false,
+        mineOnly: false,
+        search: '',
+        focusId: null,
+        schedule: [],
+        blockedPatientIds: [],
+        archiveAppointments: [],
+        scheduleCalendarMonth: '',
+        registries: { surgical: [], chemotherapy: [], goc: [], goc65Plus: [] },
+        loading: false,
+        loaded: false,
+    },
     ai: {
         status: { enabled: false, available: false, message: 'ИИ-помощник не настроен' },
         messages: [],
@@ -458,6 +480,7 @@ const app = {
         checklist: 'Чек-листы',
         data_quality: 'Качество данных',
         attention: 'Требует внимания',
+        consilium_revision: 'Доработка консилиума',
     },
 
     INTERNAL_NOTIFICATION_TABS: [
@@ -469,6 +492,7 @@ const app = {
         { value: 'checklist', label: 'Чек-листы' },
         { value: 'data_quality', label: 'Качество' },
         { value: 'attention', label: 'Внимание' },
+        { value: 'consilium_revision', label: 'Консилиум' },
     ],
 
     icd10Localizations: {
@@ -1667,6 +1691,13 @@ const app = {
         this.fillStaticSelects();
         await this.refreshAIStatus();
         await this.refreshInternalNotificationSummary();
+        if (!this.internalNotifications.pollTimer) {
+            this.internalNotifications.pollTimer = window.setInterval(() => {
+                if (document.visibilityState === 'visible' && this.user) {
+                    this.refreshInternalNotificationSummary();
+                }
+            }, 30000);
+        }
         this.showView('patients');
         if (this.can('importData')) this.maybeOfferLegacyMigration();
     },
@@ -1697,11 +1728,20 @@ const app = {
             list.replaceChildren(frag(depts.map(d => el('li', { text: d.name }))));
         }
 
+        const chair = u.roleId === 'consilium_chair';
         const navVisibility = {
-            data: this.can('importData') || this.can('exportData'),
+            patients: true,
+            consilium: true,
+            calendar: !chair,
+            notifications: !chair,
+            analytics: true,
+            checklists: !chair,
+            quality: !chair,
+            data: !chair && (this.can('importData') || this.can('exportData')),
             staff: this.can('manageUsers'),
             structure: this.can('manageDepartments'),
             audit: this.can('viewAudit'),
+            settings: !chair,
         };
         for (const item of document.querySelectorAll('.nav__item')) {
             const view = item.dataset.view;
@@ -1710,6 +1750,36 @@ const app = {
 
         $('readOnlyChip').classList.toggle('is-hidden', !this.isReadOnly());
         $('openAddBtn').classList.toggle('is-hidden', !this.can('createPatients'));
+        $('openConsiliumBookingBtn').classList.add('is-hidden');
+        $('openConsiliumArchiveBtn').classList.toggle('is-hidden', chair);
+        $('appScreen').classList.toggle('can-collapse-sidebar', chair);
+        if (!chair) $('appScreen').classList.remove('is-sidebar-collapsed');
+        const chairDesktop = chair && window.matchMedia('(min-width: 861px)').matches;
+        const sidebarCollapsed = $('appScreen').classList.contains('is-sidebar-collapsed');
+        $('sidebarToggle').setAttribute('aria-expanded', chairDesktop && !sidebarCollapsed ? 'true' : 'false');
+        $('sidebarToggle').setAttribute('aria-label', chairDesktop
+            ? (sidebarCollapsed ? 'Развернуть меню' : 'Свернуть меню')
+            : 'Меню');
+        $('consiliumChairCalendar').classList.remove('is-hidden');
+        $('consiliumChairDateActions').classList.toggle('is-hidden', !chair);
+        $('consiliumDoctorDateActions').classList.toggle('is-hidden', chair);
+        $('consiliumScheduleEditor').classList.remove('is-hidden');
+        $('consiliumScheduleManagement').classList.toggle('is-hidden', !chair);
+        $('consiliumChairScheduleToolbar').classList.toggle('is-hidden', !chair);
+        $('consiliumDoctorScheduleToolbar').classList.toggle('is-hidden', chair);
+        $('consiliumChairScheduleWrap').classList.toggle('is-hidden', !chair);
+        $('consiliumDoctorScheduleWrap').classList.toggle('is-hidden', chair);
+        $('consiliumCalendarLabel').textContent = 'День и консилиумная группа';
+        $('consiliumCalendarHint').textContent = 'Выберите один день и нужную группу для просмотра сетки свободных и занятых слотов.';
+        $('consiliumScheduleDescription').textContent = chair
+            ? 'Текущая неделя открыта автоматически. Здесь можно открыть слоты на любую будущую дату.'
+            : 'Выберите день текущей недели или будущую дату, которую открыл председатель.';
+        $('consiliumSubtitle').textContent = chair
+            ? 'Все пациенты клиники, записанные на консилиум, в хронологическом порядке'
+            : 'Ваши пациенты, записанные на рассмотрение консилиумной группой';
+        $('consiliumScheduleNote').textContent = chair
+            ? 'Все дни текущей недели открыты автоматически. Следующие недели становятся доступны врачам после создания слотов председателем.'
+            : 'Текущая неделя доступна автоматически. Следующие недели отображаются только после открытия расписания председателем.';
         $('triggerImportBtn').classList.toggle('is-hidden', !this.can('importData'));
         $('openExportBtn').classList.toggle('is-hidden', !this.can('exportData'));
         $('openDataSheetBtn').classList.toggle(
@@ -1725,7 +1795,7 @@ const app = {
 
     async loadDoctors() {
         this.doctors = [];
-        if (!this.can('createPatients') || this.user.roleId === 'doctor') return;
+        if (!this.can('createPatients') || ['doctor', 'consilium_chair'].includes(this.user.roleId)) return;
         try {
             const data = await apiGetJson('/api/users/doctors');
             this.doctors = data.doctors || [];
@@ -1783,6 +1853,7 @@ const app = {
     /* ------------------------------------------------------------ Навигация */
 
     showView(view) {
+        const previousView = this.currentView;
         this.currentView = view;
         for (const section of document.querySelectorAll('.view')) {
             section.classList.toggle('is-hidden', section.id !== `view-${view}`);
@@ -1798,6 +1869,12 @@ const app = {
         $('sidebarToggle').setAttribute('aria-expanded', 'false');
 
         if (view === 'patients') this.renderPatients();
+        if (view === 'consilium') {
+            if (previousView !== 'consilium' && !this.can('consiliumChair')) {
+                this.consilium.loaded = false;
+            }
+            this.renderConsilium();
+        }
         if (view === 'calendar') this.renderCalendar();
         if (view === 'checklists') this.renderChecklistsView();
         if (view === 'notifications') {
@@ -2423,10 +2500,12 @@ const app = {
         const select = $('doctor');
         const hint = $('doctorHint');
         if (!select) return;
-        if (this.user && this.user.roleId === 'doctor') {
+        if (this.user && ['doctor', 'consilium_chair'].includes(this.user.roleId)) {
             select.replaceChildren(option(this.user.id, this.user.fullName, true));
             select.disabled = true;
-            hint.textContent = 'Пациент закрепляется за вами. Выбрать другого врача нельзя.';
+            hint.textContent = this.user.roleId === 'consilium_chair'
+                ? 'Пациент закрепляется за вами для персонального отслеживания.'
+                : 'Пациент закрепляется за вами. Выбрать другого врача нельзя.';
             hint.classList.remove('is-hidden');
             return;
         }
@@ -4258,7 +4337,7 @@ const app = {
 
     internalNotificationTone(type) {
         if (type === 'overdue') return 'danger';
-        if (type === 'today' || type === 'data_quality') return 'warning';
+        if (type === 'today' || type === 'data_quality' || type === 'consilium_revision') return 'warning';
         if (type === 'checklist') return 'info';
         return 'accent';
     },
@@ -4420,7 +4499,24 @@ const app = {
         if (this.currentView === 'notifications') await this.renderInternalNotificationCenter();
     },
 
-    openInternalNotificationPatient(item) {
+    async openInternalNotificationPatient(item) {
+        if (item.source_type === 'consilium_revision') {
+            if (!item.read_at) {
+                await apiPost(`/api/internal-notifications/${encodeURIComponent(item.id)}/read`, {});
+            }
+            this.closeInternalNotificationsDrawer();
+            this.consilium.focusId = item.source_id;
+            this.consilium.search = '';
+            this.consilium.doctorDate = '';
+            this.consilium.groupFilters = [];
+            this.consilium.loaded = false;
+            $('consiliumSearchInput').value = '';
+            $('consiliumDoctorDate').value = '';
+            this.renderConsiliumGroupPicker('doctor');
+            await this.refreshInternalNotificationSummary();
+            this.showView('consilium');
+            return;
+        }
         this.closeInternalNotificationsDrawer();
         const tab = item.source_type === 'checklist' ? 'checklist'
             : item.source_type === 'data_quality' ? 'data'
@@ -4752,6 +4848,16 @@ const app = {
     },
 
     async renderAnalytics() {
+        if (this.can('consiliumChair')) {
+            await this.renderChairAnalytics();
+            return;
+        }
+        $('analyticsSubtitle').textContent = 'Организационные показатели маршрутов, просрочек и заполненности данных';
+        $('chairAnalyticsDashboard').classList.add('is-hidden');
+        document.querySelector('.analytics-dashboard').classList.remove('is-hidden');
+        document.querySelector('.analytics-note').classList.remove('is-hidden');
+        document.querySelector('.analytics-controls__filters').classList.remove('is-hidden');
+        $('analyticsExportBtn').classList.remove('is-hidden');
         $('analyticsStatsRow').replaceChildren();
         $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
         $('analyticsQualityList').replaceChildren();
@@ -4787,6 +4893,56 @@ const app = {
         } catch (e) {
             console.error('analytics render failed', e);
             $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику. Попробуйте обновить данные.' }));
+        }
+    },
+
+    async renderChairAnalytics() {
+        $('analyticsSubtitle').textContent = 'Назначения консилиума и фактическая загрузка расписания';
+        document.querySelector('.analytics-dashboard').classList.add('is-hidden');
+        document.querySelector('.analytics-note').classList.add('is-hidden');
+        document.querySelector('.analytics-controls__filters').classList.add('is-hidden');
+        $('analyticsExportBtn').classList.add('is-hidden');
+        $('chairAnalyticsDashboard').classList.remove('is-hidden');
+        const params = new URLSearchParams();
+        if (this.analytics.filters.dateFrom) params.set('date_from', this.analytics.filters.dateFrom);
+        if (this.analytics.filters.dateTo) params.set('date_to', this.analytics.filters.dateTo);
+        try {
+            const data = await apiGetJson(`/api/consilium/analytics${params.toString() ? '?' + params : ''}`);
+            const stat = (label, value, meta) => el('div', { class: 'stat' }, [
+                el('div', { class: 'stat__label', text: label }),
+                el('div', { class: 'stat__value', text: String(value) }),
+                el('div', { class: 'stat__meta', text: meta }),
+            ]);
+            $('chairAnalyticsStats').replaceChildren(frag([
+                stat('Всего записей', data.summary.total, 'за выбранный период'),
+                stat('Подписано', data.summary.signed, 'решение утверждено'),
+                stat('Ожидают решения', data.summary.awaiting, `${data.summary.inReview} на рассмотрении`),
+                stat('Возвращено', data.summary.returned, 'ожидают доработки врача'),
+            ]));
+            this.renderAnalyticsVisualBars('chairTreatmentAnalytics', data.treatments || [], {
+                labelKey: 'label',
+                empty: 'Подписанных назначений за период пока нет.',
+                meta: row => row.count ? 'подписанных решений' : 'назначений нет',
+            });
+            this.renderAnalyticsVisualBars('chairSchemeAnalytics', data.schemes || [], {
+                labelKey: 'label',
+                label: row => `${row.code ? row.code + ' — ' : ''}${row.label}`,
+                empty: 'Подписанных химиотерапевтических схем за период пока нет.',
+                meta: row => `${row.count} назначений`,
+            });
+            const schedule = data.schedule || {};
+            $('chairScheduleAnalytics').replaceChildren(el('div', { class: 'consilium-load-card' }, [
+                el('div', { class: 'consilium-load-card__value', text: `${schedule.loadPercent || 0}%` }),
+                el('div', { class: 'muted', text: 'занятости доступных слотов в дни с записями' }),
+                el('progress', { max: 100, value: schedule.loadPercent || 0, 'aria-label': `Загрузка расписания ${schedule.loadPercent || 0}%` }),
+                el('div', { class: 'consilium-load-card__meta', text: `${schedule.occupiedSlots || 0} занятых слотов из ${schedule.capacitySlots || 0} · активных дней: ${schedule.activeDays || 0}` }),
+                el('div', { class: 'consilium-load-card__extra', text: `Дополнительно: специалистов требуют ${data.summary.needsSpecialists || 0} записей.` }),
+            ]));
+        } catch (error) {
+            $('chairAnalyticsStats').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику консилиума.' }));
+            $('chairTreatmentAnalytics').replaceChildren();
+            $('chairSchemeAnalytics').replaceChildren();
+            $('chairScheduleAnalytics').replaceChildren();
         }
     },
 
@@ -5987,6 +6143,1224 @@ const app = {
         }
     },
 
+    /* ========================================= ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ */
+
+    malignantDiagnosisOptions() {
+        const unique = new Map();
+        for (const item of this.allDiagnosisOptions()) {
+            const code = String(item.code || '').trim().toUpperCase();
+            if (!/^C(?:0[0-9]|[1-8][0-9]|9[0-7])(?:\.[0-9A-Z]{1,2})?$/.test(code)) continue;
+            if (!unique.has(code)) unique.set(code, { code, label: item.label });
+        }
+        return [...unique.values()].sort((a, b) => a.code.localeCompare(b.code, 'ru', { numeric: true }));
+    },
+
+    validConsiliumDiagnosis(value, required = true) {
+        const normalized = String(value || '').trim().toUpperCase();
+        if (!normalized && !required) return '';
+        return /^C(?:0[0-9]|[1-8][0-9]|9[0-7])(?:\.[0-9A-Z]{1,2})?$/.test(normalized)
+            ? normalized : null;
+    },
+
+    localDateISO(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+    },
+
+    consiliumSelectedGroups(role) {
+        const key = role === 'chair' ? 'chairGroupFilters' : 'groupFilters';
+        const selected = this.consilium[key];
+        return selected === null
+            ? (this.consilium.meta?.groups || []).map(group => group.value)
+            : (selected || []);
+    },
+
+    renderConsiliumGroupPicker(role) {
+        if (!this.consilium.meta) return;
+        const chair = role === 'chair';
+        const key = chair ? 'chairGroupFilters' : 'groupFilters';
+        const optionsId = chair ? 'consiliumChairGroupOptions' : 'consiliumDoctorGroupOptions';
+        const summaryId = chair ? 'consiliumChairGroupSummary' : 'consiliumDoctorGroupSummary';
+        const groups = this.consilium.meta.groups || [];
+        const selected = this.consilium[key];
+        const allSelected = selected === null;
+        const selectedLabels = groups
+            .filter(group => (selected || []).includes(group.value))
+            .map(group => group.label);
+        $(summaryId).textContent = allSelected
+            ? 'Все консилиумные группы'
+            : (!selectedLabels.length
+                ? 'Группы не выбраны'
+                : (selectedLabels.length === 1 ? selectedLabels[0] : `Выбрано групп: ${selectedLabels.length}`));
+
+        const applySelection = (next) => {
+            this.consilium[key] = next;
+            this.renderConsiliumGroupPicker(role);
+            if (chair) this.renderConsilium();
+            else this.renderConsiliumSchedule();
+        };
+        $(optionsId).replaceChildren(frag([
+            el('label', { class: 'consilium-group-picker__option consilium-group-picker__option--all' }, [
+                el('input', {
+                    type: 'checkbox', checked: allSelected,
+                    on: { change: (event) => applySelection(event.target.checked ? null : []) },
+                }),
+                el('span', { text: 'Все консилиумные группы' }),
+            ]),
+            ...groups.map(group => el('label', { class: 'consilium-group-picker__option' }, [
+                el('input', {
+                    type: 'checkbox',
+                    checked: allSelected || (selected || []).includes(group.value),
+                    on: { change: (event) => {
+                        const current = new Set(allSelected ? groups.map(item => item.value) : (selected || []));
+                        if (event.target.checked) current.add(group.value);
+                        else current.delete(group.value);
+                        applySelection(current.size === groups.length ? null : [...current]);
+                    } },
+                }),
+                el('span', { text: group.label }),
+            ])),
+        ]));
+    },
+
+    consiliumScheduleOpenedDates() {
+        const group = $('consiliumScheduleGroup').value;
+        return new Set((this.consilium.schedule || [])
+            .filter(slot => slot.consiliumGroup === group)
+            .map(slot => slot.scheduledDate));
+    },
+
+    renderConsiliumScheduleCalendar() {
+        if (!this.can('consiliumChair')) return;
+        const today = this.localDateISO(new Date());
+        const selected = $('consiliumScheduleDate').value;
+        const baseValue = this.consilium.scheduleCalendarMonth || selected || today;
+        const [year, month] = baseValue.split('-').map(Number);
+        const firstDay = new Date(year, month - 1, 1);
+        this.consilium.scheduleCalendarMonth = this.localDateISO(firstDay);
+        $('consiliumScheduleMonthLabel').textContent = firstDay.toLocaleDateString('ru-RU', {
+            month: 'long', year: 'numeric',
+        });
+        const currentMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+        $('consiliumSchedulePrevMonthBtn').disabled = firstDay <= currentMonth;
+        const openedDates = this.consiliumScheduleOpenedDates();
+        const leading = (firstDay.getDay() + 6) % 7;
+        const daysInMonth = new Date(year, month, 0).getDate();
+        const cells = Array.from({ length: leading }, () => el('span', { class: 'consilium-date-picker__blank' }));
+        for (let day = 1; day <= daysInMonth; day += 1) {
+            const value = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+            const isPast = value < today;
+            const isOpened = openedDates.has(value);
+            cells.push(el('button', {
+                type: 'button',
+                class: `consilium-date-picker__day${value === today ? ' is-today' : ''}${value === selected ? ' is-selected' : ''}`,
+                text: String(day),
+                disabled: isPast || isOpened,
+                title: isPast ? 'Дата уже прошла' : (isOpened ? 'Расписание для этой группы уже открыто' : ''),
+                on: { click: () => {
+                    $('consiliumScheduleDate').value = value;
+                    $('consiliumScheduleDateButton').textContent = new Date(`${value}T12:00:00`).toLocaleDateString('ru-RU');
+                    $('consiliumScheduleDatePicker').classList.add('is-hidden');
+                    $('consiliumScheduleDateButton').setAttribute('aria-expanded', 'false');
+                    this.renderConsiliumScheduleCalendar();
+                } },
+            }));
+        }
+        $('consiliumScheduleCalendarDays').replaceChildren(frag(cells));
+    },
+
+    syncConsiliumScheduleDateForGroup() {
+        const selected = $('consiliumScheduleDate').value;
+        const today = this.localDateISO(new Date());
+        if (selected && (selected < today || this.consiliumScheduleOpenedDates().has(selected))) {
+            $('consiliumScheduleDate').value = '';
+            $('consiliumScheduleDateButton').textContent = 'Выберите дату';
+        }
+        this.renderConsiliumScheduleCalendar();
+    },
+
+    async loadConsilium() {
+        this.consilium.loading = true;
+        try {
+            if (!this.consilium.meta) {
+                this.consilium.meta = await apiGetJson('/api/consilium/meta');
+            }
+            if (this.can('consiliumChair')) {
+                $('consiliumScheduleGroup').replaceChildren(frag(
+                    (this.consilium.meta.groups || []).map(group => option(group.value, group.label))
+                ));
+            }
+            const data = await apiGetJson('/api/consilium/appointments');
+            this.consilium.appointments = data.appointments || [];
+            const bookedData = await apiGetJson('/api/consilium/booked-patients');
+            this.consilium.blockedPatientIds = bookedData.patientIds || [];
+            const scheduleData = await apiGetJson('/api/consilium/schedule');
+            this.consilium.schedule = scheduleData.slots || [];
+            if (this.can('consiliumChair')) {
+                this.syncConsiliumScheduleDateForGroup();
+                this.renderConsiliumGroupPicker('chair');
+                if (!this.consilium.dateFilter) {
+                    const today = this.localDateISO(new Date());
+                    const dates = [...new Set(this.consilium.schedule.map(slot => slot.scheduledDate))].sort();
+                    this.consilium.dateFilter = dates.find(date => date >= today) || dates[0] || today;
+                }
+                $('consiliumDateFilter').value = this.consilium.dateFilter;
+            }
+            if (!this.can('consiliumChair')) {
+                this.renderConsiliumGroupPicker('doctor');
+                if (this.consilium.focusId) {
+                    const focused = this.consilium.appointments.find(item => item.id === this.consilium.focusId);
+                    if (focused) {
+                        this.consilium.doctorDate = focused.scheduledDate;
+                        this.consilium.groupFilters = [focused.consiliumGroup];
+                        this.renderConsiliumGroupPicker('doctor');
+                    }
+                }
+                if (!this.consilium.doctorDate) {
+                    const today = this.localDateISO(new Date());
+                    const dates = [...new Set(this.consilium.schedule.map(slot => slot.scheduledDate))].sort();
+                    this.consilium.doctorDate = dates.find(date => date >= today) || dates[0] || today;
+                }
+                $('consiliumDoctorDate').value = this.consilium.doctorDate;
+            }
+            if (this.can('consiliumChair')) {
+                const query = this.consilium.dateFilter
+                    ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
+                this.consilium.registries = await apiGetJson(`/api/consilium/registries${query}`);
+            }
+            this.consilium.loaded = true;
+        } finally {
+            this.consilium.loading = false;
+        }
+    },
+
+    formatConsiliumDate(date, time) {
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date || '');
+        const formatted = match ? `${match[3]}.${match[2]}.${match[1]}` : (date || '—');
+        return `${formatted}, ${time || '—'}`;
+    },
+
+    renderConsiliumStats(rows = this.consilium.appointments || []) {
+        const today = this.localDateISO(new Date());
+        const upcoming = rows.filter(item => item.scheduledDate >= today).length;
+        const groups = new Set(rows.map(item => item.consiliumGroup)).size;
+        const signed = rows.filter(item => item.status === 'signed').length;
+        const withSpecialists = rows.filter(item => item.needsSurgeon || item.needsRadiotherapist).length;
+        const stat = (label, value, meta) => el('div', { class: 'stat' }, [
+            el('div', { class: 'stat__label', text: label }),
+            el('div', { class: 'stat__value', text: String(value) }),
+            el('div', { class: 'stat__meta', text: meta }),
+        ]);
+        $('consiliumStatsRow').replaceChildren(frag([
+            stat('Всего записей', rows.length, this.can('consiliumChair') ? 'общая очередь консилиума' : 'созданы вами'),
+            stat('Предстоящие', upcoming, 'сегодня и позже'),
+            stat('Группы', groups, 'задействовано'),
+            this.can('consiliumChair')
+                ? stat('Подписано', signed, 'решение председателя')
+                : stat('Нужны специалисты', withSpecialists, 'хирург или лучевой терапевт'),
+        ]));
+    },
+
+    renderConsiliumStatus(item) {
+        return frag([
+            el('span', { class: `consilium-status consilium-status--${item.status}`, text: item.statusLabel }),
+            item.revisionComment ? el('div', { class: 'consilium-revision-comment', text: `Комментарий председателя: ${item.revisionComment}` }) : null,
+            item.treatmentTypeLabel ? el('div', {
+                class: 'consilium-treatment',
+                text: item.treatmentScheme
+                    ? `${item.treatmentTypeLabel}: ${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}`
+                    : item.treatmentTypeLabel,
+            }) : null,
+        ]);
+    },
+
+    renderConsiliumChairActions(item) {
+        return el('div', { class: 'consilium-actions' }, [
+            item.status === 'signed' || item.status === 'needs_revision'
+                ? null
+                : el('button', {
+                    type: 'button', class: 'btn btn--primary btn--sm',
+                    text: item.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть',
+                    on: { click: () => this.openConsiliumDecision(item.id) },
+                }),
+            el('button', {
+                type: 'button',
+                class: `btn btn--ghost btn--sm${item.isFavorite ? ' is-favorite' : ''}`,
+                text: item.isFavorite ? '★ В избранном' : '☆ В избранное',
+                on: { click: () => this.toggleConsiliumFavorite(item) },
+            }),
+        ]);
+    },
+
+    async renderConsilium() {
+        const body = $('consiliumBody');
+        const empty = $('consiliumEmpty');
+        const chair = this.can('consiliumChair');
+        $('consiliumAppointmentsPanel').classList.add('is-hidden');
+        if (!this.consilium.loaded) {
+            body.replaceChildren(el('tr', {}, el('td', { colspan: '6', class: 'muted', text: 'Загрузка записей…' })));
+        }
+        try {
+            await this.loadConsilium();
+        } catch (error) {
+            body.replaceChildren();
+            empty.textContent = `Не удалось загрузить записи: ${error.message}`;
+            empty.classList.remove('is-hidden');
+            return;
+        }
+
+        const allRows = this.consilium.appointments || [];
+        let rows = allRows;
+        if (chair) {
+            const selectedChairGroups = new Set(this.consiliumSelectedGroups('chair'));
+            rows = allRows.filter(item =>
+                item.scheduledDate === this.consilium.dateFilter
+                && selectedChairGroups.has(item.consiliumGroup)
+            );
+        }
+        const search = String(this.consilium.search || '').trim().toLowerCase();
+        if (search) {
+            rows = rows.filter(item =>
+                String(item.patientName || '').toLowerCase().includes(search)
+                || String(item.policyNumber || '').toLowerCase().includes(search)
+            );
+        }
+        this.renderConsiliumStats(rows);
+        empty.textContent = chair
+            ? 'В общей очереди консилиума пока нет записей.'
+            : (this.patients.length
+                ? 'Записей пока нет. Нажмите «Запись», чтобы направить пациента на консилиум.'
+                : 'Сначала добавьте пациента в разделе «Пациенты».');
+        if (chair && !rows.length) {
+            empty.textContent = 'На выбранный день в этой консилиумной группе записей нет.';
+        } else if (!chair && !rows.length) {
+            empty.textContent = 'Вы пока не записали пациентов на консилиум.';
+        }
+        empty.classList.toggle('is-hidden', rows.length > 0);
+        body.replaceChildren(frag(rows.map(item => {
+            const specialists = [];
+            if (item.needsSurgeon) specialists.push('Хирург');
+            if (item.needsRadiotherapist) specialists.push('Лучевой терапевт');
+            if (item.additionalParticipant) specialists.push(item.additionalParticipant);
+            const diagnoses = item.additionalDiagnosis
+                ? `${item.primaryDiagnosis}; ${item.additionalDiagnosis}`
+                : item.primaryDiagnosis;
+            return el('tr', {
+                id: `consilium-row-${item.id}`,
+                class: this.consilium.focusId === item.id ? 'consilium-row--focused' : '',
+            }, [
+                el('td', { class: 'cell-when' }, [
+                    el('div', { class: 'cell-when__time', text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
+                    el('div', { class: 'person__meta', text: item.hasBenefit ? 'Есть льгота' : 'Без льготы' }),
+                ]),
+                el('td', {}, [
+                    el('button', {
+                        type: 'button', class: 'consilium-patient-button', text: item.patientName,
+                        on: { click: () => this.openConsiliumDetails(item) },
+                    }),
+                    el('div', { class: 'person__meta', text: item.treatingDoctorName }),
+                    el('div', { class: 'person__meta', text: `Полис ОМС: ${item.policyNumber || 'не указан'}` }),
+                    item.comment ? el('div', { class: 'consilium-comment', text: item.comment }) : null,
+                ]),
+                el('td', { text: item.consiliumGroupLabel }),
+                el('td', { class: 'consilium-diagnosis', text: diagnoses }),
+                el('td', {}, specialists.length
+                    ? frag(specialists.map(label => el('span', { class: 'chip chip--neutral consilium-chip', text: label })))
+                    : el('span', { class: 'muted', text: 'Не указаны' })),
+                el('td', {}, this.renderConsiliumStatus(item)),
+                el('td', { class: 'cell-actions' }, chair
+                    ? this.renderConsiliumChairActions(item)
+                    : (this.can('editPatients') && item.status !== 'signed'
+                        ? el('button', {
+                            type: 'button', class: 'btn btn--ghost btn--sm', text: 'Изменить',
+                            on: { click: () => this.openConsiliumModal(item.id) },
+                        })
+                        : null)),
+            ]);
+        })));
+        this.renderConsiliumRegistries();
+        this.renderConsiliumSchedule(rows);
+        if (this.consilium.focusId) {
+            const focused = $(`consilium-row-${this.consilium.focusId}`);
+            if (focused) {
+                focused.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                window.setTimeout(() => focused.classList.remove('consilium-row--focused'), 3500);
+            }
+            this.consilium.focusId = null;
+        }
+    },
+
+    renderConsiliumSchedule(appointmentRows = this.consilium.appointments || []) {
+        const chair = this.can('consiliumChair');
+        $('consiliumChairOnlyFreeBtn').setAttribute('aria-pressed', this.consilium.onlyFree ? 'true' : 'false');
+        $('consiliumDoctorOnlyFreeBtn').setAttribute('aria-pressed', this.consilium.onlyFree ? 'true' : 'false');
+        $('consiliumMineOnly').setAttribute('aria-pressed', this.consilium.mineOnly ? 'true' : 'false');
+        $('consiliumScheduleEditor').classList.remove('is-hidden');
+        $('consiliumScheduleManagement').classList.toggle('is-hidden', !chair);
+        $('consiliumChairScheduleWrap').classList.toggle('is-hidden', !chair);
+        $('consiliumDoctorScheduleWrap').classList.toggle('is-hidden', chair);
+        if (!chair) {
+            this.renderConsiliumDoctorSchedule();
+            return;
+        }
+        const selectedGroups = this.consiliumSelectedGroups('chair');
+        if (!selectedGroups.length) {
+            $('consiliumChairScheduleTables').replaceChildren();
+            $('consiliumScheduleEmpty').textContent = 'Выберите одну или несколько консилиумных групп.';
+            $('consiliumScheduleEmpty').classList.remove('is-hidden');
+            return;
+        }
+        const selectedGroupSet = new Set(selectedGroups);
+        appointmentRows = appointmentRows.filter(item =>
+            item.scheduledDate === this.consilium.dateFilter
+            && selectedGroupSet.has(item.consiliumGroup)
+            && (!String(this.consilium.search || '').trim()
+                || String(item.patientName || '').toLowerCase().includes(String(this.consilium.search).trim().toLowerCase())
+                || String(item.policyNumber || '').toLowerCase().includes(String(this.consilium.search).trim().toLowerCase()))
+        );
+        let slots = (this.consilium.schedule || []).filter(slot =>
+            slot.scheduledDate === this.consilium.dateFilter
+            && selectedGroupSet.has(slot.consiliumGroup)
+        );
+        const keyFor = item => `${item.scheduledDate}|${item.scheduledTime}|${item.consiliumGroup}`;
+        const appointmentsBySlot = new Map(appointmentRows.map(item => [keyFor(item), item]));
+        const scheduledKeys = new Set(slots.map(keyFor));
+        const searchActive = Boolean(String(this.consilium.search || '').trim());
+        if (searchActive) slots = slots.filter(slot => appointmentsBySlot.has(keyFor(slot)));
+        let gridRows = [
+            ...slots.map(slot => ({ slot, appointment: appointmentsBySlot.get(keyFor(slot)) || null })),
+            ...appointmentRows
+                .filter(item => !scheduledKeys.has(keyFor(item)))
+                .map(appointment => ({
+                    slot: {
+                        id: `appointment-${appointment.id}`,
+                        scheduledDate: appointment.scheduledDate,
+                        scheduledTime: appointment.scheduledTime,
+                        consiliumGroup: appointment.consiliumGroup,
+                        consiliumGroupLabel: appointment.consiliumGroupLabel,
+                        occupied: true,
+                    },
+                    appointment,
+                })),
+        ].sort((a, b) => keyFor(a.slot).localeCompare(keyFor(b.slot), 'ru'));
+        if (this.consilium.onlyFree) gridRows = gridRows.filter(({ appointment }) => !appointment);
+        const groups = (this.consilium.meta?.groups || []).filter(group => selectedGroupSet.has(group.value));
+        $('consiliumScheduleEmpty').textContent = searchActive
+            ? 'По вашему запросу записей в сетке не найдено.'
+            : 'Сетка пока не создана.';
+        $('consiliumScheduleEmpty').classList.add('is-hidden');
+        $('consiliumChairScheduleTables').replaceChildren(frag(groups.map(group => {
+            const rows = gridRows.filter(({ slot }) => slot.consiliumGroup === group.value);
+            return el('section', { class: 'consilium-schedule-group' }, [
+                el('h3', { class: 'consilium-schedule-group__title', text: group.label }),
+                rows.length ? el('div', { class: 'table-wrap' }, [
+                    el('table', { class: 'table consilium-schedule-table consilium-schedule-grid-table' }, [
+                        el('thead', {}, el('tr', {}, [
+                            el('th', { text: 'Время записи' }), el('th', { text: 'ФИО пациента' }),
+                            el('th', { text: 'Код МКБ-10' }), el('th', { text: 'ФИО врача' }),
+                            el('th', { text: '' }),
+                        ])),
+                        el('tbody', {}, rows.map(({ slot, appointment }) => el('tr', {
+                            id: appointment ? `consilium-grid-row-${appointment.id}` : '',
+                            class: appointment && this.consilium.focusId === appointment.id ? 'consilium-row--focused' : '',
+                        }, [
+                            el('td', { class: 'consilium-slot-time', text: slot.scheduledTime }),
+                            el('td', {}, appointment ? [
+                                el('button', {
+                                    type: 'button', class: 'consilium-patient-button', text: appointment.patientName,
+                                    on: { click: () => this.openConsiliumDetails(appointment) },
+                                }),
+                                appointment.comment ? el('div', { class: 'consilium-comment', text: appointment.comment }) : null,
+                            ] : el('span', { class: 'muted', text: '—' })),
+                            el('td', { class: 'consilium-diagnosis', text: appointment ? (appointment.primaryDiagnosis || '—') : '—' }),
+                            el('td', { text: appointment ? appointment.treatingDoctorName : '—' }),
+                            el('td', { class: 'cell-actions' }, appointment
+                                ? el('div', { class: 'consilium-grid-markers' }, [
+                                    appointment.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
+                                    this.renderConsiliumChairActions(appointment),
+                                ])
+                                : (slot.isDefaultWeek
+                                    ? el('span', { class: 'muted', text: '—' })
+                                    : el('button', {
+                                        type: 'button', class: 'btn btn--ghost btn--sm', text: 'Удалить',
+                                        on: { click: () => this.deleteConsiliumScheduleSlot(slot.id) },
+                                    }))),
+                        ]))),
+                    ]),
+                ]) : el('div', {
+                    class: 'empty consilium-schedule-group__empty',
+                    text: searchActive ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.',
+                }),
+            ]);
+        })));
+    },
+
+    renderConsiliumDoctorSchedule() {
+        const selectedDate = this.consilium.doctorDate;
+        const selectedGroups = this.consiliumSelectedGroups('doctor');
+        if (!selectedGroups.length) {
+            $('consiliumDoctorScheduleTables').replaceChildren();
+            $('consiliumDoctorScheduleEmpty').textContent = 'Выберите одну или несколько консилиумных групп.';
+            $('consiliumDoctorScheduleEmpty').classList.remove('is-hidden');
+            return;
+        }
+        const selectedGroupSet = new Set(selectedGroups);
+        let slots = (this.consilium.schedule || [])
+            .filter(slot => (!selectedDate || slot.scheduledDate === selectedDate)
+                && selectedGroupSet.has(slot.consiliumGroup))
+            .sort((a, b) => `${a.scheduledTime}|${a.consiliumGroup}`.localeCompare(`${b.scheduledTime}|${b.consiliumGroup}`, 'ru'));
+        const search = String(this.consilium.search || '').trim().toLowerCase();
+        if (search) slots = slots.filter(slot =>
+            String(slot.appointment?.patientName || '').toLowerCase().includes(search)
+            || String(slot.appointment?.policyNumber || '').toLowerCase().includes(search)
+        );
+        const ownAppointments = new Map((this.consilium.appointments || []).map(item => [
+            `${item.scheduledDate}|${item.scheduledTime}|${item.consiliumGroup}`, item,
+        ]));
+        if (this.consilium.onlyFree) slots = slots.filter(slot => !slot.occupied);
+        if (this.consilium.mineOnly) slots = slots.filter(slot => slot.appointment?.isMine);
+        $('consiliumDoctorScheduleEmpty').classList.add('is-hidden');
+        const groups = (this.consilium.meta?.groups || []).filter(group => selectedGroupSet.has(group.value));
+        $('consiliumDoctorScheduleTables').replaceChildren(frag(groups.map(group => {
+            const groupSlots = slots.filter(slot => slot.consiliumGroup === group.value);
+            return el('section', { class: 'consilium-schedule-group' }, [
+                el('h3', { class: 'consilium-schedule-group__title', text: group.label }),
+                groupSlots.length ? el('div', { class: 'table-wrap' }, [
+                    el('table', { class: 'table consilium-doctor-schedule-table' }, [
+                        el('thead', {}, el('tr', {}, [
+                            el('th', { text: 'Время записи' }), el('th', { text: 'ФИО пациента' }),
+                            el('th', { text: 'Код МКБ-10' }), el('th', { text: 'ФИО врача' }),
+                            el('th', { text: '' }),
+                        ])),
+                        el('tbody', {}, groupSlots.map(slot => {
+                            const key = `${slot.scheduledDate}|${slot.scheduledTime}|${slot.consiliumGroup}`;
+                            const ownAppointment = ownAppointments.get(key);
+                            const appointment = slot.appointment || ownAppointment || null;
+                            const isMine = Boolean(appointment && (appointment.isMine || ownAppointment));
+                            return el('tr', {}, [
+                                el('td', { class: 'consilium-slot-time', text: slot.scheduledTime }),
+                                el('td', {}, appointment
+                                    ? (isMine && ownAppointment
+                                        ? el('button', {
+                                            type: 'button', class: 'consilium-patient-button', text: appointment.patientName,
+                                            on: { click: () => this.openConsiliumDetails(ownAppointment) },
+                                        })
+                                        : el('span', { text: appointment.patientName }))
+                                    : el('span', { class: 'muted', text: '—' })),
+                                el('td', { class: 'consilium-diagnosis', text: appointment ? (appointment.primaryDiagnosis || '—') : '—' }),
+                                el('td', { text: appointment ? (appointment.treatingDoctorName || '—') : '—' }),
+                                el('td', { class: 'cell-actions' }, appointment
+                                    ? el('div', { class: 'consilium-grid-markers' }, [
+                                        appointment.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
+                                        isMine ? el('span', { class: 'chip chip--warning', text: 'Моя запись' }) : null,
+                                        isMine && ownAppointment && ownAppointment.status !== 'signed'
+                                            ? el('button', {
+                                                type: 'button', class: 'btn btn--ghost btn--sm', text: 'Изменить',
+                                                on: { click: () => this.openConsiliumModal(ownAppointment.id) },
+                                            }) : null,
+                                    ])
+                                    : el('button', {
+                                        type: 'button', class: 'btn btn--primary btn--sm', text: 'Запись',
+                                        on: { click: () => this.openConsiliumModal(null, slot) },
+                                    })),
+                            ]);
+                        })),
+                    ]),
+                ]) : el('div', {
+                    class: 'empty consilium-schedule-group__empty',
+                    text: search ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.',
+                }),
+            ]);
+        })));
+    },
+
+    renderConsiliumRegistries() {
+        const chair = this.can('consiliumChair');
+        $('consiliumRegistries').classList.toggle('is-hidden', !chair);
+        if (!chair) return;
+        const surgical = this.consilium.registries.surgical || [];
+        const chemotherapy = this.consilium.registries.chemotherapy || [];
+        const goc = this.consilium.registries.goc || [];
+        const goc65 = this.consilium.registries.goc65Plus || [];
+        $('surgicalRegistryEmpty').classList.toggle('is-hidden', surgical.length > 0);
+        $('chemoRegistryEmpty').classList.toggle('is-hidden', chemotherapy.length > 0);
+        $('gocRegistryEmpty').classList.toggle('is-hidden', goc.length > 0);
+        $('goc65RegistryEmpty').classList.toggle('is-hidden', goc65.length > 0);
+        $('surgicalRegistryBody').replaceChildren(frag(surgical.map(item => el('tr', {}, [
+            el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
+            el('td', {}, [
+                el('div', { class: 'person__name', text: item.patientName }),
+                el('div', { class: 'person__meta', text: item.treatingDoctorName }),
+            ]),
+            el('td', { text: item.policyNumber || 'Не указан' }),
+            el('td', { class: 'consilium-diagnosis', text: item.primaryDiagnosis }),
+            el('td', {}, el('label', { class: 'registry-check' }, [
+                el('input', {
+                    type: 'checkbox', checked: item.referralCompleted,
+                    on: { change: event => this.setSurgicalReferralCompleted(item.id, event.target.checked) },
+                }),
+                el('span', { text: item.referralCompleted ? 'Отмечено' : 'Поставить отметку' }),
+            ])),
+        ]))));
+        $('chemoRegistryBody').replaceChildren(frag(chemotherapy.map(item => el('tr', {}, [
+            el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
+            el('td', {}, [
+                el('div', { class: 'person__name', text: item.patientName }),
+                el('div', { class: 'person__meta', text: item.treatingDoctorName }),
+            ]),
+            el('td', { text: item.policyNumber || 'Не указан' }),
+            el('td', { class: 'consilium-diagnosis', text: item.primaryDiagnosis }),
+            el('td', { text: item.treatmentScheme ? `${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}` : 'Не указана' }),
+        ]))));
+        $('gocRegistryBody').replaceChildren(frag(goc.map(item => el('tr', {}, [
+            el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
+            el('td', {}, [
+                el('div', { class: 'person__name', text: item.patientName }),
+                el('div', { class: 'person__meta', text: item.treatingDoctorName }),
+            ]),
+            el('td', { text: item.policyNumber || 'Не указан' }),
+            el('td', { class: 'consilium-diagnosis', text: item.primaryDiagnosis }),
+            el('td', { text: item.treatmentScheme
+                ? `${item.treatmentTypeLabel}: ${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}`
+                : item.treatmentTypeLabel || 'Не указано' }),
+        ]))));
+        $('goc65RegistryBody').replaceChildren(frag(goc65.map(item => el('tr', {}, [
+            el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
+            el('td', {}, [
+                el('div', { class: 'person__name', text: item.patientName }),
+                el('div', { class: 'person__meta', text: item.treatingDoctorName }),
+            ]),
+            el('td', { text: item.policyNumber || 'Не указан' }),
+            el('td', { class: 'consilium-diagnosis', text: item.primaryDiagnosis }),
+            el('td', { text: item.treatmentScheme
+                ? `${item.treatmentTypeLabel}: ${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}`
+                : item.treatmentTypeLabel || 'Не указано' }),
+        ]))));
+    },
+
+    async deleteConsiliumAppointment(item) {
+        const confirmed = await ui.confirm({
+            title: 'Удалить запись на консилиум?',
+            text: `${item.patientName}. Слот ${this.formatConsiliumDate(item.scheduledDate, item.scheduledTime)} освободится для новой записи.`,
+            okLabel: 'Удалить запись',
+            danger: true,
+        });
+        if (!confirmed) return;
+        try {
+            await apiDelete(`/api/consilium/appointments/${encodeURIComponent(item.id)}`);
+            ui.closeModal('consiliumModal');
+            this.consilium.editingId = null;
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+            ui.toast('Запись удалена, слот снова свободен.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось удалить запись: ' + error.message, 'danger');
+        }
+    },
+
+    async generateConsiliumSchedule(event) {
+        event.preventDefault();
+        const errorNode = $('consiliumScheduleError');
+        errorNode.classList.add('is-hidden');
+        if (!$('consiliumScheduleDate').value) {
+            errorNode.textContent = 'Выберите доступную дату в календаре.';
+            errorNode.classList.remove('is-hidden');
+            return;
+        }
+        try {
+            const result = await apiPost('/api/consilium/schedule/generate', {
+                scheduledDate: $('consiliumScheduleDate').value,
+                consiliumGroup: $('consiliumScheduleGroup').value,
+                startTime: $('consiliumScheduleStart').value,
+                endTime: $('consiliumScheduleEnd').value,
+                intervalMinutes: Number($('consiliumScheduleInterval').value),
+            });
+            this.consilium.schedule = result.slots || [];
+            $('consiliumScheduleDate').value = '';
+            $('consiliumScheduleDateButton').textContent = 'Выберите дату';
+            this.renderConsiliumScheduleCalendar();
+            this.renderConsiliumSchedule();
+            ui.toast(result.created
+                ? `Создано свободных слотов: ${result.created}.`
+                : 'Такие слоты уже существуют.', 'good');
+        } catch (error) {
+            errorNode.textContent = 'Не удалось создать сетку: ' + error.message;
+            errorNode.classList.remove('is-hidden');
+        }
+    },
+
+    async deleteConsiliumScheduleSlot(slotId) {
+        try {
+            await apiDelete(`/api/consilium/schedule/${encodeURIComponent(slotId)}`);
+            const schedule = await apiGetJson('/api/consilium/schedule');
+            this.consilium.schedule = schedule.slots || [];
+            this.renderConsiliumSchedule();
+            ui.toast('Свободный слот удалён.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось удалить слот: ' + error.message, 'danger');
+        }
+    },
+
+    async toggleConsiliumFavorite(item) {
+        try {
+            if (item.isFavorite) {
+                await apiDelete(`/api/consilium/favorites/${encodeURIComponent(item.patientId)}`);
+                ui.toast('Пациент удалён из избранного.', 'good');
+            } else {
+                await apiPost(`/api/consilium/favorites/${encodeURIComponent(item.patientId)}`, {});
+                ui.toast('Пациент добавлен в раздел «Пациенты».', 'good');
+            }
+            await this.loadPatients();
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+        } catch (error) {
+            ui.toast('Не удалось изменить избранное: ' + error.message, 'danger');
+        }
+    },
+
+    openConsiliumDetails(item) {
+        const readonlyField = (label, value, wide = false) => el('div', { class: `field${wide ? ' field--wide' : ''}` }, [
+            el('span', { class: 'field__label', text: label }),
+            el('div', { class: 'consilium-detail-value', text: value || 'Не указано' }),
+        ]);
+        const specialists = [
+            item.needsSurgeon ? 'Хирург' : '',
+            item.needsRadiotherapist ? 'Лучевой терапевт' : '',
+            item.additionalParticipant || '',
+        ].filter(Boolean).join(', ') || 'Не требуются';
+        $('consiliumDetailsTitle').textContent = `Запись: ${item.patientName}`;
+        $('consiliumDetailsBody').replaceChildren(frag([
+            el('fieldset', { class: 'fieldset' }, [
+                el('legend', { class: 'fieldset__legend', text: 'Пациент и запись' }),
+                el('div', { class: 'grid-2' }, [
+                    readonlyField('ФИО пациента', item.patientName),
+                    readonlyField('Полис ОМС', item.policyNumber),
+                    readonlyField('Консилиумная группа', item.consiliumGroupLabel),
+                    readonlyField('Дата и время', this.formatConsiliumDate(item.scheduledDate, item.scheduledTime)),
+                    readonlyField('Льгота', item.hasBenefit ? 'Да' : 'Нет'),
+                    readonlyField('Лечащий врач', item.treatingDoctorName),
+                ]),
+            ]),
+            el('fieldset', { class: 'fieldset' }, [
+                el('legend', { class: 'fieldset__legend', text: 'Сведения для консилиума' }),
+                el('div', { class: 'grid-2' }, [
+                    readonlyField('Локализация', item.diagnosisLocalization),
+                    readonlyField('Основной диагноз', item.primaryDiagnosis),
+                    readonlyField('Дополнительный диагноз', item.additionalDiagnosis),
+                    readonlyField('Участники', specialists),
+                    readonlyField('Отметка УВ/РУВ', item.uvRuv ? 'Да' : 'Нет'),
+                    readonlyField('Статус', item.statusLabel),
+                    readonlyField('Назначенное лечение', item.treatmentTypeLabel),
+                    readonlyField('Отметки ГОК', [item.goc ? 'ГОК' : '', item.goc65Plus ? 'ГОК 65+' : ''].filter(Boolean).join(', ')),
+                ]),
+                readonlyField('Схема лечения', item.treatmentScheme ? `${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}` : '', true),
+                readonlyField('Комментарий врача', item.comment, true),
+                item.revisionComment ? readonlyField('Комментарий председателя', item.revisionComment, true) : null,
+            ]),
+        ]));
+        ui.openModal('consiliumDetailsModal');
+    },
+
+    async setSurgicalReferralCompleted(appointmentId, completed) {
+        try {
+            await apiPost(`/api/consilium/appointments/${encodeURIComponent(appointmentId)}/referral-completion`, { completed });
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+            ui.toast(completed ? 'Направление отмечено как созданное.' : 'Отметка направления снята.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось сохранить отметку: ' + error.message, 'danger');
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+        }
+    },
+
+    async exportChemotherapyRegistry() {
+        try {
+            const query = this.consilium.dateFilter
+                ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
+            const response = await apiFetch(`/api/consilium/registries/chemotherapy.xlsx${query}`);
+            const blob = await response.blob();
+            const disposition = response.headers.get('content-disposition') || '';
+            const match = disposition.match(/filename="([^"]+)"/);
+            const link = el('a', {
+                href: URL.createObjectURL(blob),
+                download: match ? match[1] : 'chemotherapy_registry.xlsx',
+            });
+            document.body.append(link);
+            link.click();
+            URL.revokeObjectURL(link.href);
+            link.remove();
+            ui.toast('Excel-реестр сформирован.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось сформировать Excel: ' + error.message, 'danger');
+        }
+    },
+
+    async exportGocRegistry() {
+        try {
+            const query = this.consilium.dateFilter
+                ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
+            const response = await apiFetch(`/api/consilium/registries/goc.xlsx${query}`);
+            const blob = await response.blob();
+            const disposition = response.headers.get('content-disposition') || '';
+            const match = disposition.match(/filename="([^"]+)"/);
+            const link = el('a', {
+                href: URL.createObjectURL(blob),
+                download: match ? match[1] : 'goc_registry.xlsx',
+            });
+            document.body.append(link);
+            link.click();
+            URL.revokeObjectURL(link.href);
+            link.remove();
+            ui.toast('Excel-реестр ГОК сформирован.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось сформировать реестр ГОК: ' + error.message, 'danger');
+        }
+    },
+
+    async exportGoc65Registry() {
+        try {
+            const query = this.consilium.dateFilter
+                ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
+            const response = await apiFetch(`/api/consilium/registries/goc-65-plus.xlsx${query}`);
+            const blob = await response.blob();
+            const disposition = response.headers.get('content-disposition') || '';
+            const match = disposition.match(/filename="([^"]+)"/);
+            const link = el('a', {
+                href: URL.createObjectURL(blob),
+                download: match ? match[1] : 'goc_65_plus_registry.xlsx',
+            });
+            document.body.append(link);
+            link.click();
+            URL.revokeObjectURL(link.href);
+            link.remove();
+            ui.toast('Excel-реестр ГОК 65+ сформирован.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось сформировать реестр ГОК 65+: ' + error.message, 'danger');
+        }
+    },
+
+    consiliumLocalizationKey(value = $('consiliumLocalization').value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        return Object.keys(this.icd10Localizations).find(key =>
+            key.toLowerCase() === normalized || this.icd10Localizations[key].label.toLowerCase() === normalized
+        ) || '';
+    },
+
+    fillConsiliumDiagnosisList() {
+        const localization = this.consiliumLocalizationKey();
+        const diagnoses = localization
+            ? this.icd10Localizations[localization].diagnoses
+            : this.malignantDiagnosisOptions();
+        $('consiliumDiagnosisOptions').replaceChildren(frag(
+            diagnoses.map(item => option(item.code, item.label))
+        ));
+    },
+
+    toggleConsiliumAdditionalDiagnosis(show) {
+        $('consiliumAdditionalDiagnosisField').classList.toggle('is-hidden', !show);
+        $('addConsiliumDiagnosisBtn').classList.toggle('is-hidden', show);
+        $('addConsiliumDiagnosisBtn').setAttribute('aria-expanded', show ? 'true' : 'false');
+        if (!show) $('consiliumAdditionalDiagnosis').value = '';
+    },
+
+    prefillConsiliumDiagnosisFromPatient() {
+        if (this.consilium.editingId) return;
+        const patient = this.getPatient($('consiliumPatient').value);
+        const diagnosis = this.validConsiliumDiagnosis(patient && patient.diagnosis, false);
+        $('consiliumPrimaryDiagnosis').value = diagnosis || '';
+        $('consiliumPolicyNumber').value = (patient && patient.policyNumber) || '';
+        const diagnosisItem = this.allDiagnosisOptions().find(item => item.code === diagnosis);
+        $('consiliumLocalization').value = diagnosisItem ? diagnosisItem.localizationLabel : '';
+        this.fillConsiliumDiagnosisList();
+        this.prefillConsiliumGroupFromDiagnosis();
+    },
+
+    consiliumGroupForDiagnosis(value = $('consiliumPrimaryDiagnosis').value) {
+        const match = String(value || '').trim().toUpperCase().match(/^C(\d{2})(?:\.|$)/);
+        if (!match) return '';
+        const code = Number(match[1]);
+        if ((code >= 0 && code <= 14) || (code >= 30 && code <= 32)) return 'head_neck';
+        if ((code >= 15 && code <= 16) || (code >= 22 && code <= 25)) return 'abdominal';
+        if (code === 34) return 'thoracic';
+        if (code >= 51 && code <= 57) return 'gynecology';
+        if (code >= 60 && code <= 68) return 'urology';
+        if (code === 50) return 'breast';
+        if (code >= 17 && code <= 20) return 'colorectal';
+        return 'general';
+    },
+
+    prefillConsiliumGroupFromDiagnosis() {
+        if (this.consilium.editingId) return;
+        const recommendedKey = this.consiliumGroupForDiagnosis();
+        if (!recommendedKey) return;
+        const recommended = (this.consilium.meta?.groups || []).find(group => group.value === recommendedKey);
+        if (!recommended) return;
+        $('consiliumGroup').value = recommended.label;
+        this.updateConsiliumAvailableSlots();
+    },
+
+    consiliumGroupKey(value = $('consiliumGroup').value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        const group = (this.consilium.meta?.groups || []).find(item =>
+            item.value.toLowerCase() === normalized || item.label.toLowerCase() === normalized
+        );
+        return group ? group.value : String(value || '').trim();
+    },
+
+    updateConsiliumAvailableSlots(record = null) {
+        const configured = this.consilium.schedule || [];
+        let times = [];
+        if (configured.length) {
+            const group = this.consiliumGroupKey();
+            const date = $('consiliumDate').value;
+            times = configured
+                .filter(slot => slot.scheduledDate === date && slot.consiliumGroup === group)
+                .filter(slot => !slot.occupied || (record
+                    && slot.scheduledDate === record.scheduledDate
+                    && slot.scheduledTime === record.scheduledTime
+                    && slot.consiliumGroup === record.consiliumGroup))
+                .map(slot => slot.scheduledTime);
+            $('consiliumSlotHint').textContent = times.length
+                ? 'Показаны свободные слоты из расписания председателя.'
+                : 'На выбранную дату и группу свободных слотов нет.';
+        } else {
+            times = this.consilium.meta?.timeSlots || [];
+            $('consiliumSlotHint').textContent = 'Сетка председателя пока не создана; доступны тестовые слоты.';
+        }
+        const isOriginalDate = !!record && $('consiliumDate').value === record.scheduledDate;
+        if (isOriginalDate && !times.includes(record.scheduledTime)) times.unshift(record.scheduledTime);
+        const currentValue = $('consiliumTime').value;
+        const selected = isOriginalDate ? record.scheduledTime : (times.includes(currentValue) ? currentValue : '');
+        $('consiliumTime').replaceChildren(frag([
+            option('', 'Выберите свободный слот', !selected),
+            ...[...new Set(times)].sort().map(time => option(
+                time,
+                isOriginalDate && time === record.scheduledTime ? `${time} — текущее время` : time,
+                time === selected,
+            )),
+        ]));
+    },
+
+    fillConsiliumPatientsForGroup(record = null) {
+        const group = this.consiliumGroupKey();
+        const knownGroup = (this.consilium.meta?.groups || []).some(item => item.value === group);
+        const currentPatientId = record?.patientId || $('consiliumPatient').value;
+        let patients = [...this.patients].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+        const blocked = new Set(this.consilium.blockedPatientIds || []);
+        patients = patients.filter(patient => !blocked.has(patient.id) || patient.id === record?.patientId);
+        if (knownGroup) {
+            patients = patients.filter(patient => this.consiliumGroupForDiagnosis(patient.diagnosis) === group);
+        }
+        if (record && !patients.some(patient => patient.id === record.patientId)) {
+            const currentPatient = this.getPatient(record.patientId);
+            if (currentPatient) patients.unshift(currentPatient);
+        }
+        const selectedId = patients.some(patient => patient.id === currentPatientId)
+            ? currentPatientId
+            : (patients[0]?.id || '');
+        $('consiliumPatient').replaceChildren(frag([
+            option('', patients.length ? 'Выберите пациента' : 'Нет пациентов с подходящим кодом МКБ‑10', !selectedId),
+            ...patients.map(patient => option(
+                patient.id,
+                `${patient.name}${patient.diagnosis ? ` · ${patient.diagnosis}` : ''}`,
+                patient.id === selectedId,
+            )),
+        ]));
+        $('consiliumPatient').value = selectedId;
+        $('consiliumPatientHint').textContent = knownGroup
+            ? `Доступных пациентов по коду МКБ‑10: ${patients.length}. Уже записанные и прошедшие консилиум исключены.`
+            : 'Выберите консилиумную группу, чтобы отфильтровать пациентов по коду МКБ‑10.';
+        $('submitConsiliumBtn').disabled = patients.length === 0;
+        return patients;
+    },
+
+    async openConsiliumModal(appointmentId = null, selectedSlot = null) {
+        try {
+            if (!this.consilium.meta || !this.consilium.loaded) await this.loadConsilium();
+        } catch (error) {
+            ui.toast('Не удалось подготовить форму: ' + error.message, 'danger');
+            return;
+        }
+        this.consilium.editingId = appointmentId;
+        const record = appointmentId
+            ? this.consilium.appointments.find(item => item.id === appointmentId)
+            : null;
+        $('consiliumGroupOptions').replaceChildren(frag(
+            (this.consilium.meta.groups || []).map(group => option(group.label, group.value))
+        ));
+        $('consiliumLocalizationOptions').replaceChildren(frag(
+            Object.values(this.icd10Localizations).map(item => option(item.label, ''))
+        ));
+        this.fillConsiliumDiagnosisList();
+
+        const today = this.localDateISO(new Date());
+        $('consiliumDate').min = today;
+        const firstFree = !record ? (selectedSlot || (this.consilium.schedule || []).find(slot => !slot.occupied && slot.scheduledDate >= today)) : null;
+        $('consiliumDate').value = record ? record.scheduledDate : (firstFree ? firstFree.scheduledDate : today);
+        $('consiliumDate').disabled = !record;
+        $('consiliumTime').disabled = !record;
+        $('consiliumDoctor').value = (this.user && this.user.fullName) || '';
+        $('consiliumBenefit').value = record && record.hasBenefit ? 'yes' : 'no';
+        $('consiliumPolicyNumber').value = record ? record.policyNumber : '';
+        $('consiliumGroup').value = record
+            ? record.consiliumGroupLabel
+            : (firstFree ? firstFree.consiliumGroupLabel : '');
+        const patients = this.fillConsiliumPatientsForGroup(record);
+        $('consiliumPatient').disabled = !!record;
+        $('consiliumGroup').readOnly = !!record;
+        this.updateConsiliumAvailableSlots(record);
+        if (!record && firstFree) $('consiliumTime').value = firstFree.scheduledTime;
+        $('consiliumLocalization').value = record ? record.diagnosisLocalization : '';
+        $('consiliumPrimaryDiagnosis').value = record ? record.primaryDiagnosis : '';
+        $('consiliumAdditionalDiagnosis').value = record ? record.additionalDiagnosis : '';
+        this.toggleConsiliumAdditionalDiagnosis(!!(record && record.additionalDiagnosis));
+        this.fillConsiliumDiagnosisList();
+        $('consiliumComment').value = record ? record.comment : '';
+        $('consiliumAdditionalParticipant').value = record ? record.additionalParticipant : '';
+        $('consiliumUvRuv').checked = !!(record && record.uvRuv);
+        $('consiliumNeedsSurgeon').value = record && record.needsSurgeon ? 'yes' : 'no';
+        $('consiliumNeedsRadiotherapist').value = record && record.needsRadiotherapist ? 'yes' : 'no';
+        $('consiliumFormError').classList.add('is-hidden');
+        $('consiliumModalTitle').textContent = record
+            ? 'Изменение и перенос записи на консилиум'
+            : 'Запись на онкологический консилиум';
+        $('submitConsiliumBtn').textContent = record ? 'Сохранить изменения' : 'Создать запись';
+        $('submitConsiliumBtn').disabled = patients.length === 0;
+        $('deleteConsiliumBtn').classList.toggle('is-hidden', !record || record.status === 'signed');
+        if (!record && patients.length) {
+            $('consiliumPatient').value = patients[0].id;
+            this.prefillConsiliumDiagnosisFromPatient();
+        }
+        ui.openModal('consiliumModal');
+    },
+
+    async openConsiliumArchive() {
+        try {
+            const data = await apiGetJson('/api/consilium/appointments?archived=true');
+            this.consilium.archiveAppointments = data.appointments || [];
+            $('consiliumArchiveDate').value = '';
+            $('consiliumArchiveSearch').value = '';
+            this.renderConsiliumArchive();
+            ui.openModal('consiliumArchiveModal');
+        } catch (error) {
+            ui.toast('Не удалось открыть архив: ' + error.message, 'danger');
+        }
+    },
+
+    renderConsiliumArchive() {
+        const date = $('consiliumArchiveDate').value;
+        const query = $('consiliumArchiveSearch').value.trim().toLocaleLowerCase('ru');
+        const rows = (this.consilium.archiveAppointments || []).filter(item => {
+            if (date && item.scheduledDate !== date) return false;
+            if (!query) return true;
+            return String(item.patientName || '').toLocaleLowerCase('ru').includes(query)
+                || String(item.policyNumber || '').toLocaleLowerCase('ru').includes(query);
+        });
+        const openDetails = (item) => {
+            ui.closeModal('consiliumArchiveModal');
+            this.openConsiliumDetails(item);
+        };
+        $('consiliumArchiveBody').replaceChildren(frag(rows.map(item => el('tr', {
+            class: 'consilium-archive-row',
+            tabindex: '0',
+            role: 'button',
+            'aria-label': `Открыть подписанный консилиум: ${item.patientName}`,
+            on: {
+                click: () => openDetails(item),
+                keydown: (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        openDetails(item);
+                    }
+                },
+            },
+        }, [
+            el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
+            el('td', null, [el('strong', { text: item.patientName }), el('div', { class: 'table__muted', text: item.policyNumber || 'Полис не указан' })]),
+            el('td', { text: item.consiliumGroupLabel }),
+            el('td', { text: item.primaryDiagnosis || '—' }),
+            el('td', { text: item.treatmentTypeLabel || '—' }),
+            el('td', null, [el('span', { class: 'status status--good', text: 'Подписан' })]),
+        ]))));
+        $('consiliumArchiveEmpty').classList.toggle('is-hidden', rows.length !== 0);
+        $('consiliumArchiveTableWrap').classList.toggle('is-hidden', rows.length === 0);
+    },
+
+    showConsiliumFormError(message) {
+        const node = $('consiliumFormError');
+        node.textContent = message;
+        node.classList.remove('is-hidden');
+        node.scrollIntoView({ block: 'nearest' });
+    },
+
+    async submitConsiliumAppointment(event) {
+        event.preventDefault();
+        const primaryDiagnosis = this.validConsiliumDiagnosis($('consiliumPrimaryDiagnosis').value);
+        const additionalDiagnosis = this.validConsiliumDiagnosis($('consiliumAdditionalDiagnosis').value, false);
+        if (!primaryDiagnosis) {
+            return this.showConsiliumFormError('Укажите основной диагноз кодом МКБ‑10 от C00 до C97.');
+        }
+        if (additionalDiagnosis === null) {
+            return this.showConsiliumFormError('Дополнительный диагноз должен быть кодом МКБ‑10 от C00 до C97.');
+        }
+        const enteredGroup = $('consiliumGroup').value.trim();
+        const knownGroup = (this.consilium.meta.groups || []).find(group =>
+            group.value.toLowerCase() === enteredGroup.toLowerCase() || group.label.toLowerCase() === enteredGroup.toLowerCase()
+        );
+        const localizationKey = this.consiliumLocalizationKey();
+        const payload = {
+            patientId: $('consiliumPatient').value,
+            scheduledDate: $('consiliumDate').value,
+            scheduledTime: $('consiliumTime').value,
+            consiliumGroup: knownGroup ? knownGroup.value : enteredGroup,
+            hasBenefit: $('consiliumBenefit').value === 'yes',
+            policyNumber: $('consiliumPolicyNumber').value,
+            diagnosisLocalization: localizationKey
+                ? this.icd10Localizations[localizationKey].label
+                : $('consiliumLocalization').value.trim(),
+            primaryDiagnosis,
+            additionalDiagnosis,
+            comment: $('consiliumComment').value,
+            additionalParticipant: $('consiliumAdditionalParticipant').value,
+            needsSurgeon: $('consiliumNeedsSurgeon').value === 'yes',
+            needsRadiotherapist: $('consiliumNeedsRadiotherapist').value === 'yes',
+            uvRuv: $('consiliumUvRuv').checked,
+        };
+        if (!payload.patientId || !payload.scheduledDate || !payload.scheduledTime || !payload.consiliumGroup || !payload.diagnosisLocalization) {
+            return this.showConsiliumFormError('Заполните пациента, группу, дату, свободный слот и локализацию.');
+        }
+        const button = $('submitConsiliumBtn');
+        button.disabled = true;
+        try {
+            if (this.consilium.editingId) {
+                await apiPut(`/api/consilium/appointments/${encodeURIComponent(this.consilium.editingId)}`, payload);
+            } else {
+                await apiPost('/api/consilium/appointments', payload);
+            }
+            ui.closeModal('consiliumModal');
+            ui.toast(this.consilium.editingId ? 'Запись обновлена.' : 'Пациент записан на консилиум.', 'good');
+            this.consilium.editingId = null;
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+        } catch (error) {
+            this.showConsiliumFormError('Не удалось сохранить запись: ' + error.message);
+        } finally {
+            button.disabled = false;
+        }
+    },
+
+    updateConsiliumSchemeVisibility() {
+        const chemotherapy = $('consiliumTreatmentType').value === 'chemotherapy';
+        $('consiliumSchemeField').classList.toggle('is-hidden', !chemotherapy);
+        $('consiliumTreatmentScheme').required = chemotherapy;
+        if (!chemotherapy) {
+            $('consiliumTreatmentScheme').value = '';
+            $('consiliumTreatmentSchemeCode').value = '';
+        }
+    },
+
+    fillConsiliumTreatmentSchemes() {
+        $('consiliumTreatmentSchemeOptions').replaceChildren(frag(
+            (this.consilium.meta?.treatmentSchemes || []).map(item =>
+                option(`${item.code} — ${item.name}`, item.name)
+            )
+        ));
+    },
+
+    syncConsiliumTreatmentScheme() {
+        const value = $('consiliumTreatmentScheme').value.trim();
+        const normalized = value.toLowerCase();
+        const scheme = (this.consilium.meta?.treatmentSchemes || []).find(item =>
+            item.code.toLowerCase() === normalized || item.name.toLowerCase() === normalized ||
+            `${item.code} — ${item.name}`.toLowerCase() === normalized
+        );
+        $('consiliumTreatmentSchemeCode').value = scheme ? scheme.code : '';
+        if (scheme && value.includes('—')) $('consiliumTreatmentScheme').value = scheme.name;
+    },
+
+    async openConsiliumDecision(appointmentId) {
+        try {
+            const record = await apiPost(`/api/consilium/appointments/${encodeURIComponent(appointmentId)}/review`, {});
+            this.consilium.decisionId = appointmentId;
+            const index = this.consilium.appointments.findIndex(item => item.id === appointmentId);
+            if (index >= 0) this.consilium.appointments[index] = record;
+            $('consiliumDecisionPatient').textContent = `${record.patientName} · ${this.formatConsiliumDate(record.scheduledDate, record.scheduledTime)} · ${record.consiliumGroupLabel}`;
+            $('consiliumTreatmentType').value = record.treatmentType || '';
+            $('consiliumTreatmentScheme').value = record.treatmentScheme || '';
+            $('consiliumTreatmentSchemeCode').value = record.treatmentSchemeCode || '';
+            $('consiliumGoc').checked = !!record.goc;
+            $('consiliumGoc65Plus').checked = !!record.goc65Plus;
+            this.fillConsiliumTreatmentSchemes();
+            $('consiliumDecisionError').classList.add('is-hidden');
+            this.updateConsiliumSchemeVisibility();
+            ui.openModal('consiliumDecisionModal');
+            this.renderConsilium();
+        } catch (error) {
+            ui.toast('Не удалось открыть решение: ' + error.message, 'danger');
+        }
+    },
+
+    async submitConsiliumDecision(event) {
+        event.preventDefault();
+        const treatmentType = $('consiliumTreatmentType').value;
+        const treatmentScheme = $('consiliumTreatmentScheme').value.trim();
+        this.syncConsiliumTreatmentScheme();
+        const treatmentSchemeCode = $('consiliumTreatmentSchemeCode').value.trim();
+        const goc = $('consiliumGoc').checked;
+        const goc65Plus = $('consiliumGoc65Plus').checked;
+        if (!treatmentType || (treatmentType === 'chemotherapy' && !treatmentScheme)) {
+            $('consiliumDecisionError').textContent = treatmentType
+                ? 'Для химиотерапевтического лечения укажите схему.'
+                : 'Выберите назначенное лечение.';
+            $('consiliumDecisionError').classList.remove('is-hidden');
+            return;
+        }
+        try {
+            await apiPost(`/api/consilium/appointments/${encodeURIComponent(this.consilium.decisionId)}/sign`, {
+                treatmentType, treatmentScheme, treatmentSchemeCode, goc, goc65Plus,
+            });
+            ui.closeModal('consiliumDecisionModal');
+            this.consilium.decisionId = null;
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+            ui.toast('Решение консилиума подписано.', 'good');
+        } catch (error) {
+            $('consiliumDecisionError').textContent = 'Не удалось подписать: ' + error.message;
+            $('consiliumDecisionError').classList.remove('is-hidden');
+        }
+    },
+
+    openConsiliumRevision() {
+        $('consiliumRevisionComment').value = '';
+        $('consiliumRevisionError').classList.add('is-hidden');
+        ui.closeModal('consiliumDecisionModal');
+        ui.openModal('consiliumRevisionModal');
+    },
+
+    async submitConsiliumRevision(event) {
+        event.preventDefault();
+        const comment = $('consiliumRevisionComment').value.trim();
+        if (!comment) {
+            $('consiliumRevisionError').textContent = 'Комментарий для врача обязателен.';
+            $('consiliumRevisionError').classList.remove('is-hidden');
+            return;
+        }
+        try {
+            await apiPost(`/api/consilium/appointments/${encodeURIComponent(this.consilium.decisionId)}/return`, { comment });
+            ui.closeModal('consiliumRevisionModal');
+            this.consilium.decisionId = null;
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+            ui.toast('Запись возвращена врачу на доработку.', 'good');
+        } catch (error) {
+            $('consiliumRevisionError').textContent = 'Не удалось вернуть запись: ' + error.message;
+            $('consiliumRevisionError').classList.remove('is-hidden');
+        }
+    },
+
     /* ================================================= СМЕНА ЛЕЧАЩЕГО ВРАЧА */
 
     async openDoctorModal(patientId) {
@@ -6053,6 +7427,7 @@ const app = {
         caop_head: 'Заведующий ЦАОП',
         department_head: 'Заведующий отделением',
         doctor: 'Врач',
+        consilium_chair: 'Председатель онкологического консилиума',
     },
     STATUS_LABELS: { active: 'Активен', blocked: 'Заблокирован', deactivated: 'Деактивирован' },
 
@@ -6848,6 +8223,128 @@ const app = {
         on('doctorCancelBtn', 'click', () => ui.closeModal('doctorModal'));
         on('doctorModalSelect', 'change', () => this.updateDoctorModalDept());
 
+        // Онкологический консилиум
+        on('openConsiliumBookingBtn', 'click', () => this.openConsiliumModal());
+        on('openConsiliumArchiveBtn', 'click', () => this.openConsiliumArchive());
+        on('closeConsiliumArchiveBtn', 'click', () => ui.closeModal('consiliumArchiveModal'));
+        on('closeConsiliumArchiveIconBtn', 'click', () => ui.closeModal('consiliumArchiveModal'));
+        on('consiliumArchiveDate', 'change', () => this.renderConsiliumArchive());
+        on('consiliumArchiveSearch', 'input', () => this.renderConsiliumArchive());
+        on('closeConsiliumBtn', 'click', () => ui.closeModal('consiliumModal'));
+        on('closeConsiliumIconBtn', 'click', () => ui.closeModal('consiliumModal'));
+        on('deleteConsiliumBtn', 'click', () => {
+            const item = this.consilium.appointments.find(record => record.id === this.consilium.editingId);
+            if (item) this.deleteConsiliumAppointment(item);
+        });
+        on('consiliumPatient', 'change', () => this.prefillConsiliumDiagnosisFromPatient());
+        on('consiliumLocalization', 'input', () => this.fillConsiliumDiagnosisList());
+        on('consiliumPrimaryDiagnosis', 'input', () => this.prefillConsiliumGroupFromDiagnosis());
+        on('addConsiliumDiagnosisBtn', 'click', () => this.toggleConsiliumAdditionalDiagnosis(true));
+        on('removeConsiliumDiagnosisBtn', 'click', () => this.toggleConsiliumAdditionalDiagnosis(false));
+        $('consiliumForm').addEventListener('submit', (event) => this.submitConsiliumAppointment(event));
+        on('consiliumDateFilter', 'change', (event) => {
+            this.consilium.dateFilter = event.target.value;
+            this.renderConsilium();
+        });
+        on('consiliumTodayBtn', 'click', () => {
+            this.consilium.dateFilter = this.localDateISO(new Date());
+            $('consiliumDateFilter').value = this.consilium.dateFilter;
+            this.renderConsilium();
+        });
+        on('consiliumSearchInput', 'input', (event) => {
+            this.consilium.search = event.target.value;
+            this.renderConsilium();
+        });
+        on('consiliumDoctorDate', 'change', (event) => {
+            this.consilium.doctorDate = event.target.value;
+            this.renderConsiliumSchedule();
+        });
+        on('consiliumChairOnlyFreeBtn', 'click', () => {
+            this.consilium.onlyFree = !this.consilium.onlyFree;
+            if (this.consilium.onlyFree) this.consilium.mineOnly = false;
+            this.renderConsiliumSchedule();
+        });
+        on('consiliumDoctorOnlyFreeBtn', 'click', () => {
+            this.consilium.onlyFree = !this.consilium.onlyFree;
+            if (this.consilium.onlyFree) this.consilium.mineOnly = false;
+            this.renderConsiliumSchedule();
+        });
+        on('consiliumMineOnly', 'click', () => {
+            this.consilium.mineOnly = !this.consilium.mineOnly;
+            if (this.consilium.mineOnly) this.consilium.onlyFree = false;
+            this.renderConsiliumSchedule();
+        });
+        on('consiliumScheduleDateButton', 'click', () => {
+            const picker = $('consiliumScheduleDatePicker');
+            const opening = picker.classList.contains('is-hidden');
+            picker.classList.toggle('is-hidden', !opening);
+            $('consiliumScheduleDateButton').setAttribute('aria-expanded', opening ? 'true' : 'false');
+            if (opening) this.renderConsiliumScheduleCalendar();
+        });
+        on('consiliumSchedulePrevMonthBtn', 'click', () => {
+            const [year, month] = this.consilium.scheduleCalendarMonth.split('-').map(Number);
+            this.consilium.scheduleCalendarMonth = this.localDateISO(new Date(year, month - 2, 1));
+            this.renderConsiliumScheduleCalendar();
+        });
+        on('consiliumScheduleNextMonthBtn', 'click', () => {
+            const [year, month] = this.consilium.scheduleCalendarMonth.split('-').map(Number);
+            this.consilium.scheduleCalendarMonth = this.localDateISO(new Date(year, month, 1));
+            this.renderConsiliumScheduleCalendar();
+        });
+        on('consiliumScheduleGroup', 'change', () => this.syncConsiliumScheduleDateForGroup());
+        document.addEventListener('click', (event) => {
+            ['consiliumChairGroupPicker', 'consiliumDoctorGroupPicker'].forEach(id => {
+                const picker = $(id);
+                if (picker.open && !picker.contains(event.target)) picker.removeAttribute('open');
+            });
+            const dateField = document.querySelector('.consilium-schedule-date-field');
+            if (dateField && !dateField.contains(event.target)) {
+                $('consiliumScheduleDatePicker').classList.add('is-hidden');
+                $('consiliumScheduleDateButton').setAttribute('aria-expanded', 'false');
+            }
+        });
+        on('consiliumDoctorTodayBtn', 'click', () => {
+            this.consilium.doctorDate = this.localDateISO(new Date());
+            $('consiliumDoctorDate').value = this.consilium.doctorDate;
+            this.renderConsilium();
+        });
+        on('consiliumGroup', 'input', () => {
+            const record = this.consilium.editingId
+                ? this.consilium.appointments.find(item => item.id === this.consilium.editingId)
+                : null;
+            const entered = $('consiliumGroup').value.trim().toLowerCase();
+            const knownGroup = (this.consilium.meta?.groups || []).some(group =>
+                group.value.toLowerCase() === entered || group.label.toLowerCase() === entered
+            );
+            if (knownGroup) {
+                const patients = this.fillConsiliumPatientsForGroup(record);
+                if (!record && patients.length) this.prefillConsiliumDiagnosisFromPatient();
+            }
+            this.updateConsiliumAvailableSlots(record);
+        });
+        on('consiliumDate', 'change', () => this.updateConsiliumAvailableSlots(
+            this.consilium.editingId
+                ? this.consilium.appointments.find(item => item.id === this.consilium.editingId)
+                : null
+        ));
+        $('consiliumScheduleForm').addEventListener('submit', (event) => this.generateConsiliumSchedule(event));
+        on('exportChemoRegistryBtn', 'click', () => this.exportChemotherapyRegistry());
+        on('exportGocRegistryBtn', 'click', () => this.exportGocRegistry());
+        on('exportGoc65RegistryBtn', 'click', () => this.exportGoc65Registry());
+        on('consiliumTreatmentType', 'change', () => this.updateConsiliumSchemeVisibility());
+        on('consiliumTreatmentScheme', 'input', () => this.syncConsiliumTreatmentScheme());
+        on('consiliumTreatmentScheme', 'change', () => this.syncConsiliumTreatmentScheme());
+        on('closeConsiliumDecisionIconBtn', 'click', () => ui.closeModal('consiliumDecisionModal'));
+        on('closeConsiliumDetailsIconBtn', 'click', () => ui.closeModal('consiliumDetailsModal'));
+        on('closeConsiliumDetailsBtn', 'click', () => ui.closeModal('consiliumDetailsModal'));
+        on('returnConsiliumBtn', 'click', () => this.openConsiliumRevision());
+        $('consiliumDecisionForm').addEventListener('submit', (event) => this.submitConsiliumDecision(event));
+        on('cancelConsiliumRevisionBtn', 'click', () => {
+            ui.closeModal('consiliumRevisionModal');
+            this.consilium.decisionId = null;
+        });
+        $('consiliumRevisionForm').addEventListener('submit', (event) => this.submitConsiliumRevision(event));
+
         // Навигация
         for (const item of document.querySelectorAll('.nav__item')) {
             item.addEventListener('click', () => this.showView(item.dataset.view));
@@ -6855,6 +8352,12 @@ const app = {
         on('backToList', 'click', () => this.showView('patients'));
         on('sidebarToggle', 'click', () => {
             const shell = $('appScreen');
+            if (window.matchMedia('(min-width: 861px)').matches && this.can('consiliumChair')) {
+                const collapsed = shell.classList.toggle('is-sidebar-collapsed');
+                $('sidebarToggle').setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+                $('sidebarToggle').setAttribute('aria-label', collapsed ? 'Развернуть меню' : 'Свернуть меню');
+                return;
+            }
             const open = !shell.classList.contains('is-nav-open');
             shell.classList.toggle('is-nav-open', open);
             $('sidebarScrim').hidden = !open;
