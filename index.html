@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-security-stage2-v32">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-security-stage2-v33">
 </head>
 <body>
 
@@ -1053,6 +1053,7 @@
 
         <form class="modal__body form" id="consiliumForm">
             <p class="alert alert--danger is-hidden" id="consiliumFormError" role="alert"></p>
+            <section class="consilium-revision-history is-hidden" id="consiliumFormRevisions" aria-label="История возвратов"></section>
 
             <fieldset class="fieldset">
                 <legend class="fieldset__legend">Пациент и группа</legend>
@@ -1218,6 +1219,7 @@
             <p class="alert alert--info" id="consiliumDecisionPatient"></p>
             <p class="alert alert--warning is-hidden" id="consiliumReviewHint">Рассмотрение ещё не начато. Подписать решение можно после того, как вы начнёте рассмотрение.</p>
             <p class="alert alert--danger is-hidden" id="consiliumDecisionError" role="alert"></p>
+            <section class="consilium-revision-history is-hidden" id="consiliumDecisionRevisions" aria-label="История возвратов"></section>
             <div class="field">
                 <label class="field__label" for="consiliumTreatmentType">Назначенное лечение <span class="req">*</span></label>
                 <select class="select" id="consiliumTreatmentType" required>
@@ -1619,6 +1621,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=consilium-security-stage2-v32"></script>
+<script src="/static/app.js?v=consilium-security-stage2-v33"></script>
 </body>
 </html>

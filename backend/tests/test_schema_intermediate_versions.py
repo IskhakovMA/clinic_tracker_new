@@ -210,3 +210,23 @@ def test_v4_v5_branches_keep_revision_notification_type(client, tmp_path, old_ve
     conn.close()
     assert "consilium_revision" in check
     assert version == current_schema_version()
+
+
+def test_migration_keeps_the_only_surviving_revision_comment(client, tmp_path):
+    """Before v18 every return overwrote revision_comment: only the last text
+    of an unsigned record survives, and it becomes a migrated history row."""
+    path = _build(tmp_path / "max-v16-revision.sqlite", 16)
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        "UPDATE oncology_consilium_appointments SET revision_comment = 'Последний комментарий' WHERE id = 'appt-1'"
+    )
+    conn.commit()
+    conn.close()
+    _migrate(path)
+    _migrate(path)
+    conn = sqlite3.connect(str(path))
+    rows = conn.execute(
+        "SELECT appointment_id, round, comment, returned_by_user_id, migrated FROM consilium_revision_history"
+    ).fetchall()
+    conn.close()
+    assert rows == [("appt-1", 1, "Последний комментарий", None, 1)]

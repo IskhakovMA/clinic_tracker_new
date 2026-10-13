@@ -345,7 +345,7 @@ class ConsiliumCommentError(ValueError):
 
 
 def return_for_revision(
-    conn: sqlite3.Connection, appointment_id: str, comment: str
+    conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str, comment: str
 ) -> dict | None:
     """Return a record under review to its author with a new comment.
 
@@ -360,15 +360,46 @@ def return_for_revision(
     ).fetchone()
     if existing is not None and existing["status"] == "in_review" and existing["revision_comment"] == comment:
         raise ConsiliumCommentError("Комментарий должен отличаться от предыдущего возврата")
-    return _transition(
-        conn, appointment_id,
-        """UPDATE oncology_consilium_appointments
-           SET status = 'recorded', revision_comment = ?, revision_submitted_at = NULL,
-               review_started_at = NULL, revision_count = revision_count + 1, updated_at = ?
-           WHERE id = ? AND status = 'in_review' AND archived_at IS NULL""",
-        (comment, now_iso(), appointment_id),
-        "Вернуть на доработку можно только запись, рассмотрение которой начато",
-    )
+    if existing is None:
+        return None
+    now = now_iso()
+    with conn:
+        cursor = conn.execute(
+            """UPDATE oncology_consilium_appointments
+               SET status = 'recorded', revision_comment = ?, revision_submitted_at = NULL,
+                   review_started_at = NULL, revision_count = revision_count + 1, updated_at = ?
+               WHERE id = ? AND status = 'in_review' AND archived_at IS NULL""",
+            (comment, now, appointment_id),
+        )
+        if cursor.rowcount:
+            # В той же транзакции: раунд и его текст сохраняются навсегда.
+            conn.execute(
+                """INSERT INTO consilium_revision_history
+                       (id, appointment_id, round, comment, returned_by_user_id, returned_at)
+                   SELECT ?, id, revision_count, ?, ?, ? FROM oncology_consilium_appointments WHERE id = ?""",
+                (uuid.uuid4().hex, comment, user.id, now, appointment_id),
+            )
+    if cursor.rowcount == 0:
+        raise ConsiliumStateError("Вернуть на доработку можно только запись, рассмотрение которой начато")
+    return get_for_management(conn, appointment_id)
+
+
+def revision_history(conn: sqlite3.Connection, appointment_id: str) -> list[dict]:
+    rows = conn.execute(
+        """SELECT h.round, h.comment, h.returned_at, h.migrated, u.full_name AS returned_by_name
+           FROM consilium_revision_history h
+           LEFT JOIN users u ON u.id = h.returned_by_user_id
+           WHERE h.appointment_id = ?
+           ORDER BY h.round""",
+        (appointment_id,),
+    ).fetchall()
+    return [{
+        "round": r["round"],
+        "comment": r["comment"],
+        "returnedAt": r["returned_at"],
+        "returnedByName": r["returned_by_name"] or "",
+        "migrated": bool(r["migrated"]),
+    } for r in rows]
 
 
 def analytics_summary(

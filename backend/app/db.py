@@ -295,6 +295,17 @@ CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS consilium_revision_history (
+    id TEXT PRIMARY KEY,
+    appointment_id TEXT NOT NULL REFERENCES oncology_consilium_appointments(id) ON DELETE CASCADE,
+    round INTEGER NOT NULL CHECK (round >= 1),
+    comment TEXT NOT NULL,
+    returned_by_user_id TEXT REFERENCES users(id),
+    returned_at TEXT NOT NULL,
+    migrated INTEGER NOT NULL DEFAULT 0 CHECK (migrated IN (0, 1)),
+    UNIQUE (appointment_id, round)
+);
+
 CREATE TABLE IF NOT EXISTS consilium_chair_favorites (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE,
@@ -411,6 +422,7 @@ REQUIRED_TABLES = (
     "patient_attention_issues",
     "oncology_consilium_appointments",
     "consilium_chair_favorites",
+    "consilium_revision_history",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -915,6 +927,26 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
         "WHERE revision_count = 0 AND COALESCE(revision_comment, '') != ''"
     )
     conn.executescript(_signed_immutable_trigger_sql(columns))
+    # История возвратов: до v18 текст прошлых раундов перезаписывался, и
+    # восстановить можно только последний комментарий записи (автор неизвестен,
+    # migrated = 1). Строки истории неизменны.
+    conn.executescript(SCHEMA_SQL)
+    conn.execute(
+        """INSERT OR IGNORE INTO consilium_revision_history
+               (id, appointment_id, round, comment, returned_by_user_id, returned_at, migrated)
+           SELECT lower(hex(randomblob(16))), id, revision_count, revision_comment, NULL, updated_at, 1
+           FROM oncology_consilium_appointments
+           WHERE revision_count >= 1 AND COALESCE(revision_comment, '') != ''"""
+    )
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_revision_history_immutable
+        BEFORE UPDATE ON consilium_revision_history
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_revision_history_immutable');
+        END;
+        """
+    )
 
 
 def init_db(conn: sqlite3.Connection) -> None:

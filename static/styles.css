@@ -1148,6 +1148,16 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 .consilium-status--needs_revision { background: var(--danger-soft); color: var(--danger); }
 .consilium-status--revised { background: var(--warning-soft); color: var(--warning); }
 .consilium-status--signed { background: var(--good-soft); color: var(--good); }
+.consilium-revision-history {
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    padding: var(--sp-3);
+    background: var(--surface-2);
+}
+.consilium-revision-history__title { margin: 0 0 var(--sp-2); font-size: var(--text-sm); }
+.consilium-revision-history__list { margin: 0; padding-left: var(--sp-4); display: grid; gap: var(--sp-2); }
+.consilium-revision-history__meta { font-size: var(--text-xs); color: var(--text-2); }
+.consilium-revision-history__text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .consilium-revision-comment {
     max-width: 280px;
     margin-top: var(--sp-2);

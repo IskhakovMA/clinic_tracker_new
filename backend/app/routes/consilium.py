@@ -325,7 +325,7 @@ def return_consilium_for_revision(
 ):
     _require_decision(conn, user)
     try:
-        appointment = consilium.return_for_revision(conn, appointment_id, body.comment)
+        appointment = consilium.return_for_revision(conn, user, appointment_id, body.comment)
     except consilium.ConsiliumCommentError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except consilium.ConsiliumStateError as exc:
@@ -339,6 +339,24 @@ def return_consilium_for_revision(
         **audit.actor_ctx(user),
     )
     return appointment
+
+
+@router.get("/appointments/{appointment_id}/revisions")
+def consilium_revision_history(
+    appointment_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Texts of every return round: only for the chair and for the record's
+    author while the patient is in their scope; anyone else gets 404, as for
+    a record they cannot see. Comments are never written to the audit log."""
+    _require_access(conn, user)
+    if policy.can_decide_consilium(user):
+        if consilium.get_for_management(conn, appointment_id) is None:
+            _not_found()
+    elif consilium.get_owned(conn, user, appointment_id) is None:
+        _not_found()
+    return {"revisions": consilium.revision_history(conn, appointment_id)}
 
 
 @router.get("/analytics")

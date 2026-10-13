@@ -1078,3 +1078,80 @@ def test_doctor_of_same_department_still_sees_only_occupancy(client):
     response = client.get("/api/consilium/schedule")
     assert _slot(response.json()["slots"], date.today().isoformat(), "09:00")["appointment"] is None
     assert "Пациент Своего Отделения" not in response.text
+
+
+# --- Задача 3: история возвратов ------------------------------------------
+
+ROUND_COMMENTS = ("Приложите заключение КТ", "Уточните стадию по TNM", "Добавьте гистологию")
+
+
+def _three_rounds(client):
+    doctor = create_account("doctor.rounds", "doctor", full_name="Раундова Врач Автор")
+    chair = create_account("chair.rounds", "consilium_chair", full_name="Раундов Председатель")
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Трёх Раундов", treatingDoctorUserId=doctor)
+    login(client, "doctor.rounds")
+    aid = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]),
+                      headers=client.csrf).json()["id"]
+    for index, comment in enumerate(ROUND_COMMENTS):
+        login(client, "chair.rounds")
+        assert _post(client, aid, "review").status_code == 200
+        assert _post(client, aid, "return", {"comment": comment}).status_code == 200
+        login(client, "doctor.rounds")
+        resubmitted = client.put(f"/api/consilium/appointments/{aid}", headers=client.csrf,
+                                 json=appointment_payload(patient["id"], comment=f"Исправление {index + 1}"))
+        assert resubmitted.status_code == 200, resubmitted.text
+    return aid, patient, doctor, chair
+
+
+def test_every_return_round_keeps_its_text_author_and_time(client):
+    aid, _, _, chair = _three_rounds(client)
+    login(client, "chair.rounds")
+    history = client.get(f"/api/consilium/appointments/{aid}/revisions").json()["revisions"]
+    assert [(h["round"], h["comment"], h["returnedByName"], h["migrated"]) for h in history] == [
+        (1, ROUND_COMMENTS[0], "Раундов Председатель", False),
+        (2, ROUND_COMMENTS[1], "Раундов Председатель", False),
+        (3, ROUND_COMMENTS[2], "Раундов Председатель", False),
+    ]
+    assert all(h["returnedAt"] for h in history)
+
+    assert _post(client, aid, "review").status_code == 200
+    assert _post(client, aid, "sign", DECISION).status_code == 200
+    after_sign = client.get(f"/api/consilium/appointments/{aid}/revisions").json()["revisions"]
+    assert after_sign == history
+    assert _row(aid)["status"] == "signed"
+
+    audit_dump = str([dict(r) for r in get_conn().execute("SELECT * FROM audit_events")])
+    for comment in ROUND_COMMENTS:
+        assert comment not in audit_dump
+
+
+def test_revision_history_is_limited_to_chair_and_author(client):
+    aid, _, doctor, _ = _three_rounds(client)
+    login(client, "doctor.rounds")
+    assert len(client.get(f"/api/consilium/appointments/{aid}/revisions").json()["revisions"]) == 3
+
+    create_account("doctor.stranger", "doctor")
+    create_account("deputy.rounds", "deputy_chief_oncology")
+    for username, expected in (("doctor.stranger", 404), (DEV_USERNAME, 404), ("deputy.rounds", 403)):
+        login(client, username)
+        response = client.get(f"/api/consilium/appointments/{aid}/revisions")
+        assert response.status_code == expected, (username, response.status_code)
+        assert ROUND_COMMENTS[0] not in response.text
+
+    # Автор теряет доступ к истории, когда пациент уходит из его области.
+    other = create_account("doctor.next", "doctor")
+    conn = get_conn()
+    conn.execute("UPDATE patients SET treating_doctor_user_id = ? WHERE treating_doctor_user_id = ?", (other, doctor))
+    conn.commit()
+    login(client, "doctor.rounds")
+    assert client.get(f"/api/consilium/appointments/{aid}/revisions").status_code == 404
+
+
+def test_revision_history_rows_cannot_be_rewritten(client):
+    aid, _, _, _ = _three_rounds(client)
+    conn = get_conn()
+    with pytest.raises(sqlite3.IntegrityError, match="consilium_revision_history_immutable"):
+        conn.execute("UPDATE consilium_revision_history SET comment = 'подмена' WHERE appointment_id = ?", (aid,))
+    conn.rollback()

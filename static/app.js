@@ -7111,6 +7111,7 @@ const app = {
         const record = appointmentId
             ? this.consilium.appointments.find(item => item.id === appointmentId)
             : null;
+        this.renderConsiliumRevisionHistory('consiliumFormRevisions', record);
         $('consiliumGroupOptions').replaceChildren(frag(
             (this.consilium.meta.groups || []).map(group => option(group.label, group.value))
         ));
@@ -7321,9 +7322,39 @@ const app = {
             $('consiliumDecisionError').classList.add('is-hidden');
             this.updateConsiliumSchemeVisibility();
             this.syncConsiliumReviewState(record);
+            this.renderConsiliumRevisionHistory('consiliumDecisionRevisions', record);
             ui.openModal('consiliumDecisionModal');
         } catch (error) {
             ui.toast('Не удалось открыть решение: ' + error.message, 'danger');
+        }
+    },
+
+    // История возвратов читается отдельным запросом: сервер отдаёт её только
+    // председателю и автору записи.
+    async renderConsiliumRevisionHistory(containerId, record) {
+        const box = $(containerId);
+        box.replaceChildren();
+        box.classList.add('is-hidden');
+        if (!record || !record.revisionCount) return;
+        try {
+            const data = await apiGetJson(`/api/consilium/appointments/${encodeURIComponent(record.id)}/revisions`);
+            const items = data.revisions || [];
+            if (!items.length) return;
+            box.replaceChildren(
+                el('h3', { class: 'consilium-revision-history__title', text: 'История возвратов' }),
+                el('ol', { class: 'consilium-revision-history__list' }, items.map(item => el('li', {}, [
+                    el('div', { class: 'consilium-revision-history__meta', text: [
+                        `Раунд ${item.round}`,
+                        item.returnedAt ? this.formatDateTime(item.returnedAt) : '',
+                        item.migrated ? 'перенесено из прежней версии' : item.returnedByName,
+                    ].filter(Boolean).join(' · ') }),
+                    el('div', { class: 'consilium-revision-history__text', text: item.comment }),
+                ]))),
+            );
+            box.classList.remove('is-hidden');
+        } catch (error) {
+            box.replaceChildren(el('p', { class: 'muted', text: 'Историю возвратов загрузить не удалось.' }));
+            box.classList.remove('is-hidden');
         }
     },
 
