@@ -151,8 +151,12 @@ plaintext content, or PHI.
    the current version) is first checked for integrity and FK violations,
    then migrated **on the decrypted temporary copy** with the regular
    `init_db`, then checked again against the current schema. The
-   authenticated header `schema_version` must match the snapshot. Backups
-   older than v9 or newer than the running code are refused.
+   authenticated header `schema_version` must match the snapshot. The
+   snapshot must also match a **verified build** exactly (tables and
+   columns): v9 `v0.9.0-stable`, v17 `clinic_tracker_new_Max` (see
+   `backend/app/data/restore_builds.json`) or the running build. The schema
+   number alone is not trusted because the Patient Portal branch and Max
+   both used v10. Any other structure is refused before migration.
 7. Leaves the live DB unchanged until all checks pass, including when the
    migration of the copy fails.
 8. Creates an encrypted recovery copy of the current DB.
