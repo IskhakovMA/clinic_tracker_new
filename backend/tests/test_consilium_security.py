@@ -1155,3 +1155,81 @@ def test_revision_history_rows_cannot_be_rewritten(client):
     with pytest.raises(sqlite3.IntegrityError, match="consilium_revision_history_immutable"):
         conn.execute("UPDATE consilium_revision_history SET comment = 'подмена' WHERE appointment_id = ?", (aid,))
     conn.rollback()
+
+
+# --- Архив врача: явное действие, не следствие подписи ---------------------
+
+def _signed_by_doctor(client):
+    doctor = create_account("doctor.archive", "doctor", full_name="Архивова Врач Автор")
+    create_account("chair.archive2", "consilium_chair")
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Архива", treatingDoctorUserId=doctor)
+    login(client, "doctor.archive")
+    aid = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]),
+                      headers=client.csrf).json()["id"]
+    login(client, "chair.archive2")
+    assert _post(client, aid, "review").status_code == 200
+    assert _post(client, aid, "return", {"comment": "Уточните перед подписью"}).status_code == 200
+    login(client, "doctor.archive")
+    assert client.put(f"/api/consilium/appointments/{aid}", headers=client.csrf,
+                      json=appointment_payload(patient["id"], comment="Исправлено")).status_code == 200
+    login(client, "chair.archive2")
+    assert _post(client, aid, "review").status_code == 200
+    assert _post(client, aid, "sign", DECISION).status_code == 200
+    login(client, "doctor.archive")
+    return aid, patient, doctor
+
+
+DECISION_COLUMNS = ("status", "treatment_type", "treatment_scheme", "treatment_scheme_code", "goc", "goc_65_plus",
+                    "signed_at", "signed_by_user_id", "signed_treating_doctor_user_id",
+                    "signed_treating_doctor_name", "patient_id", "revision_count")
+
+
+def _history(aid):
+    return [tuple(r) for r in get_conn().execute(
+        "SELECT round, comment, returned_by_user_id, returned_at FROM consilium_revision_history "
+        "WHERE appointment_id = ? ORDER BY round", (aid,))]
+
+
+def test_archive_and_restore_keep_the_signed_decision_and_its_history(client):
+    aid, patient, doctor = _signed_by_doctor(client)
+    before = {c: _row(aid)[c] for c in DECISION_COLUMNS}
+    history = _history(aid)
+    assert history and client.get("/api/consilium/appointments?archived=true").json()["appointments"] == []
+
+    archived = _post(client, aid, "archive")
+    assert archived.status_code == 200 and archived.json()["archived"] is True
+    row = _row(aid)
+    assert row["archived_by_user_id"] == doctor and row["archived_at"]
+    assert {c: row[c] for c in DECISION_COLUMNS} == before
+    assert _history(aid) == history
+    assert [a["id"] for a in client.get("/api/consilium/appointments?archived=true").json()["appointments"]] == [aid]
+    assert client.get("/api/consilium/appointments").json()["appointments"] == []
+    assert _post(client, aid, "archive").status_code == 409
+
+    restored = _post(client, aid, "restore")
+    assert restored.status_code == 200 and restored.json()["archived"] is False
+    assert {c: _row(aid)[c] for c in DECISION_COLUMNS} == before
+    assert _history(aid) == history
+    assert _post(client, aid, "restore").status_code == 409
+    events = [r["event_type"] for r in get_conn().execute(
+        "SELECT event_type FROM audit_events WHERE event_type IN ('consilium_archived', 'consilium_restored') ORDER BY id")]
+    assert events == ["consilium_archived", "consilium_restored"]
+
+
+@pytest.mark.parametrize("username, role, expected", [
+    ("chair.archive2", None, 403),            # председатель не ведёт личный архив врача
+    ("doctor.other.archive", "doctor", 404),  # чужая запись неотличима от несуществующей
+    ("deputy.archive", "deputy_chief_oncology", 403),
+    (DEV_USERNAME, None, 404),                # разработчик — не автор записи
+])
+def test_only_the_author_can_archive_or_restore(client, username, role, expected):
+    aid, _, _ = _signed_by_doctor(client)
+    if role:
+        create_account(username, role)
+    login(client, username)
+    before = _row(aid)
+    for action in ("archive", "restore"):
+        assert _post(client, aid, action).status_code == expected, (username, action)
+    assert _row(aid) == before

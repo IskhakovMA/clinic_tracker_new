@@ -115,6 +115,7 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         "referralCompletedAt": row["referral_completed_at"],
         "archived": bool(row["archived_at"]),
         "archivedAt": row["archived_at"],
+        "archivedByUserId": row["archived_by_user_id"],
         "isFavorite": favorite,
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -161,7 +162,9 @@ def list_for_user(
         }
         return [_to_dict(row, favorite=row["patient_id"] in favorite_ids) for row in rows]
     condition, params = policy.patient_scope_filter(user)
-    visibility_clause = "AND a.status = 'signed' " if archived else "AND a.archived_at IS NULL "
+    # Архив — явное действие автора над подписанной записью, а не сам факт
+    # подписи: подписанная, но не архивированная запись остаётся в работе.
+    visibility_clause = "AND a.archived_at IS NOT NULL " if archived else "AND a.archived_at IS NULL "
     rows = conn.execute(
         _SELECT + f" WHERE a.created_by_user_id = ? AND {condition} "
         + visibility_clause
@@ -190,19 +193,35 @@ def set_archived(
     appointment_id: str,
     archived: bool,
 ) -> dict | None:
+    """Move the author's signed record to their archive, or back.
+
+    Only archived_at / archived_by_user_id (and updated_at) change; the signed
+    decision itself is protected by trg_consilium_signed_immutable. Who
+    archived and restored, and when, stays in the audit log.
+    """
     existing = get_owned(conn, user, appointment_id)
     if existing is None:
         return None
     if existing["status"] != "signed":
-        raise ValueError("Only signed consilium appointments can be archived")
+        raise ConsiliumStateError("Архивировать можно только подписанное решение")
     now = now_iso()
     with conn:
-        conn.execute(
-            """UPDATE oncology_consilium_appointments
-               SET archived_at = ?, archived_by_user_id = ?, updated_at = ?
-               WHERE id = ? AND created_by_user_id = ?""",
-            (now if archived else None, user.id if archived else None, now, appointment_id, user.id),
-        )
+        if archived:
+            cursor = conn.execute(
+                """UPDATE oncology_consilium_appointments
+                   SET archived_at = ?, archived_by_user_id = ?, updated_at = ?
+                   WHERE id = ? AND created_by_user_id = ? AND status = 'signed' AND archived_at IS NULL""",
+                (now, user.id, now, appointment_id, user.id),
+            )
+        else:
+            cursor = conn.execute(
+                """UPDATE oncology_consilium_appointments
+                   SET archived_at = NULL, archived_by_user_id = NULL, updated_at = ?
+                   WHERE id = ? AND created_by_user_id = ? AND status = 'signed' AND archived_at IS NOT NULL""",
+                (now, appointment_id, user.id),
+            )
+    if cursor.rowcount == 0:
+        raise ConsiliumStateError("Запись уже в архиве" if archived else "Запись не находится в архиве")
     return get_owned(conn, user, appointment_id)
 
 

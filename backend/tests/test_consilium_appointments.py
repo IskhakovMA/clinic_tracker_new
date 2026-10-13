@@ -616,8 +616,9 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
     assert signed.status_code == 200
 
     login(client, DEV_USERNAME)
-    automatic_archive = client.get("/api/consilium/appointments?archived=true").json()["appointments"]
-    assert [row["id"] for row in automatic_archive] == [created["id"]]
+    # Подпись не переносит запись в архив: это отдельное действие автора.
+    assert client.get("/api/consilium/appointments?archived=true").json()["appointments"] == []
+    assert [row["id"] for row in client.get("/api/consilium/appointments").json()["appointments"]] == [created["id"]]
     archived = client.post(
         f"/api/consilium/appointments/{created['id']}/archive",
         json={}, headers=client.csrf,
@@ -635,7 +636,7 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
     assert restored.status_code == 200
     assert restored.json()["archived"] is False
     assert [row["id"] for row in client.get("/api/consilium/appointments").json()["appointments"]] == [created["id"]]
-    assert [row["id"] for row in client.get("/api/consilium/appointments?archived=true").json()["appointments"]] == [created["id"]]
+    assert client.get("/api/consilium/appointments?archived=true").json()["appointments"] == []
 
 
 def test_doctor_consilium_frontend_has_single_day_multi_group_grid_and_delete():

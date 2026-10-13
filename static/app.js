@@ -6877,7 +6877,30 @@ const app = {
                 item.revisionComment ? readonlyField('Комментарий председателя', item.revisionComment, true) : null,
             ]),
         ]));
+        // Архив — личное действие автора над подписанной записью; сервер
+        // проверяет то же (автор, область видимости, подпись) и отвечает 409.
+        const toggle = $('consiliumArchiveToggleBtn');
+        const canArchive = item.status === 'signed' && this.can('bookConsilium') && !this.can('consiliumChair');
+        toggle.classList.toggle('is-hidden', !canArchive);
+        toggle.textContent = item.archived ? 'Восстановить из архива' : 'Перенести в архив';
+        this.consilium.detailsItem = item;
         ui.openModal('consiliumDetailsModal');
+    },
+
+    async toggleConsiliumArchive() {
+        const item = this.consilium.detailsItem;
+        if (!item) return;
+        const action = item.archived ? 'restore' : 'archive';
+        try {
+            await apiPost(`/api/consilium/appointments/${encodeURIComponent(item.id)}/${action}`, {});
+            ui.closeModal('consiliumDetailsModal');
+            this.consilium.detailsItem = null;
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+            ui.toast(action === 'archive' ? 'Запись перенесена в архив.' : 'Запись восстановлена из архива.', 'good');
+        } catch (error) {
+            ui.toast('Не удалось изменить архив: ' + error.message, 'danger');
+        }
     },
 
     async setSurgicalReferralCompleted(appointmentId, completed) {
@@ -7191,7 +7214,7 @@ const app = {
             class: 'consilium-archive-row',
             tabindex: '0',
             role: 'button',
-            'aria-label': `Открыть подписанный консилиум: ${item.patientName}`,
+            'aria-label': `Открыть архивный консилиум: ${item.patientName}`,
             on: {
                 click: () => openDetails(item),
                 keydown: (event) => {
@@ -7207,7 +7230,7 @@ const app = {
             el('td', { text: item.consiliumGroupLabel }),
             el('td', { text: item.primaryDiagnosis || '—' }),
             el('td', { text: item.treatmentTypeLabel || '—' }),
-            el('td', null, [el('span', { class: 'status status--good', text: 'Подписан' })]),
+            el('td', null, [el('span', { class: 'status status--good', text: 'В архиве' })]),
         ]))));
         $('consiliumArchiveEmpty').classList.toggle('is-hidden', rows.length !== 0);
         $('consiliumArchiveTableWrap').classList.toggle('is-hidden', rows.length === 0);
@@ -8419,6 +8442,7 @@ const app = {
         on('closeConsiliumDecisionIconBtn', 'click', () => ui.closeModal('consiliumDecisionModal'));
         on('closeConsiliumDetailsIconBtn', 'click', () => ui.closeModal('consiliumDetailsModal'));
         on('closeConsiliumDetailsBtn', 'click', () => ui.closeModal('consiliumDetailsModal'));
+        on('consiliumArchiveToggleBtn', 'click', () => this.toggleConsiliumArchive());
         on('returnConsiliumBtn', 'click', () => this.openConsiliumRevision());
         on('startConsiliumReviewBtn', 'click', () => this.startConsiliumReview());
         $('consiliumDecisionForm').addEventListener('submit', (event) => this.submitConsiliumDecision(event));

@@ -1175,7 +1175,7 @@
         <div class="modal__head">
             <div>
                 <h2 class="modal__title" id="consiliumArchiveTitle">Архив консилиумов</h2>
-                <p class="modal__subtitle">Все подписанные консилиумы пациентов, записанных вами. Нажмите на случай, чтобы открыть полную информацию.</p>
+                <p class="modal__subtitle">Подписанные консилиумы, которые вы перенесли в архив. Нажмите на случай, чтобы открыть его или восстановить.</p>
             </div>
             <button type="button" class="btn btn--icon" id="closeConsiliumArchiveIconBtn" aria-label="Закрыть">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -1292,6 +1292,7 @@
         </div>
         <div class="modal__body form" id="consiliumDetailsBody"></div>
         <div class="modal__foot">
+            <button type="button" class="btn btn--ghost is-hidden" id="consiliumArchiveToggleBtn"></button>
             <button type="button" class="btn btn--primary" id="closeConsiliumDetailsBtn">Закрыть</button>
         </div>
     </div>
