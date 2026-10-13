@@ -34,7 +34,9 @@ ALLOWLIST = {
     ("backend/app/analytics/service.py", 567, "B608"),
     ("backend/app/analytics/service.py", 608, "B608"),
     ("backend/app/analytics/service.py", 681, "B608"),
-    ("backend/app/policy.py", 114, "B608"),
+    # Same reviewed can_read_patient query; moved one line down by the
+    # ROLE_CONSILIUM_CHAIR constant.
+    ("backend/app/policy.py", 115, "B608"),
     ("backend/app/routes/staff.py", 120, "B608"),
     ("backend/app/routes/staff.py", 121, "B608"),
     ("backend/app/services/data_quality.py", 206, "B608"),

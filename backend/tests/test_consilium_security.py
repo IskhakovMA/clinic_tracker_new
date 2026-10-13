@@ -658,3 +658,16 @@ def test_demo_seed_writes_only_encrypted_backup_and_keeps_routes(client, monkeyp
     for pid, history in routes_before.items():
         assert client.get(f"/api/patients/{pid}").json()["history"] == history
     assert _audit_rows("consilium_demo_reset")[0]["detail"].startswith("slots=")
+
+
+# --- Б9: аналитика без сборки SQL из строк --------------------------------
+
+def test_chair_analytics_validates_dates_and_filters_by_range(client):
+    aid, _ = _make_state(client, "recorded")
+    assert client.get("/api/consilium/analytics?date_from=2026-13-01").status_code == 422
+    assert client.get("/api/consilium/analytics?date_to=1%27%20OR%201=1").status_code == 422
+    inside = client.get("/api/consilium/analytics?date_from=2026-11-12&date_to=2026-11-12").json()
+    outside = client.get("/api/consilium/analytics?date_from=2026-11-13").json()
+    assert inside["summary"]["total"] == 1
+    assert outside["summary"]["total"] == 0
+    assert client.get("/api/consilium/analytics").json()["summary"]["total"] == 1

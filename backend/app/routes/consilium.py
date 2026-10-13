@@ -318,7 +318,7 @@ def consilium_analytics(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_chair(conn, user)
-    return consilium.analytics_summary(conn, date_from, date_to)
+    return consilium.analytics_summary(conn, _validated_date(date_from), _validated_date(date_to))
 
 
 @router.post("/favorites/{patient_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
