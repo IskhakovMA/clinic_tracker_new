@@ -164,15 +164,34 @@ def consilium_import_impact(conn: sqlite3.Connection, document: ImportDocument, 
     """What `mode` would do to consilium records, from the same check that
     commit_import enforces: counts only, never patient data."""
     records, signed = consilium_conflicts(conn, document, mode)
+    deleted = _deleted_with_history(conn, document, mode)
     blocked = records > 0
     return {
         "records": records,
         "signed": signed,
-        "unsigned": records - signed,
+        "unsigned": records - signed - deleted,
+        "deletedWithHistory": deleted,
         "blocked": blocked,
-        "reason": str(ImportConflictError(records, signed)) if blocked else "",
+        "reason": (
+            f"Режим удалил бы записи онкоконсилиума ({records}, из них подписанных решений: {signed}) "
+            "вместе с карточками пациентов. Записи консилиума, подписанные решения и история "
+            "возвратов не удаляются, поэтому импорт будет отклонён без изменения данных."
+        ) if blocked else "",
         "advice": IMPORT_CONSILIUM_ADVICE if blocked else "",
     }
+
+
+def _deleted_with_history(conn: sqlite3.Connection, document: ImportDocument, mode: str) -> int:
+    """Soft-deleted records kept for their return history, among those `mode` would hit."""
+    if mode not in ("replace", "update"):
+        return 0
+    rows = conn.execute(
+        "SELECT patient_id FROM oncology_consilium_appointments WHERE deleted_at IS NOT NULL"
+    ).fetchall()
+    if mode == "update":
+        matched = {p.id for p in document.patients if p.id}
+        rows = [r for r in rows if r["patient_id"] in matched]
+    return len(rows)
 
 
 def preview_report(

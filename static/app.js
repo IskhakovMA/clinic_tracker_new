@@ -8228,6 +8228,9 @@ const app = {
                 el('li', { text: `Будет затронуто записей консилиума: ${impact.records}` }),
                 el('li', { text: `Из них подписанных решений: ${impact.signed}` }),
                 el('li', { text: `Неподписанных и находящихся в работе: ${impact.unsigned}` }),
+                impact.deletedWithHistory
+                    ? el('li', { text: `Удалённых записей с сохранённой историей возвратов: ${impact.deletedWithHistory}` })
+                    : null,
             ]),
             impact.reason ? el('p', { text: impact.reason }) : null,
             impact.advice ? el('p', { text: impact.advice }) : null,

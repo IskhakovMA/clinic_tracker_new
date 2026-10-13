@@ -941,10 +941,11 @@ def test_safe_imports_still_work_next_to_consilium_records(client):
         "/api/import/preview", json={"raw": json.dumps(document, ensure_ascii=False)}, headers=client.csrf,
     ).json()
     impact = preview["consiliumImpact"]
-    assert {k: impact["replace"][k] for k in ("records", "signed", "unsigned", "blocked")} == {
-        "records": 1, "signed": 1, "unsigned": 0, "blocked": True}
+    assert {k: impact["replace"][k] for k in ("records", "signed", "unsigned", "deletedWithHistory", "blocked")} == {
+        "records": 1, "signed": 1, "unsigned": 0, "deletedWithHistory": 0, "blocked": True}
     assert impact["update"]["blocked"] is True
-    assert impact["add"] == {"records": 0, "signed": 0, "unsigned": 0, "blocked": False, "reason": "", "advice": ""}
+    assert impact["add"] == {"records": 0, "signed": 0, "unsigned": 0, "deletedWithHistory": 0, "blocked": False,
+                             "reason": "", "advice": ""}
 
 
 def test_patient_with_consilium_records_cannot_be_deleted(client):
@@ -1266,14 +1267,15 @@ def test_import_preview_reports_signed_and_working_records_and_why(client):
                           json={"raw": json.dumps(document, ensure_ascii=False)}).json()
     replace = preview["consiliumImpact"]["replace"]
     assert (replace["records"], replace["signed"], replace["unsigned"], replace["blocked"]) == (3, 1, 2, True)
-    assert "подписанных решений: 1" in replace["reason"] and "Данные не изменены" in replace["reason"]
+    assert "подписанных решений: 1" in replace["reason"] and "без изменения данных" in replace["reason"]
     assert "«Добавить как новые записи»" in replace["advice"]
+    assert "«Добавить как новые записи»" not in replace["reason"]
     assert not any(name in json.dumps(preview, ensure_ascii=False) for name in ("C34.1", "C34.9"))
 
     before = _data_digest()
     response = _import(client, document, "replace")
     assert response.status_code == 409
-    assert response.json()["detail"] == replace["reason"]
+    assert "Данные не изменены" in response.json()["detail"]
     assert _data_digest() == before
 
 
@@ -1409,6 +1411,10 @@ def test_soft_deleted_history_still_blocks_destructive_import_and_card_deletion(
     aid, patient, _ = _returned_record(client)
     assert client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf).status_code == 200
     login(client, DEV_USERNAME)
+    preview = client.post("/api/import/preview", headers=client.csrf,
+                          json={"raw": json.dumps(_export_document(client), ensure_ascii=False)}).json()
+    replace = preview["consiliumImpact"]["replace"]
+    assert (replace["records"], replace["signed"], replace["unsigned"], replace["deletedWithHistory"]) == (1, 0, 0, 1)
     before = _data_digest()
     assert _import(client, _export_document(client), "replace").status_code == 409
     assert client.delete(f"/api/patients/{patient['id']}", headers=client.csrf).status_code == 409
