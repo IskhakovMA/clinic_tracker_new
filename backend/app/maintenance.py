@@ -24,7 +24,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from . import config
-from .db import REQUIRED_TABLES
+from .db import REQUIRED_TABLES, connect_readonly_check, init_db
 
 
 class MaintenanceError(RuntimeError):
@@ -136,6 +136,79 @@ def check_database(db_path: Path) -> dict:
     finally:
         conn.close()
 
+    return report
+
+
+# Самая старая схема, чьи резервные копии восстанавливаются с миграцией:
+# v9 — v0.9.0-stable. Более старые копии и копии из более новой версии
+# приложения отклоняются (миграции v1–v8 на копиях не проверялись).
+MIN_RESTORE_SCHEMA_VERSION = 9
+
+
+def _stored_schema_version(path: Path) -> int | None:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        has_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+        ).fetchone()
+        row = conn.execute("SELECT version FROM schema_version").fetchone() if has_table else None
+    finally:
+        conn.close()
+    return row[0] if row else None
+
+
+def _integrity_problems(path: Path) -> list[str]:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        problems = []
+        if [r[0] for r in conn.execute("PRAGMA integrity_check").fetchall()] != ["ok"]:
+            problems.append("integrity_check failed")
+        violations = len(conn.execute("PRAGMA foreign_key_check").fetchall())
+        if violations:
+            problems.append(f"{violations} foreign key violation(s)")
+    finally:
+        conn.close()
+    return problems
+
+
+def _check_or_migrate_plaintext(plaintext: Path, metadata: dict) -> dict:
+    """Validate a decrypted snapshot, migrating a supported older one in place.
+
+    `plaintext` is always the throw-away decrypted copy inside a private temp
+    directory, never the live database. The header's schema_version is
+    authenticated (AAD), so it must match the snapshot it describes. A
+    supported older snapshot must pass integrity and FK checks *before* the
+    migration (a migration must not paper over a damaged copy) and the full
+    check_database afterwards.
+    """
+    stored = _stored_schema_version(plaintext)
+    if stored != metadata["schema_version"]:
+        raise MaintenanceError("Резервная копия отклонена: версия схемы в заголовке не совпадает с содержимым")
+    migrated_from = None
+    if stored is not None and stored < config.SCHEMA_VERSION:
+        if stored < MIN_RESTORE_SCHEMA_VERSION:
+            raise MaintenanceError(
+                f"Резервная копия отклонена: схема v{stored} не поддерживается для восстановления "
+                f"(поддерживаются v{MIN_RESTORE_SCHEMA_VERSION}–v{config.SCHEMA_VERSION})"
+            )
+        problems = _integrity_problems(plaintext)
+        if problems:
+            raise MaintenanceError("Резервная копия отклонена: " + "; ".join(problems))
+        conn = connect_readonly_check(plaintext)
+        try:
+            init_db(conn)
+        except Exception as exc:  # любая ошибка миграции — отказ; живая база не затронута
+            raise MaintenanceError(
+                f"Резервную копию v{stored} не удалось обновить до схемы v{config.SCHEMA_VERSION}: "
+                f"{type(exc).__name__}"
+            ) from exc
+        finally:
+            conn.close()
+        migrated_from = stored
+    report = check_database(plaintext)
+    if not report["ok"]:
+        raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
+    report["migrated_from_schema_version"] = migrated_from
     return report
 
 
@@ -628,9 +701,9 @@ def validate_backup(backup_path: Path) -> dict:
         plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
         if not looks_like_sqlite(plaintext):
             raise MaintenanceError("Расшифрованный backup не является базой SQLite")
-        report = check_database(plaintext)
-        if not report["ok"]:
-            raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
+        # Старая поддерживаемая копия проверяется так же, как при restore:
+        # миграцией одноразовой копии во временном каталоге.
+        report = _check_or_migrate_plaintext(plaintext, metadata)
         report.update(metadata)
         report["authenticated"] = True
         return report
@@ -669,9 +742,9 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
             plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
             if not looks_like_sqlite(plaintext):
                 raise MaintenanceError("Расшифрованный backup не является базой SQLite")
-            report = check_database(plaintext)
-            if not report["ok"]:
-                raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
+            # Миграция идёт на расшифрованной копии; живая база не тронута,
+            # пока копия не прошла полную проверку текущей схемы.
+            report = _check_or_migrate_plaintext(plaintext, metadata)
             report.update(metadata)
 
             if db_path.exists():
@@ -714,6 +787,7 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
         "pre_restore_backup": str(pre_restore_backup) if pre_restore_backup else None,
         "patient_count": report.get("patient_count"),
         "schema_version": report.get("schema_version"),
+        "migrated_from_schema_version": report.get("migrated_from_schema_version"),
         "format_version": report.get("version"),
         "key_id": report.get("key_id"),
         "accounts_reconciled": report.get("accounts_reconciled", 0),

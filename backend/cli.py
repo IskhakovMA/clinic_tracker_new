@@ -258,6 +258,8 @@ def cmd_backup_verify(args: argparse.Namespace) -> int:
     print(f"  формат:          v{report.get('version')}")
     print(f"  key_id:          {report.get('key_id')}")
     print(f"  версия схемы:    {report.get('schema_version')}")
+    if report.get("migrated_from_schema_version"):
+        print(f"  при restore копия будет обновлена до схемы v{config.SCHEMA_VERSION} (проверено на временной копии)")
     print(f"  записей пациентов: {report.get('patient_count')}")
     return 0
 
@@ -273,6 +275,8 @@ def cmd_restore(args: argparse.Namespace) -> int:
     print(f"  формат:          v{report.get('version')}")
     print(f"  key_id:          {report.get('key_id')}")
     print(f"  версия схемы:     {report.get('schema_version')}")
+    if report.get("migrated_from_schema_version"):
+        print(f"  копия будет обновлена до схемы v{config.SCHEMA_VERSION} перед заменой базы")
     print(f"  записей пациентов: {report.get('patient_count')}")
 
     if not args.confirm_offline:
@@ -298,7 +302,11 @@ def cmd_restore(args: argparse.Namespace) -> int:
     audit.record(
         db.get_connection(),
         audit.RESTORE_PERFORMED,
-        detail=f"via=cli format=v{result['format_version']} key_id={result['key_id']} accounts_reconciled={result['accounts_reconciled']}",
+        detail=(
+            f"via=cli format=v{result['format_version']} key_id={result['key_id']} "
+            f"accounts_reconciled={result['accounts_reconciled']} "
+            f"migrated_from={result['migrated_from_schema_version'] or '-'}"
+        ),
     )
     print("Восстановление завершено.")
     print(f"  backup filename:             {result['restored_from']}")
