@@ -260,3 +260,62 @@ def test_v19_derives_route_context_for_decisions_signed_by_older_builds(client, 
     else:
         assert expected_entry is None and row["signed_route_stage"] is None
     assert unsigned is None
+
+
+def _triggers(path):
+    conn = sqlite3.connect(str(path))
+    rows = dict(conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'").fetchall())
+    conn.close()
+    return rows
+
+
+@pytest.mark.parametrize("version", (16, None))
+def test_concurrent_init_db_is_safe(client, tmp_path, version):
+    """init_db may run in several connections at once (the first requests);
+    trigger rebuilds must neither fail nor leave a window without them."""
+    import threading
+    from backend.app.db import connect_readonly_check, init_db
+
+    path = tmp_path / "concurrent.sqlite"
+    if version:
+        _build(path, version)
+    else:
+        _migrate(path)
+    errors = []
+    barrier = threading.Barrier(8)
+
+    def run():
+        conn = connect_readonly_check(path)
+        conn.execute("PRAGMA busy_timeout = 10000")
+        try:
+            barrier.wait()
+            init_db(conn)
+        except Exception as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(repr(exc))
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=run) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    names = set(_triggers(path))
+    assert {"trg_consilium_signed_immutable", "trg_consilium_one_appointment_per_patient_insert",
+            "trg_consilium_one_appointment_per_patient_update"} <= names
+
+
+def test_init_db_on_an_up_to_date_database_drops_no_trigger(client, tmp_path):
+    from backend.app.db import connect_readonly_check, init_db
+
+    path = tmp_path / "current.sqlite"
+    _migrate(path)
+    before = _triggers(path)
+    conn = connect_readonly_check(path)
+    statements = []
+    conn.set_trace_callback(statements.append)
+    init_db(conn)
+    conn.close()
+    assert not [s for s in statements if "DROP TRIGGER" in s.upper()]
+    assert _triggers(path) == before

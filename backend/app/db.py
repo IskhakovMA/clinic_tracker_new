@@ -1,6 +1,7 @@
 """SQLite storage layer: connection handling, schema init, migrations."""
 import hashlib
 import os
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -895,6 +896,50 @@ def _signed_immutable_trigger_sql(columns: list[str]) -> str:
     """
 
 
+def _normalized_sql(sql: str | None) -> str:
+    text = re.sub(r"\s+", " ", (sql or "").replace("IF NOT EXISTS ", "")).strip()
+    return text[:-1].rstrip() if text.endswith(";") else text
+
+
+def _ensure_trigger(
+    conn: sqlite3.Connection, name: str, create_sql: str, backfills: tuple[str, ...] = (),
+    pending: str | None = None,
+) -> None:
+    """Make trigger `name` match `create_sql`, running `backfills` while it is off.
+
+    init_db runs at start and once per database path in the first requests,
+    so several connections can run it at the same moment. Nothing is touched
+    when the trigger already matches and `pending` (an EXISTS query) finds
+    no row to backfill. Otherwise drop, backfill and create happen in one
+    IMMEDIATE transaction: no other connection can write while the trigger
+    is absent, and a concurrent run finds the work done.
+    """
+    def current() -> str | None:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)).fetchone()
+        return row["sql"] if row else None
+
+    def needed() -> bool:
+        if _normalized_sql(current()) != _normalized_sql(create_sql):
+            return True
+        return bool(pending and conn.execute(pending).fetchone())
+
+    if not needed():
+        return
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if needed():
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+            for statement in backfills:
+                conn.execute(statement)
+            conn.execute(create_sql)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+
 def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
     """v17 → v18: resubmission marker and immutable signed decisions.
 
@@ -921,20 +966,24 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
     columns = sorted(_table_columns(conn, "oncology_consilium_appointments"))
     if not columns:
         return
-    conn.execute("DROP TRIGGER IF EXISTS trg_consilium_signed_immutable")
     # Решения, подписанные сборкой до v18: врач на момент подписи не
     # сохранялся; сборка показывала при подписании treating_doctor_name
     # записи — он и становится историческим значением. id неизвестен.
-    conn.execute(
-        "UPDATE oncology_consilium_appointments SET signed_treating_doctor_name = treating_doctor_name "
-        "WHERE status = 'signed' AND signed_treating_doctor_name IS NULL"
-    )
     # Записи, возвращённые сборкой до v18, уже прошли один раунд доработки.
-    conn.execute(
-        "UPDATE oncology_consilium_appointments SET revision_count = 1 "
-        "WHERE revision_count = 0 AND COALESCE(revision_comment, '') != ''"
+    _ensure_trigger(
+        conn, "trg_consilium_signed_immutable", _signed_immutable_trigger_sql(columns),
+        backfills=(
+            "UPDATE oncology_consilium_appointments SET signed_treating_doctor_name = treating_doctor_name "
+            "WHERE status = 'signed' AND signed_treating_doctor_name IS NULL",
+            "UPDATE oncology_consilium_appointments SET revision_count = 1 "
+            "WHERE revision_count = 0 AND COALESCE(revision_comment, '') != ''",
+        ),
+        pending=(
+            "SELECT 1 FROM oncology_consilium_appointments "
+            "WHERE (status = 'signed' AND signed_treating_doctor_name IS NULL) "
+            "OR (revision_count = 0 AND COALESCE(revision_comment, '') != '') LIMIT 1"
+        ),
     )
-    conn.executescript(_signed_immutable_trigger_sql(columns))
     # История возвратов: до v18 текст прошлых раундов перезаписывался, и
     # восстановить можно только последний комментарий записи (автор неизвестен,
     # migrated = 1). Строки истории неизменны.
@@ -992,28 +1041,29 @@ def migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
     ):
         _add_column_if_missing(conn, table, column, ddl)
 
-    conn.execute("DROP TRIGGER IF EXISTS trg_consilium_signed_immutable")
-    conn.execute(
-        f"""UPDATE oncology_consilium_appointments SET
-                signed_route_history_entry_id = (SELECT h.id {_ROUTE_ENTRY_AT_SIGNING}),
-                signed_route_stage = (SELECT h.stage {_ROUTE_ENTRY_AT_SIGNING}),
-                signed_route_entered_at = (SELECT h.entered_at {_ROUTE_ENTRY_AT_SIGNING}),
-                signed_route_link_source = CASE
-                    WHEN EXISTS (SELECT 1 {_ROUTE_ENTRY_AT_SIGNING}) THEN 'derived' ELSE 'unknown' END
-            WHERE status = 'signed' AND signed_route_link_source IS NULL"""  # nosec B608 - fixed SQL fragment, no input.
-    )
     columns = sorted(_table_columns(conn, table))
-    conn.executescript(_signed_immutable_trigger_sql(columns))
+    _ensure_trigger(
+        conn, "trg_consilium_signed_immutable", _signed_immutable_trigger_sql(columns),
+        backfills=(
+            f"""UPDATE oncology_consilium_appointments SET
+                    signed_route_history_entry_id = (SELECT h.id {_ROUTE_ENTRY_AT_SIGNING}),
+                    signed_route_stage = (SELECT h.stage {_ROUTE_ENTRY_AT_SIGNING}),
+                    signed_route_entered_at = (SELECT h.entered_at {_ROUTE_ENTRY_AT_SIGNING}),
+                    signed_route_link_source = CASE
+                        WHEN EXISTS (SELECT 1 {_ROUTE_ENTRY_AT_SIGNING}) THEN 'derived' ELSE 'unknown' END
+                WHERE status = 'signed' AND signed_route_link_source IS NULL""",  # nosec B608 - fixed SQL fragment, no input.
+        ),
+        pending="SELECT 1 FROM oncology_consilium_appointments "
+                "WHERE status = 'signed' AND signed_route_link_source IS NULL LIMIT 1",
+    )
 
     index = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_consilium_appointment_slot'"
     ).fetchone()
     if index is not None and "deleted_at" not in (index["sql"] or ""):
-        conn.execute("DROP INDEX uq_consilium_appointment_slot")  # INDEX_SQL recreates it partial
-    conn.executescript(
-        """
-        DROP TRIGGER IF EXISTS trg_consilium_one_appointment_per_patient_insert;
-        CREATE TRIGGER trg_consilium_one_appointment_per_patient_insert
+        conn.execute("DROP INDEX IF EXISTS uq_consilium_appointment_slot")  # INDEX_SQL recreates it partial
+    _ensure_trigger(conn, "trg_consilium_one_appointment_per_patient_insert", """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_insert
         BEFORE INSERT ON oncology_consilium_appointments
         WHEN EXISTS (
             SELECT 1 FROM oncology_consilium_appointments
@@ -1021,10 +1071,9 @@ def migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
         )
         BEGIN
             SELECT RAISE(ABORT, 'consilium_patient_already_booked');
-        END;
-
-        DROP TRIGGER IF EXISTS trg_consilium_one_appointment_per_patient_update;
-        CREATE TRIGGER trg_consilium_one_appointment_per_patient_update
+        END""")
+    _ensure_trigger(conn, "trg_consilium_one_appointment_per_patient_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_update
         BEFORE UPDATE OF patient_id ON oncology_consilium_appointments
         WHEN NEW.patient_id != OLD.patient_id AND EXISTS (
             SELECT 1 FROM oncology_consilium_appointments
@@ -1032,9 +1081,7 @@ def migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
         )
         BEGIN
             SELECT RAISE(ABORT, 'consilium_patient_already_booked');
-        END;
-        """
-    )
+        END""")
 
 
 def init_db(conn: sqlite3.Connection) -> None:
