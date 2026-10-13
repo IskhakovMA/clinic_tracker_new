@@ -95,6 +95,15 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
             else row["current_treating_doctor_name"]
         ),
         "currentTreatingDoctorName": row["current_treating_doctor_name"],
+        # Этап маршрута, к которому относится подписанное решение (исторический,
+        # не текущий этап пациента). source: recorded — записан при подписи;
+        # derived — восстановлен миграцией по истории; unknown — не установлен.
+        "routeContext": ({
+            "stage": row["signed_route_stage"],
+            "historyEntryId": row["signed_route_history_entry_id"],
+            "enteredAt": row["signed_route_entered_at"],
+            "source": row["signed_route_link_source"],
+        } if status == "signed" else None),
         "primaryDiagnosis": row["primary_diagnosis"],
         "additionalDiagnosis": row["additional_diagnosis"] or "",
         "comment": row["comment"] or "",
@@ -372,7 +381,22 @@ def sign(
                                    oncology_consilium_appointments.treating_doctor_name)
                    FROM patients
                    LEFT JOIN users treating_doctor ON treating_doctor.id = patients.treating_doctor_user_id
-                   WHERE patients.id = oncology_consilium_appointments.patient_id)
+                   WHERE patients.id = oncology_consilium_appointments.patient_id),
+               -- Контекст маршрута на момент подписи: текущий этап пациента и
+               -- последняя запись его истории. Только фиксируется; этап
+               -- пациента подпись не меняет.
+               signed_route_stage = (
+                   SELECT patients.stage FROM patients
+                   WHERE patients.id = oncology_consilium_appointments.patient_id),
+               signed_route_history_entry_id = (
+                   SELECT h.id FROM history_entries h
+                   WHERE h.patient_id = oncology_consilium_appointments.patient_id
+                   ORDER BY h.seq DESC LIMIT 1),
+               signed_route_entered_at = (
+                   SELECT h.entered_at FROM history_entries h
+                   WHERE h.patient_id = oncology_consilium_appointments.patient_id
+                   ORDER BY h.seq DESC LIMIT 1),
+               signed_route_link_source = 'recorded'
            WHERE id = ? AND status = 'in_review' AND deleted_at IS NULL""",
         (treatment_type, treatment_scheme or None, treatment_scheme_code or None,
          int(goc), int(goc_65_plus), now, user.id, now, appointment_id),

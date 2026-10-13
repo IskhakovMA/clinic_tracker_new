@@ -230,3 +230,33 @@ def test_migration_keeps_the_only_surviving_revision_comment(client, tmp_path):
     ).fetchall()
     conn.close()
     assert rows == [("appt-1", 1, "Последний комментарий", None, 1)]
+
+
+@pytest.mark.parametrize("signed_at, expected_source", [
+    ("2099-01-01T00:00:00+00:00", "derived"),   # после записей истории фикстуры
+    ("2000-01-01T00:00:00+00:00", "unknown"),   # раньше любой записи истории
+])
+def test_v19_derives_route_context_for_decisions_signed_by_older_builds(client, tmp_path, signed_at, expected_source):
+    path = _build(tmp_path / "max-v16-route.sqlite", 16)
+    conn = sqlite3.connect(str(path))
+    conn.execute("UPDATE oncology_consilium_appointments SET signed_at = ? WHERE id = 'appt-0'", (signed_at,))
+    conn.commit()
+    conn.close()
+    _migrate(path)
+    _migrate(path)
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM oncology_consilium_appointments WHERE id = 'appt-0'").fetchone()
+    expected_entry = conn.execute(
+        "SELECT id, stage, entered_at FROM history_entries WHERE patient_id = ? AND entered_at <= ? "
+        "ORDER BY seq DESC LIMIT 1", (row["patient_id"], signed_at)).fetchone()
+    unsigned = conn.execute("SELECT signed_route_link_source FROM oncology_consilium_appointments "
+                            "WHERE id = 'appt-1'").fetchone()[0]
+    conn.close()
+    assert row["signed_route_link_source"] == expected_source
+    if expected_source == "derived":
+        assert (row["signed_route_history_entry_id"], row["signed_route_stage"], row["signed_route_entered_at"]) == (
+            expected_entry["id"], expected_entry["stage"], expected_entry["entered_at"])
+    else:
+        assert expected_entry is None and row["signed_route_stage"] is None
+    assert unsigned is None

@@ -1414,3 +1414,78 @@ def test_soft_deleted_history_still_blocks_destructive_import_and_card_deletion(
     assert client.delete(f"/api/patients/{patient['id']}", headers=client.csrf).status_code == 409
     assert _data_digest() == before
     assert _history(aid)
+
+
+# --- Связь подписанного решения с маршрутом пациента ------------------------
+
+def _route(client, patient_id):
+    card = client.get(f"/api/patients/{patient_id}").json()
+    return card["stage"], [(h["stage"], h["enteredAt"]) for h in card["history"]]
+
+
+def test_signing_records_route_context_without_moving_the_patient(client):
+    doctor = create_account("doctor.route", "doctor")
+    create_account("chair.route", "consilium_chair")
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Маршрута", treatingDoctorUserId=doctor)
+    route = _route(client, patient["id"])
+    assert route[0] == "exam"
+
+    def unchanged():
+        login(client, DEV_USERNAME)
+        assert _route(client, patient["id"]) == route
+
+    login(client, "doctor.route")
+    aid = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]),
+                      headers=client.csrf).json()["id"]
+    unchanged()
+    login(client, "chair.route")
+    assert _post(client, aid, "review").status_code == 200
+    assert _post(client, aid, "return", {"comment": "Уточните"}).status_code == 200
+    unchanged()
+    login(client, "doctor.route")
+    assert client.put(f"/api/consilium/appointments/{aid}", headers=client.csrf,
+                      json=appointment_payload(patient["id"], comment="Исправлено")).status_code == 200
+    login(client, "chair.route")
+    assert _post(client, aid, "review").status_code == 200
+    signed = _post(client, aid, "sign", DECISION)
+    assert signed.status_code == 200
+    unchanged()
+
+    context = signed.json()["routeContext"]
+    last = get_conn().execute(
+        "SELECT id, stage, entered_at FROM history_entries WHERE patient_id = ? ORDER BY seq DESC LIMIT 1",
+        (patient["id"],)).fetchone()
+    assert context == {"stage": "exam", "historyEntryId": last["id"], "enteredAt": last["entered_at"],
+                       "source": "recorded"}
+    assert route[1][-1] == ("exam", last["entered_at"])
+
+    login(client, "doctor.route")
+    assert _post(client, aid, "archive").status_code == 200
+    assert _post(client, aid, "restore").status_code == 200
+    unchanged()
+
+
+def test_route_context_stays_historical_after_the_route_moves_on(client):
+    aid, patient = _make_state(client, "signed")
+    signed_context = client.get("/api/consilium/appointments").json()["appointments"][0]["routeContext"]
+    login(client, DEV_USERNAME)
+    moved = client.post(f"/api/patients/{patient['id']}/stage", json={"newStage": "treatment-prep"},
+                        headers=client.csrf)
+    assert moved.status_code == 200, moved.text
+    assert client.get(f"/api/patients/{patient['id']}").json()["stage"] == "treatment-prep"
+    login(client, "chair.states")
+    after = client.get("/api/consilium/appointments").json()["appointments"][0]["routeContext"]
+    assert after == signed_context and after["stage"] == "exam"
+    conn = get_conn()
+    for column, value in (("signed_route_stage", "treatment-prep"), ("signed_route_history_entry_id", "x"),
+                          ("signed_route_link_source", "derived")):
+        with pytest.raises(sqlite3.IntegrityError, match="consilium_signed_immutable"):
+            conn.execute(f"UPDATE oncology_consilium_appointments SET {column} = ? WHERE id = ?", (value, aid))
+        conn.rollback()
+
+
+def test_unsigned_records_have_no_route_context(client):
+    _make_state(client, "in_review")
+    assert client.get("/api/consilium/appointments").json()["appointments"][0]["routeContext"] is None

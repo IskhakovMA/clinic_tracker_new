@@ -6872,6 +6872,9 @@ const app = {
                     readonlyField('Отметка УВ/РУВ', item.uvRuv ? 'Да' : 'Нет'),
                     readonlyField('Статус', item.statusLabel),
                     readonlyField('Назначенное лечение', item.treatmentTypeLabel),
+                    item.routeContext ? readonlyField('Этап маршрута на момент решения', item.routeContext.stage
+                        ? `${this.stageNames[item.routeContext.stage] || item.routeContext.stage}${item.routeContext.source === 'derived' ? ' (восстановлено по истории)' : ''}`
+                        : 'Не установлен') : null,
                     readonlyField('Отметки ГОК', [item.goc ? 'ГОК' : '', item.goc65Plus ? 'ГОК 65+' : ''].filter(Boolean).join(', ')),
                 ]),
                 readonlyField('Схема лечения', item.treatmentScheme ? `${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}` : '', true),
