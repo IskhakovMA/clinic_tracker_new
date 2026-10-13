@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Create an idempotent set of demo patients in the configured clinic DB."""
+"""Create an idempotent set of demo patients in the configured clinic DB.
+
+Demo environments only: requires CLINIC_ENV=demo and a `.clinic-demo` marker
+file in CLINIC_DATA_DIR (see maintenance.require_demo_environment).
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +14,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from backend.app import audit, policy, store  # noqa: E402
+from backend.app import audit, maintenance, policy, store  # noqa: E402
 from backend.app.db import get_connection  # noqa: E402
 from backend.app.models import PatientCreateIn  # noqa: E402
 
@@ -88,6 +92,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--owner", default="admin", help="Username that will own the test patients")
     args = parser.parse_args()
+    try:
+        maintenance.require_demo_environment()
+    except maintenance.MaintenanceError as exc:
+        print(f"{exc}; no patients were created.", file=sys.stderr)
+        return 2
 
     conn = get_connection()
     owner_row = conn.execute(

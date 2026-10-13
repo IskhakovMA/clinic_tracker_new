@@ -1,13 +1,31 @@
 #!/usr/bin/env python3
-"""Reset consilium demo data and create a complete 15-minute schedule grid."""
+"""Reset consilium demo data and create a complete 15-minute schedule grid.
+
+Demo environments only: requires CLINIC_ENV=demo and a `.clinic-demo` marker
+file in CLINIC_DATA_DIR (see maintenance.require_demo_environment). Before
+deleting anything it writes an encrypted backup with the regular backup key,
+so it refuses to run when no backup key is configured. Patient routes
+(stage, history) are not touched.
+"""
 from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
+import sys
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from backend.app import audit, config, maintenance  # noqa: E402
+from backend.app.db import get_connection  # noqa: E402
+from backend.app.services.consilium import (  # noqa: E402
+    _current_treating_doctor_name,
+    group_for_diagnosis,
+)
 
 
 GROUPS = (
@@ -36,42 +54,49 @@ def slot_times() -> list[str]:
     return result
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("db", type=Path)
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--date", dest="schedule_date")
     parser.add_argument("--owner", default="admin")
     parser.add_argument("--patients", type=int, default=16)
     parser.add_argument("--confirm-reset", action="store_true")
     args = parser.parse_args()
     if not args.confirm_reset:
-        raise SystemExit("Refusing to reset without --confirm-reset")
-    if not args.db.is_file():
-        raise SystemExit(f"Database not found: {args.db}")
+        print("Refusing to reset without --confirm-reset", file=sys.stderr)
+        return 2
+    try:
+        db_path = maintenance.require_demo_environment()
+    except maintenance.MaintenanceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not db_path.is_file():
+        print(f"Database not found: {db_path}", file=sys.stderr)
+        return 2
 
     schedule_day = date.fromisoformat(args.schedule_date) if args.schedule_date else next_workday(date.today())
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_dir = args.db.parent / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = backup_dir / f"clinic-before-consilium-reset-{timestamp}.db"
-    conn = sqlite3.connect(args.db)
-    conn.row_factory = sqlite3.Row
-    backup_conn = sqlite3.connect(backup_path)
     try:
-        conn.backup(backup_conn)
-    finally:
-        backup_conn.close()
+        backup_path = maintenance.backup_database(
+            db_path, config.BACKUP_DIR / f"before-consilium-demo-reset-{timestamp}{maintenance.DEFAULT_BACKUP_SUFFIX}",
+        )
+    except maintenance.MaintenanceError as exc:
+        print(f"Encrypted backup failed, nothing was changed: {exc}", file=sys.stderr)
+        return 2
+
+    conn = get_connection()
     owner = conn.execute(
-        "SELECT id, full_name FROM users WHERE username = ? COLLATE NOCASE AND status = 'active'",
+        "SELECT id, role_id FROM users WHERE username = ? COLLATE NOCASE AND status = 'active'",
         (args.owner,),
     ).fetchone()
     if owner is None:
-        raise SystemExit(f"Active owner not found: {args.owner}")
+        print(f"Active owner not found: {args.owner}", file=sys.stderr)
+        return 2
     chair = conn.execute(
         "SELECT id FROM users WHERE role_id = 'consilium_chair' AND status = 'active' ORDER BY username LIMIT 1"
     ).fetchone()
     if chair is None:
-        raise SystemExit("Active consilium chair not found")
+        print("Active consilium chair not found", file=sys.stderr)
+        return 2
     patients = conn.execute(
         """SELECT id, name, policy_number, diagnosis
            FROM patients
@@ -81,7 +106,8 @@ def main() -> None:
         (max(1, args.patients),),
     ).fetchall()
     if not patients:
-        raise SystemExit("No patients available for demo appointments")
+        print("No patients available for demo appointments", file=sys.stderr)
+        return 2
 
     now = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
     times = slot_times()
@@ -98,13 +124,19 @@ def main() -> None:
                     for slot_time in times
                 ],
             )
+        used_per_group = {group: 0 for group in GROUPS}
         for index, patient in enumerate(patients):
-            group_index = index % len(GROUPS)
-            round_index = index // len(GROUPS)
-            scheduled_time = times[round_index * 4]
             diagnosis = str(patient["diagnosis"] or "").strip().upper()
-            if not diagnosis.startswith("C"):
-                diagnosis = DIAGNOSES[group_index]
+            group = group_for_diagnosis(diagnosis)
+            if group not in GROUPS:
+                group = GROUPS[index % len(GROUPS)]
+                diagnosis = DIAGNOSES[index % len(GROUPS)]
+            # Каждой записи — свой слот в своей группе (слот вмещает одну запись).
+            slot_index = used_per_group[group] * 4
+            if slot_index >= len(times):
+                continue
+            used_per_group[group] += 1
+            scheduled_time = times[slot_index]
             conn.execute(
                 """INSERT INTO oncology_consilium_appointments (
                        id, patient_id, created_by_user_id, scheduled_date, scheduled_time,
@@ -112,43 +144,30 @@ def main() -> None:
                        diagnosis_localization, primary_diagnosis, additional_diagnosis,
                        comment, additional_participant, needs_surgeon, needs_radiotherapist,
                        created_at, updated_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?)""",
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, NULL, ?, ?, ?, ?)""",
                 (
                     uuid.uuid4().hex, patient["id"], owner["id"], schedule_day.isoformat(),
-                    scheduled_time, GROUPS[group_index], index % 3 == 0, owner["full_name"],
-                    patient["policy_number"], GROUPS[group_index], diagnosis,
+                    scheduled_time, group, index % 3 == 0,
+                    _current_treating_doctor_name(conn, patient["id"]),
+                    patient["policy_number"], diagnosis,
                     "Тестовая запись для проверки сетки расписания",
                     index % 2 == 0, index % 4 == 0, now, now,
                 ),
             )
-            latest_stage = conn.execute(
-                "SELECT stage FROM history_entries WHERE patient_id = ? ORDER BY seq DESC LIMIT 1",
-                (patient["id"],),
-            ).fetchone()
-            if latest_stage is None or latest_stage["stage"] != "consult":
-                history_count = conn.execute(
-                    "SELECT COUNT(*) AS c FROM history_entries WHERE patient_id = ?",
-                    (patient["id"],),
-                ).fetchone()["c"]
-                conn.execute(
-                    """INSERT INTO history_entries
-                       (id, patient_id, seq, stage, entered_at, checklist_json, note)
-                       VALUES (?, ?, ?, 'consult', ?, NULL, '')""",
-                    (uuid.uuid4().hex, patient["id"], history_count, now),
-                )
-            conn.execute(
-                "UPDATE patients SET stage = 'consult', updated_at = ? WHERE id = ?",
-                (now, patient["id"]),
-            )
-    conn.close()
+    audit.record(
+        conn, audit.CONSILIUM_DEMO_RESET,
+        detail=f"slots={len(GROUPS) * len(times)};appointments={sum(used_per_group.values())};date={schedule_day.isoformat()}",
+        actor_user_id=owner["id"], actor_role=owner["role_id"],
+    )
     print(json.dumps({
-        "backup": str(backup_path),
+        "backup": backup_path.name,
         "date": schedule_day.isoformat(),
         "groups": len(GROUPS),
         "slots": len(GROUPS) * len(times),
-        "appointments": len(patients),
+        "appointments": sum(used_per_group.values()),
     }, ensure_ascii=False))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

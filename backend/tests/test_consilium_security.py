@@ -560,3 +560,101 @@ def test_revision_notification_respects_recipient_scope(client):
     response = client.get("/api/internal-notifications?type=consilium_revision")
     assert response.json()["items"] == []
     assert "Уведомляемый Пациент" not in client.get("/api/internal-notifications").text
+
+
+# --- Б8: демо-скрипты -----------------------------------------------------
+
+import hashlib  # noqa: E402
+import runpy  # noqa: E402
+
+BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+
+def _script(name):
+    return runpy.run_path(str(PROJECT_ROOT / "backend" / "scripts" / name), run_name="seed_under_test")
+
+
+def _seed_world(client):
+    """Owner, chair and two patients in the per-test temp DB."""
+    create_account(DEV_USERNAME)
+    create_account("admin", "developer")
+    create_account("chair.demo", "consilium_chair")
+    login(client, DEV_USERNAME)
+    first = create_patient(client, name="Демо Первый", diagnosis="C34.1", nosology="lung34")
+    second = create_patient(client, name="Демо Второй", diagnosis="C34.9", nosology="lung12")
+    return first, second
+
+
+def _db_digest():
+    from backend.app import config
+    conn = get_conn()
+    conn.execute("PRAGMA wal_checkpoint(FULL)")
+    return hashlib.sha256(config.DB_PATH.read_bytes()).hexdigest()
+
+
+def _files_under(path):
+    return sorted(p.relative_to(path).as_posix() for p in path.rglob("*") if p.is_file())
+
+
+@pytest.mark.parametrize("env, marker", [("local", True), ("demo", False), ("production", True)])
+def test_demo_seed_refuses_outside_marked_demo_environment(client, monkeypatch, capsys, env, marker):
+    from backend.app import config
+
+    _seed_world(client)
+    monkeypatch.setattr(config, "APP_ENV", env)
+    if marker:
+        (config.DATA_DIR / ".clinic-demo").write_text("demo\n")
+    monkeypatch.setenv("CLINIC_BACKUP_KEY", BACKUP_KEY)
+    before, files_before = _db_digest(), _files_under(config.DATA_DIR)
+    for name, argv in (
+        ("seed_consilium_demo.py", ["seed", "--confirm-reset"]),
+        ("seed_test_patients.py", ["seed"]),
+    ):
+        monkeypatch.setattr("sys.argv", argv)
+        assert _script(name)["main"]() == 2
+    assert _db_digest() == before
+    assert _files_under(config.DATA_DIR) == files_before
+
+
+def test_demo_seed_without_backup_key_changes_nothing(client, monkeypatch):
+    from backend.app import config
+
+    _seed_world(client)
+    monkeypatch.setattr(config, "APP_ENV", "demo")
+    (config.DATA_DIR / ".clinic-demo").write_text("demo\n")
+    for var in ("CLINIC_BACKUP_KEY", "CLINIC_BACKUP_KEY_FILE"):
+        monkeypatch.delenv(var, raising=False)
+    before = _db_digest()
+    monkeypatch.setattr("sys.argv", ["seed", "--confirm-reset"])
+    assert _script("seed_consilium_demo.py")["main"]() == 2
+    assert _db_digest() == before
+    assert [p.name for p in config.DATA_DIR.rglob("*.db")] == ["clinic.db"]
+    assert not config.BACKUP_DIR.exists() or not any(config.BACKUP_DIR.iterdir())
+
+
+def test_demo_seed_writes_only_encrypted_backup_and_keeps_routes(client, monkeypatch):
+    from backend.app import config, maintenance
+
+    first, second = _seed_world(client)
+    monkeypatch.setattr(config, "APP_ENV", "demo")
+    (config.DATA_DIR / ".clinic-demo").write_text("demo\n")
+    monkeypatch.setenv("CLINIC_BACKUP_KEY", BACKUP_KEY)
+    routes_before = {
+        pid: client.get(f"/api/patients/{pid}").json()["history"] for pid in (first["id"], second["id"])
+    }
+    monkeypatch.setattr("sys.argv", ["seed", "--confirm-reset"])
+    assert _script("seed_consilium_demo.py")["main"]() == 0
+
+    backups = list(config.BACKUP_DIR.iterdir())
+    assert len(backups) == 1 and backups[0].suffix == ".cbk"
+    assert maintenance.looks_like_encrypted_backup(backups[0])
+    assert not maintenance.looks_like_sqlite(backups[0])
+    assert [p.name for p in config.DATA_DIR.rglob("*.db")] == ["clinic.db"]
+
+    conn = get_conn()
+    rows = conn.execute("SELECT patient_id, consilium_group FROM oncology_consilium_appointments").fetchall()
+    assert {r["patient_id"] for r in rows} == {first["id"], second["id"]}
+    assert {r["consilium_group"] for r in rows} == {"thoracic"}
+    for pid, history in routes_before.items():
+        assert client.get(f"/api/patients/{pid}").json()["history"] == history
+    assert _audit_rows("consilium_demo_reset")[0]["detail"].startswith("slots=")

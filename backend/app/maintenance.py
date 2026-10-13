@@ -67,6 +67,29 @@ class BackupKey:
 
 # --- integrity checks ---------------------------------------------------
 
+DEMO_ENV = "demo"
+DEMO_MARKER_NAME = ".clinic-demo"
+
+
+def require_demo_environment() -> Path:
+    """Refuse to run a demo-data script outside an explicitly marked demo setup.
+
+    Two independent signals are required: CLINIC_ENV=demo for the process and
+    a `.clinic-demo` marker file in the configured data directory. An
+    environment variable alone is too easy to leave set in a shell that later
+    points at a real database; the marker ties the permission to one data
+    directory. Returns the configured database path.
+    """
+    if config.APP_ENV != DEMO_ENV:
+        raise MaintenanceError("Демо-скрипт разрешён только при CLINIC_ENV=demo")
+    marker = config.DATA_DIR / DEMO_MARKER_NAME
+    if marker.is_symlink() or not marker.is_file():
+        raise MaintenanceError(
+            f"Каталог данных не помечен как демо: нет файла {DEMO_MARKER_NAME} в {config.DATA_DIR}"
+        )
+    return config.DB_PATH
+
+
 def check_database(db_path: Path) -> dict:
     """Run integrity_check, foreign_key_check, schema version and table checks.
     Returns a report dict; never includes row contents."""

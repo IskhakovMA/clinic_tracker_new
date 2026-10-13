@@ -109,6 +109,7 @@ CONSILIUM_RESTORED = "consilium_restored"
 CONSILIUM_SCHEDULE_GENERATED = "consilium_schedule_generated"
 CONSILIUM_SCHEDULE_SLOT_DELETED = "consilium_schedule_slot_deleted"
 CONSILIUM_REGISTRY_EXPORTED = "consilium_registry_exported"
+CONSILIUM_DEMO_RESET = "consilium_demo_reset"
 
 RESULT_OK = "ok"
 RESULT_DENIED = "denied"
