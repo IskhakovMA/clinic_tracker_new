@@ -185,3 +185,26 @@ jobs:
 
       - name: Scan Git history for secrets
         run: '"$RUNNER_TEMP/gitleaks" git . --redact --no-banner --verbose'
+
+      # The history scan above uses gitleaks' default `git log -p`, which prints
+      # no patch for merge commits: a secret typed while resolving a conflict,
+      # or added by hand to a clean merge, is never scanned. remerge diffs each
+      # merge against Git's own automatic merge of its parents, i.e. exactly the
+      # changes made in the merge commit. --log-opts replaces gitleaks' default
+      # log arguments, so they are repeated unchanged.
+      # Fail closed: if Git rejects the option, gitleaks logs an ERR, scans 0
+      # commits and still exits 0, so the step checks for both explicitly.
+      - name: Scan changes made inside merge commits for secrets
+        run: |
+          set -euo pipefail
+          git --version
+          git log -1 --diff-merges=remerge --format=%H HEAD > /dev/null
+          log="$RUNNER_TEMP/gitleaks-merge-commits.log"
+          "$RUNNER_TEMP/gitleaks" git . \
+            --log-opts="--all --full-history --diff-filter=tuxdb --diff-merges=remerge" \
+            --redact --no-banner --no-color --verbose 2>&1 | tee "$log"
+          if grep -Eq '^[^ ]+ ERR ' "$log"; then
+            echo "gitleaks reported an error; merge commits were not scanned" >&2
+            exit 1
+          fi
+          grep -Eq ' [1-9][0-9]* commits scanned' "$log"
