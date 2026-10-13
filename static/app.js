@@ -6396,7 +6396,7 @@ const app = {
                         : item.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть',
                     on: { click: () => this.openConsiliumDecision(item.id) },
                 }),
-            el('button', {
+            !this.can('useConsiliumFavorites') ? null : el('button', {
                 type: 'button',
                 class: `btn btn--ghost btn--sm${item.isFavorite ? ' is-favorite' : ''}`,
                 text: item.isFavorite ? '★ В избранном' : '☆ В избранное',
@@ -6716,6 +6716,8 @@ const app = {
             el('td', {}, el('label', { class: 'registry-check' }, [
                 el('input', {
                     type: 'checkbox', checked: item.referralCompleted,
+                    // Отдельное право; сервер проверяет его же.
+                    disabled: !this.can('markReferralCompletion'),
                     on: { change: event => this.setSurgicalReferralCompleted(item.id, event.target.checked) },
                 }),
                 el('span', { text: item.referralCompleted ? 'Отмечено' : 'Поставить отметку' }),

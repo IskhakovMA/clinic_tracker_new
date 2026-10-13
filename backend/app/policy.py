@@ -200,9 +200,11 @@ def can_manage_notification_templates(user: CurrentUser) -> bool:
 # Онкоконсилиум — минимальные полномочия; роль вне списков доступа не получает.
 #   запись пациентов: врач и заведующий в пределах своего scope (объектная
 #     проверка can_write_patient), разработчик — по административной модели;
-#   медицинские решения (рассмотрение, подпись, возврат, отметка исполнения
-#     направления, избранное председателя): только председатель — техническая
-#     роль разработчика их не наследует;
+#   медицинские решения (рассмотрение, подпись, возврат): только председатель —
+#     техническая роль разработчика их не наследует;
+#   отметка исполнения хирургического направления в реестре председателя и
+#   избранное председателя — два отдельных права (сейчас оба у председателя);
+#     избранное — закладка и доступа к карточке не расширяет;
 #   администрирование консилиума (сетка расписания, реестры, XLSX,
 #     аналитика): председатель и разработчик.
 # Глобальные read-only роли (заместитель главного врача, заведующий ЦАОП)
@@ -220,6 +222,17 @@ def can_manage_consilium(user: CurrentUser) -> bool:
 
 
 def can_decide_consilium(user: CurrentUser) -> bool:
+    return user.role_id == ROLE_CONSILIUM_CHAIR
+
+
+def can_mark_referral_completion(user: CurrentUser) -> bool:
+    """Отметка исполнения хирургического направления по подписанному решению:
+    по логике реестров её ведёт председатель."""
+    return user.role_id == ROLE_CONSILIUM_CHAIR
+
+
+def can_use_chair_favorites(user: CurrentUser) -> bool:
+    """Личные закладки председателя внутри консилиума."""
     return user.role_id == ROLE_CONSILIUM_CHAIR
 
 
@@ -270,5 +283,7 @@ def permissions_payload(user: CurrentUser) -> dict:
         "bookConsilium": can_book_consilium(user),
         "manageConsilium": can_manage_consilium(user),
         "decideConsilium": can_decide_consilium(user),
+        "markReferralCompletion": can_mark_referral_completion(user),
+        "useConsiliumFavorites": can_use_chair_favorites(user),
         "consiliumChair": user.role_id == ROLE_CONSILIUM_CHAIR,
     }

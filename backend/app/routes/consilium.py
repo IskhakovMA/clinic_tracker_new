@@ -54,6 +54,14 @@ def _require_decision(conn: sqlite3.Connection, user: policy.CurrentUser) -> Non
     _require(conn, user, policy.can_decide_consilium(user), "consilium_decision")
 
 
+def _require_favorites(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+    _require(conn, user, policy.can_use_chair_favorites(user), "consilium_favorites")
+
+
+def _require_referral_mark(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+    _require(conn, user, policy.can_mark_referral_completion(user), "consilium_referral_completion")
+
+
 def _require_access(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
     _require(conn, user, policy.can_access_consilium(user), "consilium_access")
 
@@ -376,7 +384,7 @@ def add_consilium_favorite(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_decision(conn, user)
+    _require_favorites(conn, user)
     linked = conn.execute(
         "SELECT 1 FROM oncology_consilium_appointments WHERE patient_id = ?",
         (patient_id,),
@@ -396,7 +404,7 @@ def remove_consilium_favorite(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_decision(conn, user)
+    _require_favorites(conn, user)
     consilium.remove_favorite(conn, user, patient_id)
     audit.record(
         conn, audit.CONSILIUM_FAVORITE_REMOVED, patient_id=patient_id,
@@ -412,7 +420,7 @@ def set_surgical_referral_completion(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_decision(conn, user)
+    _require_referral_mark(conn, user)
     try:
         appointment = consilium.set_referral_completed(
             conn, user, appointment_id, body.completed

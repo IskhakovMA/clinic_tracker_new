@@ -769,6 +769,8 @@ ACCESS = {"developer", "doctor", "department_head", "consilium_chair"}
 BOOKING = {"developer", "doctor", "department_head"}
 MANAGING = {"developer", "consilium_chair"}
 DECIDING = {"consilium_chair"}
+REFERRAL_MARKING = {"consilium_chair"}
+FAVORITES = {"consilium_chair"}
 ENDPOINTS = (
     ("GET", "/api/consilium/meta", None, ACCESS),
     ("GET", "/api/consilium/appointments", None, ACCESS),
@@ -786,10 +788,10 @@ ENDPOINTS = (
     ("POST", "/api/consilium/appointments/{aid}/review", {}, DECIDING),
     ("POST", "/api/consilium/appointments/{aid}/sign", DECISION, DECIDING),
     ("POST", "/api/consilium/appointments/{aid}/return", {"comment": "Проверка прав"}, DECIDING),
-    ("POST", "/api/consilium/appointments/{aid}/referral-completion", {"completed": True}, DECIDING),
+    ("POST", "/api/consilium/appointments/{aid}/referral-completion", {"completed": True}, REFERRAL_MARKING),
     ("GET", "/api/consilium/analytics", None, MANAGING),
-    ("POST", "/api/consilium/favorites/{pid}", {}, DECIDING),
-    ("DELETE", "/api/consilium/favorites/{pid}", None, DECIDING),
+    ("POST", "/api/consilium/favorites/{pid}", {}, FAVORITES),
+    ("DELETE", "/api/consilium/favorites/{pid}", None, FAVORITES),
     ("GET", "/api/consilium/registries", None, MANAGING),
     ("GET", "/api/consilium/registries/chemotherapy.xlsx", None, MANAGING),
     ("GET", "/api/consilium/registries/goc.xlsx", None, MANAGING),
@@ -820,6 +822,8 @@ def test_consilium_endpoint_authorization_matrix(client, role):
     assert me["bookConsilium"] is (role in BOOKING)
     assert me["manageConsilium"] is (role in MANAGING)
     assert me["decideConsilium"] is (role in DECIDING)
+    assert me["markReferralCompletion"] is (role in REFERRAL_MARKING)
+    assert me["useConsiliumFavorites"] is (role in FAVORITES)
 
     for method, template, body, allowed_roles in ENDPOINTS:
         path = template.format(aid=aid, pid=patient["id"])
@@ -1303,3 +1307,36 @@ def test_import_dialog_uses_server_impact_and_blocks_confirm():
     assert "this.importReport.consiliumImpact" in body
     assert "$('confirmImportCommitBtn').disabled = blocked;" in body
     assert 'id="importConsiliumImpact"' in (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+
+
+# --- Отметка исполнения направления и избранное — отдельные права ------------
+
+def test_referral_mark_and_favorites_are_separate_permissions(client, monkeypatch):
+    """Each endpoint checks its own permission: switching one off must not
+    affect the other, and neither follows from the decision permission."""
+    from backend.app import policy
+
+    aid, patient = _make_state(client, "signed")  # surgery decision, chair session
+    referral = f"/api/consilium/appointments/{aid}/referral-completion"
+    favorite = f"/api/consilium/favorites/{patient['id']}"
+    assert client.post(referral, json={"completed": True}, headers=client.csrf).status_code == 200
+    assert _row(aid)["referral_completed_at"]
+
+    monkeypatch.setattr(policy, "can_mark_referral_completion", lambda user: False)
+    assert client.post(referral, json={"completed": False}, headers=client.csrf).status_code == 403
+    assert _row(aid)["referral_completed_at"]
+    assert client.post(favorite, json={}, headers=client.csrf).status_code == 200
+
+    monkeypatch.undo()
+    monkeypatch.setattr(policy, "can_use_chair_favorites", lambda user: False)
+    assert client.post(favorite, json={}, headers=client.csrf).status_code == 403
+    assert client.post(referral, json={"completed": False}, headers=client.csrf).status_code == 200
+    assert _post(client, aid, "review").status_code == 409  # decision rights untouched, record is signed
+
+
+def test_referral_mark_does_not_touch_the_decision(client):
+    aid, _ = _make_state(client, "signed")
+    before = {c: _row(aid)[c] for c in DECISION_COLUMNS}
+    assert client.post(f"/api/consilium/appointments/{aid}/referral-completion",
+                       json={"completed": True}, headers=client.csrf).status_code == 200
+    assert {c: _row(aid)[c] for c in DECISION_COLUMNS} == before
