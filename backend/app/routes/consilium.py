@@ -178,9 +178,6 @@ def create_consilium_appointment(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable_patient(conn, user, body.patientId)
-    previous_stage = conn.execute(
-        "SELECT stage FROM patients WHERE id = ?", (body.patientId,)
-    ).fetchone()["stage"]
     try:
         appointment = consilium.create(conn, user, body)
     except ValueError as exc:
@@ -189,12 +186,6 @@ def create_consilium_appointment(
         conn, audit.CONSILIUM_APPOINTMENT_CREATED, patient_id=body.patientId,
         **audit.actor_ctx(user),
     )
-    if previous_stage != "consult":
-        audit.record(
-            conn, audit.PATIENT_UPDATED, patient_id=body.patientId,
-            detail="field=stage;reason=consilium_appointment",
-            **audit.actor_ctx(user),
-        )
     return appointment
 
 
@@ -214,9 +205,6 @@ def update_consilium_appointment(
             detail="Подписанная запись недоступна для редактирования.",
         )
     _require_writable_patient(conn, user, body.patientId)
-    previous_stage = conn.execute(
-        "SELECT stage FROM patients WHERE id = ?", (body.patientId,)
-    ).fetchone()["stage"]
     try:
         appointment = consilium.update(conn, user, appointment_id, body)
     except ValueError as exc:
@@ -227,12 +215,6 @@ def update_consilium_appointment(
         conn, audit.CONSILIUM_APPOINTMENT_UPDATED, patient_id=body.patientId,
         **audit.actor_ctx(user),
     )
-    if previous_stage != "consult":
-        audit.record(
-            conn, audit.PATIENT_UPDATED, patient_id=body.patientId,
-            detail="field=stage;reason=consilium_appointment",
-            **audit.actor_ctx(user),
-        )
     return appointment
 
 

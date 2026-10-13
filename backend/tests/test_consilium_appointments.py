@@ -44,10 +44,6 @@ def test_consilium_create_list_and_update_are_personal(auth_client):
     assert item["consiliumGroupLabel"] == "Торакальная"
     assert item["hasBenefit"] is True
 
-    routed_patient = auth_client.get(f"/api/patients/{patient['id']}").json()
-    assert routed_patient["stage"] == "consult"
-    assert [entry["stage"] for entry in routed_patient["history"]] == ["exam", "consult"]
-
     listed = auth_client.get("/api/consilium/appointments")
     assert listed.status_code == 200
     assert [row["id"] for row in listed.json()["appointments"]] == [item["id"]]
@@ -66,6 +62,37 @@ def test_consilium_create_list_and_update_are_personal(auth_client):
     assert updated.json()["scheduledTime"] == "12:00"
     assert updated.json()["consiliumGroupLabel"] == "Торакальная"
     assert updated.json()["needsRadiotherapist"] is True
+
+
+def test_consilium_booking_does_not_change_patient_route(auth_client):
+    # Правила перехода по результатам консилиума ещё не согласованы:
+    # запись и её правка не должны трогать этап и историю маршрута.
+    patient = create_patient(auth_client)
+    before = auth_client.get(f"/api/patients/{patient['id']}").json()
+
+    created = auth_client.post(
+        "/api/consilium/appointments",
+        json=appointment_payload(patient["id"]),
+        headers=auth_client.csrf,
+    )
+    assert created.status_code == 201, created.text
+    updated = auth_client.put(
+        f"/api/consilium/appointments/{created.json()['id']}",
+        json=appointment_payload(patient["id"], scheduledTime="12:00"),
+        headers=auth_client.csrf,
+    )
+    assert updated.status_code == 200, updated.text
+
+    after = auth_client.get(f"/api/patients/{patient['id']}").json()
+    assert after["stage"] == before["stage"] == "exam"
+    assert [entry["stage"] for entry in after["history"]] == ["exam"]
+    conn = get_conn()
+    stage_audit = conn.execute(
+        "SELECT COUNT(*) AS c FROM audit_events WHERE event_type = 'patient_updated' "
+        "AND patient_id = ? AND detail LIKE '%reason=consilium_appointment%'",
+        (patient["id"],),
+    ).fetchone()["c"]
+    assert stage_audit == 0
 
 
 def test_doctor_can_delete_unsigned_appointment_and_reuse_slot(auth_client):

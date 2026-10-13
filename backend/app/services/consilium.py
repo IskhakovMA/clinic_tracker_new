@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from .. import policy, store
+from .. import policy
 from ..db import now_iso
 from ..models import ConsiliumAppointmentIn
 
@@ -230,7 +230,6 @@ def create(
                     int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now, now,
                 ),
             )
-            store.ensure_patient_stage(conn, body.patientId, "consult")
     except sqlite3.IntegrityError as exc:
         raise ValueError(_integrity_error_message(exc)) from exc
     return get_owned(conn, user, appointment_id)
@@ -412,7 +411,6 @@ def update(
                 appointment_id, user.id,
                 ),
             )
-            store.ensure_patient_stage(conn, body.patientId, "consult")
     except sqlite3.IntegrityError as exc:
         raise ValueError(_integrity_error_message(exc)) from exc
     return get_owned(conn, user, appointment_id)
