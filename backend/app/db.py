@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -510,11 +511,37 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
     # Wait instead of failing immediately when another writer (a CLI backup,
     # a second uvicorn worker) briefly holds the write lock.
     conn.execute(f"PRAGMA busy_timeout = {config.BUSY_TIMEOUT_MS}")
+    _enable_wal(conn)
     return conn
+
+
+def _enable_wal(conn: sqlite3.Connection) -> None:
+    """Switch the file to WAL, waiting for a competing lock within busy_timeout.
+
+    Every database this app creates is already WAL (the mode is kept in the
+    file), so nothing is switched then. A file that is not WAL yet needs
+    exclusive access to switch. When two processes (the server and a CLI
+    command) switch it at the same moment, or another connection holds a
+    write lock, SQLite returns SQLITE_BUSY at once instead of using
+    busy_timeout, because waiting could deadlock: the caller has to let go
+    and try again. The statement runs in autocommit, so a failed attempt
+    holds no lock. Attempts stop at the same busy timeout and the last
+    error is raised.
+    """
+    if conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal":
+        return
+    deadline = time.monotonic() + config.BUSY_TIMEOUT_MS / 1000
+    while True:
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            return
+        except sqlite3.OperationalError as exc:
+            if exc.sqlite_errorcode != sqlite3.SQLITE_BUSY or time.monotonic() >= deadline:
+                raise
+        time.sleep(0.01)
 
 
 def connect_readonly_check(db_path: Path) -> sqlite3.Connection:
