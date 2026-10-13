@@ -135,8 +135,8 @@ def test_canonical_page_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-schedule-workflow-v30">' in body
-    assert '<script src="/static/app.js?v=consilium-schedule-workflow-v30"></script>' in body
+    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-security-stage2-v31">' in body
+    assert '<script src="/static/app.js?v=consilium-security-stage2-v31"></script>' in body
     # ни одного <style> и ни одного inline-скрипта в документе
     assert "<style" not in body
     assert not re.search(r"<script(?![^>]*\ssrc=)", body)
@@ -254,7 +254,7 @@ def test_route_treatment_and_semantic_color_frontend_contracts_are_present():
     assert "this.treatmentTypeOptions(ev.treatmentType || '')" in js
     assert "Направить на дообследование" in js
     assert "this.advanceToStage(patientId, 'exam', this.stageNames.exam)" in js
-    assert "consilium-schedule-workflow-v30" in html
+    assert "consilium-security-stage2-v31" in html
 
     for marker in (
         "analyticsCardToneClass",

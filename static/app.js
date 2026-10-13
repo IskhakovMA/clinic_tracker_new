@@ -6388,7 +6388,8 @@ const app = {
                 ? null
                 : el('button', {
                     type: 'button', class: 'btn btn--primary btn--sm',
-                    text: item.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть',
+                    text: item.status === 'in_review' ? 'Продолжить рассмотрение'
+                        : item.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть',
                     on: { click: () => this.openConsiliumDecision(item.id) },
                 }),
             el('button', {
@@ -7296,12 +7297,13 @@ const app = {
         if (scheme && value.includes('—')) $('consiliumTreatmentScheme').value = scheme.name;
     },
 
-    async openConsiliumDecision(appointmentId) {
+    // Открытие окна ничего не меняет на сервере: рассмотрение начинается
+    // только кнопкой «Начать рассмотрение», подписать можно после неё.
+    openConsiliumDecision(appointmentId) {
         try {
-            const record = await apiPost(`/api/consilium/appointments/${encodeURIComponent(appointmentId)}/review`, {});
+            const record = (this.consilium.appointments || []).find(item => item.id === appointmentId);
+            if (!record) throw new Error('запись не найдена, обновите страницу');
             this.consilium.decisionId = appointmentId;
-            const index = this.consilium.appointments.findIndex(item => item.id === appointmentId);
-            if (index >= 0) this.consilium.appointments[index] = record;
             $('consiliumDecisionPatient').textContent = `${record.patientName} · ${this.formatConsiliumDate(record.scheduledDate, record.scheduledTime)} · ${record.consiliumGroupLabel}`;
             $('consiliumTreatmentType').value = record.treatmentType || '';
             $('consiliumTreatmentScheme').value = record.treatmentScheme || '';
@@ -7311,10 +7313,34 @@ const app = {
             this.fillConsiliumTreatmentSchemes();
             $('consiliumDecisionError').classList.add('is-hidden');
             this.updateConsiliumSchemeVisibility();
+            this.syncConsiliumReviewState(record);
             ui.openModal('consiliumDecisionModal');
-            this.renderConsilium();
         } catch (error) {
             ui.toast('Не удалось открыть решение: ' + error.message, 'danger');
+        }
+    },
+
+    syncConsiliumReviewState(record) {
+        const inReview = record.status === 'in_review';
+        $('consiliumReviewHint').classList.toggle('is-hidden', inReview);
+        $('startConsiliumReviewBtn').classList.toggle('is-hidden', inReview);
+        $('signConsiliumBtn').classList.toggle('is-hidden', !inReview);
+        $('signConsiliumBtn').disabled = !inReview;
+    },
+
+    async startConsiliumReview() {
+        const appointmentId = this.consilium.decisionId;
+        if (!appointmentId) return;
+        try {
+            const record = await apiPost(`/api/consilium/appointments/${encodeURIComponent(appointmentId)}/review`, {});
+            const index = this.consilium.appointments.findIndex(item => item.id === appointmentId);
+            if (index >= 0) this.consilium.appointments[index] = record;
+            $('consiliumDecisionError').classList.add('is-hidden');
+            this.syncConsiliumReviewState(record);
+            this.renderConsilium();
+        } catch (error) {
+            $('consiliumDecisionError').textContent = 'Не удалось начать рассмотрение: ' + error.message;
+            $('consiliumDecisionError').classList.remove('is-hidden');
         }
     },
 
@@ -8353,6 +8379,7 @@ const app = {
         on('closeConsiliumDetailsIconBtn', 'click', () => ui.closeModal('consiliumDetailsModal'));
         on('closeConsiliumDetailsBtn', 'click', () => ui.closeModal('consiliumDetailsModal'));
         on('returnConsiliumBtn', 'click', () => this.openConsiliumRevision());
+        on('startConsiliumReviewBtn', 'click', () => this.startConsiliumReview());
         $('consiliumDecisionForm').addEventListener('submit', (event) => this.submitConsiliumDecision(event));
         on('cancelConsiliumRevisionBtn', 'click', () => {
             ui.closeModal('consiliumRevisionModal');

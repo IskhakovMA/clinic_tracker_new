@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-schedule-workflow-v30">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-security-stage2-v31">
 </head>
 <body>
 
@@ -1216,6 +1216,7 @@
         </div>
         <form class="modal__body form" id="consiliumDecisionForm">
             <p class="alert alert--info" id="consiliumDecisionPatient"></p>
+            <p class="alert alert--warning is-hidden" id="consiliumReviewHint">Рассмотрение ещё не начато. Подписать решение можно после того, как вы начнёте рассмотрение.</p>
             <p class="alert alert--danger is-hidden" id="consiliumDecisionError" role="alert"></p>
             <div class="field">
                 <label class="field__label" for="consiliumTreatmentType">Назначенное лечение <span class="req">*</span></label>
@@ -1252,6 +1253,7 @@
         </form>
         <div class="modal__foot consilium-decision-actions">
             <button type="button" class="btn btn--ghost" id="returnConsiliumBtn">Вернуть на доработку</button>
+            <button type="button" class="btn btn--primary" id="startConsiliumReviewBtn">Начать рассмотрение</button>
             <button type="submit" class="btn btn--primary" form="consiliumDecisionForm" id="signConsiliumBtn">Подписать</button>
         </div>
     </div>
@@ -1617,6 +1619,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=consilium-schedule-workflow-v30"></script>
+<script src="/static/app.js?v=consilium-security-stage2-v31"></script>
 </body>
 </html>

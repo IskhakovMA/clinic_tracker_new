@@ -470,3 +470,28 @@ def test_consilium_writes_are_rate_limited(client):
     ]
     assert codes[:60] == [200] * 60
     assert codes[60] == 429
+
+
+# --- Б6: начало рассмотрения — отдельное действие --------------------------
+
+from .conftest import PROJECT_ROOT  # noqa: E402
+
+
+def _method_body(source: str, signature: str) -> str:
+    start = source.index(signature)
+    end = source.index("\n    },", start)
+    return source[start:end]
+
+
+def test_opening_decision_modal_does_not_start_review():
+    app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    index_html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
+    opener = _method_body(app_js, "openConsiliumDecision(appointmentId) {")
+    assert "/review" not in opener
+    assert "apiPost" not in opener and "apiFetch" not in opener
+    starter = _method_body(app_js, "async startConsiliumReview() {")
+    assert "/review`" in starter
+    assert 'id="startConsiliumReviewBtn"' in index_html
+    assert "on('startConsiliumReviewBtn', 'click', () => this.startConsiliumReview());" in app_js
+    sync = _method_body(app_js, "syncConsiliumReviewState(record) {")
+    assert "$('signConsiliumBtn').disabled = !inReview;" in sync
