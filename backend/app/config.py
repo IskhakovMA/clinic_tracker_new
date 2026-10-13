@@ -72,6 +72,13 @@ SCHEMA_VERSION = 18
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
+# Онкоконсилиум: лимиты на пользователя и адрес клиента за окно (deps.abuse_rate_limit
+# ведёт отдельный счётчик на «эндпоинт:пользователь:адрес», общего счётчика нет).
+CONSILIUM_RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.environ.get("CLINIC_CONSILIUM_RATE_LIMIT_WINDOW_SECONDS", "60")))
+CONSILIUM_WRITE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_WRITE_RATE_LIMIT", "60")))
+CONSILIUM_EXPORT_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_EXPORT_RATE_LIMIT", "20")))
+CONSILIUM_SCHEDULE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_SCHEDULE_RATE_LIMIT", "20")))
+
 INTERNAL_NOTIFICATION_UPCOMING_DAYS = int(os.environ.get("INTERNAL_NOTIFICATION_UPCOMING_DAYS", "3"))
 
 NOTIFICATION_PROVIDER = os.environ.get("NOTIFICATION_PROVIDER", "mock").strip().lower()

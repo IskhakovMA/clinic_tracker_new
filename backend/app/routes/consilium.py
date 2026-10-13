@@ -7,7 +7,7 @@ from datetime import date as date_type
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 
-from .. import audit, policy
+from .. import audit, config, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import (
     ConsiliumAppointmentIn,
@@ -22,14 +22,15 @@ from ..services.xlsx_export import workbook_bytes
 
 router = APIRouter(prefix="/api/consilium", tags=["consilium"])
 
-# Лимиты на пользователя и адрес за минуту. Запись врачом и решения
-# председателя — штучные действия: 60/мин с запасом покрывают работу целого
-# заседания и останавливают скрипт. Генерация сетки и выгрузки реестров с ПДн
-# тяжелее и реже — 20/мин, как экспорт аналитики.
-_WRITE_LIMIT = Depends(abuse_rate_limit("consilium_write", 60))
-_DECISION_LIMIT = Depends(abuse_rate_limit("consilium_decision", 60))
-_SCHEDULE_LIMIT = Depends(abuse_rate_limit("consilium_schedule_generate", 20))
-_EXPORT_LIMIT = Depends(abuse_rate_limit("consilium_registry_export", 20))
+# Лимиты на пользователя и адрес (config.CONSILIUM_*_RATE_LIMIT, по умолчанию
+# 60 изменений и 20 выгрузок/генераций сетки в минуту). Запись врачом и решения
+# председателя — штучные действия: 60/мин покрывают заседание и останавливают
+# скрипт; выгрузки реестров с ПДн и генерация сетки тяжелее и реже.
+_WINDOW = config.CONSILIUM_RATE_LIMIT_WINDOW_SECONDS
+_WRITE_LIMIT = Depends(abuse_rate_limit("consilium_write", config.CONSILIUM_WRITE_RATE_LIMIT, _WINDOW))
+_DECISION_LIMIT = Depends(abuse_rate_limit("consilium_decision", config.CONSILIUM_WRITE_RATE_LIMIT, _WINDOW))
+_SCHEDULE_LIMIT = Depends(abuse_rate_limit("consilium_schedule_generate", config.CONSILIUM_SCHEDULE_RATE_LIMIT, _WINDOW))
+_EXPORT_LIMIT = Depends(abuse_rate_limit("consilium_registry_export", config.CONSILIUM_EXPORT_RATE_LIMIT, _WINDOW))
 
 
 def _not_found():

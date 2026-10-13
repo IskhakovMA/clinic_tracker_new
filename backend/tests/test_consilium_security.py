@@ -735,3 +735,26 @@ def test_signed_decision_keeps_treating_doctor_at_signing(client):
         with pytest.raises(sqlite3.IntegrityError, match="consilium_signed_immutable"):
             conn.execute(f"UPDATE oncology_consilium_appointments SET {column} = ? WHERE id = ?", (value, created["id"]))
         conn.rollback()
+
+
+# --- Правило 6: настраиваемые лимиты на пользователя -------------------------
+
+@pytest.fixture()
+def low_limits(monkeypatch):
+    # Должно быть задано до фикстуры client: лимиты читаются при импорте приложения.
+    monkeypatch.setenv("CLINIC_CONSILIUM_EXPORT_RATE_LIMIT", "3")
+    monkeypatch.setenv("CLINIC_CONSILIUM_WRITE_RATE_LIMIT", "4")
+
+
+def test_consilium_limits_are_configurable_and_per_user(low_limits, client):
+    _, patient = _make_state(client, "recorded")
+    create_account("chair.second", "consilium_chair")
+    export = EXPORTS[0]
+    assert [client.get(export, headers=client.csrf).status_code for _ in range(4)] == [200, 200, 200, 429]
+    favorite = f"/api/consilium/favorites/{patient['id']}"
+    assert [client.delete(favorite, headers=client.csrf).status_code for _ in range(5)] == [200] * 4 + [429]
+
+    # Другой председатель с того же адреса не заблокирован чужим счётчиком.
+    login(client, "chair.second")
+    assert client.get(export, headers=client.csrf).status_code == 200
+    assert client.delete(favorite, headers=client.csrf).status_code == 200
