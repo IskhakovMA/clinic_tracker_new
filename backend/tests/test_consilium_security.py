@@ -117,3 +117,111 @@ def test_schedule_hides_own_record_once_patient_leaves_scope(client):
     assert occupied["occupied"] is True
     assert occupied["appointment"] is None
     assert PATIENT_NAME not in response.text
+
+
+# --- Б2: избранное председателя -------------------------------------------
+
+FAVORITE_NAME = "Избранов Закладка Консилиумович"
+
+
+def _chair_with_favorite(client):
+    """A doctor's patient is booked; the chair bookmarks that patient.
+    Returns (patient, chair_user_id, snapshots_before_favorite)."""
+    doctor_a = create_account("doctor.a", "doctor", full_name="Врачова Анна Первая")
+    chair_id = create_account("chair.favorite", "consilium_chair")
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
+    patient = create_patient(
+        client, name=FAVORITE_NAME, policyNumber="7700000000000999",
+        treatingDoctorUserId=doctor_a, phone="+7 (999) 111-22-33",
+    )
+    login(client, "doctor.a")
+    booked = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    )
+    assert booked.status_code == 201, booked.text
+
+    login(client, "chair.favorite")
+    before = {path: client.get(path).json() for path in SCOPED_LISTS}
+    added = client.post(f"/api/consilium/favorites/{patient['id']}", json={}, headers=client.csrf)
+    assert added.status_code == 200, added.text
+    return patient, chair_id, before
+
+
+def _stable(value):
+    """Drop computation timestamps so two snapshots compare by content."""
+    if isinstance(value, dict):
+        return {k: _stable(v) for k, v in value.items() if k not in ("computed_at", "generated_at", "generatedAt")}
+    if isinstance(value, list):
+        return [_stable(v) for v in value]
+    return value
+
+
+SCOPED_LISTS = (
+    "/api/patients",
+    "/api/data-quality/issues",
+    "/api/data-quality/summary",
+    "/api/notifications",
+    "/api/notifications/summary",
+    "/api/internal-notifications",
+    "/api/internal-notifications/summary",
+    "/api/analytics/summary",
+    "/api/analytics/dashboard",
+)
+
+
+def test_favorite_does_not_open_patient_card_or_its_subresources(client):
+    patient, _, _ = _chair_with_favorite(client)
+    pid = patient["id"]
+    for path in (
+        f"/api/patients/{pid}",
+        f"/api/data-quality/patients/{pid}",
+        f"/api/notifications/patients/{pid}",
+    ):
+        response = client.get(path)
+        assert response.status_code == 404, (path, response.status_code)
+        assert FAVORITE_NAME not in response.text
+    edit = client.patch(
+        f"/api/patients/{pid}", json={"field": "complaint", "value": "x"}, headers=client.csrf,
+    )
+    assert edit.status_code == 404
+
+
+def test_favorite_does_not_change_scoped_lists_and_analytics(client):
+    patient, _, before = _chair_with_favorite(client)
+    for path in SCOPED_LISTS:
+        response = client.get(path)
+        assert response.status_code == 200, (path, response.status_code)
+        assert FAVORITE_NAME not in response.text, path
+        assert patient["id"] not in response.text, path
+        assert _stable(response.json()) == _stable(before[path]), path
+
+
+def test_favorite_does_not_reach_ai_tools(client):
+    from backend.app import policy
+    from backend.app.ai import tools
+
+    patient, chair_id, _ = _chair_with_favorite(client)
+    conn = get_conn()
+    chair = policy.load_current_user(conn, chair_id)
+    found = tools.execute_tool("search_accessible_patients", {"query": "Избранов"}, conn, chair)
+    assert found == {"patients": []}
+    for name in ("get_patient_summary", "get_patient_timeline", "get_patient_attention"):
+        try:
+            tools.execute_tool(name, {"patientId": patient["id"]}, conn, chair)
+        except tools.ToolPermissionError:
+            continue
+        raise AssertionError(f"{name} returned data for a favorite outside scope")
+    analytics = tools.execute_tool("get_analytics_summary", {}, conn, chair)
+    assert FAVORITE_NAME not in str(analytics)
+    assert patient["id"] not in str(analytics)
+
+
+def test_chair_still_sees_minimal_consilium_record_for_favorite(client):
+    patient, _, _ = _chair_with_favorite(client)
+    listed = client.get("/api/consilium/appointments").json()["appointments"]
+    assert [(row["patientId"], row["isFavorite"]) for row in listed] == [(patient["id"], True)]
+    assert listed[0]["patientName"] == FAVORITE_NAME
+    # Телефон и прочие поля карточки в запись консилиума не входят.
+    assert "phone" not in listed[0]
+    assert "+7 (999) 111-22-33" not in str(listed[0])

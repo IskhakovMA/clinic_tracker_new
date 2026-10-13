@@ -6813,9 +6813,9 @@ const app = {
                 ui.toast('Пациент удалён из избранного.', 'good');
             } else {
                 await apiPost(`/api/consilium/favorites/${encodeURIComponent(item.patientId)}`, {});
-                ui.toast('Пациент добавлен в раздел «Пациенты».', 'good');
+                ui.toast('Пациент добавлен в избранное консилиума.', 'good');
             }
-            await this.loadPatients();
+            // Избранное — закладка внутри консилиума, доступ к карточке оно не даёт.
             this.consilium.loaded = false;
             await this.renderConsilium();
         } catch (error) {

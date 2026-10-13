@@ -495,7 +495,7 @@ def test_signed_record_is_locked_policy_is_saved_and_surgical_registry_is_checka
     assert locked.status_code == 409
 
 
-def test_chair_favorite_appears_in_patients_read_only_and_chemo_exports_xlsx(client):
+def test_chair_favorite_is_a_bookmark_and_chemo_exports_xlsx(client):
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
     patient = create_patient(client, name="Пациент для избранного", policyNumber="7700000000000011")
@@ -512,13 +512,16 @@ def test_chair_favorite_appears_in_patients_read_only_and_chemo_exports_xlsx(cli
         f"/api/consilium/favorites/{patient['id']}", json={}, headers=client.csrf
     )
     assert favorite.status_code == 200
-    assert [row["id"] for row in client.get("/api/patients").json()] == [patient["id"]]
+    # Избранное — закладка в консилиуме, а не расширение области видимости.
+    assert client.get("/api/patients").json() == []
     denied = client.patch(
         f"/api/patients/{patient['id']}",
         json={"field": "complaint", "value": "Нельзя менять избранное"},
         headers=client.csrf,
     )
-    assert denied.status_code == 403
+    assert denied.status_code == 404
+    listed = client.get("/api/consilium/appointments").json()["appointments"]
+    assert [(row["id"], row["isFavorite"]) for row in listed] == [(first["id"], True)]
 
     signed = client.post(
         f"/api/consilium/appointments/{first['id']}/sign",

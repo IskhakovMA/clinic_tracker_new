@@ -103,13 +103,6 @@ def patient_scope_filter(user: CurrentUser) -> tuple[str, list]:
                 )""",
             list(user.department_ids),
         )
-    if user.role_id == ROLE_CONSILIUM_CHAIR:
-        return (
-            "(patients.treating_doctor_user_id = ? OR EXISTS ("
-            "SELECT 1 FROM consilium_chair_favorites f "
-            "WHERE f.user_id = ? AND f.patient_id = patients.id))",
-            [user.id, user.id],
-        )
     if user.scope_strategy == SCOPE_BY_TREATING_DOCTOR:
         return "patients.treating_doctor_user_id = ?", [user.id]
     # Неизвестная стратегия — fail-closed.
@@ -129,11 +122,6 @@ def _writes_allowed(user: CurrentUser) -> bool:
 
 def can_write_patient(conn: sqlite3.Connection, user: CurrentUser, patient_id: str) -> bool:
     """Объектная проверка на изменение/удаление: видимость + право записи."""
-    if user.role_id == ROLE_CONSILIUM_CHAIR:
-        return conn.execute(
-            "SELECT 1 FROM patients WHERE id = ? AND treating_doctor_user_id = ?",
-            (patient_id, user.id),
-        ).fetchone() is not None
     return _writes_allowed(user) and can_read_patient(conn, user, patient_id)
 
 
