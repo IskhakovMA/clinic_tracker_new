@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - main
+      - integration/stable-plus-max
   workflow_dispatch:
 
 permissions:
