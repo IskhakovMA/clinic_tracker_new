@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import DEV_USERNAME, create_account, login, make_patient_payload
+from .conftest import DEV_USERNAME, create_account, login, make_patient_payload, current_schema_version
 
 # Схема v1 — как она выглядела до RBAC (упрощённо, но с теми же таблицами).
 V1_SCHEMA = """
@@ -87,7 +87,7 @@ def test_migration_preserves_patients_and_legacy_doctor(migrated):
     from backend.app import db
     conn = db.get_connection()
     # версия поднята
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 17
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == current_schema_version()
     # медицинские данные не потеряны
     row = conn.execute("SELECT * FROM patients WHERE id = 'legacy1'").fetchone()
     assert row["name"] == "Стародавнев Пациент"
@@ -112,7 +112,7 @@ def test_migration_is_idempotent(migrated):
     # повторный запуск миграции ничего не ломает
     db.init_db(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 17
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == current_schema_version()
     assert conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0] == 1
 
 
@@ -158,7 +158,7 @@ def test_check_db_ok_after_migration(migrated):
     from backend.app import maintenance
     report = maintenance.check_database(tmp_path / "clinic.db")
     assert report["ok"] is True, report["problems"]
-    assert report["schema_version"] == 17
+    assert report["schema_version"] == current_schema_version()
     assert report["missing_tables"] == []
 
 

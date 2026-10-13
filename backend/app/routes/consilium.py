@@ -199,11 +199,6 @@ def update_consilium_appointment(
     existing = consilium.get_owned(conn, user, appointment_id)
     if existing is None:
         _not_found()
-    if existing["status"] == "signed":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Подписанная запись недоступна для редактирования.",
-        )
     _require_writable_patient(conn, user, body.patientId)
     try:
         appointment = consilium.update(conn, user, appointment_id, body)
@@ -248,7 +243,10 @@ def start_consilium_review(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_chair(conn, user)
-    appointment = consilium.start_review(conn, appointment_id)
+    try:
+        appointment = consilium.start_review(conn, appointment_id)
+    except consilium.ConsiliumStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if appointment is None:
         _not_found()
     audit.record(
@@ -266,10 +264,13 @@ def sign_consilium(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_chair(conn, user)
-    appointment = consilium.sign(
-        conn, user, appointment_id, body.treatmentType, body.treatmentScheme,
-        body.treatmentSchemeCode, body.goc, body.goc65Plus,
-    )
+    try:
+        appointment = consilium.sign(
+            conn, user, appointment_id, body.treatmentType, body.treatmentScheme,
+            body.treatmentSchemeCode, body.goc, body.goc65Plus,
+        )
+    except consilium.ConsiliumStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if appointment is None:
         _not_found()
     audit.record(
@@ -287,7 +288,10 @@ def return_consilium_for_revision(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_chair(conn, user)
-    appointment = consilium.return_for_revision(conn, appointment_id, body.comment)
+    try:
+        appointment = consilium.return_for_revision(conn, appointment_id, body.comment)
+    except consilium.ConsiliumStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if appointment is None:
         _not_found()
     audit.record(

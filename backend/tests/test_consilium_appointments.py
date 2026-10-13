@@ -302,7 +302,7 @@ def test_consilium_chair_sees_all_returns_signs_and_gets_analytics(client):
         json={}, headers=client.csrf,
     )
     assert reviewed.status_code == 200
-    assert reviewed.json()["status"] == "recorded"
+    assert reviewed.json()["status"] == "in_review"
 
     returned = client.post(
         f"/api/consilium/appointments/{created['id']}/return",
@@ -470,6 +470,9 @@ def test_signed_record_is_locked_policy_is_saved_and_surgical_registry_is_checka
 
     create_account("chair.registry", "consilium_chair")
     login(client, "chair.registry")
+    assert client.post(
+        f"/api/consilium/appointments/{created['id']}/review", json={}, headers=client.csrf,
+    ).status_code == 200
     signed = client.post(
         f"/api/consilium/appointments/{created['id']}/sign",
         json={"treatmentType": "surgery", "treatmentScheme": ""},
@@ -523,6 +526,9 @@ def test_chair_favorite_is_a_bookmark_and_chemo_exports_xlsx(client):
     listed = client.get("/api/consilium/appointments").json()["appointments"]
     assert [(row["id"], row["isFavorite"]) for row in listed] == [(first["id"], True)]
 
+    assert client.post(
+        f"/api/consilium/appointments/{first['id']}/review", json={}, headers=client.csrf,
+    ).status_code == 200
     signed = client.post(
         f"/api/consilium/appointments/{first['id']}/sign",
         json={"treatmentType": "chemotherapy", "treatmentScheme": "FOLFOX, тест"},
@@ -552,6 +558,9 @@ def test_goc_marks_create_registry_and_excel_export(client):
 
     create_account("chair.goc", "consilium_chair")
     login(client, "chair.goc")
+    assert client.post(
+        f"/api/consilium/appointments/{created['id']}/review", json={}, headers=client.csrf,
+    ).status_code == 200
     signed = client.post(
         f"/api/consilium/appointments/{created['id']}/sign",
         json={
@@ -595,6 +604,9 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
 
     create_account("chair.archive", "consilium_chair")
     login(client, "chair.archive")
+    assert client.post(
+        f"/api/consilium/appointments/{created['id']}/review", json={}, headers=client.csrf,
+    ).status_code == 200
     signed = client.post(
         f"/api/consilium/appointments/{created['id']}/sign",
         json={"treatmentType": "active_observation", "treatmentScheme": ""},

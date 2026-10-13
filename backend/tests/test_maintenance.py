@@ -8,7 +8,7 @@ import sys
 
 import pytest
 
-from .conftest import PROJECT_ROOT, make_patient_payload
+from .conftest import PROJECT_ROOT, make_patient_payload, current_schema_version
 
 TEST_BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 32 zero bytes, base64url without padding.
 
@@ -28,7 +28,7 @@ def test_check_db_passes_on_live_database(auth_client, tmp_path):
     assert report["integrity_check"] == ["ok"]
     assert report["foreign_key_violations"] == 0
     assert report["missing_tables"] == []
-    assert report["schema_version"] == 17
+    assert report["schema_version"] == current_schema_version()
 
 
 def test_check_db_reports_missing_file(tmp_path):

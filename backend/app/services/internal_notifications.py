@@ -219,6 +219,7 @@ def _consilium_revision_conditions(
            WHERE a.created_by_user_id = ?
              AND a.status = 'recorded'
              AND COALESCE(a.revision_comment, '') != ''
+             AND a.revision_submitted_at IS NULL
              AND a.archived_at IS NULL
            ORDER BY a.updated_at ASC, a.id ASC""",
         (user.id,),

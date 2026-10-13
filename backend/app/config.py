@@ -66,9 +66,11 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 
 # v9: Doctor Feedback Iteration 2 — localization-first active model,
 # PGI result date; disease_stage/future_plans are retired from active contracts.
-SCHEMA_VERSION = 17
+# v10–v17: oncology consilium (see db.migrate_v9_to_v10 … migrate_v16_to_v17).
+# v18: consilium resubmission marker and immutable signed decisions.
+SCHEMA_VERSION = 18
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
-IMPORT_ACCEPTED_SCHEMA_VERSIONS = (0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17)
+IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
 INTERNAL_NOTIFICATION_UPCOMING_DAYS = int(os.environ.get("INTERNAL_NOTIFICATION_UPCOMING_DAYS", "3"))
 

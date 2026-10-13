@@ -225,3 +225,130 @@ def test_chair_still_sees_minimal_consilium_record_for_favorite(client):
     # Телефон и прочие поля карточки в запись консилиума не входят.
     assert "phone" not in listed[0]
     assert "+7 (999) 111-22-33" not in str(listed[0])
+
+
+# --- Б3: переходы состояний ----------------------------------------------
+
+import sqlite3  # noqa: E402
+
+import pytest  # noqa: E402
+
+DECISION = {"treatmentType": "surgery", "treatmentScheme": "", "treatmentSchemeCode": ""}
+STATES = ("recorded", "in_review", "needs_revision", "revised", "signed", "signed_archived")
+ACTIONS = ("review", "sign", "return", "update", "delete")
+ALLOWED = {
+    "review": {"recorded", "revised"},
+    "sign": {"in_review"},
+    "return": {"recorded", "in_review", "needs_revision", "revised"},
+    "update": {"recorded", "needs_revision", "revised"},
+    "delete": {"recorded", "needs_revision", "revised"},
+}
+
+
+def _post(client, appointment_id, action, body=None):
+    return client.post(
+        f"/api/consilium/appointments/{appointment_id}/{action}", json=body or {}, headers=client.csrf,
+    )
+
+
+def _make_state(client, state):
+    """Return an appointment id in `state`; the session ends logged in as the chair."""
+    create_account(DEV_USERNAME)
+    create_account("chair.states", "consilium_chair")
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name=f"Состояний {state}")
+    created = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    )
+    assert created.status_code == 201, created.text
+    aid = created.json()["id"]
+    login(client, "chair.states")
+    if state in ("in_review", "signed", "signed_archived"):
+        assert _post(client, aid, "review").status_code == 200
+    if state in ("signed", "signed_archived"):
+        assert _post(client, aid, "sign", DECISION).status_code == 200
+    if state == "signed_archived":
+        login(client, DEV_USERNAME)
+        assert _post(client, aid, "archive").status_code == 200
+        login(client, "chair.states")
+    if state in ("needs_revision", "revised"):
+        assert _post(client, aid, "return", {"comment": "Уточните данные"}).status_code == 200
+    if state == "revised":
+        login(client, DEV_USERNAME)
+        resubmitted = client.put(
+            f"/api/consilium/appointments/{aid}",
+            json=appointment_payload(patient["id"], comment="Исправлено"), headers=client.csrf,
+        )
+        assert resubmitted.status_code == 200, resubmitted.text
+        login(client, "chair.states")
+    status = get_conn().execute(
+        "SELECT status FROM oncology_consilium_appointments WHERE id = ?", (aid,)
+    ).fetchone()["status"]
+    assert status in ("recorded", "in_review", "signed")
+    return aid, patient
+
+
+def _row(aid):
+    row = get_conn().execute("SELECT * FROM oncology_consilium_appointments WHERE id = ?", (aid,)).fetchone()
+    return dict(row) if row else None
+
+
+def _consilium_audit_count():
+    return get_conn().execute(
+        "SELECT COUNT(*) AS c FROM audit_events WHERE event_type LIKE 'consilium_%'"
+    ).fetchone()["c"]
+
+
+def _act(client, action, aid, patient):
+    if action in ("review", "sign", "return"):
+        body = DECISION if action == "sign" else ({"comment": "Ещё раз"} if action == "return" else None)
+        return _post(client, aid, action, body)
+    login(client, DEV_USERNAME)
+    if action == "update":
+        return client.put(
+            f"/api/consilium/appointments/{aid}",
+            json=appointment_payload(patient["id"], comment="Правка"), headers=client.csrf,
+        )
+    return client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+
+
+@pytest.mark.parametrize("state", STATES)
+@pytest.mark.parametrize("action", ACTIONS)
+def test_consilium_transition_matrix(client, state, action):
+    aid, patient = _make_state(client, state)
+    before_row, before_audit = _row(aid), _consilium_audit_count()
+    response = _act(client, action, aid, patient)
+    if state in ALLOWED[action]:
+        assert response.status_code == 200, (state, action, response.text)
+        assert _consilium_audit_count() == before_audit + 1
+    else:
+        assert response.status_code == 409, (state, action, response.status_code, response.text)
+        assert _row(aid) == before_row
+        assert _consilium_audit_count() == before_audit
+
+
+def test_resubmission_waits_for_explicit_review(client):
+    aid, _ = _make_state(client, "revised")
+    listed = client.get("/api/consilium/appointments").json()["appointments"][0]
+    assert listed["status"] == "revised"
+    assert _row(aid)["status"] == "recorded"
+    assert _post(client, aid, "sign", DECISION).status_code == 409
+    assert _post(client, aid, "review").status_code == 200
+    assert _post(client, aid, "sign", DECISION).status_code == 200
+
+
+def test_signed_decision_is_immutable_in_the_database(client):
+    aid, _ = _make_state(client, "signed")
+    conn = get_conn()
+    for column, value in (
+        ("treatment_type", "radiotherapy"), ("status", "recorded"), ("signed_by_user_id", None),
+        ("primary_diagnosis", "C50.1"), ("revision_comment", "тихий возврат"),
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match="consilium_signed_immutable"):
+            conn.execute(f"UPDATE oncology_consilium_appointments SET {column} = ? WHERE id = ?", (value, aid))
+        conn.rollback()
+    conn.execute(
+        "UPDATE oncology_consilium_appointments SET archived_at = ?, updated_at = ? WHERE id = ?",
+        ("2026-11-13T10:00:00+00:00", "2026-11-13T10:00:00+00:00", aid),
+    )
+    conn.rollback()

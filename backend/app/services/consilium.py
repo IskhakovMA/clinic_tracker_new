@@ -26,6 +26,7 @@ GROUP_LABELS = dict(GROUPS)
 TIME_SLOTS = tuple(f"{hour:02d}:{minute:02d}" for hour in range(9, 17) for minute in (0, 30))
 STATUS_LABELS = {
     "recorded": "Записан",
+    "in_review": "На рассмотрении",
     "needs_revision": "На доработке",
     "revised": "Возвращен с доработки",
     "signed": "Подписан",
@@ -37,6 +38,26 @@ TREATMENT_LABELS = {
     "active_observation": "Активное наблюдение",
     "dispensary_observation": "Диспансерное наблюдение",
 }
+class ConsiliumStateError(ValueError):
+    """The requested transition is not allowed from the record's current state."""
+
+
+# Хранимый status: recorded → in_review → signed. Возврат на доработку
+# оставляет status = 'recorded' с revision_comment; пока врач не отправил
+# исправления (revision_submitted_at IS NULL), рассмотрение начать нельзя.
+_AWAITING_CHAIR = "status = 'recorded' AND (revision_comment IS NULL OR revision_submitted_at IS NOT NULL)"
+
+
+def public_status(row: sqlite3.Row) -> str:
+    if row["status"] == "signed":
+        return "signed"
+    if row["status"] == "in_review":
+        return "in_review"
+    if row["revision_comment"]:
+        return "revised" if row["revision_submitted_at"] else "needs_revision"
+    return "recorded"
+
+
 TREATMENT_SCHEMES = json.loads(
     (Path(__file__).resolve().parent.parent / "data" / "treatment_schemes.json").read_text(encoding="utf-8")
 )
@@ -51,14 +72,7 @@ def metadata() -> dict:
 
 
 def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
-    if row["status"] == "signed":
-        public_status = "signed"
-    elif row["revision_comment"] and row["status"] == "recorded":
-        public_status = "needs_revision"
-    elif row["revision_comment"] and row["status"] == "in_review":
-        public_status = "revised"
-    else:
-        public_status = "recorded"
+    status = public_status(row)
     return {
         "id": row["id"],
         "patientId": row["patient_id"],
@@ -77,8 +91,8 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         "additionalParticipant": row["additional_participant"] or "",
         "needsSurgeon": bool(row["needs_surgeon"]),
         "needsRadiotherapist": bool(row["needs_radiotherapist"]),
-        "status": public_status,
-        "statusLabel": STATUS_LABELS.get(public_status, public_status),
+        "status": status,
+        "statusLabel": STATUS_LABELS.get(status, status),
         "treatmentType": row["treatment_type"] or "",
         "treatmentTypeLabel": TREATMENT_LABELS.get(row["treatment_type"], "") if row["treatment_type"] else "",
         "treatmentScheme": row["treatment_scheme"] or "",
@@ -187,12 +201,17 @@ def delete_owned(
     existing = get_owned(conn, user, appointment_id)
     if existing is None:
         return None
-    if existing["status"] == "signed":
-        raise ValueError("Подписанная запись недоступна для удаления")
     with conn:
-        conn.execute(
-            "DELETE FROM oncology_consilium_appointments WHERE id = ? AND created_by_user_id = ?",
+        cursor = conn.execute(
+            "DELETE FROM oncology_consilium_appointments "
+            "WHERE id = ? AND created_by_user_id = ? AND status = 'recorded'",
             (appointment_id, user.id),
+        )
+    if cursor.rowcount == 0:
+        raise ConsiliumStateError(
+            "Подписанная запись недоступна для удаления"
+            if existing["status"] == "signed"
+            else "Запись на рассмотрении у председателя недоступна для удаления"
         )
     return existing
 
@@ -235,19 +254,31 @@ def create(
     return get_owned(conn, user, appointment_id)
 
 
-def start_review(conn: sqlite3.Connection, appointment_id: str) -> dict | None:
-    existing = get_for_management(conn, appointment_id)
-    if existing is None:
+def _transition(conn: sqlite3.Connection, appointment_id: str, sql: str, params: tuple, refusal: str) -> dict | None:
+    """Apply a guarded UPDATE; the WHERE clause is the transition rule.
+
+    The status check and the write happen in one statement, so a concurrent
+    request cannot slip between them. Nothing is written when it is refused.
+    """
+    if get_for_management(conn, appointment_id) is None:
         return None
-    if existing["status"] == "recorded":
-        with conn:
-            conn.execute(
-                """UPDATE oncology_consilium_appointments
-                   SET status = 'in_review', review_started_at = ?, updated_at = ?
-                   WHERE id = ?""",
-                (now_iso(), now_iso(), appointment_id),
-            )
+    with conn:
+        cursor = conn.execute(sql, params)
+    if cursor.rowcount == 0:
+        raise ConsiliumStateError(refusal)
     return get_for_management(conn, appointment_id)
+
+
+def start_review(conn: sqlite3.Connection, appointment_id: str) -> dict | None:
+    now = now_iso()
+    return _transition(
+        conn, appointment_id,
+        f"""UPDATE oncology_consilium_appointments
+            SET status = 'in_review', review_started_at = ?, updated_at = ?
+            WHERE id = ? AND {_AWAITING_CHAIR}""",
+        (now, now, appointment_id),
+        "Рассмотрение можно начать только для записи, ожидающей председателя",
+    )
 
 
 def sign(
@@ -260,38 +291,32 @@ def sign(
     goc: bool,
     goc_65_plus: bool,
 ) -> dict | None:
-    if get_for_management(conn, appointment_id) is None:
-        return None
     now = now_iso()
-    with conn:
-        conn.execute(
-            """UPDATE oncology_consilium_appointments
-               SET status = 'signed', treatment_type = ?, treatment_scheme = ?, treatment_scheme_code = ?,
-                   goc = ?, goc_65_plus = ?,
-                   revision_comment = NULL, signed_at = ?, signed_by_user_id = ?, updated_at = ?
-                   , referral_completed_at = NULL, referral_completed_by_user_id = NULL
-               WHERE id = ?""",
-            (treatment_type, treatment_scheme or None, treatment_scheme_code or None,
-             int(goc), int(goc_65_plus), now, user.id, now, appointment_id),
-        )
-    return get_for_management(conn, appointment_id)
+    return _transition(
+        conn, appointment_id,
+        """UPDATE oncology_consilium_appointments
+           SET status = 'signed', treatment_type = ?, treatment_scheme = ?, treatment_scheme_code = ?,
+               goc = ?, goc_65_plus = ?,
+               revision_comment = NULL, signed_at = ?, signed_by_user_id = ?, updated_at = ?
+           WHERE id = ? AND status = 'in_review'""",
+        (treatment_type, treatment_scheme or None, treatment_scheme_code or None,
+         int(goc), int(goc_65_plus), now, user.id, now, appointment_id),
+        "Подписать можно только запись, рассмотрение которой начато",
+    )
 
 
 def return_for_revision(
     conn: sqlite3.Connection, appointment_id: str, comment: str
 ) -> dict | None:
-    if get_for_management(conn, appointment_id) is None:
-        return None
-    with conn:
-        conn.execute(
-            """UPDATE oncology_consilium_appointments
-               SET status = 'recorded', revision_comment = ?, treatment_type = NULL,
-                   treatment_scheme = NULL, treatment_scheme_code = NULL, goc = 0, goc_65_plus = 0,
-                   signed_at = NULL, signed_by_user_id = NULL,
-                   updated_at = ? WHERE id = ?""",
-            (comment, now_iso(), appointment_id),
-        )
-    return get_for_management(conn, appointment_id)
+    return _transition(
+        conn, appointment_id,
+        """UPDATE oncology_consilium_appointments
+           SET status = 'recorded', revision_comment = ?, revision_submitted_at = NULL,
+               review_started_at = NULL, updated_at = ?
+           WHERE id = ? AND status IN ('recorded', 'in_review') AND archived_at IS NULL""",
+        (comment, now_iso(), appointment_id),
+        "Подписанное решение нельзя вернуть на доработку",
+    )
 
 
 def analytics_summary(
@@ -313,7 +338,7 @@ def analytics_summary(
     total = len(rows)
     signed = sum(row["status"] == "signed" for row in rows)
     in_review = sum(row["status"] == "in_review" for row in rows)
-    returned = sum(bool(row["revision_comment"]) and row["status"] == "recorded" for row in rows)
+    returned = sum(public_status(row) == "needs_revision" for row in rows)
     specialist = sum(bool(row["needs_surgeon"] or row["needs_radiotherapist"]) for row in rows)
     treatment_counts = {code: 0 for code in TREATMENT_LABELS}
     scheme_counts: dict[tuple[str, str], int] = {}
@@ -367,8 +392,12 @@ def update(
     ).fetchone()
     if existing is None:
         return None
-    if existing["status"] == "signed":
-        raise ValueError("Подписанная запись недоступна для редактирования")
+    if existing["status"] != "recorded":
+        raise ConsiliumStateError(
+            "Подписанная запись недоступна для редактирования"
+            if existing["status"] == "signed"
+            else "Запись на рассмотрении у председателя недоступна для редактирования"
+        )
     if body.patientId != existing["patient_id"]:
         raise ValueError("При переносе нельзя изменить пациента")
     if body.consiliumGroup != existing["consilium_group"]:
@@ -389,30 +418,34 @@ def update(
             conn, body.scheduledDate, body.scheduledTime, body.consiliumGroup,
             exclude_appointment_id=appointment_id,
         )
+    now = now_iso()
     try:
         with conn:
-            conn.execute(
+            cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
                SET scheduled_date = ?, scheduled_time = ?,
                    has_benefit = ?, treating_doctor_name = ?, policy_number = ?, diagnosis_localization = ?,
                    primary_diagnosis = ?, additional_diagnosis = ?, comment = ?,
                    additional_participant = ?, needs_surgeon = ?,
                    needs_radiotherapist = ?, uv_ruv = ?,
-                   status = CASE WHEN revision_comment IS NOT NULL THEN 'in_review' ELSE status END,
+                   revision_submitted_at = CASE
+                       WHEN revision_comment IS NOT NULL THEN ? ELSE revision_submitted_at END,
                    updated_at = ?
-               WHERE id = ? AND created_by_user_id = ?""",
+               WHERE id = ? AND created_by_user_id = ? AND status = 'recorded'""",
                 (
                 body.scheduledDate, body.scheduledTime,
                 int(body.hasBenefit), user.full_name, body.policyNumber or None,
                 body.diagnosisLocalization or None,
                 body.primaryDiagnosis, body.additionalDiagnosis or None,
                 body.comment or None, body.additionalParticipant or None,
-                int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now_iso(),
+                int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now, now,
                 appointment_id, user.id,
                 ),
             )
     except sqlite3.IntegrityError as exc:
         raise ValueError(_integrity_error_message(exc)) from exc
+    if cursor.rowcount == 0:
+        raise ConsiliumStateError("Запись на рассмотрении у председателя недоступна для редактирования")
     return get_owned(conn, user, appointment_id)
 
 

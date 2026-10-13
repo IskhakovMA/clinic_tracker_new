@@ -1,6 +1,6 @@
 import json
 
-from .conftest import make_patient_payload
+from .conftest import make_patient_payload, current_schema_version
 
 
 def test_export_shape_and_content(auth_client):
@@ -14,7 +14,7 @@ def test_export_shape_and_content(auth_client):
     assert r.status_code == 200
     assert "attachment" in r.headers["content-disposition"]
     doc = json.loads(r.content.decode("utf-8"))
-    assert doc["schemaVersion"] == 17
+    assert doc["schemaVersion"] == current_schema_version()
     assert "generatedAt" in doc
     assert len(doc["patients"]) == 1
     assert doc["patients"][0]["name"] == "Кириллица Юникодовна"

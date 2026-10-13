@@ -1,6 +1,6 @@
 import json
 
-from .conftest import make_patient_payload
+from .conftest import make_patient_payload, current_schema_version
 
 
 def test_create_update_get_and_list_patient_policy_number(auth_client):
@@ -71,7 +71,7 @@ def test_policy_number_import_export_and_legacy_import(auth_client):
 
     exported = json.loads(auth_client.get("/api/export", headers=auth_client.csrf).text)
     by_name = {p["name"]: p for p in exported["patients"]}
-    assert exported["schemaVersion"] == 17
+    assert exported["schemaVersion"] == current_schema_version()
     assert by_name["Полисов Импорт"]["policyNumber"] == "7700000000000003"
     assert by_name["Безполисов Импорт"]["policyNumber"] == ""
 

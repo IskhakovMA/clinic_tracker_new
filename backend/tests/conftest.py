@@ -37,6 +37,12 @@ def client(tmp_path, monkeypatch):
         yield c
 
 
+def current_schema_version() -> int:
+    """SCHEMA_VERSION of the freshly imported app (modules are reloaded per test)."""
+    from backend.app import config
+    return config.SCHEMA_VERSION
+
+
 def get_conn():
     """Соединение с temp-базой текущего клиента (после старта приложения)."""
     from backend.app.db import get_connection

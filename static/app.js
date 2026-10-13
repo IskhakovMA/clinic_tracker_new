@@ -6363,6 +6363,12 @@ const app = {
         ]));
     },
 
+    // Врач правит и удаляет запись, пока председатель не начал рассмотрение;
+    // сервер проверяет то же самое и отвечает 409.
+    consiliumEditable(item) {
+        return ['recorded', 'needs_revision', 'revised'].includes(item.status);
+    },
+
     renderConsiliumStatus(item) {
         return frag([
             el('span', { class: `consilium-status consilium-status--${item.status}`, text: item.statusLabel }),
@@ -6472,7 +6478,7 @@ const app = {
                 el('td', {}, this.renderConsiliumStatus(item)),
                 el('td', { class: 'cell-actions' }, chair
                     ? this.renderConsiliumChairActions(item)
-                    : (this.can('editPatients') && item.status !== 'signed'
+                    : (this.can('editPatients') && this.consiliumEditable(item)
                         ? el('button', {
                             type: 'button', class: 'btn btn--ghost btn--sm', text: 'Изменить',
                             on: { click: () => this.openConsiliumModal(item.id) },
@@ -6655,7 +6661,7 @@ const app = {
                                     ? el('div', { class: 'consilium-grid-markers' }, [
                                         appointment.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
                                         isMine ? el('span', { class: 'chip chip--warning', text: 'Моя запись' }) : null,
-                                        isMine && ownAppointment && ownAppointment.status !== 'signed'
+                                        isMine && ownAppointment && this.consiliumEditable(ownAppointment)
                                             ? el('button', {
                                                 type: 'button', class: 'btn btn--ghost btn--sm', text: 'Изменить',
                                                 on: { click: () => this.openConsiliumModal(ownAppointment.id) },
@@ -7132,7 +7138,7 @@ const app = {
             : 'Запись на онкологический консилиум';
         $('submitConsiliumBtn').textContent = record ? 'Сохранить изменения' : 'Создать запись';
         $('submitConsiliumBtn').disabled = patients.length === 0;
-        $('deleteConsiliumBtn').classList.toggle('is-hidden', !record || record.status === 'signed');
+        $('deleteConsiliumBtn').classList.toggle('is-hidden', !record || !this.consiliumEditable(record));
         if (!record && patients.length) {
             $('consiliumPatient').value = patients[0].id;
             this.prefillConsiliumDiagnosisFromPatient();

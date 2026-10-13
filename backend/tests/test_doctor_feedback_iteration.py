@@ -3,7 +3,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, get_conn, login, make_patient_payload
+from .conftest import DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -60,7 +60,7 @@ def test_schema_v6_to_v10_adds_feedback_consilium_and_diagnosis_history(tmp_path
         )
     db.init_db(conn)
 
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 17
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == current_schema_version()
     patient_columns = {row["name"] for row in conn.execute("PRAGMA table_info(patients)").fetchall()}
     assert {"consilium_code", "pgi_code", "pgi_result_date"} <= patient_columns
     row = conn.execute("SELECT diagnosis, policy_number, pgi_result_date FROM patients WHERE id = 'legacy_v6'").fetchone()
@@ -571,14 +571,14 @@ def test_schema_v10_encrypted_backup_restore_preserves_doctor_feedback_fields(au
     )
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
     backup = maintenance.backup_database(db_path, tmp_path / "doctor-feedback-v9.cbk")
-    assert maintenance.inspect_backup(backup)["schema_version"] == 17
+    assert maintenance.inspect_backup(backup)["schema_version"] == current_schema_version()
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
     with get_conn():
         get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
     assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
     restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
-    assert restore["schema_version"] == 17
+    assert restore["schema_version"] == current_schema_version()
     # Restore revokes every session from the snapshot; sign in again.
     assert login(auth_client, DEV_USERNAME).status_code == 200
     restored = auth_client.get(f"/api/patients/{patient['id']}").json()

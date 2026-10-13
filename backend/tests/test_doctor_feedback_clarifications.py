@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, create_account, create_department, get_conn, login, make_patient_payload
+from .conftest import DEV_USERNAME, create_account, create_department, get_conn, login, make_patient_payload, current_schema_version
 
 
 def _create_patient(client, **overrides):
@@ -202,7 +202,7 @@ def test_import_export_accepts_prev7_legacy_and_v8_structured_fields(auth_client
     assert auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf).status_code == 200
     exported = json.loads(auth_client.get("/api/export", headers=auth_client.csrf).text)
     structured = next(p for p in exported["patients"] if p["name"] == "Structured v8")
-    assert exported["schemaVersion"] == 17
+    assert exported["schemaVersion"] == current_schema_version()
     assert structured["pgiResult"] == "confirmed"
     assert structured["pgiResultDate"] is None
     assert structured["history"][0]["events"][0]["consiliumDecision"] == "treatment_strategy_defined"

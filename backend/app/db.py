@@ -280,6 +280,7 @@ CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
     goc_65_plus INTEGER NOT NULL DEFAULT 0 CHECK (goc_65_plus IN (0, 1)),
     uv_ruv INTEGER NOT NULL DEFAULT 0 CHECK (uv_ruv IN (0, 1)),
     revision_comment TEXT,
+    revision_submitted_at TEXT,
     review_started_at TEXT,
     signed_at TEXT,
     signed_by_user_id TEXT REFERENCES users(id),
@@ -813,6 +814,43 @@ def migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
     )
 
 
+# Поля подписанного решения, которые ещё можно менять: личный архив врача и
+# отметка исполнения хирургического направления. Всё остальное — решение.
+_SIGNED_MUTABLE_COLUMNS = (
+    "archived_at", "archived_by_user_id",
+    "referral_completed_at", "referral_completed_by_user_id", "updated_at",
+)
+
+
+def _signed_immutable_trigger_sql(columns: list[str]) -> str:
+    guarded = [c for c in columns if c not in _SIGNED_MUTABLE_COLUMNS]
+    changed = " OR ".join(f"NEW.{c} IS NOT OLD.{c}" for c in guarded)
+    return f"""
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_signed_immutable
+        BEFORE UPDATE ON oncology_consilium_appointments
+        WHEN OLD.status = 'signed' AND ({changed})
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_signed_immutable');
+        END;
+    """
+
+
+def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
+    """v17 → v18: resubmission marker and immutable signed decisions.
+
+    revision_submitted_at separates «returned, waiting for the doctor» from
+    «doctor resubmitted, waiting for the chair», so a resubmission no longer
+    starts the review on the chair's behalf. The trigger keeps a signed
+    decision unchanged even if a future code path forgets the status check.
+    """
+    _add_column_if_missing(
+        conn, "oncology_consilium_appointments", "revision_submitted_at", "revision_submitted_at TEXT",
+    )
+    columns = sorted(_table_columns(conn, "oncology_consilium_appointments"))
+    conn.execute("DROP TRIGGER IF EXISTS trg_consilium_signed_immutable")
+    conn.executescript(_signed_immutable_trigger_sql(columns))
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -836,6 +874,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v14_to_v15(conn)         # physician archive for signed consiliums
         migrate_v15_to_v16(conn)         # chair schedule and revision notifications
         migrate_v16_to_v17(conn)         # strict slot and patient uniqueness
+        migrate_v17_to_v18(conn)         # resubmission marker, immutable signed decisions
         _ensure_notification_schema(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -897,6 +936,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 16:
             migrate_v16_to_v17(conn)
+            migrate_v17_to_v18(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 17:
+            migrate_v17_to_v18(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
