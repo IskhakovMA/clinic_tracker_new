@@ -462,6 +462,274 @@
      "username"
     ]
    }
+  },
+  {
+   "id": "integration-c03f99a",
+   "source": "integration/stable-plus-max commit c03f99a (CI run 38451292103)",
+   "schema_version": 18,
+   "tables": {
+    "app_login": [
+     "id",
+     "password_hash",
+     "updated_at"
+    ],
+    "audit_events": [
+     "actor",
+     "actor_department_id",
+     "actor_role",
+     "actor_user_id",
+     "created_at",
+     "detail",
+     "event_type",
+     "id",
+     "patient_id",
+     "request_id",
+     "result",
+     "target_department_id",
+     "target_user_id"
+    ],
+    "consilium_chair_favorites": [
+     "created_at",
+     "patient_id",
+     "user_id"
+    ],
+    "consilium_revision_history": [
+     "appointment_id",
+     "comment",
+     "id",
+     "migrated",
+     "returned_at",
+     "returned_by_user_id",
+     "round"
+    ],
+    "consilium_schedule_slots": [
+     "consilium_group",
+     "created_at",
+     "created_by_user_id",
+     "id",
+     "scheduled_date",
+     "scheduled_time"
+    ],
+    "department_heads": [
+     "created_at",
+     "department_id",
+     "user_id"
+    ],
+    "departments": [
+     "created_at",
+     "id",
+     "name",
+     "status",
+     "updated_at"
+    ],
+    "events": [
+     "actual_date",
+     "actual_time",
+     "consilium_decision",
+     "date",
+     "history_entry_id",
+     "id",
+     "matched_plan",
+     "no_plan",
+     "seq",
+     "set_at",
+     "time",
+     "treatment_type"
+    ],
+    "future_plans": [
+     "date",
+     "patient_id",
+     "template_index",
+     "time",
+     "treatment_type"
+    ],
+    "history_entries": [
+     "checklist_json",
+     "entered_at",
+     "id",
+     "note",
+     "patient_id",
+     "seq",
+     "stage"
+    ],
+    "internal_notification_state": [
+     "first_seen_at",
+     "id",
+     "last_seen_at",
+     "notification_type",
+     "patient_id",
+     "read_at",
+     "resolved_at",
+     "source_id",
+     "source_type",
+     "stable_key",
+     "user_id"
+    ],
+    "notification_templates": [
+     "body",
+     "channel",
+     "code",
+     "created_at",
+     "enabled",
+     "id",
+     "name",
+     "updated_at",
+     "version"
+    ],
+    "notifications": [
+     "attempt_count",
+     "cancelled_at",
+     "cancelled_by_user_id",
+     "channel",
+     "created_at",
+     "created_by_user_id",
+     "error_code",
+     "error_message_safe",
+     "id",
+     "idempotency_key",
+     "max_attempts",
+     "next_attempt_at",
+     "patient_id",
+     "processing_started_at",
+     "provider_message_id",
+     "provider_status",
+     "scheduled_at",
+     "sent_at",
+     "source_id",
+     "source_type",
+     "status",
+     "template_code",
+     "template_id",
+     "template_version",
+     "updated_at"
+    ],
+    "oncology_consilium_appointments": [
+     "additional_diagnosis",
+     "additional_participant",
+     "archived_at",
+     "archived_by_user_id",
+     "comment",
+     "consilium_group",
+     "created_at",
+     "created_by_user_id",
+     "diagnosis_localization",
+     "goc",
+     "goc_65_plus",
+     "has_benefit",
+     "id",
+     "needs_radiotherapist",
+     "needs_surgeon",
+     "patient_id",
+     "policy_number",
+     "primary_diagnosis",
+     "referral_completed_at",
+     "referral_completed_by_user_id",
+     "review_started_at",
+     "revision_comment",
+     "revision_count",
+     "revision_submitted_at",
+     "scheduled_date",
+     "scheduled_time",
+     "signed_at",
+     "signed_by_user_id",
+     "signed_treating_doctor_name",
+     "signed_treating_doctor_user_id",
+     "status",
+     "treating_doctor_name",
+     "treatment_scheme",
+     "treatment_scheme_code",
+     "treatment_type",
+     "updated_at",
+     "uv_ruv"
+    ],
+    "patient_attention_issues": [
+     "closed_at",
+     "closed_by_user_id",
+     "comment",
+     "created_at",
+     "created_by_user_id",
+     "event_date",
+     "id",
+     "patient_id",
+     "reason_code",
+     "resolution_comment",
+     "status"
+    ],
+    "patient_diagnosis_history": [
+     "actor_user_id",
+     "changed_at",
+     "id",
+     "new_diagnosis",
+     "old_diagnosis",
+     "patient_id"
+    ],
+    "patient_notification_preferences": [
+     "consent_recorded_at",
+     "consent_recorded_by_user_id",
+     "consent_revoked_at",
+     "consent_status",
+     "patient_id",
+     "sms_enabled",
+     "updated_at"
+    ],
+    "patients": [
+     "age",
+     "arrival",
+     "complaint",
+     "consilium_code",
+     "created_at",
+     "diagnosis",
+     "disease_stage",
+     "doctor",
+     "head",
+     "id",
+     "name",
+     "nosology",
+     "pgi_code",
+     "pgi_malignancy_confirmed",
+     "pgi_result_date",
+     "phone",
+     "policy_number",
+     "priority",
+     "stage",
+     "treating_doctor_user_id",
+     "updated_at"
+    ],
+    "roles": [
+     "id",
+     "label",
+     "scope_strategy"
+    ],
+    "schema_version": [
+     "version"
+    ],
+    "sessions": [
+     "created_at",
+     "csrf_token",
+     "expires_at",
+     "last_seen_at",
+     "token_hash",
+     "user_id"
+    ],
+    "user_departments": [
+     "created_at",
+     "department_id",
+     "user_id"
+    ],
+    "users": [
+     "created_at",
+     "full_name",
+     "id",
+     "last_login_at",
+     "must_change_password",
+     "password_changed_at",
+     "password_hash",
+     "role_id",
+     "status",
+     "updated_at",
+     "username"
+    ]
+   }
   }
  ]
 }

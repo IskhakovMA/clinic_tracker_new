@@ -227,3 +227,33 @@ def test_unverified_builds_with_plausible_numbers_are_refused(auth_client, tmp_p
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert _digest(live) == before
     assert _plaintext_leftovers(tmp_path) == []
+
+
+V18_FIXTURE = PROJECT_ROOT / "backend" / "tests" / "fixtures" / "integration_v18_synthetic.sql"
+
+
+def test_restore_migrates_v18_backup_keeping_decision_history_and_route(auth_client, tmp_path):
+    from backend.app import maintenance
+    live = _live(auth_client)
+    backup = _v9_backup(tmp_path, "integration-v18.cbk", header=18, fixture=V18_FIXTURE)
+    report = maintenance.validate_backup(backup)
+    assert (report["source_build"], report["migrated_from_schema_version"]) == ("integration-c03f99a", 18)
+    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    assert result["migrated_from_schema_version"] == 18
+    assert maintenance.check_database(live)["ok"]
+
+    conn = sqlite3.connect(str(live))
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute("SELECT * FROM oncology_consilium_appointments ORDER BY scheduled_time")]
+    history = conn.execute("SELECT appointment_id, round, comment FROM consilium_revision_history ORDER BY comment").fetchall()
+    assert [r["status"] for r in rows] == ["signed", "recorded"]
+    assert rows[0]["signed_route_link_source"] == "derived" and rows[0]["signed_route_stage"] == "exam"
+    assert rows[1]["signed_route_link_source"] is None and rows[1]["deleted_at"] is None
+    assert [tuple(h) for h in history] == [
+        (rows[1]["id"], 1, "Синтетический возврат неподписанной записи"),
+        (rows[0]["id"], 1, "Синтетический комментарий возврата"),
+    ]
+    with pytest.raises(sqlite3.IntegrityError, match="consilium_signed_immutable"):
+        conn.execute("UPDATE oncology_consilium_appointments SET signed_route_stage = 'treatment' WHERE id = ?",
+                     (rows[0]["id"],))
+    conn.close()
