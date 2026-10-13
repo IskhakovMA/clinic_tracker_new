@@ -947,3 +947,24 @@ def test_patient_with_consilium_records_cannot_be_deleted(client):
     assert _data_digest() == before
     assert _row(aid)["status"] == "signed"
     assert _audit_rows("patient_deleted")[-1]["result"] == "denied"
+
+
+@pytest.mark.parametrize("role", sorted(ACCESS))
+def test_frontend_load_sequence_is_allowed_for_every_role_with_access(client, role):
+    """Mirrors loadConsilium/renderConsilium: every request the page makes for
+    a role must be permitted, otherwise the section silently stays empty."""
+    app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    loader = _method_body(app_js, "async loadConsilium() {")
+    assert "this.can('bookConsilium')\n                ? await apiGetJson('/api/consilium/booked-patients')" in loader
+    assert "if (this.can('consiliumChair')) {\n                const query" in loader
+
+    create_account(f"load.{role}", role)
+    login(client, f"load.{role}")
+    permissions = client.get("/api/auth/me").json()["user"]["permissions"]
+    calls = ["/api/consilium/meta", "/api/consilium/appointments", "/api/consilium/schedule"]
+    if permissions["bookConsilium"]:
+        calls.append("/api/consilium/booked-patients")
+    if permissions["consiliumChair"]:
+        calls += ["/api/consilium/registries", "/api/consilium/analytics"]
+    for path in calls:
+        assert client.get(path).status_code == 200, (role, path)

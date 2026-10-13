@@ -6296,7 +6296,9 @@ const app = {
             }
             const data = await apiGetJson('/api/consilium/appointments');
             this.consilium.appointments = data.appointments || [];
-            const bookedData = await apiGetJson('/api/consilium/booked-patients');
+            // Список уже записанных пациентов нужен только тем, кто записывает.
+            const bookedData = this.can('bookConsilium')
+                ? await apiGetJson('/api/consilium/booked-patients') : { patientIds: [] };
             this.consilium.blockedPatientIds = bookedData.patientIds || [];
             const scheduleData = await apiGetJson('/api/consilium/schedule');
             this.consilium.schedule = scheduleData.slots || [];
