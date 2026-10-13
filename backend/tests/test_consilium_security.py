@@ -768,6 +768,7 @@ ROLES = ("developer", "doctor", "department_head", "consilium_chair", "deputy_ch
 ACCESS = {"developer", "doctor", "department_head", "consilium_chair"}
 BOOKING = {"developer", "doctor", "department_head"}
 MANAGING = {"developer", "consilium_chair"}
+DECIDING = {"consilium_chair"}
 ENDPOINTS = (
     ("GET", "/api/consilium/meta", None, ACCESS),
     ("GET", "/api/consilium/appointments", None, ACCESS),
@@ -782,13 +783,13 @@ ENDPOINTS = (
         "scheduledDate": "2026-12-01", "consiliumGroup": "thoracic",
         "startTime": "10:00", "endTime": "11:00", "intervalMinutes": 30}, MANAGING),
     ("DELETE", "/api/consilium/schedule/missing-slot", None, MANAGING),
-    ("POST", "/api/consilium/appointments/{aid}/review", {}, MANAGING),
-    ("POST", "/api/consilium/appointments/{aid}/sign", DECISION, MANAGING),
-    ("POST", "/api/consilium/appointments/{aid}/return", {"comment": "Проверка прав"}, MANAGING),
-    ("POST", "/api/consilium/appointments/{aid}/referral-completion", {"completed": True}, MANAGING),
+    ("POST", "/api/consilium/appointments/{aid}/review", {}, DECIDING),
+    ("POST", "/api/consilium/appointments/{aid}/sign", DECISION, DECIDING),
+    ("POST", "/api/consilium/appointments/{aid}/return", {"comment": "Проверка прав"}, DECIDING),
+    ("POST", "/api/consilium/appointments/{aid}/referral-completion", {"completed": True}, DECIDING),
     ("GET", "/api/consilium/analytics", None, MANAGING),
-    ("POST", "/api/consilium/favorites/{pid}", {}, MANAGING),
-    ("DELETE", "/api/consilium/favorites/{pid}", None, MANAGING),
+    ("POST", "/api/consilium/favorites/{pid}", {}, DECIDING),
+    ("DELETE", "/api/consilium/favorites/{pid}", None, DECIDING),
     ("GET", "/api/consilium/registries", None, MANAGING),
     ("GET", "/api/consilium/registries/chemotherapy.xlsx", None, MANAGING),
     ("GET", "/api/consilium/registries/goc.xlsx", None, MANAGING),
@@ -818,6 +819,7 @@ def test_consilium_endpoint_authorization_matrix(client, role):
     assert me["accessConsilium"] is (role in ACCESS)
     assert me["bookConsilium"] is (role in BOOKING)
     assert me["manageConsilium"] is (role in MANAGING)
+    assert me["decideConsilium"] is (role in DECIDING)
 
     for method, template, body, allowed_roles in ENDPOINTS:
         path = template.format(aid=aid, pid=patient["id"])
@@ -968,3 +970,45 @@ def test_frontend_load_sequence_is_allowed_for_every_role_with_access(client, ro
         calls += ["/api/consilium/registries", "/api/consilium/analytics"]
     for path in calls:
         assert client.get(path).status_code == 200, (role, path)
+
+
+
+# --- Задача 2: разработчик не наследует полномочия председателя -------------
+
+def test_developer_without_chair_role_cannot_decide(client):
+    create_account(DEV_USERNAME)
+    create_account("chair.real", "consilium_chair")
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Решения")
+    aid = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    ).json()["id"]
+
+    def attempts():
+        return {
+            "review": _post(client, aid, "review").status_code,
+            "sign": _post(client, aid, "sign", DECISION).status_code,
+            "return": _post(client, aid, "return", {"comment": "Попытка разработчика"}).status_code,
+        }
+
+    before_row, before_denied = _row(aid), _denied_count()
+    assert attempts() == {"review": 403, "sign": 403, "return": 403}
+    assert _row(aid) == before_row
+    assert _denied_count() == before_denied + 3
+
+    # Даже когда председатель уже начал рассмотрение, подписать разработчик не может.
+    login(client, "chair.real")
+    assert _post(client, aid, "review").status_code == 200
+    login(client, DEV_USERNAME)
+    in_review = _row(aid)
+    assert _post(client, aid, "sign", DECISION).status_code == 403
+    assert _row(aid) == in_review
+
+    # Административные функции разработчика сохраняются.
+    assert client.get("/api/consilium/registries").status_code == 200
+    assert client.get("/api/consilium/analytics").status_code == 200
+    assert client.get(EXPORTS[0], headers=client.csrf).status_code == 200
+    assert client.post("/api/consilium/schedule/generate", json={
+        "scheduledDate": "2026-12-01", "consiliumGroup": "thoracic",
+        "startTime": "10:00", "endTime": "11:00", "intervalMinutes": 30,
+    }, headers=client.csrf).status_code == 200

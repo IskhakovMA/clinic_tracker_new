@@ -46,8 +46,12 @@ def _require(conn: sqlite3.Connection, user: policy.CurrentUser, allowed: bool, 
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
-def _require_chair(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+def _require_manage(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
     _require(conn, user, policy.can_manage_consilium(user), "consilium_manage")
+
+
+def _require_decision(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+    _require(conn, user, policy.can_decide_consilium(user), "consilium_decision")
 
 
 def _require_access(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
@@ -124,7 +128,7 @@ def generate_consilium_schedule(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     try:
         created = consilium.generate_schedule(
             conn, user, body.scheduledDate, body.consiliumGroup,
@@ -145,7 +149,7 @@ def delete_consilium_schedule_slot(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     try:
         deleted = consilium.delete_schedule_slot(conn, slot_id)
     except ValueError as exc:
@@ -274,7 +278,7 @@ def start_consilium_review(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_decision(conn, user)
     try:
         appointment = consilium.start_review(conn, appointment_id)
     except consilium.ConsiliumStateError as exc:
@@ -295,7 +299,7 @@ def sign_consilium(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_decision(conn, user)
     try:
         appointment = consilium.sign(
             conn, user, appointment_id, body.treatmentType, body.treatmentScheme,
@@ -319,7 +323,7 @@ def return_consilium_for_revision(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_decision(conn, user)
     try:
         appointment = consilium.return_for_revision(conn, appointment_id, body.comment)
     except consilium.ConsiliumCommentError as exc:
@@ -344,7 +348,7 @@ def consilium_analytics(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     return consilium.analytics_summary(conn, _validated_date(date_from), _validated_date(date_to))
 
 
@@ -354,7 +358,7 @@ def add_consilium_favorite(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_decision(conn, user)
     linked = conn.execute(
         "SELECT 1 FROM oncology_consilium_appointments WHERE patient_id = ?",
         (patient_id,),
@@ -374,7 +378,7 @@ def remove_consilium_favorite(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_decision(conn, user)
     consilium.remove_favorite(conn, user, patient_id)
     audit.record(
         conn, audit.CONSILIUM_FAVORITE_REMOVED, patient_id=patient_id,
@@ -390,7 +394,7 @@ def set_surgical_referral_completion(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_decision(conn, user)
     try:
         appointment = consilium.set_referral_completed(
             conn, user, appointment_id, body.completed
@@ -414,7 +418,7 @@ def treatment_registries(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     selected_date = _validated_date(date)
     return {
         "surgical": consilium.registry_rows(conn, "surgery", selected_date),
@@ -470,7 +474,7 @@ def export_chemotherapy_registry(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     selected_date = _validated_date(date)
     return _registry_xlsx(
         conn, user, registry="chemotherapy", date=selected_date,
@@ -499,7 +503,7 @@ def export_goc_registry(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     selected_date = _validated_date(date)
     return _registry_xlsx(
         conn, user, registry="goc", date=selected_date,
@@ -514,7 +518,7 @@ def export_goc_65_plus_registry(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    _require_chair(conn, user)
+    _require_manage(conn, user)
     selected_date = _validated_date(date)
     return _registry_xlsx(
         conn, user, registry="goc_65_plus", date=selected_date,

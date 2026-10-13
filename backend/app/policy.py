@@ -200,8 +200,11 @@ def can_manage_notification_templates(user: CurrentUser) -> bool:
 # Онкоконсилиум — минимальные полномочия; роль вне списков доступа не получает.
 #   запись пациентов: врач и заведующий в пределах своего scope (объектная
 #     проверка can_write_patient), разработчик — по административной модели;
-#   рассмотрение, подпись, возврат, сетка, реестры, аналитика: председатель
-#     и разработчик.
+#   медицинские решения (рассмотрение, подпись, возврат, отметка исполнения
+#     направления, избранное председателя): только председатель — техническая
+#     роль разработчика их не наследует;
+#   администрирование консилиума (сетка расписания, реестры, XLSX,
+#     аналитика): председатель и разработчик.
 # Глобальные read-only роли (заместитель главного врача, заведующий ЦАОП)
 # в консилиум не допускаются.
 _CONSILIUM_BOOKING_ROLES = (ROLE_DEVELOPER, ROLE_DOCTOR, ROLE_DEPARTMENT_HEAD)
@@ -216,8 +219,12 @@ def can_manage_consilium(user: CurrentUser) -> bool:
     return user.role_id in _CONSILIUM_MANAGING_ROLES
 
 
+def can_decide_consilium(user: CurrentUser) -> bool:
+    return user.role_id == ROLE_CONSILIUM_CHAIR
+
+
 def can_access_consilium(user: CurrentUser) -> bool:
-    return can_book_consilium(user) or can_manage_consilium(user)
+    return can_book_consilium(user) or can_manage_consilium(user) or can_decide_consilium(user)
 
 
 def can_import(user: CurrentUser, mode: str = "add") -> bool:
@@ -262,5 +269,6 @@ def permissions_payload(user: CurrentUser) -> dict:
         "accessConsilium": can_access_consilium(user),
         "bookConsilium": can_book_consilium(user),
         "manageConsilium": can_manage_consilium(user),
+        "decideConsilium": can_decide_consilium(user),
         "consiliumChair": user.role_id == ROLE_CONSILIUM_CHAIR,
     }
