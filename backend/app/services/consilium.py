@@ -101,6 +101,7 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         "goc65Plus": bool(row["goc_65_plus"]),
         "uvRuv": bool(row["uv_ruv"]),
         "revisionComment": row["revision_comment"] or "",
+        "revisionCount": row["revision_count"],
         "reviewStartedAt": row["review_started_at"],
         "signedAt": row["signed_at"],
         "referralCompleted": bool(row["referral_completed_at"]),
@@ -323,17 +324,34 @@ def sign(
     )
 
 
+class ConsiliumCommentError(ValueError):
+    """The revision comment repeats the previous one."""
+
+
 def return_for_revision(
     conn: sqlite3.Connection, appointment_id: str, comment: str
 ) -> dict | None:
+    """Return a record under review to its author with a new comment.
+
+    Only from in_review: the chair returns what they are reviewing, and a
+    resubmitted record has to be reviewed again before a second return. The
+    comment is required (model) and must differ from the previous one, so
+    each round leaves its own instruction for the doctor.
+    """
+    existing = conn.execute(
+        "SELECT status, revision_comment FROM oncology_consilium_appointments WHERE id = ?",
+        (appointment_id,),
+    ).fetchone()
+    if existing is not None and existing["status"] == "in_review" and existing["revision_comment"] == comment:
+        raise ConsiliumCommentError("Комментарий должен отличаться от предыдущего возврата")
     return _transition(
         conn, appointment_id,
         """UPDATE oncology_consilium_appointments
            SET status = 'recorded', revision_comment = ?, revision_submitted_at = NULL,
-               review_started_at = NULL, updated_at = ?
-           WHERE id = ? AND status IN ('recorded', 'in_review') AND archived_at IS NULL""",
+               review_started_at = NULL, revision_count = revision_count + 1, updated_at = ?
+           WHERE id = ? AND status = 'in_review' AND archived_at IS NULL""",
         (comment, now_iso(), appointment_id),
-        "Подписанное решение нельзя вернуть на доработку",
+        "Вернуть на доработку можно только запись, рассмотрение которой начато",
     )
 
 

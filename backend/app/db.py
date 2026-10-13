@@ -281,6 +281,7 @@ CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
     uv_ruv INTEGER NOT NULL DEFAULT 0 CHECK (uv_ruv IN (0, 1)),
     revision_comment TEXT,
     revision_submitted_at TEXT,
+    revision_count INTEGER NOT NULL DEFAULT 0 CHECK (revision_count >= 0),
     review_started_at TEXT,
     signed_at TEXT,
     signed_by_user_id TEXT REFERENCES users(id),
@@ -883,8 +884,19 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(
         conn, "oncology_consilium_appointments", "revision_submitted_at", "revision_submitted_at TEXT",
     )
+    _add_column_if_missing(
+        conn, "oncology_consilium_appointments", "revision_count",
+        "revision_count INTEGER NOT NULL DEFAULT 0 CHECK (revision_count >= 0)",
+    )
     columns = sorted(_table_columns(conn, "oncology_consilium_appointments"))
+    if not columns:
+        return
     conn.execute("DROP TRIGGER IF EXISTS trg_consilium_signed_immutable")
+    # Записи, возвращённые сборкой до v18, уже прошли один раунд доработки.
+    conn.execute(
+        "UPDATE oncology_consilium_appointments SET revision_count = 1 "
+        "WHERE revision_count = 0 AND COALESCE(revision_comment, '') != ''"
+    )
     conn.executescript(_signed_immutable_trigger_sql(columns))
 
 

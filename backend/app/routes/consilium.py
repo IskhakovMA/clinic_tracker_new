@@ -299,12 +299,16 @@ def return_consilium_for_revision(
     _require_chair(conn, user)
     try:
         appointment = consilium.return_for_revision(conn, appointment_id, body.comment)
+    except consilium.ConsiliumCommentError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except consilium.ConsiliumStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if appointment is None:
         _not_found()
+    # Текст комментария в аудит не пишется: он может содержать сведения о пациенте.
     audit.record(
         conn, audit.CONSILIUM_RETURNED, patient_id=appointment["patientId"],
+        detail=f"revision_round={appointment['revisionCount']}",
         **audit.actor_ctx(user),
     )
     return appointment

@@ -239,7 +239,7 @@ ACTIONS = ("review", "sign", "return", "update", "delete")
 ALLOWED = {
     "review": {"recorded", "revised"},
     "sign": {"in_review"},
-    "return": {"recorded", "in_review", "needs_revision", "revised"},
+    "return": {"in_review"},
     "update": {"recorded", "needs_revision", "revised"},
     "delete": {"recorded", "needs_revision", "revised"},
 }
@@ -272,6 +272,7 @@ def _make_state(client, state):
         assert _post(client, aid, "archive").status_code == 200
         login(client, "chair.states")
     if state in ("needs_revision", "revised"):
+        assert _post(client, aid, "review").status_code == 200
         assert _post(client, aid, "return", {"comment": "Уточните данные"}).status_code == 200
     if state == "revised":
         login(client, DEV_USERNAME)
@@ -548,6 +549,7 @@ def test_revision_notification_respects_recipient_scope(client):
         "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
     ).json()
     login(client, "chair.notify")
+    assert _post(client, created["id"], "review").status_code == 200
     assert _post(client, created["id"], "return", {"comment": "Уточните"}).status_code == 200
 
     login(client, "doctor.a")
@@ -671,3 +673,27 @@ def test_chair_analytics_validates_dates_and_filters_by_range(client):
     assert inside["summary"]["total"] == 1
     assert outside["summary"]["total"] == 0
     assert client.get("/api/consilium/analytics").json()["summary"]["total"] == 1
+
+
+# --- Правило 3: повторный возврат -----------------------------------------
+
+def test_second_return_needs_new_review_and_new_comment(client):
+    aid, patient = _make_state(client, "revised")
+    assert _row(aid)["revision_count"] == 1
+    # Повторно отправленную запись нельзя вернуть, не начав рассмотрение заново.
+    assert _post(client, aid, "return", {"comment": "Ещё уточнение"}).status_code == 409
+    assert _post(client, aid, "review").status_code == 200
+    before = _row(aid)
+    for blank in ("", "   "):
+        assert _post(client, aid, "return", {"comment": blank}).status_code == 422
+    same = _post(client, aid, "return", {"comment": "Уточните данные"})
+    assert same.status_code == 422
+    assert _row(aid) == before
+
+    second = _post(client, aid, "return", {"comment": "Приложите заключение КТ"})
+    assert second.status_code == 200, second.text
+    assert second.json()["revisionCount"] == 2
+    assert second.json()["status"] == "needs_revision"
+    details = [r["detail"] for r in _audit_rows("consilium_returned_for_revision")]
+    assert details == ["revision_round=1", "revision_round=2"]
+    assert "КТ" not in str(_audit_rows("consilium_returned_for_revision"))

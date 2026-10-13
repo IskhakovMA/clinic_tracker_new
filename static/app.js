@@ -7326,6 +7326,9 @@ const app = {
         $('startConsiliumReviewBtn').classList.toggle('is-hidden', inReview);
         $('signConsiliumBtn').classList.toggle('is-hidden', !inReview);
         $('signConsiliumBtn').disabled = !inReview;
+        // Вернуть на доработку можно только то, что председатель рассматривает.
+        $('returnConsiliumBtn').classList.toggle('is-hidden', !inReview);
+        $('returnConsiliumBtn').disabled = !inReview;
     },
 
     async startConsiliumReview() {
