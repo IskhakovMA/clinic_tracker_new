@@ -6889,7 +6889,9 @@ const app = {
         try {
             const query = this.consilium.dateFilter
                 ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-            const response = await apiFetch(`/api/consilium/registries/chemotherapy.xlsx${query}`);
+            const response = await apiFetch(`/api/consilium/registries/chemotherapy.xlsx${query}`, {
+                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
+            });
             const blob = await response.blob();
             const disposition = response.headers.get('content-disposition') || '';
             const match = disposition.match(/filename="([^"]+)"/);
@@ -6911,7 +6913,9 @@ const app = {
         try {
             const query = this.consilium.dateFilter
                 ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-            const response = await apiFetch(`/api/consilium/registries/goc.xlsx${query}`);
+            const response = await apiFetch(`/api/consilium/registries/goc.xlsx${query}`, {
+                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
+            });
             const blob = await response.blob();
             const disposition = response.headers.get('content-disposition') || '';
             const match = disposition.match(/filename="([^"]+)"/);
@@ -6933,7 +6937,9 @@ const app = {
         try {
             const query = this.consilium.dateFilter
                 ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-            const response = await apiFetch(`/api/consilium/registries/goc-65-plus.xlsx${query}`);
+            const response = await apiFetch(`/api/consilium/registries/goc-65-plus.xlsx${query}`, {
+                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
+            });
             const blob = await response.blob();
             const disposition = response.headers.get('content-disposition') || '';
             const match = disposition.match(/filename="([^"]+)"/);

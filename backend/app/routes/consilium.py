@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 
 from .. import audit, policy
-from ..deps import get_db, require_active_password, require_csrf
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import (
     ConsiliumAppointmentIn,
     ConsiliumDecisionIn,
@@ -21,6 +21,15 @@ from ..services.xlsx_export import workbook_bytes
 
 
 router = APIRouter(prefix="/api/consilium", tags=["consilium"])
+
+# Лимиты на пользователя и адрес за минуту. Запись врачом и решения
+# председателя — штучные действия: 60/мин с запасом покрывают работу целого
+# заседания и останавливают скрипт. Генерация сетки и выгрузки реестров с ПДн
+# тяжелее и реже — 20/мин, как экспорт аналитики.
+_WRITE_LIMIT = Depends(abuse_rate_limit("consilium_write", 60))
+_DECISION_LIMIT = Depends(abuse_rate_limit("consilium_decision", 60))
+_SCHEDULE_LIMIT = Depends(abuse_rate_limit("consilium_schedule_generate", 20))
+_EXPORT_LIMIT = Depends(abuse_rate_limit("consilium_registry_export", 20))
 
 
 def _not_found():
@@ -91,7 +100,7 @@ def list_consilium_schedule(
     return {"slots": consilium.schedule_slots(conn, user)}
 
 
-@router.post("/schedule/generate", dependencies=[Depends(require_csrf)])
+@router.post("/schedule/generate", dependencies=[Depends(require_csrf), _SCHEDULE_LIMIT])
 def generate_consilium_schedule(
     body: ConsiliumScheduleGenerateIn,
     conn: sqlite3.Connection = Depends(get_db),
@@ -112,7 +121,7 @@ def generate_consilium_schedule(
     return {"created": created, "slots": consilium.schedule_slots(conn, user)}
 
 
-@router.delete("/schedule/{slot_id}", dependencies=[Depends(require_csrf)])
+@router.delete("/schedule/{slot_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def delete_consilium_schedule_slot(
     slot_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -129,7 +138,7 @@ def delete_consilium_schedule_slot(
     return {"deleted": True}
 
 
-@router.post("/appointments/{appointment_id}/archive", dependencies=[Depends(require_csrf)])
+@router.post("/appointments/{appointment_id}/archive", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def archive_consilium_appointment(
     appointment_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -148,7 +157,7 @@ def archive_consilium_appointment(
     return appointment
 
 
-@router.post("/appointments/{appointment_id}/restore", dependencies=[Depends(require_csrf)])
+@router.post("/appointments/{appointment_id}/restore", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def restore_consilium_appointment(
     appointment_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -169,7 +178,7 @@ def restore_consilium_appointment(
 
 @router.post(
     "/appointments",
-    dependencies=[Depends(require_csrf)],
+    dependencies=[Depends(require_csrf), _WRITE_LIMIT],
     status_code=status.HTTP_201_CREATED,
 )
 def create_consilium_appointment(
@@ -189,7 +198,7 @@ def create_consilium_appointment(
     return appointment
 
 
-@router.put("/appointments/{appointment_id}", dependencies=[Depends(require_csrf)])
+@router.put("/appointments/{appointment_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def update_consilium_appointment(
     appointment_id: str,
     body: ConsiliumAppointmentIn,
@@ -213,7 +222,7 @@ def update_consilium_appointment(
     return appointment
 
 
-@router.delete("/appointments/{appointment_id}", dependencies=[Depends(require_csrf)])
+@router.delete("/appointments/{appointment_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def delete_consilium_appointment(
     appointment_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -236,7 +245,7 @@ def delete_consilium_appointment(
     }}
 
 
-@router.post("/appointments/{appointment_id}/review", dependencies=[Depends(require_csrf)])
+@router.post("/appointments/{appointment_id}/review", dependencies=[Depends(require_csrf), _DECISION_LIMIT])
 def start_consilium_review(
     appointment_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -256,7 +265,7 @@ def start_consilium_review(
     return appointment
 
 
-@router.post("/appointments/{appointment_id}/sign", dependencies=[Depends(require_csrf)])
+@router.post("/appointments/{appointment_id}/sign", dependencies=[Depends(require_csrf), _DECISION_LIMIT])
 def sign_consilium(
     appointment_id: str,
     body: ConsiliumDecisionIn,
@@ -280,7 +289,7 @@ def sign_consilium(
     return appointment
 
 
-@router.post("/appointments/{appointment_id}/return", dependencies=[Depends(require_csrf)])
+@router.post("/appointments/{appointment_id}/return", dependencies=[Depends(require_csrf), _DECISION_LIMIT])
 def return_consilium_for_revision(
     appointment_id: str,
     body: ConsiliumRevisionIn,
@@ -312,7 +321,7 @@ def consilium_analytics(
     return consilium.analytics_summary(conn, date_from, date_to)
 
 
-@router.post("/favorites/{patient_id}", dependencies=[Depends(require_csrf)])
+@router.post("/favorites/{patient_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def add_consilium_favorite(
     patient_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -332,7 +341,7 @@ def add_consilium_favorite(
     return {"patientId": patient_id, "favorite": True}
 
 
-@router.delete("/favorites/{patient_id}", dependencies=[Depends(require_csrf)])
+@router.delete("/favorites/{patient_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def remove_consilium_favorite(
     patient_id: str,
     conn: sqlite3.Connection = Depends(get_db),
@@ -347,7 +356,7 @@ def remove_consilium_favorite(
     return {"patientId": patient_id, "favorite": False}
 
 
-@router.post("/appointments/{appointment_id}/referral-completion", dependencies=[Depends(require_csrf)])
+@router.post("/appointments/{appointment_id}/referral-completion", dependencies=[Depends(require_csrf), _DECISION_LIMIT])
 def set_surgical_referral_completion(
     appointment_id: str,
     body: ConsiliumRegistryCompletionIn,
@@ -388,7 +397,47 @@ def treatment_registries(
     }
 
 
-@router.get("/registries/chemotherapy.xlsx")
+_TREATMENT_HEADER = [
+    "Дата", "Время", "Пациент", "Полис ОМС", "Диагноз",
+    "Назначенное лечение", "Схема лечения", "Лечащий врач", "Консилиумная группа",
+]
+
+
+def _registry_xlsx(
+    conn: sqlite3.Connection,
+    user: policy.CurrentUser,
+    *,
+    registry: str,
+    date: str | None,
+    sheet_name: str,
+    filename: str,
+    header: list[str],
+    items: list[dict],
+    columns: tuple[str, ...],
+) -> Response:
+    """Build the workbook and log the export.
+
+    The audit row holds only the registry, the date filter and the row
+    count: never names, policy numbers or diagnoses from the file.
+    """
+    rows: list[list[object]] = [header, *[[item[c] for c in columns] for item in items]]
+    content = workbook_bytes(sheet_name, rows)
+    suffix = date or "all"
+    audit.record(
+        conn, audit.CONSILIUM_REGISTRY_EXPORTED,
+        detail=f"registry={registry};date={suffix};row_count={len(items)};format=xlsx",
+        **audit.actor_ctx(user),
+    )
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}_{suffix}.xlsx"'},
+    )
+
+
+# GET с обязательным X-CSRF-Token, как /api/export: файл содержит ПДн, а
+# межсайтовая навигация верхнего уровня не может задать заголовок.
+@router.get("/registries/chemotherapy.xlsx", dependencies=[Depends(require_csrf), _EXPORT_LIMIT])
 def export_chemotherapy_registry(
     date: str | None = Query(None, max_length=10),
     conn: sqlite3.Connection = Depends(get_db),
@@ -396,29 +445,28 @@ def export_chemotherapy_registry(
 ):
     _require_chair(conn, user)
     selected_date = _validated_date(date)
-    items = consilium.registry_rows(conn, "chemotherapy", selected_date)
-    rows: list[list[object]] = [[
-        "Дата", "Время", "Пациент", "Полис ОМС", "Диагноз",
-        "Код схемы", "Схема лечения", "Лечащий врач", "Консилиумная группа",
-    ]]
-    rows.extend([
-        [
-            item["scheduledDate"], item["scheduledTime"], item["patientName"],
-            item["policyNumber"], item["primaryDiagnosis"], item["treatmentSchemeCode"], item["treatmentScheme"],
-            item["treatingDoctorName"], item["consiliumGroupLabel"],
-        ]
-        for item in items
-    ])
-    suffix = selected_date or "all"
-    content = workbook_bytes("Химиотерапия", rows)
-    return Response(
-        content=content,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="chemotherapy_registry_{suffix}.xlsx"'},
+    return _registry_xlsx(
+        conn, user, registry="chemotherapy", date=selected_date,
+        sheet_name="Химиотерапия", filename="chemotherapy_registry",
+        header=[
+            "Дата", "Время", "Пациент", "Полис ОМС", "Диагноз",
+            "Код схемы", "Схема лечения", "Лечащий врач", "Консилиумная группа",
+        ],
+        items=consilium.registry_rows(conn, "chemotherapy", selected_date),
+        columns=(
+            "scheduledDate", "scheduledTime", "patientName", "policyNumber", "primaryDiagnosis",
+            "treatmentSchemeCode", "treatmentScheme", "treatingDoctorName", "consiliumGroupLabel",
+        ),
     )
 
 
-@router.get("/registries/goc.xlsx")
+_GOC_COLUMNS = (
+    "scheduledDate", "scheduledTime", "patientName", "policyNumber", "primaryDiagnosis",
+    "treatmentTypeLabel", "treatmentScheme", "treatingDoctorName", "consiliumGroupLabel",
+)
+
+
+@router.get("/registries/goc.xlsx", dependencies=[Depends(require_csrf), _EXPORT_LIMIT])
 def export_goc_registry(
     date: str | None = Query(None, max_length=10),
     conn: sqlite3.Connection = Depends(get_db),
@@ -426,29 +474,14 @@ def export_goc_registry(
 ):
     _require_chair(conn, user)
     selected_date = _validated_date(date)
-    items = consilium.goc_registry_rows(conn, "goc", selected_date)
-    rows: list[list[object]] = [[
-        "Дата", "Время", "Пациент", "Полис ОМС", "Диагноз",
-        "Назначенное лечение", "Схема лечения", "Лечащий врач", "Консилиумная группа",
-    ]]
-    rows.extend([
-        [
-            item["scheduledDate"], item["scheduledTime"], item["patientName"],
-            item["policyNumber"], item["primaryDiagnosis"], item["treatmentTypeLabel"],
-            item["treatmentScheme"], item["treatingDoctorName"], item["consiliumGroupLabel"],
-        ]
-        for item in items
-    ])
-    suffix = selected_date or "all"
-    content = workbook_bytes("ГОК", rows)
-    return Response(
-        content=content,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="goc_registry_{suffix}.xlsx"'},
+    return _registry_xlsx(
+        conn, user, registry="goc", date=selected_date,
+        sheet_name="ГОК", filename="goc_registry", header=_TREATMENT_HEADER,
+        items=consilium.goc_registry_rows(conn, "goc", selected_date), columns=_GOC_COLUMNS,
     )
 
 
-@router.get("/registries/goc-65-plus.xlsx")
+@router.get("/registries/goc-65-plus.xlsx", dependencies=[Depends(require_csrf), _EXPORT_LIMIT])
 def export_goc_65_plus_registry(
     date: str | None = Query(None, max_length=10),
     conn: sqlite3.Connection = Depends(get_db),
@@ -456,23 +489,8 @@ def export_goc_65_plus_registry(
 ):
     _require_chair(conn, user)
     selected_date = _validated_date(date)
-    items = consilium.goc_registry_rows(conn, "goc_65_plus", selected_date)
-    rows: list[list[object]] = [[
-        "Дата", "Время", "Пациент", "Полис ОМС", "Диагноз",
-        "Назначенное лечение", "Схема лечения", "Лечащий врач", "Консилиумная группа",
-    ]]
-    rows.extend([
-        [
-            item["scheduledDate"], item["scheduledTime"], item["patientName"],
-            item["policyNumber"], item["primaryDiagnosis"], item["treatmentTypeLabel"],
-            item["treatmentScheme"], item["treatingDoctorName"], item["consiliumGroupLabel"],
-        ]
-        for item in items
-    ])
-    suffix = selected_date or "all"
-    content = workbook_bytes("ГОК 65+", rows)
-    return Response(
-        content=content,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="goc_65_plus_registry_{suffix}.xlsx"'},
+    return _registry_xlsx(
+        conn, user, registry="goc_65_plus", date=selected_date,
+        sheet_name="ГОК 65+", filename="goc_65_plus_registry", header=_TREATMENT_HEADER,
+        items=consilium.goc_registry_rows(conn, "goc_65_plus", selected_date), columns=_GOC_COLUMNS,
     )

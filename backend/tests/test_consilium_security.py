@@ -405,3 +405,68 @@ def test_registry_export_keeps_formula_like_scheme_as_text(client):
     assert sheet.findall(".//m:f", NS) == []
     texts = [t.text for t in sheet.findall(".//m:t", NS)]
     assert scheme in texts
+
+
+# --- Б4: аудит выгрузок и ограничения частоты -----------------------------
+
+EXPORTS = (
+    "/api/consilium/registries/chemotherapy.xlsx",
+    "/api/consilium/registries/goc.xlsx",
+    "/api/consilium/registries/goc-65-plus.xlsx",
+)
+
+
+def _audit_rows(event_type):
+    return [dict(r) for r in get_conn().execute(
+        "SELECT * FROM audit_events WHERE event_type = ? ORDER BY id", (event_type,)
+    ).fetchall()]
+
+
+def test_registry_export_is_audited_without_personal_data(client):
+    aid, patient = _make_state(client, "in_review")
+    signed = _post(client, aid, "sign", {
+        "treatmentType": "chemotherapy", "treatmentScheme": "FOLFOX", "goc": True, "goc65Plus": True,
+    })
+    assert signed.status_code == 200, signed.text
+    for path in EXPORTS:
+        assert client.get(f"{path}?date=2026-11-12", headers=client.csrf).status_code == 200
+    rows = _audit_rows("consilium_registry_exported")
+    assert [r["detail"] for r in rows] == [
+        "registry=chemotherapy;date=2026-11-12;row_count=1;format=xlsx",
+        "registry=goc;date=2026-11-12;row_count=1;format=xlsx",
+        "registry=goc_65_plus;date=2026-11-12;row_count=1;format=xlsx",
+    ]
+    dump = str(rows)
+    for secret in (patient["name"], patient["policyNumber"], "C34.1", "FOLFOX"):
+        assert secret not in dump
+    assert all(r["patient_id"] is None and r["actor_role"] == "consilium_chair" for r in rows)
+
+
+def test_registry_export_needs_csrf_header_and_chair_role(client):
+    _make_state(client, "recorded")
+    for path in EXPORTS:
+        assert client.get(path, headers={"Sec-Fetch-Site": "cross-site"}).status_code == 403
+    assert _audit_rows("consilium_registry_exported") == []
+    login(client, DEV_USERNAME)
+    create_account("doctor.plain", "doctor")
+    login(client, "doctor.plain")
+    assert client.get(EXPORTS[0], headers=client.csrf).status_code == 403
+    assert _audit_rows("consilium_registry_exported") == []
+
+
+def test_registry_export_is_rate_limited(client):
+    _make_state(client, "recorded")
+    codes = [client.get(EXPORTS[0], headers=client.csrf).status_code for _ in range(21)]
+    assert codes[:20] == [200] * 20
+    assert codes[20] == 429
+    assert len(_audit_rows("consilium_registry_exported")) == 20
+
+
+def test_consilium_writes_are_rate_limited(client):
+    _, patient = _make_state(client, "recorded")
+    codes = [
+        client.delete(f"/api/consilium/favorites/{patient['id']}", headers=client.csrf).status_code
+        for _ in range(61)
+    ]
+    assert codes[:60] == [200] * 60
+    assert codes[60] == 429

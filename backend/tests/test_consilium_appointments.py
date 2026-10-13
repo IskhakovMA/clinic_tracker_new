@@ -535,7 +535,7 @@ def test_chair_favorite_is_a_bookmark_and_chemo_exports_xlsx(client):
         headers=client.csrf,
     )
     assert signed.status_code == 200
-    exported = client.get("/api/consilium/registries/chemotherapy.xlsx?date=2026-11-12")
+    exported = client.get("/api/consilium/registries/chemotherapy.xlsx?date=2026-11-12", headers=client.csrf)
     assert exported.status_code == 200
     assert exported.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -576,12 +576,12 @@ def test_goc_marks_create_registry_and_excel_export(client):
     registries = client.get("/api/consilium/registries?date=2026-11-12").json()
     assert [row["id"] for row in registries["goc"]] == [created["id"]]
     assert [row["id"] for row in registries["goc65Plus"]] == [created["id"]]
-    exported = client.get("/api/consilium/registries/goc.xlsx?date=2026-11-12")
+    exported = client.get("/api/consilium/registries/goc.xlsx?date=2026-11-12", headers=client.csrf)
     assert exported.status_code == 200
     with ZipFile(BytesIO(exported.content)) as workbook:
         sheet = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
         assert "Пациент ГОК" in sheet
-    exported_65 = client.get("/api/consilium/registries/goc-65-plus.xlsx?date=2026-11-12")
+    exported_65 = client.get("/api/consilium/registries/goc-65-plus.xlsx?date=2026-11-12", headers=client.csrf)
     assert exported_65.status_code == 200
     with ZipFile(BytesIO(exported_65.content)) as workbook:
         sheet = workbook.read("xl/worksheets/sheet1.xml").decode("utf-8")
