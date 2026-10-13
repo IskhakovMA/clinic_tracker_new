@@ -6666,6 +6666,9 @@ const app = {
                                     ? el('div', { class: 'consilium-grid-markers' }, [
                                         appointment.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
                                         isMine ? el('span', { class: 'chip chip--warning', text: 'Моя запись' }) : null,
+                                        // Запись пациента отделения для заведующего: только ФИО, врач и статус.
+                                        appointment.view === 'department'
+                                            ? el('span', { class: 'chip chip--neutral', text: appointment.statusLabel }) : null,
                                         isMine && ownAppointment && this.consiliumEditable(ownAppointment)
                                             ? el('button', {
                                                 type: 'button', class: 'btn btn--ghost btn--sm', text: 'Изменить',

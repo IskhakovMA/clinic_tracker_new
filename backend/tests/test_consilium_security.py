@@ -1012,3 +1012,69 @@ def test_developer_without_chair_role_cannot_decide(client):
         "scheduledDate": "2026-12-01", "consiliumGroup": "thoracic",
         "startTime": "10:00", "endTime": "11:00", "intervalMinutes": 30,
     }, headers=client.csrf).status_code == 200
+
+
+# --- Задача 1: заведующий в расписании ------------------------------------
+
+HEAD_FIELDS = {"patientName", "treatingDoctorName", "status", "statusLabel", "isMine", "view"}
+
+
+def _department_world(client):
+    own = create_department("Отделение заведующего")
+    other = create_department("Соседнее отделение")
+    create_account(DEV_USERNAME)
+    create_account("head.sched", "department_head", department_ids=[own])
+    create_account("doctor.own", "doctor", full_name="Своева Врач Отделения", department_ids=[own])
+    create_account("doctor.other", "doctor", full_name="Чужова Врач Соседняя", department_ids=[other])
+    ids = {r["username"]: r["id"] for r in get_conn().execute("SELECT id, username FROM users")}
+    login(client, DEV_USERNAME)
+    mine = create_patient(client, name="Пациент Своего Отделения", policyNumber="7700000000004401",
+                          treatingDoctorUserId=ids["doctor.own"])
+    foreign = create_patient(client, name="Пациент Соседнего Отделения", policyNumber="7700000000004402",
+                             diagnosis="C34.9", nosology="lung12", treatingDoctorUserId=ids["doctor.other"])
+    today = date.today().isoformat()
+    login(client, "doctor.own")
+    own_booking = client.post("/api/consilium/appointments", headers=client.csrf,
+                              json=appointment_payload(mine["id"], scheduledDate=today, scheduledTime="09:00"))
+    assert own_booking.status_code == 201, own_booking.text
+    login(client, "doctor.other")
+    other_booking = client.post("/api/consilium/appointments", headers=client.csrf,
+                                json=appointment_payload(foreign["id"], scheduledDate=today, scheduledTime="09:15",
+                                                         primaryDiagnosis="C34.9"))
+    assert other_booking.status_code == 201, other_booking.text
+    login(client, "head.sched")
+    return mine, foreign, today, own_booking.json()["id"], other_booking.json()["id"]
+
+
+def test_head_sees_minimal_details_for_own_department(client):
+    mine, _, today, own_id, _ = _department_world(client)
+    response = client.get("/api/consilium/schedule")
+    assert response.status_code == 200
+    details = _slot(response.json()["slots"], today, "09:00")["appointment"]
+    assert set(details) == HEAD_FIELDS
+    assert details == {
+        "patientName": "Пациент Своего Отделения", "treatingDoctorName": "Своева Врач Отделения",
+        "status": "recorded", "statusLabel": "Записан", "isMine": False, "view": "department",
+    }
+    for secret in ("7700000000004401", "C34.1", mine["id"], own_id):
+        assert secret not in json.dumps(_slot(response.json()["slots"], today, "09:00"), ensure_ascii=False)
+
+
+def test_head_gets_only_occupancy_for_other_department(client):
+    _, foreign, today, _, other_id = _department_world(client)
+    response = client.get("/api/consilium/schedule")
+    slot = _slot(response.json()["slots"], today, "09:15")
+    assert slot["occupied"] is True and slot["appointment"] is None
+    for secret in ("Пациент Соседнего Отделения", "Чужова Врач Соседняя", "7700000000004402",
+                   "C34.9", foreign["id"], other_id):
+        assert secret not in response.text
+
+
+def test_doctor_of_same_department_still_sees_only_occupancy(client):
+    _department_world(client)
+    create_account("doctor.colleague", "doctor", department_ids=[
+        get_conn().execute("SELECT id FROM departments WHERE name = 'Отделение заведующего'").fetchone()["id"]])
+    login(client, "doctor.colleague")
+    response = client.get("/api/consilium/schedule")
+    assert _slot(response.json()["slots"], date.today().isoformat(), "09:00")["appointment"] is None
+    assert "Пациент Своего Отделения" not in response.text

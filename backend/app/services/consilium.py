@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from .. import policy
-from ..db import now_iso
+from ..db import in_chunks, now_iso
 from ..models import ConsiliumAppointmentIn
 
 
@@ -588,12 +588,26 @@ def _is_current_week_default_slot(scheduled_date: str, scheduled_time: str, cons
 def _slot_appointment(row: sqlite3.Row, user: policy.CurrentUser, readable_ids: set[str]) -> dict | None:
     """Details of the appointment occupying a slot, or None.
 
-    Only the chair (and the developer) manage the whole schedule; everyone
-    else sees their own record for a patient still in their scope, and for
-    any other occupied slot only the fact that it is taken.
+    - the chair and the developer (schedule management) and the author of
+      the record while the patient is in their scope: full slot details;
+    - a department head, for a patient of their department (existing patient
+      scope): only who, when, treating doctor and status — no diagnosis,
+      policy number, patient or record ids, urgency mark;
+    - everyone else: None, the slot is reported only as occupied.
     """
     is_mine = row["created_by_user_id"] == user.id
-    if not (policy.can_manage_consilium(user) or (is_mine and row["patient_id"] in readable_ids)):
+    in_scope = row["patient_id"] in readable_ids
+    status = public_status(row)
+    if not (policy.can_manage_consilium(user) or policy.can_decide_consilium(user) or (is_mine and in_scope)):
+        if user.role_id == policy.ROLE_DEPARTMENT_HEAD and in_scope:
+            return {
+                "patientName": row["patient_name"],
+                "treatingDoctorName": row["treating_doctor_name"],
+                "status": status,
+                "statusLabel": STATUS_LABELS.get(status, status),
+                "isMine": False,
+                "view": "department",
+            }
         return None
     return {
         "id": row["id"],
@@ -602,10 +616,12 @@ def _slot_appointment(row: sqlite3.Row, user: policy.CurrentUser, readable_ids: 
         "primaryDiagnosis": row["primary_diagnosis"],
         "treatingDoctorName": row["treating_doctor_name"],
         "policyNumber": row["policy_number"],
-        "status": row["status"],
+        "status": status,
+        "statusLabel": STATUS_LABELS.get(status, status),
         "uvRuv": bool(row["uv_ruv"]),
         "createdByUserId": row["created_by_user_id"],
         "isMine": is_mine,
+        "view": "full",
     }
 
 
@@ -613,12 +629,15 @@ def _readable_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, pa
     if not patient_ids:
         return set()
     condition, params = policy.patient_scope_filter(user)
-    marks = ",".join("?" for _ in patient_ids)
-    rows = conn.execute(
-        f"SELECT patients.id FROM patients WHERE patients.id IN ({marks}) AND {condition}",  # nosec B608 - only "?" placeholders and the policy scope condition are interpolated; values are bound.
-        [*patient_ids, *params],
-    ).fetchall()
-    return {row["id"] for row in rows}
+    readable: set[str] = set()
+    for chunk in in_chunks(conn, patient_ids, reserve=len(params) + 8):
+        marks = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT patients.id FROM patients WHERE patients.id IN ({marks}) AND {condition}",  # nosec B608 - only "?" placeholders and the policy scope condition are interpolated; values are bound.
+            [*chunk, *params],
+        ).fetchall()
+        readable.update(row["id"] for row in rows)
+    return readable
 
 
 def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[dict]:
@@ -635,7 +654,7 @@ def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[d
                       treating_doctor.full_name, NULLIF(patients.doctor, ''), a.treating_doctor_name
                   ) AS treating_doctor_name,
                   COALESCE(a.policy_number, patients.policy_number, '') AS policy_number, a.status,
-                  a.uv_ruv, patients.name AS patient_name
+                  a.uv_ruv, a.revision_comment, a.revision_submitted_at, patients.name AS patient_name
            FROM oncology_consilium_appointments a
            JOIN patients ON patients.id = a.patient_id
            LEFT JOIN users treating_doctor ON treating_doctor.id = patients.treating_doctor_user_id"""
@@ -644,9 +663,12 @@ def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[d
         (row["scheduled_date"], row["scheduled_time"], row["consilium_group"]): row
         for row in appointment_rows
     }
+    # Область видимости проверяется для своих записей, а заведующему — для
+    # всех: он видит записи пациентов своего отделения в сокращённом виде.
+    head = user.role_id == policy.ROLE_DEPARTMENT_HEAD
     readable_ids = _readable_patient_ids(
         conn, user,
-        {row["patient_id"] for row in appointment_rows if row["created_by_user_id"] == user.id},
+        {row["patient_id"] for row in appointment_rows if head or row["created_by_user_id"] == user.id},
     )
 
     def appointment_for(key: tuple[str, str, str]) -> dict | None:
