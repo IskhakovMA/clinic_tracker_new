@@ -235,6 +235,18 @@ def delete_patient(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
+    # Удаление карточки каскадом удалило бы записи консилиума и подписанные
+    # решения; исторические решения ради удаления не уничтожаются.
+    consilium_records = conn.execute(
+        "SELECT COUNT(*) AS c FROM oncology_consilium_appointments WHERE patient_id = ?", (patient_id,)
+    ).fetchone()["c"]
+    if consilium_records:
+        audit.record(conn, audit.PATIENT_DELETED, result=audit.RESULT_DENIED, patient_id=patient_id,
+                     detail=f"consilium_records={consilium_records}", **audit.actor_ctx(user))
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="У пациента есть записи онкологического консилиума; карточку удалить нельзя.",
+        )
     if not store.delete_patient(conn, patient_id):
         _not_found()
     audit.record(conn, audit.PATIENT_DELETED, patient_id=patient_id, **audit.actor_ctx(user))

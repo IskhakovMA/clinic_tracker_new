@@ -864,3 +864,86 @@ def test_consilium_menu_follows_access_permission():
     app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     assert "consilium: this.can('accessConsilium')," in app_js
     assert "if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';" in app_js
+
+
+# --- R6: импорт и удаление не уничтожают решения консилиума ----------------
+
+import json  # noqa: E402
+
+
+def _data_digest():
+    """Content of every table except the audit trail and session activity,
+    which a refused request legitimately writes."""
+    conn = get_conn()
+    tables = [r["name"] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name NOT IN ('audit_events', 'sessions', 'sqlite_sequence') ORDER BY name"
+    )]
+    digest = hashlib.sha256()
+    for table in tables:
+        for row in conn.execute(f'SELECT * FROM "{table}" ORDER BY 1'):
+            digest.update(repr((table, tuple(row))).encode())
+    return digest.hexdigest()
+
+
+def _export_document(client):
+    response = client.get("/api/export", headers=client.csrf)
+    assert response.status_code == 200
+    return response.json()
+
+
+def _import(client, document, mode):
+    return client.post(
+        "/api/import/commit", json={"raw": json.dumps(document, ensure_ascii=False), "mode": mode},
+        headers=client.csrf,
+    )
+
+
+@pytest.mark.parametrize("state", ["signed", "recorded"])
+@pytest.mark.parametrize("mode", ["replace", "update"])
+def test_dangerous_import_stops_before_any_change(client, state, mode):
+    aid, patient = _make_state(client, state)
+    login(client, DEV_USERNAME)
+    document = _export_document(client)
+    before_digest, before_row = _data_digest(), _row(aid)
+
+    response = _import(client, document, mode)
+    assert response.status_code == 409, response.text
+    assert "Данные не изменены" in response.json()["detail"]
+    assert _data_digest() == before_digest
+    assert _row(aid) == before_row
+    denied = [r for r in _audit_rows("import_committed") if r["result"] == "denied"]
+    expected_signed = 1 if state == "signed" else 0
+    assert denied[-1]["detail"] == f"mode={mode} consilium_records=1 signed={expected_signed}"
+
+
+def test_safe_imports_still_work_next_to_consilium_records(client):
+    aid, patient = _make_state(client, "signed")
+    login(client, DEV_USERNAME)
+    other = create_patient(client, name="Пациент Без Консилиума", diagnosis="C50.1", nosology="breast")
+    document = _export_document(client)
+    only_other = {**document, "patients": [p for p in document["patients"] if p["id"] == other["id"]]}
+
+    updated = _import(client, only_other, "update")
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["updated"] == 1
+    added = _import(client, document, "add")
+    assert added.status_code == 200, added.text
+    assert _row(aid)["status"] == "signed"
+
+    preview = client.post(
+        "/api/import/preview", json={"raw": json.dumps(document, ensure_ascii=False)}, headers=client.csrf,
+    ).json()
+    assert preview["consiliumBlocks"]["replace"] == {"records": 1, "signed": 1}
+    assert preview["consiliumBlocks"]["update"] == {"records": 1, "signed": 1}
+
+
+def test_patient_with_consilium_records_cannot_be_deleted(client):
+    aid, patient = _make_state(client, "signed")
+    login(client, DEV_USERNAME)
+    before = _data_digest()
+    response = client.delete(f"/api/patients/{patient['id']}", headers=client.csrf)
+    assert response.status_code == 409
+    assert _data_digest() == before
+    assert _row(aid)["status"] == "signed"
+    assert _audit_rows("patient_deleted")[-1]["result"] == "denied"

@@ -39,6 +39,11 @@ def import_preview(
     if scope_errors:
         return {"valid": False, "errors": scope_errors}
     report = importexport.preview_report(conn, document, user)
+    # Сколько записей консилиума заблокировали бы опасные режимы (числа, без ПДн).
+    report["consiliumBlocks"] = {
+        mode: dict(zip(("records", "signed"), importexport.consilium_conflicts(conn, document, mode)))
+        for mode in ("update", "replace")
+    }
     return {"valid": True, "errors": [], **report}
 
 
@@ -67,7 +72,12 @@ def import_commit(
                      detail=f"mode={body.mode} scope_rejected={len(scope_errors)}", **ctx)
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail={"errors": scope_errors})
-    result = importexport.commit_import(conn, document, body.mode, user)
+    try:
+        result = importexport.commit_import(conn, document, body.mode, user)
+    except importexport.ImportConflictError as e:
+        audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
+                     detail=f"mode={body.mode} consilium_records={e.records} signed={e.signed}", **ctx)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     audit.record(
         conn, audit.IMPORT_COMMITTED,
         detail=f"mode={body.mode} added={result['added']} updated={result['updated']} skipped={result['skipped']}",

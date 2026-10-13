@@ -125,6 +125,35 @@ def scope_errors(
     return errors[:200]
 
 
+class ImportConflictError(ValueError):
+    """replace/update would delete consilium records through the patient cascade."""
+
+    def __init__(self, records: int, signed: int):
+        self.records = records
+        self.signed = signed
+        super().__init__(
+            f"Импорт остановлен: он удалил бы записи онкоконсилиума ({records}, из них "
+            f"подписанных решений: {signed}) вместе с карточками пациентов. Данные не изменены. "
+            "Для пациентов с записями консилиума используйте режим «добавить» или правку карточки."
+        )
+
+
+def consilium_conflicts(conn: sqlite3.Connection, document: ImportDocument, mode: str) -> tuple[int, int]:
+    """Consilium records that `mode` would delete: (all records, signed ones).
+
+    replace deletes every patient; update deletes and re-inserts each matched
+    patient. Both go through ON DELETE CASCADE, which would silently remove
+    the patient's consilium bookings and signed decisions.
+    """
+    if mode not in ("replace", "update"):
+        return 0, 0
+    rows = conn.execute("SELECT patient_id, status FROM oncology_consilium_appointments").fetchall()
+    if mode == "update":
+        matched = {p.id for p in document.patients if p.id}
+        rows = [r for r in rows if r["patient_id"] in matched]
+    return len(rows), sum(1 for r in rows if r["status"] == "signed")
+
+
 def preview_report(
     conn: sqlite3.Connection, document: ImportDocument, actor: "policy.CurrentUser"
 ) -> dict:
@@ -242,6 +271,11 @@ def commit_import(
             # Проверено ещё в preview; здесь — жёсткая страховка.
             raise PermissionError("import assignment outside actor scope")
         resolved.append(doctor_id)
+
+    records, signed = consilium_conflicts(conn, document, mode)
+    if records:
+        # До транзакции: при отказе база не меняется ни на одну строку.
+        raise ImportConflictError(records, signed)
 
     existing_ids = {r["id"] for r in conn.execute("SELECT id FROM patients").fetchall()}
     added = updated = skipped = 0
