@@ -37,13 +37,25 @@ def _not_found():
     raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Appointment not found")
 
 
-def _require_chair(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
-    if not policy.can_manage_consilium(user):
+def _require(conn: sqlite3.Connection, user: policy.CurrentUser, allowed: bool, action: str) -> None:
+    if not allowed:
         audit.record(
             conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
-            detail="action=consilium_manage", **audit.actor_ctx(user),
+            detail=f"action={action}", **audit.actor_ctx(user),
         )
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+
+def _require_chair(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+    _require(conn, user, policy.can_manage_consilium(user), "consilium_manage")
+
+
+def _require_access(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+    _require(conn, user, policy.can_access_consilium(user), "consilium_access")
+
+
+def _require_booking(conn: sqlite3.Connection, user: policy.CurrentUser) -> None:
+    _require(conn, user, policy.can_book_consilium(user), "consilium_booking")
 
 
 def _validated_date(value: str | None) -> str | None:
@@ -71,8 +83,10 @@ def _require_writable_patient(
 
 @router.get("/meta")
 def get_consilium_meta(
+    conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_access(conn, user)
     return consilium.metadata()
 
 
@@ -82,6 +96,7 @@ def list_consilium_appointments(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_access(conn, user)
     return {"appointments": consilium.list_for_user(conn, user, archived=archived)}
 
 
@@ -90,6 +105,7 @@ def list_booked_consilium_patients(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_booking(conn, user)
     return {"patientIds": consilium.booked_patient_ids(conn, user)}
 
 
@@ -98,6 +114,7 @@ def list_consilium_schedule(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_access(conn, user)
     return {"slots": consilium.schedule_slots(conn, user)}
 
 
@@ -145,6 +162,7 @@ def archive_consilium_appointment(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_booking(conn, user)
     try:
         appointment = consilium.set_archived(conn, user, appointment_id, True)
     except ValueError as exc:
@@ -164,6 +182,7 @@ def restore_consilium_appointment(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_booking(conn, user)
     try:
         appointment = consilium.set_archived(conn, user, appointment_id, False)
     except ValueError as exc:
@@ -187,6 +206,7 @@ def create_consilium_appointment(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_booking(conn, user)
     _require_writable_patient(conn, user, body.patientId)
     try:
         appointment = consilium.create(conn, user, body)
@@ -206,6 +226,7 @@ def update_consilium_appointment(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_booking(conn, user)
     existing = consilium.get_owned(conn, user, appointment_id)
     if existing is None:
         _not_found()
@@ -229,6 +250,7 @@ def delete_consilium_appointment(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    _require_booking(conn, user)
     try:
         appointment = consilium.delete_owned(conn, user, appointment_id)
     except ValueError as exc:

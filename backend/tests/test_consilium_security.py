@@ -758,3 +758,109 @@ def test_consilium_limits_are_configurable_and_per_user(low_limits, client):
     login(client, "chair.second")
     assert client.get(export, headers=client.csrf).status_code == 200
     assert client.delete(favorite, headers=client.csrf).status_code == 200
+
+
+# --- R7: минимальные полномочия --------------------------------------------
+
+from .conftest import create_department  # noqa: E402
+
+ROLES = ("developer", "doctor", "department_head", "consilium_chair", "deputy_chief_oncology", "caop_head")
+ACCESS = {"developer", "doctor", "department_head", "consilium_chair"}
+BOOKING = {"developer", "doctor", "department_head"}
+MANAGING = {"developer", "consilium_chair"}
+ENDPOINTS = (
+    ("GET", "/api/consilium/meta", None, ACCESS),
+    ("GET", "/api/consilium/appointments", None, ACCESS),
+    ("GET", "/api/consilium/schedule", None, ACCESS),
+    ("GET", "/api/consilium/booked-patients", None, BOOKING),
+    ("POST", "/api/consilium/appointments", "booking", BOOKING),
+    ("PUT", "/api/consilium/appointments/{aid}", "booking", BOOKING),
+    ("DELETE", "/api/consilium/appointments/{aid}", None, BOOKING),
+    ("POST", "/api/consilium/appointments/{aid}/archive", {}, BOOKING),
+    ("POST", "/api/consilium/appointments/{aid}/restore", {}, BOOKING),
+    ("POST", "/api/consilium/schedule/generate", {
+        "scheduledDate": "2026-12-01", "consiliumGroup": "thoracic",
+        "startTime": "10:00", "endTime": "11:00", "intervalMinutes": 30}, MANAGING),
+    ("DELETE", "/api/consilium/schedule/missing-slot", None, MANAGING),
+    ("POST", "/api/consilium/appointments/{aid}/review", {}, MANAGING),
+    ("POST", "/api/consilium/appointments/{aid}/sign", DECISION, MANAGING),
+    ("POST", "/api/consilium/appointments/{aid}/return", {"comment": "Проверка прав"}, MANAGING),
+    ("POST", "/api/consilium/appointments/{aid}/referral-completion", {"completed": True}, MANAGING),
+    ("GET", "/api/consilium/analytics", None, MANAGING),
+    ("POST", "/api/consilium/favorites/{pid}", {}, MANAGING),
+    ("DELETE", "/api/consilium/favorites/{pid}", None, MANAGING),
+    ("GET", "/api/consilium/registries", None, MANAGING),
+    ("GET", "/api/consilium/registries/chemotherapy.xlsx", None, MANAGING),
+    ("GET", "/api/consilium/registries/goc.xlsx", None, MANAGING),
+    ("GET", "/api/consilium/registries/goc-65-plus.xlsx", None, MANAGING),
+)
+
+
+def _denied_count():
+    return get_conn().execute(
+        "SELECT COUNT(*) AS c FROM audit_events WHERE event_type = 'access_denied' AND detail LIKE 'action=consilium_%'"
+    ).fetchone()["c"]
+
+
+@pytest.mark.parametrize("role", ROLES)
+def test_consilium_endpoint_authorization_matrix(client, role):
+    department = create_department("Отделение проверки прав")
+    create_account(DEV_USERNAME)
+    user_id = create_account(f"role.{role}", role, department_ids=[department])
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Матрицы Прав")
+    aid = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    ).json()["id"]
+
+    login(client, f"role.{role}")
+    me = client.get("/api/auth/me").json()["user"]["permissions"]
+    assert me["accessConsilium"] is (role in ACCESS)
+    assert me["bookConsilium"] is (role in BOOKING)
+    assert me["manageConsilium"] is (role in MANAGING)
+
+    for method, template, body, allowed_roles in ENDPOINTS:
+        path = template.format(aid=aid, pid=patient["id"])
+        if body == "booking":
+            body = appointment_payload(patient["id"])
+        before_denied, before_row = _denied_count(), _row(aid)
+        response = client.request(method, path, json=body, headers=client.csrf)
+        if role in allowed_roles:
+            assert response.status_code != 403, (role, method, template, response.text)
+        else:
+            assert response.status_code == 403, (role, method, template, response.status_code)
+            assert _denied_count() == before_denied + 1, (role, method, template)
+            assert _row(aid) == before_row
+    assert user_id
+
+
+def test_department_head_books_only_within_own_department(client):
+    own = create_department("Своё отделение")
+    other = create_department("Чужое отделение")
+    create_account(DEV_USERNAME)
+    create_account("head.own", "department_head", department_ids=[own])
+    doctor_own = create_account("doctor.own", "doctor", department_ids=[own])
+    doctor_other = create_account("doctor.other", "doctor", department_ids=[other])
+    login(client, DEV_USERNAME)
+    mine = create_patient(client, name="Пациент Своего Отделения", treatingDoctorUserId=doctor_own)
+    foreign = create_patient(client, name="Пациент Чужого Отделения", diagnosis="C34.9",
+                             nosology="lung12", treatingDoctorUserId=doctor_other)
+
+    login(client, "head.own")
+    booked = client.post("/api/consilium/appointments", json=appointment_payload(mine["id"]), headers=client.csrf)
+    assert booked.status_code == 201, booked.text
+    refused = client.post(
+        "/api/consilium/appointments",
+        json=appointment_payload(foreign["id"], scheduledTime="11:00", primaryDiagnosis="C34.9"),
+        headers=client.csrf,
+    )
+    assert refused.status_code == 404
+    assert client.get("/api/consilium/booked-patients").json()["patientIds"] == [mine["id"]]
+    for forbidden in ("/api/consilium/analytics", "/api/consilium/registries"):
+        assert client.get(forbidden).status_code == 403
+
+
+def test_consilium_menu_follows_access_permission():
+    app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    assert "consilium: this.can('accessConsilium')," in app_js
+    assert "if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';" in app_js

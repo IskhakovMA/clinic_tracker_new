@@ -1731,7 +1731,8 @@ const app = {
         const chair = u.roleId === 'consilium_chair';
         const navVisibility = {
             patients: true,
-            consilium: true,
+            // Видимость — подсказка; сервер проверяет каждый эндпоинт консилиума.
+            consilium: this.can('accessConsilium'),
             calendar: !chair,
             notifications: !chair,
             analytics: true,
@@ -1751,7 +1752,7 @@ const app = {
         $('readOnlyChip').classList.toggle('is-hidden', !this.isReadOnly());
         $('openAddBtn').classList.toggle('is-hidden', !this.can('createPatients'));
         $('openConsiliumBookingBtn').classList.add('is-hidden');
-        $('openConsiliumArchiveBtn').classList.toggle('is-hidden', chair);
+        $('openConsiliumArchiveBtn').classList.toggle('is-hidden', !this.can('bookConsilium'));
         $('appScreen').classList.toggle('can-collapse-sidebar', chair);
         if (!chair) $('appScreen').classList.remove('is-sidebar-collapsed');
         const chairDesktop = chair && window.matchMedia('(min-width: 861px)').matches;
@@ -1853,6 +1854,7 @@ const app = {
     /* ------------------------------------------------------------ Навигация */
 
     showView(view) {
+        if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';
         const previousView = this.currentView;
         this.currentView = view;
         for (const section of document.querySelectorAll('.view')) {
