@@ -8172,6 +8172,7 @@ const app = {
     },
 
     showImportReviewModal(report) {
+        this.importReport = report;
         $('importModeSelect').disabled = false;
         $('confirmImportCommitBtn').disabled = false;
         $('importReviewSummary').replaceChildren(frag([
@@ -8202,6 +8203,30 @@ const app = {
             replace: 'Все текущие данные на сервере будут удалены и заменены содержимым файла. Действие необратимо.',
         };
         $('importModeHint').textContent = hints[mode] || '';
+        this.renderImportConsiliumImpact(mode);
+    },
+
+    // Влияние режима на записи консилиума считает сервер (то же правило, что
+    // отклонит импорт при подтверждении); здесь только показ.
+    renderImportConsiliumImpact(mode) {
+        const box = $('importConsiliumImpact');
+        const impact = (this.importReport && this.importReport.consiliumImpact || {})[mode];
+        const blocked = Boolean(impact && impact.blocked);
+        $('confirmImportCommitBtn').disabled = blocked;
+        if (!impact || !impact.records) {
+            box.replaceChildren();
+            return;
+        }
+        box.replaceChildren(el('div', { class: `alert ${blocked ? 'alert--danger' : 'alert--info'}`, role: blocked ? 'alert' : null }, [
+            el('strong', { text: blocked ? 'Этот режим импорта недоступен' : 'Записи онкоконсилиума' }),
+            el('ul', { class: 'import-consilium-impact' }, [
+                el('li', { text: `Будет затронуто записей консилиума: ${impact.records}` }),
+                el('li', { text: `Из них подписанных решений: ${impact.signed}` }),
+                el('li', { text: `Неподписанных и находящихся в работе: ${impact.unsigned}` }),
+            ]),
+            impact.reason ? el('p', { text: impact.reason }) : null,
+            impact.advice ? el('p', { text: impact.advice }) : null,
+        ]));
     },
 
     closeImportReviewModal() {

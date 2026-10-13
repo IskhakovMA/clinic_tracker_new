@@ -154,6 +154,27 @@ def consilium_conflicts(conn: sqlite3.Connection, document: ImportDocument, mode
     return len(rows), sum(1 for r in rows if r["status"] == "signed")
 
 
+IMPORT_CONSILIUM_ADVICE = (
+    "Используйте режим «Добавить как новые записи» или исправьте нужные карточки "
+    "вручную. Записи консилиума и подписанные решения удаляться не будут."
+)
+
+
+def consilium_import_impact(conn: sqlite3.Connection, document: ImportDocument, mode: str) -> dict:
+    """What `mode` would do to consilium records, from the same check that
+    commit_import enforces: counts only, never patient data."""
+    records, signed = consilium_conflicts(conn, document, mode)
+    blocked = records > 0
+    return {
+        "records": records,
+        "signed": signed,
+        "unsigned": records - signed,
+        "blocked": blocked,
+        "reason": str(ImportConflictError(records, signed)) if blocked else "",
+        "advice": IMPORT_CONSILIUM_ADVICE if blocked else "",
+    }
+
+
 def preview_report(
     conn: sqlite3.Connection, document: ImportDocument, actor: "policy.CurrentUser"
 ) -> dict:

@@ -936,8 +936,11 @@ def test_safe_imports_still_work_next_to_consilium_records(client):
     preview = client.post(
         "/api/import/preview", json={"raw": json.dumps(document, ensure_ascii=False)}, headers=client.csrf,
     ).json()
-    assert preview["consiliumBlocks"]["replace"] == {"records": 1, "signed": 1}
-    assert preview["consiliumBlocks"]["update"] == {"records": 1, "signed": 1}
+    impact = preview["consiliumImpact"]
+    assert {k: impact["replace"][k] for k in ("records", "signed", "unsigned", "blocked")} == {
+        "records": 1, "signed": 1, "unsigned": 0, "blocked": True}
+    assert impact["update"]["blocked"] is True
+    assert impact["add"] == {"records": 0, "signed": 0, "unsigned": 0, "blocked": False, "reason": "", "advice": ""}
 
 
 def test_patient_with_consilium_records_cannot_be_deleted(client):
@@ -1233,3 +1236,70 @@ def test_only_the_author_can_archive_or_restore(client, username, role, expected
     for action in ("archive", "restore"):
         assert _post(client, aid, action).status_code == expected, (username, action)
     assert _row(aid) == before
+
+
+# --- Превью импорта: влияние на консилиум считает сервер --------------------
+
+def test_import_preview_reports_signed_and_working_records_and_why(client):
+    create_account(DEV_USERNAME)
+    create_account("chair.preview", "consilium_chair")
+    login(client, DEV_USERNAME)
+    ids = []
+    for index, (name, dx, nos) in enumerate((("Превью Подписанный", "C34.1", "lung34"),
+                                             ("Превью Рассматриваемый", "C34.9", "lung12"),
+                                             ("Превью Записанный", "C34.1", "lung34"))):
+        patient = create_patient(client, name=name, diagnosis=dx, nosology=nos)
+        aid = client.post("/api/consilium/appointments", headers=client.csrf,
+                          json=appointment_payload(patient["id"], scheduledTime=f"1{index}:00", primaryDiagnosis=dx)).json()["id"]
+        ids.append(aid)
+    login(client, "chair.preview")
+    assert _post(client, ids[0], "review").status_code == 200
+    assert _post(client, ids[0], "sign", DECISION).status_code == 200
+    assert _post(client, ids[1], "review").status_code == 200
+    login(client, DEV_USERNAME)
+    document = _export_document(client)
+    preview = client.post("/api/import/preview", headers=client.csrf,
+                          json={"raw": json.dumps(document, ensure_ascii=False)}).json()
+    replace = preview["consiliumImpact"]["replace"]
+    assert (replace["records"], replace["signed"], replace["unsigned"], replace["blocked"]) == (3, 1, 2, True)
+    assert "подписанных решений: 1" in replace["reason"] and "Данные не изменены" in replace["reason"]
+    assert "«Добавить как новые записи»" in replace["advice"]
+    assert not any(name in json.dumps(preview, ensure_ascii=False) for name in ("C34.1", "C34.9"))
+
+    before = _data_digest()
+    response = _import(client, document, "replace")
+    assert response.status_code == 409
+    assert response.json()["detail"] == replace["reason"]
+    assert _data_digest() == before
+
+
+def test_add_import_keeps_consilium_records_and_routes(client):
+    aid, patient = _make_state(client, "signed")
+    login(client, DEV_USERNAME)
+    history_before = client.get(f"/api/patients/{patient['id']}").json()["history"]
+    row_before = _row(aid)
+    document = _export_document(client)
+    added = _import(client, document, "add")
+    assert added.status_code == 200 and added.json()["added"] == len(document["patients"])
+    assert _row(aid) == row_before
+    assert client.get(f"/api/patients/{patient['id']}").json()["history"] == history_before
+
+
+def test_preview_hides_modes_the_user_cannot_use(client):
+    department = create_department("Отделение импорта")
+    create_account(DEV_USERNAME)
+    create_account("head.import", "department_head", department_ids=[department])
+    login(client, "head.import")
+    preview = client.post("/api/import/preview", headers=client.csrf,
+                          json={"raw": json.dumps({"schemaVersion": 18, "patients": []})})
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["valid"] is True
+    assert set(preview.json()["consiliumImpact"]) == {"add"}
+
+
+def test_import_dialog_uses_server_impact_and_blocks_confirm():
+    app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    body = _method_body(app_js, "renderImportConsiliumImpact(mode) {")
+    assert "this.importReport.consiliumImpact" in body
+    assert "$('confirmImportCommitBtn').disabled = blocked;" in body
+    assert 'id="importConsiliumImpact"' in (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")

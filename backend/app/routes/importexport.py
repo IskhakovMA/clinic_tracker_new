@@ -39,10 +39,12 @@ def import_preview(
     if scope_errors:
         return {"valid": False, "errors": scope_errors}
     report = importexport.preview_report(conn, document, user)
-    # Сколько записей консилиума заблокировали бы опасные режимы (числа, без ПДн).
-    report["consiliumBlocks"] = {
-        mode: dict(zip(("records", "signed"), importexport.consilium_conflicts(conn, document, mode)))
-        for mode in ("update", "replace")
+    # Что каждый доступный пользователю режим сделал бы с записями консилиума —
+    # тот же расчёт, которым commit_import отклоняет операцию (только числа).
+    report["consiliumImpact"] = {
+        mode: importexport.consilium_import_impact(conn, document, mode)
+        for mode in ("add", "update", "replace")
+        if policy.can_import(user, mode)
     }
     return {"valid": True, "errors": [], **report}
 
