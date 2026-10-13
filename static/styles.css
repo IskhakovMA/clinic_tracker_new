@@ -910,6 +910,12 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 }
 .consilium-calendar__actions .input { width: auto; min-width: 170px; }
 .consilium-calendar__actions .select { width: auto; min-width: 240px; }
+/* Три колонки календаря требуют ~800px контента: между 861px (одна
+   колонка ниже) и ~1180px поля дня и группы уходили за край страницы. */
+@media (max-width: 1180px) {
+    .consilium-calendar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    .consilium-calendar__actions { grid-column: 1 / -1; }
+}
 .consilium-group-picker { position: relative; min-width: 260px; }
 .consilium-group-picker[open] { z-index: 60; }
 .consilium-group-picker__summary {
@@ -1939,6 +1945,11 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     }
     .table td { padding: 0; border: 0; }
     .table td + td { margin-top: var(--sp-3); }
+    /* Карточкам консилиума ширина таблицы не нужна: с ней каждая карточка
+       была 760px и кнопка «Запись» уходила за край экрана. */
+    .consilium-schedule-grid-table,
+    .consilium-doctor-schedule-table,
+    .consilium-schedule-grid-table .consilium-actions { min-width: 0; }
     .cell-stage { min-width: 0; }
     .cell-actions { text-align: left; }
     .cell-actions .btn { width: 100%; }
@@ -1958,6 +1969,11 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
 
 @media (max-width: 560px) {
     .consilium-schedule-form { grid-template-columns: 1fr; }
+    /* Две кнопки фильтра по 164px не помещались рядом с заголовком сетки
+       и растягивали страницу (и модальные окна) шире экрана. */
+    .consilium-schedule-editor > .section-head { flex-wrap: wrap; }
+    .consilium-schedule-toolbar { flex: 1 1 100%; justify-content: flex-start; }
+    .consilium-schedule-filter-btn { flex: 1 1 0; width: auto; min-width: 0; }
     .content { padding: var(--sp-4); }
     .topbar { padding: 0 var(--sp-4); }
     .topbar__brand { white-space: nowrap; }
