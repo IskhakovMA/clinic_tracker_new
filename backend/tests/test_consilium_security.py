@@ -495,3 +495,68 @@ def test_opening_decision_modal_does_not_start_review():
     assert "on('startConsiliumReviewBtn', 'click', () => this.startConsiliumReview());" in app_js
     sync = _method_body(app_js, "syncConsiliumReviewState(record) {")
     assert "$('signConsiliumBtn').disabled = !inReview;" in sync
+
+
+# --- Б7: лечащий врач и адресат уведомления -------------------------------
+
+def test_treating_doctor_comes_from_patient_card_not_record_author(client):
+    doctor_a = create_account("doctor.a", "doctor", full_name="Лечащева Анна Карточная")
+    doctor_b = create_account("doctor.b", "doctor", full_name="Новиков Борис Переданный")
+    create_account(DEV_USERNAME)
+    create_account("chair.doctor", "consilium_chair")
+    login(client, "chair.doctor")
+    assert client.post(
+        "/api/consilium/schedule/generate",
+        json={
+            "scheduledDate": "2026-11-12", "consiliumGroup": "thoracic",
+            "startTime": "10:00", "endTime": "11:00", "intervalMinutes": 30,
+        },
+        headers=client.csrf,
+    ).status_code == 200
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Лечащего", treatingDoctorUserId=doctor_a)
+    created = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["treatingDoctorName"] == "Лечащева Анна Карточная"
+    stored = get_conn().execute(
+        "SELECT treating_doctor_name FROM oncology_consilium_appointments WHERE id = ?",
+        (created.json()["id"],),
+    ).fetchone()["treating_doctor_name"]
+    assert stored == "Лечащева Анна Карточная"
+
+    conn = get_conn()
+    conn.execute("UPDATE patients SET treating_doctor_user_id = ? WHERE id = ?", (doctor_b, patient["id"]))
+    conn.commit()
+    login(client, "chair.doctor")
+    listed = client.get("/api/consilium/appointments").json()["appointments"][0]
+    assert listed["treatingDoctorName"] == "Новиков Борис Переданный"
+    slots = client.get("/api/consilium/schedule").json()["slots"]
+    assert _slot(slots, "2026-11-12", "10:30")["appointment"]["treatingDoctorName"] == "Новиков Борис Переданный"
+
+
+def test_revision_notification_respects_recipient_scope(client):
+    doctor_a = create_account("doctor.a", "doctor", full_name="Врачова Анна Первая")
+    doctor_b = create_account("doctor.b", "doctor")
+    create_account(DEV_USERNAME)
+    create_account("chair.notify", "consilium_chair")
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Уведомляемый Пациент", treatingDoctorUserId=doctor_a)
+    login(client, "doctor.a")
+    created = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    ).json()
+    login(client, "chair.notify")
+    assert _post(client, created["id"], "return", {"comment": "Уточните"}).status_code == 200
+
+    login(client, "doctor.a")
+    items = client.get("/api/internal-notifications?type=consilium_revision").json()["items"]
+    assert [i["source_id"] for i in items] == [created["id"]]
+
+    conn = get_conn()
+    conn.execute("UPDATE patients SET treating_doctor_user_id = ? WHERE id = ?", (doctor_b, patient["id"]))
+    conn.commit()
+    response = client.get("/api/internal-notifications?type=consilium_revision")
+    assert response.json()["items"] == []
+    assert "Уведомляемый Пациент" not in client.get("/api/internal-notifications").text

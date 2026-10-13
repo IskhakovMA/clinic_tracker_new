@@ -40,7 +40,8 @@ def test_consilium_create_list_and_update_are_personal(auth_client):
     assert created.status_code == 201, created.text
     item = created.json()
     assert item["patientName"] == patient["name"]
-    assert item["treatingDoctorName"] == "Разработчиков Тест Системович"
+    # Лечащий врач — из карточки пациента, а не автор записи.
+    assert item["treatingDoctorName"] == patient["doctor"]
     assert item["consiliumGroupLabel"] == "Торакальная"
     assert item["hasBenefit"] is True
 

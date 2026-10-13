@@ -211,18 +211,23 @@ def _attention_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) ->
 def _consilium_revision_conditions(
     conn: sqlite3.Connection, user: policy.CurrentUser
 ) -> list[Condition]:
+    # Автор записи получает уведомление, только пока пациент в его области
+    # видимости: после передачи пациента другому врачу ФИО в уведомлении
+    # раскрыло бы чужого пациента.
+    condition, params = policy.patient_scope_filter(user)
     rows = conn.execute(
-        """SELECT a.id AS appointment_id, a.patient_id, a.updated_at,
-                  patients.name AS patient_name, patients.stage
-           FROM oncology_consilium_appointments a
-           JOIN patients ON patients.id = a.patient_id
-           WHERE a.created_by_user_id = ?
-             AND a.status = 'recorded'
-             AND COALESCE(a.revision_comment, '') != ''
-             AND a.revision_submitted_at IS NULL
-             AND a.archived_at IS NULL
-           ORDER BY a.updated_at ASC, a.id ASC""",
-        (user.id,),
+        f"""SELECT a.id AS appointment_id, a.patient_id, a.updated_at,
+                   patients.name AS patient_name, patients.stage
+            FROM oncology_consilium_appointments a
+            JOIN patients ON patients.id = a.patient_id
+            WHERE a.created_by_user_id = ?
+              AND a.status = 'recorded'
+              AND COALESCE(a.revision_comment, '') != ''
+              AND a.revision_submitted_at IS NULL
+              AND a.archived_at IS NULL
+              AND {condition}
+            ORDER BY a.updated_at ASC, a.id ASC""",
+        [user.id, *params],
     ).fetchall()
     return [Condition(
         stable_key=f"consilium_revision:appointment:{row['appointment_id']}:{row['updated_at']}",

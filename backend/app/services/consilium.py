@@ -84,7 +84,7 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         "hasBenefit": bool(row["has_benefit"]),
         "policyNumber": row["policy_number"] or row["patient_policy_number"] or "",
         "diagnosisLocalization": row["diagnosis_localization"] or "",
-        "treatingDoctorName": row["treating_doctor_name"],
+        "treatingDoctorName": row["current_treating_doctor_name"],
         "primaryDiagnosis": row["primary_diagnosis"],
         "additionalDiagnosis": row["additional_diagnosis"] or "",
         "comment": row["comment"] or "",
@@ -113,12 +113,33 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
     }
 
 
-_SELECT = """
+# Лечащий врач — из актуальной карточки пациента (как в store.patient_to_dict),
+# а не автор записи: запись может создать заведующий, пациента могут передать
+# другому врачу. a.treating_doctor_name — снимок на момент записи, запасной.
+_CURRENT_TREATING_DOCTOR = (
+    "COALESCE(treating_doctor.full_name, NULLIF(patients.doctor, ''), a.treating_doctor_name)"
+)
+_TREATING_DOCTOR_JOIN = "LEFT JOIN users treating_doctor ON treating_doctor.id = patients.treating_doctor_user_id"
+
+_SELECT = f"""
     SELECT a.*, patients.name AS patient_name,
-           patients.policy_number AS patient_policy_number
+           patients.policy_number AS patient_policy_number,
+           {_CURRENT_TREATING_DOCTOR} AS current_treating_doctor_name
     FROM oncology_consilium_appointments a
     JOIN patients ON patients.id = a.patient_id
+    {_TREATING_DOCTOR_JOIN}
 """
+
+
+def _current_treating_doctor_name(conn: sqlite3.Connection, patient_id: str) -> str:
+    row = conn.execute(
+        """SELECT COALESCE(treating_doctor.full_name, NULLIF(patients.doctor, ''), '') AS name
+           FROM patients
+           LEFT JOIN users treating_doctor ON treating_doctor.id = patients.treating_doctor_user_id
+           WHERE patients.id = ?""",
+        (patient_id,),
+    ).fetchone()
+    return row["name"] if row else ""
 
 
 def list_for_user(
@@ -243,7 +264,8 @@ def create(
                 (
                     appointment_id, body.patientId, user.id, body.scheduledDate,
                     body.scheduledTime, body.consiliumGroup, int(body.hasBenefit),
-                    user.full_name, policy_number, body.diagnosisLocalization or None,
+                    _current_treating_doctor_name(conn, body.patientId), policy_number,
+                    body.diagnosisLocalization or None,
                     body.primaryDiagnosis, body.additionalDiagnosis or None,
                     body.comment or None, body.additionalParticipant or None,
                     int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now, now,
@@ -434,7 +456,8 @@ def update(
                WHERE id = ? AND created_by_user_id = ? AND status = 'recorded'""",
                 (
                 body.scheduledDate, body.scheduledTime,
-                int(body.hasBenefit), user.full_name, body.policyNumber or None,
+                int(body.hasBenefit), _current_treating_doctor_name(conn, existing["patient_id"]),
+                body.policyNumber or None,
                 body.diagnosisLocalization or None,
                 body.primaryDiagnosis, body.additionalDiagnosis or None,
                 body.comment or None, body.additionalParticipant or None,
@@ -583,12 +606,14 @@ def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[d
     ).fetchall()
     week_dates = _current_week_dates()
     appointment_rows = conn.execute(
-        """SELECT a.id, a.patient_id, a.created_by_user_id, a.scheduled_date, a.scheduled_time,
-                  a.consilium_group, a.primary_diagnosis, a.treating_doctor_name,
-                  COALESCE(a.policy_number, p.policy_number, '') AS policy_number, a.status,
-                  a.uv_ruv, p.name AS patient_name
-           FROM oncology_consilium_appointments a
-           JOIN patients p ON p.id = a.patient_id"""
+        f"""SELECT a.id, a.patient_id, a.created_by_user_id, a.scheduled_date, a.scheduled_time,
+                   a.consilium_group, a.primary_diagnosis,
+                   {_CURRENT_TREATING_DOCTOR} AS treating_doctor_name,
+                   COALESCE(a.policy_number, patients.policy_number, '') AS policy_number, a.status,
+                   a.uv_ruv, patients.name AS patient_name
+            FROM oncology_consilium_appointments a
+            JOIN patients ON patients.id = a.patient_id
+            {_TREATING_DOCTOR_JOIN}"""
     ).fetchall()
     appointments = {
         (row["scheduled_date"], row["scheduled_time"], row["consilium_group"]): row
