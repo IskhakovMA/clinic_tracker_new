@@ -127,6 +127,11 @@ source .venv/bin/activate
 uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 ```
 
+Запускается **один процесс** (без `--workers`): лимиты запросов и входа
+хранятся в памяти процесса. При `WEB_CONCURRENCY`/`UVICORN_WORKERS` больше 1
+или втором процессе на том же каталоге данных приложение не стартует
+(блокировка `CLINIC_DATA_DIR/.clinic-app.lock`).
+
 Приложение доступно на http://127.0.0.1:8420. По умолчанию слушает **только localhost**
 и не открыто во внешнюю сеть.
 
@@ -213,7 +218,7 @@ API key задаётся только на backend через `CLINIC_AI_API_KEY
 
 ## Данные, защита каталога и резервное копирование
 
-- **База**: `backend/data/clinic.db` (SQLite schema v18, исключена из Git и не раздаётся по HTTP).
+- **База**: `backend/data/clinic.db` (SQLite schema v19, исключена из Git и не раздаётся по HTTP).
   v7 добавила legacy patient-level поля `consilium_code`, `pgi_code` и таблицу
   `patient_diagnosis_history`; v8 добавляет структурированное решение ОК на
   событии маршрута и структурированный результат ПГИ; v9 добавляет дату

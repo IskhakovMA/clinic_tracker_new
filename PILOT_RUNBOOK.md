@@ -15,6 +15,12 @@ source .venv/bin/activate
 python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 ```
 
+Run exactly one process. The request and login limiters keep their counters in
+process memory, so the backend refuses to start with `WEB_CONCURRENCY` or
+`UVICORN_WORKERS` above 1 and when another process already serves the same data
+directory (`CLINIC_DATA_DIR/.clinic-app.lock`). A shared limiter is required
+before running several workers.
+
 For production-like pilot deployment, run behind a reverse proxy and do not expose the app directly without approved controls.
 
 ### Reverse proxy requirements

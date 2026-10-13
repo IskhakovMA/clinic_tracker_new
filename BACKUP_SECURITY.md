@@ -153,8 +153,9 @@ plaintext content, or PHI.
    `init_db`, then checked again against the current schema. The
    authenticated header `schema_version` must match the snapshot. The
    snapshot must also match a **verified build** exactly (tables and
-   columns): v9 `v0.9.0-stable`, v17 `clinic_tracker_new_Max` (see
-   `backend/app/data/restore_builds.json`) or the running build. The schema
+   columns): v9 `v0.9.0-stable`, v17 `clinic_tracker_new_Max`, v18
+   `integration-c03f99a` (see `backend/app/data/restore_builds.json`) or the
+   running build. The schema
    number alone is not trusted because the Patient Portal branch and Max
    both used v10. Any other structure is refused before migration.
 7. Leaves the live DB unchanged until all checks pass, including when the
