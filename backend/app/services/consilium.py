@@ -507,65 +507,87 @@ def _is_current_week_default_slot(scheduled_date: str, scheduled_time: str, cons
     return parsed.hour in range(9, 17) and parsed.minute in (0, 15, 30, 45)
 
 
-def schedule_slots(conn: sqlite3.Connection, current_user_id: str | None = None) -> list[dict]:
-    rows = conn.execute(
-        """SELECT s.*,
-                  a.id AS appointment_id,
-                  a.patient_id AS appointment_patient_id,
-                  a.created_by_user_id AS appointment_created_by_user_id,
-                  a.primary_diagnosis AS appointment_primary_diagnosis,
-                  a.treating_doctor_name AS appointment_treating_doctor_name,
-                  COALESCE(a.policy_number, p.policy_number, '') AS appointment_policy_number,
-                  a.status AS appointment_status,
-                  a.uv_ruv AS appointment_uv_ruv,
-                  p.name AS appointment_patient_name
-           FROM consilium_schedule_slots s
-           LEFT JOIN oncology_consilium_appointments a
-             ON a.scheduled_date = s.scheduled_date
-            AND a.scheduled_time = s.scheduled_time
-            AND a.consilium_group = s.consilium_group
-           LEFT JOIN patients p ON p.id = a.patient_id
-           ORDER BY s.scheduled_date ASC, s.scheduled_time ASC, s.consilium_group ASC"""
-    ).fetchall()
-    slots = [{
+def _slot_appointment(row: sqlite3.Row, user: policy.CurrentUser, readable_ids: set[str]) -> dict | None:
+    """Details of the appointment occupying a slot, or None.
+
+    Only the chair (and the developer) manage the whole schedule; everyone
+    else sees their own record for a patient still in their scope, and for
+    any other occupied slot only the fact that it is taken.
+    """
+    is_mine = row["created_by_user_id"] == user.id
+    if not (policy.can_manage_consilium(user) or (is_mine and row["patient_id"] in readable_ids)):
+        return None
+    return {
         "id": row["id"],
-        "scheduledDate": row["scheduled_date"],
-        "scheduledTime": row["scheduled_time"],
-        "consiliumGroup": row["consilium_group"],
-        "consiliumGroupLabel": GROUP_LABELS.get(row["consilium_group"], row["consilium_group"]),
-        "occupied": bool(row["appointment_id"]),
-        "appointment": ({
-            "id": row["appointment_id"],
-            "patientId": row["appointment_patient_id"],
-            "patientName": row["appointment_patient_name"],
-            "primaryDiagnosis": row["appointment_primary_diagnosis"],
-            "treatingDoctorName": row["appointment_treating_doctor_name"],
-            "policyNumber": row["appointment_policy_number"],
-            "status": row["appointment_status"],
-            "uvRuv": bool(row["appointment_uv_ruv"]),
-            "createdByUserId": row["appointment_created_by_user_id"],
-            "isMine": row["appointment_created_by_user_id"] == current_user_id,
-        } if row["appointment_id"] else None),
-        "isDefaultWeek": False,
-    } for row in rows if row["consilium_group"] in GROUP_LABELS]
+        "patientId": row["patient_id"],
+        "patientName": row["patient_name"],
+        "primaryDiagnosis": row["primary_diagnosis"],
+        "treatingDoctorName": row["treating_doctor_name"],
+        "policyNumber": row["policy_number"],
+        "status": row["status"],
+        "uvRuv": bool(row["uv_ruv"]),
+        "createdByUserId": row["created_by_user_id"],
+        "isMine": is_mine,
+    }
+
+
+def _readable_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, patient_ids: set[str]) -> set[str]:
+    if not patient_ids:
+        return set()
+    condition, params = policy.patient_scope_filter(user)
+    marks = ",".join("?" for _ in patient_ids)
+    rows = conn.execute(
+        f"SELECT patients.id FROM patients WHERE patients.id IN ({marks}) AND {condition}",
+        [*patient_ids, *params],
+    ).fetchall()
+    return {row["id"] for row in rows}
+
+
+def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[dict]:
+    slot_rows = conn.execute(
+        """SELECT * FROM consilium_schedule_slots
+           ORDER BY scheduled_date ASC, scheduled_time ASC, consilium_group ASC"""
+    ).fetchall()
+    week_dates = _current_week_dates()
+    appointment_rows = conn.execute(
+        """SELECT a.id, a.patient_id, a.created_by_user_id, a.scheduled_date, a.scheduled_time,
+                  a.consilium_group, a.primary_diagnosis, a.treating_doctor_name,
+                  COALESCE(a.policy_number, p.policy_number, '') AS policy_number, a.status,
+                  a.uv_ruv, p.name AS patient_name
+           FROM oncology_consilium_appointments a
+           JOIN patients p ON p.id = a.patient_id"""
+    ).fetchall()
+    appointments = {
+        (row["scheduled_date"], row["scheduled_time"], row["consilium_group"]): row
+        for row in appointment_rows
+    }
+    readable_ids = _readable_patient_ids(
+        conn, user,
+        {row["patient_id"] for row in appointment_rows if row["created_by_user_id"] == user.id},
+    )
+
+    def appointment_for(key: tuple[str, str, str]) -> dict | None:
+        row = appointments.get(key)
+        return _slot_appointment(row, user, readable_ids) if row else None
+
+    slots = []
+    for row in slot_rows:
+        if row["consilium_group"] not in GROUP_LABELS:
+            continue
+        key = (row["scheduled_date"], row["scheduled_time"], row["consilium_group"])
+        slots.append({
+            "id": row["id"],
+            "scheduledDate": row["scheduled_date"],
+            "scheduledTime": row["scheduled_time"],
+            "consiliumGroup": row["consilium_group"],
+            "consiliumGroupLabel": GROUP_LABELS.get(row["consilium_group"], row["consilium_group"]),
+            "occupied": key in appointments,
+            "appointment": appointment_for(key),
+            "isDefaultWeek": False,
+        })
     persisted_keys = {
         (slot["scheduledDate"], slot["scheduledTime"], slot["consiliumGroup"])
         for slot in slots
-    }
-    week_dates = _current_week_dates()
-    week_appointment_rows = conn.execute(
-        f"""SELECT a.id, a.patient_id, a.created_by_user_id, a.scheduled_date, a.scheduled_time,
-                   a.consilium_group, a.primary_diagnosis, a.treating_doctor_name,
-                   COALESCE(a.policy_number, p.policy_number, '') AS policy_number, a.status,
-                   a.uv_ruv, p.name AS patient_name
-            FROM oncology_consilium_appointments a
-            JOIN patients p ON p.id = a.patient_id
-            WHERE a.scheduled_date IN ({','.join('?' for _ in week_dates)})""",
-        week_dates,
-    ).fetchall()
-    week_appointments = {
-        (row["scheduled_date"], row["scheduled_time"], row["consilium_group"]): row
-        for row in week_appointment_rows
     }
     for scheduled_date in week_dates:
         for consilium_group, group_label in GROUPS:
@@ -575,26 +597,14 @@ def schedule_slots(conn: sqlite3.Connection, current_user_id: str | None = None)
                     key = (scheduled_date, scheduled_time, consilium_group)
                     if key in persisted_keys:
                         continue
-                    appointment_row = week_appointments.get(key)
                     slots.append({
                         "id": f"current-week-{scheduled_date}-{scheduled_time}-{consilium_group}",
                         "scheduledDate": scheduled_date,
                         "scheduledTime": scheduled_time,
                         "consiliumGroup": consilium_group,
                         "consiliumGroupLabel": group_label,
-                        "occupied": bool(appointment_row),
-                        "appointment": ({
-                            "id": appointment_row["id"],
-                            "patientId": appointment_row["patient_id"],
-                            "patientName": appointment_row["patient_name"],
-                            "primaryDiagnosis": appointment_row["primary_diagnosis"],
-                            "treatingDoctorName": appointment_row["treating_doctor_name"],
-                            "policyNumber": appointment_row["policy_number"],
-                            "status": appointment_row["status"],
-                            "uvRuv": bool(appointment_row["uv_ruv"]),
-                            "createdByUserId": appointment_row["created_by_user_id"],
-                            "isMine": appointment_row["created_by_user_id"] == current_user_id,
-                        } if appointment_row else None),
+                        "occupied": key in appointments,
+                        "appointment": appointment_for(key),
                         "isDefaultWeek": True,
                     })
     return sorted(slots, key=lambda slot: (

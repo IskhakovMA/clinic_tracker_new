@@ -88,7 +88,7 @@ def list_consilium_schedule(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    return {"slots": consilium.schedule_slots(conn, user.id)}
+    return {"slots": consilium.schedule_slots(conn, user)}
 
 
 @router.post("/schedule/generate", dependencies=[Depends(require_csrf)])
@@ -109,7 +109,7 @@ def generate_consilium_schedule(
         conn, audit.CONSILIUM_SCHEDULE_GENERATED,
         detail=f"created={created};interval={body.intervalMinutes}", **audit.actor_ctx(user),
     )
-    return {"created": created, "slots": consilium.schedule_slots(conn, user.id)}
+    return {"created": created, "slots": consilium.schedule_slots(conn, user)}
 
 
 @router.delete("/schedule/{slot_id}", dependencies=[Depends(require_csrf)])

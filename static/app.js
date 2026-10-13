@@ -6648,7 +6648,7 @@ const app = {
                                             on: { click: () => this.openConsiliumDetails(ownAppointment) },
                                         })
                                         : el('span', { text: appointment.patientName }))
-                                    : el('span', { class: 'muted', text: '—' })),
+                                    : el('span', { class: 'muted', text: slot.occupied ? 'Занято' : '—' })),
                                 el('td', { class: 'consilium-diagnosis', text: appointment ? (appointment.primaryDiagnosis || '—') : '—' }),
                                 el('td', { text: appointment ? (appointment.treatingDoctorName || '—') : '—' }),
                                 el('td', { class: 'cell-actions' }, appointment
@@ -6661,10 +6661,13 @@ const app = {
                                                 on: { click: () => this.openConsiliumModal(ownAppointment.id) },
                                             }) : null,
                                     ])
-                                    : el('button', {
-                                        type: 'button', class: 'btn btn--primary btn--sm', text: 'Запись',
-                                        on: { click: () => this.openConsiliumModal(null, slot) },
-                                    })),
+                                    : slot.occupied
+                                        // Чужая запись: сервер отдаёт только факт занятости слота.
+                                        ? el('span', { class: 'chip chip--neutral', text: 'Занято' })
+                                        : el('button', {
+                                            type: 'button', class: 'btn btn--primary btn--sm', text: 'Запись',
+                                            on: { click: () => this.openConsiliumModal(null, slot) },
+                                        })),
                             ]);
                         })),
                     ]),
