@@ -146,8 +146,15 @@ plaintext content, or PHI.
    sidecars only after exclusive access checks.
 4. Decrypts only after successful AEAD authentication.
 5. Writes decrypted data to a private temporary file.
-6. Validates SQLite integrity, FK, required tables, and schema version.
-7. Leaves the live DB unchanged until all checks pass.
+6. Validates SQLite integrity, FK, required tables, and schema version. A
+   backup taken at an older supported schema (v9, i.e. v0.9.0-stable, up to
+   the current version) is first checked for integrity and FK violations,
+   then migrated **on the decrypted temporary copy** with the regular
+   `init_db`, then checked again against the current schema. The
+   authenticated header `schema_version` must match the snapshot. Backups
+   older than v9 or newer than the running code are refused.
+7. Leaves the live DB unchanged until all checks pass, including when the
+   migration of the copy fails.
 8. Creates an encrypted recovery copy of the current DB.
 9. Writes the restored DB to a staging file with the SQLite backup API.
 10. Atomically replaces `clinic.db`.
