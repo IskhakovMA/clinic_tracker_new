@@ -84,7 +84,14 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         "hasBenefit": bool(row["has_benefit"]),
         "policyNumber": row["policy_number"] or row["patient_policy_number"] or "",
         "diagnosisLocalization": row["diagnosis_localization"] or "",
-        "treatingDoctorName": row["current_treating_doctor_name"],
+        # Подписанное решение хранит лечащего врача на момент подписи; текущий
+        # врач пациента — отдельным полем, без подмены исторических данных.
+        "treatingDoctorName": (
+            row["signed_treating_doctor_name"]
+            if row["status"] == "signed" and row["signed_treating_doctor_name"]
+            else row["current_treating_doctor_name"]
+        ),
+        "currentTreatingDoctorName": row["current_treating_doctor_name"],
         "primaryDiagnosis": row["primary_diagnosis"],
         "additionalDiagnosis": row["additional_diagnosis"] or "",
         "comment": row["comment"] or "",
@@ -316,7 +323,16 @@ def sign(
         """UPDATE oncology_consilium_appointments
            SET status = 'signed', treatment_type = ?, treatment_scheme = ?, treatment_scheme_code = ?,
                goc = ?, goc_65_plus = ?,
-               revision_comment = NULL, signed_at = ?, signed_by_user_id = ?, updated_at = ?
+               revision_comment = NULL, signed_at = ?, signed_by_user_id = ?, updated_at = ?,
+               signed_treating_doctor_user_id = (
+                   SELECT patients.treating_doctor_user_id FROM patients
+                   WHERE patients.id = oncology_consilium_appointments.patient_id),
+               signed_treating_doctor_name = (
+                   SELECT COALESCE(treating_doctor.full_name, NULLIF(patients.doctor, ''),
+                                   oncology_consilium_appointments.treating_doctor_name)
+                   FROM patients
+                   LEFT JOIN users treating_doctor ON treating_doctor.id = patients.treating_doctor_user_id
+                   WHERE patients.id = oncology_consilium_appointments.patient_id)
            WHERE id = ? AND status = 'in_review'""",
         (treatment_type, treatment_scheme or None, treatment_scheme_code or None,
          int(goc), int(goc_65_plus), now, user.id, now, appointment_id),
@@ -614,8 +630,10 @@ def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[d
     appointment_rows = conn.execute(
         """SELECT a.id, a.patient_id, a.created_by_user_id, a.scheduled_date, a.scheduled_time,
                   a.consilium_group, a.primary_diagnosis,
-                  COALESCE(treating_doctor.full_name, NULLIF(patients.doctor, ''), a.treating_doctor_name)
-                      AS treating_doctor_name,
+                  COALESCE(
+                      CASE WHEN a.status = 'signed' THEN a.signed_treating_doctor_name END,
+                      treating_doctor.full_name, NULLIF(patients.doctor, ''), a.treating_doctor_name
+                  ) AS treating_doctor_name,
                   COALESCE(a.policy_number, patients.policy_number, '') AS policy_number, a.status,
                   a.uv_ruv, patients.name AS patient_name
            FROM oncology_consilium_appointments a

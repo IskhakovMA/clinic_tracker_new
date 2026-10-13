@@ -697,3 +697,41 @@ def test_second_return_needs_new_review_and_new_comment(client):
     details = [r["detail"] for r in _audit_rows("consilium_returned_for_revision")]
     assert details == ["revision_round=1", "revision_round=2"]
     assert "КТ" not in str(_audit_rows("consilium_returned_for_revision"))
+
+
+# --- Правило 4: лечащий врач в подписанном решении -------------------------
+
+def test_signed_decision_keeps_treating_doctor_at_signing(client):
+    doctor_a = create_account("doctor.a", "doctor", full_name="Подписанова Анна Историческая")
+    doctor_b = create_account("doctor.b", "doctor", full_name="Текущев Борис Новый")
+    create_account(DEV_USERNAME)
+    create_account("chair.sign", "consilium_chair")
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Подписи", treatingDoctorUserId=doctor_a)
+    created = client.post(
+        "/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf,
+    ).json()
+    login(client, "chair.sign")
+    assert _post(client, created["id"], "review").status_code == 200
+    signed = _post(client, created["id"], "sign", {"treatmentType": "chemotherapy", "treatmentScheme": "FOLFOX"})
+    assert signed.status_code == 200, signed.text
+    row = _row(created["id"])
+    assert (row["signed_treating_doctor_user_id"], row["signed_treating_doctor_name"]) == (
+        doctor_a, "Подписанова Анна Историческая")
+
+    conn = get_conn()
+    conn.execute("UPDATE patients SET treating_doctor_user_id = ?, doctor = ? WHERE id = ?",
+                 (doctor_b, "Текущев Борис Новый", patient["id"]))
+    conn.commit()
+    listed = client.get("/api/consilium/appointments").json()["appointments"][0]
+    assert listed["treatingDoctorName"] == "Подписанова Анна Историческая"
+    assert listed["currentTreatingDoctorName"] == "Текущев Борис Новый"
+    registry = client.get("/api/consilium/registries?date=2026-11-12").json()["chemotherapy"][0]
+    assert registry["treatingDoctorName"] == "Подписанова Анна Историческая"
+    exported = client.get("/api/consilium/registries/chemotherapy.xlsx", headers=client.csrf)
+    texts = [t.text for t in _sheet(exported.content)[0].findall(".//m:t", NS)]
+    assert "Подписанова Анна Историческая" in texts and "Текущев Борис Новый" not in texts
+    for column, value in (("signed_treating_doctor_name", "Подмена"), ("signed_treating_doctor_user_id", doctor_b)):
+        with pytest.raises(sqlite3.IntegrityError, match="consilium_signed_immutable"):
+            conn.execute(f"UPDATE oncology_consilium_appointments SET {column} = ? WHERE id = ?", (value, created["id"]))
+        conn.rollback()

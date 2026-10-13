@@ -153,6 +153,10 @@ def test_intermediate_max_schema_migrates_and_is_idempotent(client, tmp_path, ve
     if version >= 11:
         assert rows["appt-0"]["status"] == "signed"
         assert rows["appt-0"]["treatment_type"] == "surgery"
+        # Врач на момент подписи до v18 не хранился: берётся значение записи.
+        assert rows["appt-0"]["signed_treating_doctor_name"] == "Фикстурова Врач Тестовна"
+        assert rows["appt-0"]["signed_treating_doctor_user_id"] is None
+    assert rows["appt-1"]["signed_treating_doctor_name"] is None
     assert all(r["revision_submitted_at"] is None for r in rows.values())
 
     _migrate(path)

@@ -285,6 +285,8 @@ CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
     review_started_at TEXT,
     signed_at TEXT,
     signed_by_user_id TEXT REFERENCES users(id),
+    signed_treating_doctor_user_id TEXT REFERENCES users(id),
+    signed_treating_doctor_name TEXT,
     referral_completed_at TEXT,
     referral_completed_by_user_id TEXT REFERENCES users(id),
     archived_at TEXT,
@@ -888,10 +890,25 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
         conn, "oncology_consilium_appointments", "revision_count",
         "revision_count INTEGER NOT NULL DEFAULT 0 CHECK (revision_count >= 0)",
     )
+    _add_column_if_missing(
+        conn, "oncology_consilium_appointments", "signed_treating_doctor_user_id",
+        "signed_treating_doctor_user_id TEXT REFERENCES users(id)",
+    )
+    _add_column_if_missing(
+        conn, "oncology_consilium_appointments", "signed_treating_doctor_name",
+        "signed_treating_doctor_name TEXT",
+    )
     columns = sorted(_table_columns(conn, "oncology_consilium_appointments"))
     if not columns:
         return
     conn.execute("DROP TRIGGER IF EXISTS trg_consilium_signed_immutable")
+    # Решения, подписанные сборкой до v18: врач на момент подписи не
+    # сохранялся; сборка показывала при подписании treating_doctor_name
+    # записи — он и становится историческим значением. id неизвестен.
+    conn.execute(
+        "UPDATE oncology_consilium_appointments SET signed_treating_doctor_name = treating_doctor_name "
+        "WHERE status = 'signed' AND signed_treating_doctor_name IS NULL"
+    )
     # Записи, возвращённые сборкой до v18, уже прошли один раунд доработки.
     conn.execute(
         "UPDATE oncology_consilium_appointments SET revision_count = 1 "
