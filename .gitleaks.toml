@@ -8,17 +8,27 @@
 #
 # They are needed for the Git history scan: the working tree no longer
 # contains these shapes, but earlier commits of the hardening branch do.
+#
+# They are attached to the `generic-api-key` rule, not declared as global
+# [[allowlists]]: gitleaks 8.28.0 `dir` scans skip a file outright when its
+# path matches a global allowlist, ignoring `condition = "AND"`, so the two
+# files were not scanned for any rule. A rule allowlist is checked per
+# finding with both conditions. Redeclaring the rule by id only extends the
+# default rule; its regex, entropy and own allowlists stay as they are.
 
 [extend]
 useDefault = true
 
-[[allowlists]]
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
 description = "Audit hunter identifiers in the Audit 3 skill-coverage table (e.g. r3-h-auth-session)"
 condition = "AND"
 paths = ['''^security-audit/SKILL-COVERAGE\.md$''']
 regexes = ['''^r3-[a-z0-9-]+$''']
 
-[[allowlists]]
+[[rules.allowlists]]
 description = "Dummy analytics filter id used by the audit-detail regression test"
 condition = "AND"
 paths = ['''^backend/tests/test_preprod_audit_detail\.py$''']
