@@ -1,12 +1,27 @@
 """Small dependency-free XLSX writer for tabular registries."""
 from __future__ import annotations
 
+import re
 from io import BytesIO
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+# Символы, недопустимые в XML 1.0: управляющие (кроме \t \n \r), одиночные
+# суррогаты и U+FFFE/U+FFFF. Их наличие делает файл нечитаемым для Excel.
+_XML_INVALID = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]")
+
+
+def cell_text(value: object) -> str:
+    """Text for a cell: XML-illegal characters removed, then XML-escaped.
+
+    Every cell is written as an inline string, so the file has no formulas.
+    The cell style also sets quotePrefix, so a value such as «=HYPERLINK(…)»
+    or «+7…» stays text even after the user edits the cell in Excel.
+    """
+    return escape(_XML_INVALID.sub("", "" if value is None else str(value)))
 
 
 def _column_name(index: int) -> str:
@@ -19,14 +34,14 @@ def _column_name(index: int) -> str:
 
 
 def workbook_bytes(sheet_name: str, rows: list[list[object]]) -> bytes:
-    safe_sheet = escape((sheet_name or "Реестр")[:31])
+    safe_sheet = escape(_XML_INVALID.sub("", sheet_name or "Реестр")[:31], {'"': "&quot;"})
     sheet_rows = []
     for row_index, row in enumerate(rows, start=1):
         cells = []
         for column_index, value in enumerate(row):
             ref = f"{_column_name(column_index)}{row_index}"
-            text = escape("" if value is None else str(value))
-            cells.append(f'<c r="{ref}" t="inlineStr"><is><t>{text}</t></is></c>')
+            text = cell_text(value)
+            cells.append(f'<c r="{ref}" s="1" t="inlineStr"><is><t xml:space="preserve">{text}</t></is></c>')
         sheet_rows.append(f'<row r="{row_index}">{"".join(cells)}</row>')
 
     worksheet = (
@@ -45,7 +60,7 @@ def workbook_bytes(sheet_name: str, rows: list[list[object]]) -> bytes:
         '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>'
         '<borders count="1"><border/></borders>'
         '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
-        '<cellXfs count="1"><xf xfId="0"/></cellXfs>'
+        '<cellXfs count="2"><xf xfId="0"/><xf xfId="0" quotePrefix="1"/></cellXfs>'
         '</styleSheet>'
     )
     content_types = (

@@ -352,3 +352,56 @@ def test_signed_decision_is_immutable_in_the_database(client):
         ("2026-11-13T10:00:00+00:00", "2026-11-13T10:00:00+00:00", aid),
     )
     conn.rollback()
+
+
+# --- Б4: XLSX ------------------------------------------------------------
+
+from io import BytesIO  # noqa: E402
+from xml.etree import ElementTree  # noqa: E402
+from zipfile import ZipFile  # noqa: E402
+
+NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
+DANGEROUS = ("=HYPERLINK(\"http://evil.example/\",\"x\")", "+7 999", "-2+3", "@SUM(A1)", "=cmd|' /C calc'!A0")
+
+
+def _sheet(content: bytes):
+    with ZipFile(BytesIO(content)) as workbook:
+        sheet = ElementTree.fromstring(workbook.read("xl/worksheets/sheet1.xml"))
+        styles = ElementTree.fromstring(workbook.read("xl/styles.xml"))
+    return sheet, styles
+
+
+def test_xlsx_writes_dangerous_values_as_text():
+    from backend.app.services.xlsx_export import workbook_bytes
+
+    sheet, styles = _sheet(workbook_bytes("Проверка", [list(DANGEROUS)]))
+    assert sheet.findall(".//m:f", NS) == []
+    cells = sheet.findall(".//m:c", NS)
+    assert [c.get("t") for c in cells] == ["inlineStr"] * len(DANGEROUS)
+    assert [c.find("m:is/m:t", NS).text for c in cells] == list(DANGEROUS)
+    quote_styles = {
+        str(index) for index, xf in enumerate(styles.find("m:cellXfs", NS)) if xf.get("quotePrefix") == "1"
+    }
+    assert {c.get("s") for c in cells} <= quote_styles
+
+
+def test_xlsx_strips_xml_illegal_characters():
+    from backend.app.services.xlsx_export import workbook_bytes
+
+    value = "Схема\x01 с\x1b упр\x0bавляющими￾ символами\ud800 <&>\t\n"
+    sheet, _ = _sheet(workbook_bytes('Лист"\x02', [[value]]))  # parses => valid XML
+    text = sheet.find(".//m:c/m:is/m:t", NS).text
+    assert text == "Схема с управляющими символами <&>\t\n"
+
+
+def test_registry_export_keeps_formula_like_scheme_as_text(client):
+    aid, _ = _make_state(client, "in_review")
+    scheme = "=HYPERLINK(\"http://evil.example/\",\"Открыть\")"
+    signed = _post(client, aid, "sign", {"treatmentType": "chemotherapy", "treatmentScheme": scheme})
+    assert signed.status_code == 200, signed.text
+    exported = client.get("/api/consilium/registries/chemotherapy.xlsx", headers=client.csrf)
+    assert exported.status_code == 200
+    sheet, _ = _sheet(exported.content)
+    assert sheet.findall(".//m:f", NS) == []
+    texts = [t.text for t in sheet.findall(".//m:t", NS)]
+    assert scheme in texts
