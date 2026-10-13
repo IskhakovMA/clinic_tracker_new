@@ -258,6 +258,7 @@ def cmd_backup_verify(args: argparse.Namespace) -> int:
     print(f"  формат:          v{report.get('version')}")
     print(f"  key_id:          {report.get('key_id')}")
     print(f"  версия схемы:    {report.get('schema_version')}")
+    print(f"  сборка:          {report.get('source_build')}")
     if report.get("migrated_from_schema_version"):
         print(f"  при restore копия будет обновлена до схемы v{config.SCHEMA_VERSION} (проверено на временной копии)")
     print(f"  записей пациентов: {report.get('patient_count')}")
@@ -275,6 +276,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
     print(f"  формат:          v{report.get('version')}")
     print(f"  key_id:          {report.get('key_id')}")
     print(f"  версия схемы:     {report.get('schema_version')}")
+    print(f"  сборка:           {report.get('source_build')}")
     if report.get("migrated_from_schema_version"):
         print(f"  копия будет обновлена до схемы v{config.SCHEMA_VERSION} перед заменой базы")
     print(f"  записей пациентов: {report.get('patient_count')}")

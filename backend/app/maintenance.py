@@ -24,6 +24,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from . import config
+from . import db as _db
 from .db import REQUIRED_TABLES, connect_readonly_check, init_db
 
 
@@ -139,10 +140,65 @@ def check_database(db_path: Path) -> dict:
     return report
 
 
-# Самая старая схема, чьи резервные копии восстанавливаются с миграцией:
-# v9 — v0.9.0-stable. Более старые копии и копии из более новой версии
-# приложения отклоняются (миграции v1–v8 на копиях не проверялись).
+# Восстанавливаются только копии проверенных сборок. Номер схемы сборку не
+# определяет (ветка Patient Portal и Max обе называли свою схему v10), поэтому
+# снимок должен точно совпасть по структуре (таблицы и их столбцы) с одной из
+# сборок data/restore_builds.json для своего номера или с текущей сборкой.
+RESTORE_BUILDS_PATH = Path(__file__).resolve().parent / "data" / "restore_builds.json"
 MIN_RESTORE_SCHEMA_VERSION = 9
+
+
+def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
+    tables = [r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()]
+    return {
+        table: frozenset(row[1] for row in conn.execute(f'PRAGMA table_info("{table}")').fetchall())
+        for table in tables
+    }
+
+
+_current_structure_cache: dict[str, frozenset[str]] | None = None
+
+
+def _current_structure() -> dict[str, frozenset[str]]:
+    global _current_structure_cache
+    if _current_structure_cache is None:
+        conn = connect_readonly_check(Path(":memory:"))
+        try:
+            _db.init_db(conn)  # эталон структуры текущей сборки, не миграция копии
+            _current_structure_cache = _structure(conn)
+        finally:
+            conn.close()
+    return _current_structure_cache
+
+
+def restore_builds() -> list[dict]:
+    """Verified builds: [{id, schema_version, tables}] including the running one."""
+    data = json.loads(RESTORE_BUILDS_PATH.read_text(encoding="utf-8"))
+    builds = [
+        {"id": b["id"], "schema_version": b["schema_version"],
+         "tables": {t: frozenset(cols) for t, cols in b["tables"].items()}}
+        for b in data["builds"]
+    ]
+    builds.append({"id": "current", "schema_version": config.SCHEMA_VERSION, "tables": _current_structure()})
+    return builds
+
+
+def identify_backup_build(path: Path, schema_version: int) -> str:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        snapshot = _structure(conn)
+    finally:
+        conn.close()
+    for build in restore_builds():
+        if build["schema_version"] == schema_version and build["tables"] == snapshot:
+            return build["id"]
+    supported = ", ".join(f"v{b['schema_version']} ({b['id']})" for b in restore_builds())
+    raise MaintenanceError(
+        f"Резервная копия отклонена: структура схемы v{schema_version} не совпадает ни с одной "
+        f"проверенной сборкой (поддерживаются: {supported})"
+    )
 
 
 def _stored_schema_version(path: Path) -> int | None:
@@ -184,13 +240,11 @@ def _check_or_migrate_plaintext(plaintext: Path, metadata: dict) -> dict:
     stored = _stored_schema_version(plaintext)
     if stored != metadata["schema_version"]:
         raise MaintenanceError("Резервная копия отклонена: версия схемы в заголовке не совпадает с содержимым")
+    if stored is None or stored < MIN_RESTORE_SCHEMA_VERSION or stored > config.SCHEMA_VERSION:
+        raise MaintenanceError(f"Резервная копия отклонена: схема v{stored} не поддерживается для восстановления")
+    build = identify_backup_build(plaintext, stored)
     migrated_from = None
-    if stored is not None and stored < config.SCHEMA_VERSION:
-        if stored < MIN_RESTORE_SCHEMA_VERSION:
-            raise MaintenanceError(
-                f"Резервная копия отклонена: схема v{stored} не поддерживается для восстановления "
-                f"(поддерживаются v{MIN_RESTORE_SCHEMA_VERSION}–v{config.SCHEMA_VERSION})"
-            )
+    if stored < config.SCHEMA_VERSION:
         problems = _integrity_problems(plaintext)
         if problems:
             raise MaintenanceError("Резервная копия отклонена: " + "; ".join(problems))
@@ -209,6 +263,7 @@ def _check_or_migrate_plaintext(plaintext: Path, metadata: dict) -> dict:
     if not report["ok"]:
         raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
     report["migrated_from_schema_version"] = migrated_from
+    report["source_build"] = build
     return report
 
 

@@ -13,6 +13,7 @@ from .conftest import PROJECT_ROOT, current_schema_version, make_patient_payload
 
 TEST_BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 V9_FIXTURE = PROJECT_ROOT / "backend" / "tests" / "fixtures" / "stable_v9_synthetic.sql"
+MAX_V17_FIXTURE = PROJECT_ROOT / "backend" / "tests" / "fixtures" / "max_v17_synthetic.sql"
 V9_NAMES = {"Вымышленов Первый Пациентович", "Вымышленова Вторая Пациентовна", "Вымышленов Третий Пациентович"}
 
 
@@ -24,9 +25,9 @@ def backup_key(monkeypatch):
     monkeypatch.delenv("CLINIC_BACKUP_DECRYPT_KEYS", raising=False)
 
 
-def _sqlite_from_fixture(path, *, edit=None):
+def _sqlite_from_fixture(path, *, edit=None, fixture=V9_FIXTURE):
     conn = sqlite3.connect(str(path))
-    conn.executescript(V9_FIXTURE.read_text(encoding="utf-8"))
+    conn.executescript(fixture.read_text(encoding="utf-8"))
     if edit:
         conn.execute("PRAGMA foreign_keys = OFF")
         edit(conn)
@@ -51,10 +52,10 @@ def _encrypt(plaintext, dest, header_schema_version):
     return dest
 
 
-def _v9_backup(tmp_path, name="stable-v9.cbk", *, edit=None, header=9):
+def _v9_backup(tmp_path, name="stable-v9.cbk", *, edit=None, header=9, fixture=V9_FIXTURE):
     work = tmp_path / "fixture-work"
     work.mkdir(exist_ok=True)
-    plaintext = _sqlite_from_fixture(work / f"{name}.sqlite", edit=edit)
+    plaintext = _sqlite_from_fixture(work / f"{name}.sqlite", edit=edit, fixture=fixture)
     backup = _encrypt(plaintext, tmp_path / name, header)
     plaintext.unlink()
     return backup
@@ -160,4 +161,69 @@ def test_refused_old_backup_leaves_live_db_unchanged(auth_client, tmp_path, monk
     assert _digest(live) == before
     after = sorted(config.BACKUP_DIR.glob("*")) if config.BACKUP_DIR.exists() else []
     assert after == backups_before  # no pre-restore copy for a refused backup
+    assert _plaintext_leftovers(tmp_path) == []
+
+
+# --- проверенные сборки, а не номер схемы ---------------------------------
+
+PORTAL_TABLE = """CREATE TABLE patient_portal_access (
+    patient_id TEXT PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+    email_normalized TEXT NOT NULL UNIQUE COLLATE NOCASE, status TEXT NOT NULL,
+    enrollment_state TEXT NOT NULL DEFAULT 'none', linked_at TEXT, linked_by_user_id TEXT,
+    activated_at TEXT, last_login_at TEXT, revoked_at TEXT, revoked_by_user_id TEXT, updated_at TEXT)"""
+
+
+def test_restore_migrates_verified_max_v17_backup_keeping_signed_decision(auth_client, tmp_path):
+    from backend.app import maintenance
+    live = _live(auth_client)
+    backup = _v9_backup(tmp_path, "max-v17.cbk", header=17, fixture=MAX_V17_FIXTURE)
+    report = maintenance.validate_backup(backup)
+    assert (report["source_build"], report["migrated_from_schema_version"]) == ("clinic_tracker_new_Max", 17)
+    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    assert result["migrated_from_schema_version"] == 17
+
+    conn = sqlite3.connect(str(live))
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute("SELECT * FROM oncology_consilium_appointments ORDER BY scheduled_time")]
+    assert [r["status"] for r in rows] == ["signed", "recorded"]
+    assert rows[0]["treatment_type"] == "surgery"
+    assert rows[0]["signed_treating_doctor_name"] == "Фикстурова Врач Тестовна"
+    assert conn.execute("SELECT COUNT(*) FROM consilium_chair_favorites").fetchone()[0] == 1
+    with pytest.raises(sqlite3.IntegrityError, match="consilium_signed_immutable"):
+        conn.execute("UPDATE oncology_consilium_appointments SET status = 'recorded' WHERE id = ?", (rows[0]["id"],))
+    conn.close()
+    assert maintenance.check_database(live)["ok"]
+
+
+def test_current_and_stable_backups_report_their_build(auth_client, tmp_path):
+    from backend.app import config, maintenance
+    _live(auth_client)
+    assert maintenance.validate_backup(_v9_backup(tmp_path))["source_build"] == "v0.9.0-stable"
+    current = maintenance.backup_database(config.DB_PATH, tmp_path / "current.cbk")
+    assert maintenance.validate_backup(current)["source_build"] == "current"
+
+
+@pytest.mark.parametrize("case", ["portal_v10", "max_v17_plus_portal", "v9_with_consilium", "max_v12_unverified"])
+def test_unverified_builds_with_plausible_numbers_are_refused(auth_client, tmp_path, case):
+    from backend.app import maintenance
+    live = _live(auth_client)
+    before = _digest(live)
+    if case == "portal_v10":
+        backup = _v9_backup(tmp_path, edit=lambda c: (c.execute(PORTAL_TABLE),
+                            c.execute("UPDATE schema_version SET version = 10")), header=10)
+    elif case == "max_v17_plus_portal":
+        backup = _v9_backup(tmp_path, edit=lambda c: c.execute(PORTAL_TABLE), header=17, fixture=MAX_V17_FIXTURE)
+    elif case == "v9_with_consilium":
+        backup = _v9_backup(tmp_path, edit=lambda c: c.execute(
+            "CREATE TABLE consilium_schedule_slots (id TEXT PRIMARY KEY)"))
+    else:
+        from .test_schema_intermediate_versions import _build
+        work = tmp_path / "fixture-work"
+        work.mkdir(exist_ok=True)
+        plaintext = _build(work / "max-v12.sqlite", 12)
+        backup = _encrypt(plaintext, tmp_path / "max-v12.cbk", 12)
+        plaintext.unlink()
+    with pytest.raises(maintenance.MaintenanceError, match="не совпадает ни с одной проверенной сборкой"):
+        maintenance.restore_database(backup, live, confirm_offline=True)
+    assert _digest(live) == before
     assert _plaintext_leftovers(tmp_path) == []
