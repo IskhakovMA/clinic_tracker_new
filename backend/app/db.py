@@ -525,6 +525,26 @@ def connect_readonly_check(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
+def _execute_script(conn: sqlite3.Connection, script: str) -> None:
+    """executescript() without its implicit COMMIT.
+
+    sqlite3's executescript() first commits an open transaction, which would
+    release init_db's write lock in the middle of a migration. The script is
+    split on ';' and every complete statement (sqlite3.complete_statement
+    keeps a trigger body or a ';' inside a string or comment together) runs
+    in the caller's transaction.
+    """
+    statement = ""
+    parts = script.split(";")
+    for index, part in enumerate(parts):
+        statement += part if index == len(parts) - 1 else part + ";"
+        if sqlite3.complete_statement(statement):
+            conn.execute(statement)
+            statement = ""
+    if statement.strip():
+        conn.execute(statement)
+
+
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
@@ -627,7 +647,7 @@ def migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     starts as `not_recorded`; phone presence is deliberately not interpreted as
     permission to send SMS.
     """
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
     _ensure_notification_schema(conn)
     _seed_notification_templates(conn)
 
@@ -639,7 +659,7 @@ def migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
 
 def migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     """v4 → v5: read-state for computed internal notification conditions."""
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def _rebuild_internal_notification_state_v6(conn: sqlite3.Connection) -> None:
@@ -650,7 +670,7 @@ def _rebuild_internal_notification_state_v6(conn: sqlite3.Connection) -> None:
     columns = _table_columns(conn, "internal_notification_state")
     if not columns:
         return
-    conn.executescript(
+    _execute_script(conn,
         """
         CREATE TABLE IF NOT EXISTS internal_notification_state_v6 (
             id TEXT PRIMARY KEY,
@@ -681,14 +701,14 @@ def _rebuild_internal_notification_state_v6(conn: sqlite3.Connection) -> None:
 def migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
     """v5 → v6: patient attention issues and attention notification type."""
     _rebuild_internal_notification_state_v6(conn)
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
     """v6 → v7: doctor feedback optional patient codes and diagnosis history."""
     _add_column_if_missing(conn, "patients", "consilium_code", "consilium_code TEXT")
     _add_column_if_missing(conn, "patients", "pgi_code", "pgi_code TEXT")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
@@ -709,7 +729,7 @@ def migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
         "consilium_decision",
         "consilium_decision TEXT CHECK (consilium_decision IN ('treatment_strategy_defined', 'treatment_strategy_changed', 'dispensary_observation') OR consilium_decision IS NULL)",
     )
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
@@ -720,12 +740,12 @@ def migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
     or writes it. Existing PGI rows receive NULL date, never an invented date.
     """
     _add_column_if_missing(conn, "patients", "pgi_result_date", "pgi_result_date TEXT")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
     """v9 → v10: персональные записи на онкологический консилиум."""
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
@@ -737,7 +757,7 @@ def migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "oncology_consilium_appointments", "review_started_at", "review_started_at TEXT")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "signed_at", "signed_at TEXT")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "signed_by_user_id", "signed_by_user_id TEXT REFERENCES users(id)")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
@@ -745,28 +765,28 @@ def migrate_v11_to_v12(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "oncology_consilium_appointments", "policy_number", "policy_number TEXT")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "referral_completed_at", "referral_completed_at TEXT")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "referral_completed_by_user_id", "referral_completed_by_user_id TEXT REFERENCES users(id)")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v12_to_v13(conn: sqlite3.Connection) -> None:
     """v12 → v13: локализация диагноза и код схемы лечения."""
     _add_column_if_missing(conn, "oncology_consilium_appointments", "diagnosis_localization", "diagnosis_localization TEXT")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "treatment_scheme_code", "treatment_scheme_code TEXT")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v13_to_v14(conn: sqlite3.Connection) -> None:
     """v13 → v14: отметки ГОК и ГОК 65+ в решении консилиума."""
     _add_column_if_missing(conn, "oncology_consilium_appointments", "goc", "goc INTEGER NOT NULL DEFAULT 0 CHECK (goc IN (0, 1))")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "goc_65_plus", "goc_65_plus INTEGER NOT NULL DEFAULT 0 CHECK (goc_65_plus IN (0, 1))")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v14_to_v15(conn: sqlite3.Connection) -> None:
     """v14 → v15: personal archive for signed consilium appointments."""
     _add_column_if_missing(conn, "oncology_consilium_appointments", "archived_at", "archived_at TEXT")
     _add_column_if_missing(conn, "oncology_consilium_appointments", "archived_by_user_id", "archived_by_user_id TEXT REFERENCES users(id)")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
@@ -776,7 +796,7 @@ def migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
     ).fetchone()
     current_sql = (current_sql_row["sql"] or "") if current_sql_row else ""
     if current_sql_row and "consilium_revision" not in current_sql:
-        conn.executescript("""
+        _execute_script(conn, """
             CREATE TABLE internal_notification_state_v16 (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -801,7 +821,7 @@ def migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
             ALTER TABLE internal_notification_state_v16 RENAME TO internal_notification_state;
         """)
     _add_column_if_missing(conn, "oncology_consilium_appointments", "uv_ruv", "uv_ruv INTEGER NOT NULL DEFAULT 0 CHECK (uv_ruv IN (0, 1))")
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
 
 
 def migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
@@ -812,7 +832,7 @@ def migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
     without deleting medical records. Every new booking is still rejected as
     soon as any appointment for that patient exists.
     """
-    conn.executescript(
+    _execute_script(conn,
         """
         CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_insert
         BEFORE INSERT ON oncology_consilium_appointments
@@ -907,37 +927,20 @@ def _ensure_trigger(
 ) -> None:
     """Make trigger `name` match `create_sql`, running `backfills` while it is off.
 
-    init_db runs at start and once per database path in the first requests,
-    so several connections can run it at the same moment. Nothing is touched
-    when the trigger already matches and `pending` (an EXISTS query) finds
-    no row to backfill. Otherwise drop, backfill and create happen in one
-    IMMEDIATE transaction: no other connection can write while the trigger
-    is absent, and a concurrent run finds the work done.
+    Runs inside init_db's IMMEDIATE transaction: no other connection can
+    write while the trigger is absent, and a run that waited for the lock
+    finds the work done. Nothing is touched when the trigger already matches
+    and `pending` (an EXISTS query) finds no row to backfill.
     """
-    def current() -> str | None:
-        row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)).fetchone()
-        return row["sql"] if row else None
-
-    def needed() -> bool:
-        if _normalized_sql(current()) != _normalized_sql(create_sql):
-            return True
-        return bool(pending and conn.execute(pending).fetchone())
-
-    if not needed():
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)).fetchone()
+    if _normalized_sql(row["sql"] if row else None) == _normalized_sql(create_sql) and not (
+        pending and conn.execute(pending).fetchone()
+    ):
         return
-    if conn.in_transaction:
-        conn.commit()
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        if needed():
-            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
-            for statement in backfills:
-                conn.execute(statement)
-            conn.execute(create_sql)
-        conn.commit()
-    except BaseException:
-        conn.rollback()
-        raise
+    conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+    for statement in backfills:
+        conn.execute(statement)
+    conn.execute(create_sql)
 
 
 def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
@@ -987,7 +990,7 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
     # История возвратов: до v18 текст прошлых раундов перезаписывался, и
     # восстановить можно только последний комментарий записи (автор неизвестен,
     # migrated = 1). Строки истории неизменны.
-    conn.executescript(SCHEMA_SQL)
+    _execute_script(conn, SCHEMA_SQL)
     conn.execute(
         """INSERT OR IGNORE INTO consilium_revision_history
                (id, appointment_id, round, comment, returned_by_user_id, returned_at, migrated)
@@ -995,7 +998,7 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
            FROM oncology_consilium_appointments
            WHERE revision_count >= 1 AND COALESCE(revision_comment, '') != ''"""
     )
-    conn.executescript(
+    _execute_script(conn,
         """
         CREATE TRIGGER IF NOT EXISTS trg_consilium_revision_history_immutable
         BEFORE UPDATE ON consilium_revision_history
@@ -1090,9 +1093,19 @@ def init_db(conn: sqlite3.Connection) -> None:
 
     Порядок важен: сначала ALTER-ы существующих v1-таблиц (иначе индексы по
     новым колонкам из SCHEMA_SQL не создадутся), затем создание недостающих
-    таблиц и индексов."""
-    with conn:
-        conn.executescript(SCHEMA_SQL)   # создаёт недостающие таблицы (IF NOT EXISTS)
+    таблиц и индексов.
+
+    Everything runs in one IMMEDIATE transaction. The server start, the
+    first requests and a CLI command can run init_db on the same file at
+    once; each migration step checks the schema and then changes it, so
+    the write lock is taken before the first check and held to the end. A
+    concurrent run waits (busy_timeout) and then finds the work done, and a
+    failed migration leaves the file exactly as it was."""
+    if conn.in_transaction:
+        raise RuntimeError("init_db must not run inside an open transaction")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _execute_script(conn, SCHEMA_SQL)  # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
         migrate_v4_to_v5(conn)           # создаёт read-state для внутреннего центра уведомлений
@@ -1111,7 +1124,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v18_to_v19(conn)         # route context of decisions, soft deletion
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
-        conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
+        _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)
         _seed_notification_templates(conn)
         row = conn.execute("SELECT version FROM schema_version").fetchone()
@@ -1188,7 +1201,11 @@ def init_db(conn: sqlite3.Connection) -> None:
         # пересобирается, только если в её CHECK нет consilium_revision;
         # индексы пересобранной таблицы создаются заново (IF NOT EXISTS).
         migrate_v15_to_v16(conn)
-        conn.executescript(INDEX_SQL)
+        _execute_script(conn, INDEX_SQL)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 _singleton_conn: sqlite3.Connection | None = None

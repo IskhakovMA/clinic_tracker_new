@@ -319,3 +319,72 @@ def test_init_db_on_an_up_to_date_database_drops_no_trigger(client, tmp_path):
     conn.close()
     assert not [s for s in statements if "DROP TRIGGER" in s.upper()]
     assert _triggers(path) == before
+
+
+def test_concurrent_init_db_holds_the_lock_from_check_to_change(client, tmp_path, monkeypatch):
+    """Every migration step reads the schema and then changes it. Two runs
+    on the same v16 file meet right after reading that revision_submitted_at
+    (added by v17 -> v18) is missing, the race CI caught: without one write
+    lock from the first check to the end both add the column. With the lock
+    the second run cannot read until the first has committed, the meeting
+    times out and the runs go in turn."""
+    import threading
+    from backend.app import db
+
+    path = _build(tmp_path / "lockstep.sqlite", 16)
+    columns = db._table_columns
+    meeting = threading.Barrier(2, timeout=1)
+
+    def columns_then_meet(conn, table):
+        found = columns(conn, table)
+        if table == "oncology_consilium_appointments" and "revision_submitted_at" not in found:
+            try:
+                meeting.wait()
+            except threading.BrokenBarrierError:
+                pass
+        return found
+
+    monkeypatch.setattr(db, "_table_columns", columns_then_meet)
+    errors = []
+
+    def run():
+        conn = db.connect_readonly_check(path)
+        conn.execute("PRAGMA busy_timeout = 60000")
+        try:
+            db.init_db(conn)
+        except Exception as exc:  # noqa: BLE001 - collected for the assertion
+            errors.append(repr(exc))
+        finally:
+            conn.close()
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert _snapshot(path)["version"] == current_schema_version()
+
+
+def test_failed_migration_leaves_the_database_unchanged(client, tmp_path):
+    from backend.app.db import SchemaMigrationError
+
+    path = _build(tmp_path / "dup-v16.sqlite", 16, duplicate_slot=True)
+    before = _snapshot(path)
+    with pytest.raises(SchemaMigrationError):
+        _migrate(path)
+    assert _snapshot(path) == before
+
+
+def test_init_db_refuses_an_open_transaction(client, tmp_path):
+    from backend.app.db import connect_readonly_check, init_db
+
+    path = _build(tmp_path / "open.sqlite", 16)
+    conn = connect_readonly_check(path)
+    conn.execute("DELETE FROM oncology_consilium_appointments WHERE id = 'appt-1'")
+    assert conn.in_transaction
+    with pytest.raises(RuntimeError):
+        init_db(conn)
+    conn.rollback()
+    conn.close()
+    assert len(_snapshot(path)["appointments"]) == 2
