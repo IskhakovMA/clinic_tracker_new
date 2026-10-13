@@ -287,6 +287,12 @@ CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
     signed_by_user_id TEXT REFERENCES users(id),
     signed_treating_doctor_user_id TEXT REFERENCES users(id),
     signed_treating_doctor_name TEXT,
+    signed_route_history_entry_id TEXT,
+    signed_route_stage TEXT,
+    signed_route_entered_at TEXT,
+    signed_route_link_source TEXT CHECK (signed_route_link_source IN ('recorded', 'derived', 'unknown')),
+    deleted_at TEXT,
+    deleted_by_user_id TEXT REFERENCES users(id),
     referral_completed_at TEXT,
     referral_completed_by_user_id TEXT REFERENCES users(id),
     archived_at TEXT,
@@ -384,7 +390,8 @@ CREATE INDEX IF NOT EXISTS idx_consilium_favorites_patient
 CREATE INDEX IF NOT EXISTS idx_consilium_schedule_date
     ON consilium_schedule_slots(scheduled_date, scheduled_time, consilium_group);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_consilium_appointment_slot
-    ON oncology_consilium_appointments(scheduled_date, scheduled_time, consilium_group);
+    ON oncology_consilium_appointments(scheduled_date, scheduled_time, consilium_group)
+    WHERE deleted_at IS NULL;
 """
 
 # Роли — справочник, а не бизнес-конфигурация: наполняется всегда.
@@ -851,6 +858,7 @@ def _assert_no_duplicate_consilium_slots(conn: sqlite3.Connection) -> None:
         """SELECT scheduled_date, scheduled_time, consilium_group,
                   GROUP_CONCAT(id, ',') AS ids, COUNT(*) AS c
            FROM oncology_consilium_appointments
+           WHERE deleted_at IS NULL
            GROUP BY scheduled_date, scheduled_time, consilium_group
            HAVING COUNT(*) > 1
            ORDER BY scheduled_date, scheduled_time, consilium_group"""
@@ -949,6 +957,86 @@ def migrate_v17_to_v18(conn: sqlite3.Connection) -> None:
     )
 
 
+_ROUTE_ENTRY_AT_SIGNING = """
+    FROM history_entries h
+    WHERE h.patient_id = oncology_consilium_appointments.patient_id
+      AND h.entered_at <= oncology_consilium_appointments.signed_at
+    ORDER BY h.seq DESC LIMIT 1
+"""
+
+
+def migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
+    """v18 → v19: route context of signed decisions and soft deletion.
+
+    - signed_route_*: the patient's route entry and stage a decision was
+      signed in. New signatures record it (source 'recorded'). For decisions
+      signed by older builds it is derived from the route history entry
+      current at signed_at ('derived'), or left empty ('unknown') when the
+      history has no entry by then. Like the rest of a signed decision it
+      cannot change afterwards (the immutability trigger is rebuilt).
+    - deleted_at / deleted_by_user_id: a record that already went through a
+      return round is soft-deleted, so its return history survives; the slot
+      uniqueness and the one-booking-per-patient rule ignore such rows.
+    """
+    table = "oncology_consilium_appointments"
+    if not _table_columns(conn, table):
+        return
+    for column, ddl in (
+        ("signed_route_history_entry_id", "signed_route_history_entry_id TEXT"),
+        ("signed_route_stage", "signed_route_stage TEXT"),
+        ("signed_route_entered_at", "signed_route_entered_at TEXT"),
+        ("signed_route_link_source", "signed_route_link_source TEXT CHECK "
+                                     "(signed_route_link_source IN ('recorded', 'derived', 'unknown'))"),
+        ("deleted_at", "deleted_at TEXT"),
+        ("deleted_by_user_id", "deleted_by_user_id TEXT REFERENCES users(id)"),
+    ):
+        _add_column_if_missing(conn, table, column, ddl)
+
+    conn.execute("DROP TRIGGER IF EXISTS trg_consilium_signed_immutable")
+    conn.execute(
+        f"""UPDATE oncology_consilium_appointments SET
+                signed_route_history_entry_id = (SELECT h.id {_ROUTE_ENTRY_AT_SIGNING}),
+                signed_route_stage = (SELECT h.stage {_ROUTE_ENTRY_AT_SIGNING}),
+                signed_route_entered_at = (SELECT h.entered_at {_ROUTE_ENTRY_AT_SIGNING}),
+                signed_route_link_source = CASE
+                    WHEN EXISTS (SELECT 1 {_ROUTE_ENTRY_AT_SIGNING}) THEN 'derived' ELSE 'unknown' END
+            WHERE status = 'signed' AND signed_route_link_source IS NULL"""  # nosec B608 - fixed SQL fragment, no input.
+    )
+    columns = sorted(_table_columns(conn, table))
+    conn.executescript(_signed_immutable_trigger_sql(columns))
+
+    index = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'uq_consilium_appointment_slot'"
+    ).fetchone()
+    if index is not None and "deleted_at" not in (index["sql"] or ""):
+        conn.execute("DROP INDEX uq_consilium_appointment_slot")  # INDEX_SQL recreates it partial
+    conn.executescript(
+        """
+        DROP TRIGGER IF EXISTS trg_consilium_one_appointment_per_patient_insert;
+        CREATE TRIGGER trg_consilium_one_appointment_per_patient_insert
+        BEFORE INSERT ON oncology_consilium_appointments
+        WHEN EXISTS (
+            SELECT 1 FROM oncology_consilium_appointments
+            WHERE patient_id = NEW.patient_id AND deleted_at IS NULL
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
+        END;
+
+        DROP TRIGGER IF EXISTS trg_consilium_one_appointment_per_patient_update;
+        CREATE TRIGGER trg_consilium_one_appointment_per_patient_update
+        BEFORE UPDATE OF patient_id ON oncology_consilium_appointments
+        WHEN NEW.patient_id != OLD.patient_id AND EXISTS (
+            SELECT 1 FROM oncology_consilium_appointments
+            WHERE patient_id = NEW.patient_id AND id != OLD.id AND deleted_at IS NULL
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
+        END;
+        """
+    )
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -973,6 +1061,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v15_to_v16(conn)         # chair schedule and revision notifications
         migrate_v16_to_v17(conn)         # strict slot and patient uniqueness
         migrate_v17_to_v18(conn)         # resubmission marker, immutable signed decisions
+        migrate_v18_to_v19(conn)         # route context of decisions, soft deletion
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
@@ -1039,6 +1128,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 17:
             migrate_v17_to_v18(conn)
+            migrate_v18_to_v19(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 18:
+            migrate_v18_to_v19(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

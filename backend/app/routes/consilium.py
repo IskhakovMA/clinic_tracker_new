@@ -271,9 +271,10 @@ def delete_consilium_appointment(
         _not_found()
     audit.record(
         conn, audit.CONSILIUM_APPOINTMENT_DELETED, patient_id=appointment["patientId"],
+        detail="mode=soft;history_preserved=true" if appointment["historyPreserved"] else "mode=hard",
         **audit.actor_ctx(user),
     )
-    return {"deleted": True, "releasedSlot": {
+    return {"deleted": True, "historyPreserved": appointment["historyPreserved"], "releasedSlot": {
         "scheduledDate": appointment["scheduledDate"],
         "scheduledTime": appointment["scheduledTime"],
         "consiliumGroup": appointment["consiliumGroup"],
@@ -386,7 +387,7 @@ def add_consilium_favorite(
 ):
     _require_favorites(conn, user)
     linked = conn.execute(
-        "SELECT 1 FROM oncology_consilium_appointments WHERE patient_id = ?",
+        "SELECT 1 FROM oncology_consilium_appointments WHERE patient_id = ? AND deleted_at IS NULL",
         (patient_id,),
     ).fetchone()
     if linked is None or not consilium.add_favorite(conn, user, patient_id):

@@ -1340,3 +1340,77 @@ def test_referral_mark_does_not_touch_the_decision(client):
     assert client.post(f"/api/consilium/appointments/{aid}/referral-completion",
                        json={"completed": True}, headers=client.csrf).status_code == 200
     assert {c: _row(aid)[c] for c in DECISION_COLUMNS} == before
+
+
+# --- История возвратов переживает удаление записи --------------------------
+
+def _returned_record(client):
+    """Doctor's record returned once by the chair (needs_revision); doctor session."""
+    doctor = create_account("doctor.softdel", "doctor", full_name="Удалова Врач Автор")
+    create_account("chair.softdel", "consilium_chair")
+    create_account(DEV_USERNAME)
+    login(client, DEV_USERNAME)
+    patient = create_patient(client, name="Пациент Удаления", treatingDoctorUserId=doctor)
+    login(client, "doctor.softdel")
+    aid = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]),
+                      headers=client.csrf).json()["id"]
+    login(client, "chair.softdel")
+    assert _post(client, aid, "review").status_code == 200
+    assert _post(client, aid, "return", {"comment": "Текст первого возврата"}).status_code == 200
+    login(client, "doctor.softdel")
+    return aid, patient, doctor
+
+
+def test_deleting_a_returned_record_keeps_its_history(client):
+    aid, patient, doctor = _returned_record(client)
+    history = _history(aid)
+    assert [h[1] for h in history] == ["Текст первого возврата"]
+
+    response = client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    assert response.status_code == 200 and response.json()["historyPreserved"] is True
+    row = _row(aid)
+    assert row is not None and row["deleted_at"] and row["deleted_by_user_id"] == doctor
+    assert _history(aid) == history
+    audit = [r for r in _audit_rows("consilium_appointment_deleted")]
+    assert audit[-1]["detail"] == "mode=soft;history_preserved=true"
+    assert "Текст первого возврата" not in str(audit)
+
+    assert client.get("/api/consilium/appointments").json()["appointments"] == []
+    assert patient["id"] not in client.get("/api/consilium/booked-patients").json()["patientIds"]
+    assert client.get(f"/api/consilium/appointments/{aid}/revisions").status_code == 404
+    login(client, "chair.softdel")
+    assert all(a["id"] != aid for a in client.get("/api/consilium/appointments").json()["appointments"])
+    for action, body in (("review", None), ("sign", DECISION), ("return", {"comment": "Ещё"})):
+        assert _post(client, aid, action, body).status_code == 404
+    assert _row(aid)["deleted_at"]
+
+    # Слот свободен, пациента можно записать снова; новая запись — отдельная история.
+    login(client, "doctor.softdel")
+    again = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf)
+    assert again.status_code == 201, again.text
+    new_id = again.json()["id"]
+    login(client, "chair.softdel")
+    assert _post(client, new_id, "review").status_code == 200
+    assert _post(client, new_id, "return", {"comment": "Текст для новой записи"}).status_code == 200
+    assert [h[1] for h in _history(new_id)] == ["Текст для новой записи"]
+    assert _history(aid) == history
+
+
+def test_record_without_history_is_still_removed(client):
+    aid, _ = _make_state(client, "recorded")
+    login(client, DEV_USERNAME)
+    response = client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    assert response.status_code == 200 and response.json()["historyPreserved"] is False
+    assert _row(aid) is None
+    assert _audit_rows("consilium_appointment_deleted")[-1]["detail"] == "mode=hard"
+
+
+def test_soft_deleted_history_still_blocks_destructive_import_and_card_deletion(client):
+    aid, patient, _ = _returned_record(client)
+    assert client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf).status_code == 200
+    login(client, DEV_USERNAME)
+    before = _data_digest()
+    assert _import(client, _export_document(client), "replace").status_code == 409
+    assert client.delete(f"/api/patients/{patient['id']}", headers=client.csrf).status_code == 409
+    assert _data_digest() == before
+    assert _history(aid)
