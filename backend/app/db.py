@@ -814,6 +814,43 @@ def migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
     )
 
 
+class SchemaMigrationError(RuntimeError):
+    """The database holds data that the current schema cannot accept as is."""
+
+
+def _assert_no_duplicate_consilium_slots(conn: sqlite3.Connection) -> None:
+    """Fail with a readable diagnosis before uq_consilium_appointment_slot.
+
+    Builds before v17 allowed two appointments in one slot. Creating the
+    unique index over such data raised a bare IntegrityError and the app did
+    not start. Medical records are never deleted automatically: the start is
+    stopped with the record ids (no patient data) so they can be moved.
+    """
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'uq_consilium_appointment_slot'"
+    ).fetchone():
+        return
+    if not _table_columns(conn, "oncology_consilium_appointments"):
+        return
+    rows = conn.execute(
+        """SELECT scheduled_date, scheduled_time, consilium_group,
+                  GROUP_CONCAT(id, ',') AS ids, COUNT(*) AS c
+           FROM oncology_consilium_appointments
+           GROUP BY scheduled_date, scheduled_time, consilium_group
+           HAVING COUNT(*) > 1
+           ORDER BY scheduled_date, scheduled_time, consilium_group"""
+    ).fetchall()
+    if rows:
+        slots = "; ".join(
+            f"{r['scheduled_date']} {r['scheduled_time']} {r['consilium_group']}: {r['ids']}" for r in rows
+        )
+        raise SchemaMigrationError(
+            f"Нельзя создать уникальный индекс слотов консилиума: {len(rows)} слот(ов) заняты "
+            f"несколькими записями ({slots}). Записи не удалены. Перенесите лишние записи в "
+            "свободные слоты (или удалите ошибочные) и запустите приложение снова."
+        )
+
+
 # Поля подписанного решения, которые ещё можно менять: личный архив врача и
 # отметка исполнения хирургического направления. Всё остальное — решение.
 _SIGNED_MUTABLE_COLUMNS = (
@@ -876,6 +913,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v16_to_v17(conn)         # strict slot and patient uniqueness
         migrate_v17_to_v18(conn)         # resubmission marker, immutable signed decisions
         _ensure_notification_schema(conn)
+        _assert_no_duplicate_consilium_slots(conn)
         conn.executescript(INDEX_SQL)    # индексы — когда все колонки уже есть
         _seed_roles(conn)
         _seed_notification_templates(conn)
@@ -943,6 +981,13 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        # Ветки v4/v5 выше снова вызывают migrate_v5_to_v6, а он пересобирает
+        # internal_notification_state по схеме v6 — без типа consilium_revision,
+        # уже после безусловного v15→v16. Повтор идемпотентен: таблица
+        # пересобирается, только если в её CHECK нет consilium_revision;
+        # индексы пересобранной таблицы создаются заново (IF NOT EXISTS).
+        migrate_v15_to_v16(conn)
+        conn.executescript(INDEX_SQL)
 
 
 _singleton_conn: sqlite3.Connection | None = None
