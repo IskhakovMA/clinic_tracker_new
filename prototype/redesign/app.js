@@ -897,29 +897,90 @@
         toast(box.checked ? 'Направление отмечено как созданное.' : 'Отметка направления снята.');
     });
 
+    /* ---------- Аналитика председателя (этап 3.4) ----------
+       По static/app.js (renderChairAnalytics, setAnalyticsPeriodPreset) и
+       services/consilium.py (analytics_summary). Реестров здесь нет: в
+       приложении они под сеткой консилиума (этап 3.3). */
+    S.chairAn = { from: '', to: '' };   // как analytics.filters: по умолчанию период не задан — все записи
+    const CONS_TIME_SLOTS = 16;         // TIME_SLOTS сервера: 09:00–16:30 с шагом 30 минут (расхождение 25)
+    const presetRange = (days) => { const end = parse(D.today); return { from: D.helpers.iso(D.helpers.addDays(end, -Number(days) + 1)), to: D.today }; };
+    function chairAnalyticsData() {
+        const { from, to } = S.chairAn;
+        // analytics_summary: все неудалённые записи (архивные тоже) с датой в периоде.
+        const rows = S.consilium.filter(c => (!from || c.date >= from) && (!to || c.date <= to));
+        const signed = rows.filter(c => c.status === 'signed');
+        // analytics_summary считает по treatment_type без фильтра статуса, но пишет это поле только sign()
+        // вместе со status = 'signed', а подписанное решение неизменяемо (trg_consilium_signed_immutable).
+        // Поэтому на достижимых данных это ровно подписанные решения — так и считаем явно.
+        const treatments = Object.entries(D.TREATMENTS).map(([code, label]) => ({ code, label, count: signed.filter(c => c.treatment === code).length }));
+        const schemeMap = new Map();
+        signed.filter(c => c.treatment === 'chemotherapy' && c.scheme && c.scheme.name).forEach(c => {
+            const key = `${c.scheme.code || ''}\u0000${c.scheme.name}`;
+            schemeMap.set(key, { code: c.scheme.code || '', label: c.scheme.name, count: ((schemeMap.get(key) || {}).count || 0) + 1 });
+        });
+        const cmp = (u, v) => (u < v ? -1 : u > v ? 1 : 0);   // как sorted() в Python: по кодовым точкам, не по локали
+        const schemes = [...schemeMap.values()].sort((x, y) => y.count - x.count || cmp(x.code, y.code) || cmp(x.label, y.label));
+        const activeDays = new Set(rows.map(c => c.date)).size;
+        const capacity = activeDays * Object.keys(D.GROUPS).length * CONS_TIME_SLOTS;
+        const occupied = new Set(rows.map(c => `${c.date}|${c.time}|${c.group}`)).size;
+        return {
+            summary: { total: rows.length, signed: signed.length, inReview: rows.filter(c => c.status === 'in_review').length, awaiting: rows.length - signed.length,
+                returned: rows.filter(c => c.status === 'needs_revision').length, needsSpecialists: rows.filter(c => c.needsSurgeon || c.needsRadiotherapist).length },
+            treatments, schemes,
+            schedule: { activeDays, occupiedSlots: occupied, capacitySlots: capacity, loadPercent: capacity ? Math.round(occupied / capacity * 1000) / 10 : 0 },
+        };
+    }
+    const anBars = (rows, label, meta, empty) => rows.length ? html`<div class="an-bars">${rows.map(r => { const max = Math.max(1, ...rows.map(x => x.count)); return html`
+        <div class="an-bar"><div class="an-bar__top"><span class="an-bar__label">${label(r)}</span><strong class="mono">${r.count}</strong></div>
+        <progress max="${max}" value="${r.count}" aria-label="${label(r)}: ${r.count}"></progress><span class="an-bar__meta">${meta(r)}</span></div>`; })}</div>`
+        : html`<div class="empty empty--compact"><div>${empty}</div></div>`;
     function viewConsiliumAnalytics() {
-        const signed = S.consilium.filter(c => c.status === 'signed');
-        const max = (items) => Math.max(1, ...items.map(i => i.value));
-        const bars = (items) => html`<div class="bars">${items.map(b => html`<div class="bars__row"><span class="bars__label" title="${b.label}">${b.label}</span><span class="bars__track"><span class="bars__fill" style="width:${(b.value / max(items)) * 100}%"></span></span><span class="bars__value">${b.value}</span></div>`)}</div>`;
-        const treat = Object.entries(D.TREATMENTS).map(([k, v]) => ({ label: v, value: signed.filter(c => c.treatment === k).length }));
-        const load = Object.entries(D.GROUPS).map(([k, v]) => ({ label: v, value: S.consilium.filter(c => c.group === k).length })).filter(g => g.value);
-        const schemes = D.SCHEMES.map(s => ({ label: s.name, value: signed.filter(c => c.scheme && c.scheme.code === s.code).length })).filter(s => s.value);
+        const { from, to } = S.chairAn;
+        const pressed = (d) => { const r = presetRange(d); return from === r.from && to === r.to; };
+        const controls = html`<section class="panel an-controls" aria-label="Период аналитики">
+            <span class="field__label">Период</span>
+            <input class="input" type="date" id="chairAnFrom" value="${from}" aria-label="Дата от">
+            <input class="input" type="date" id="chairAnTo" value="${to}" aria-label="Дата до">
+            <div class="segmented" role="group" aria-label="Быстрый выбор периода">${[7, 30, 90].map(d => html`<button data-chair-an="${d}" aria-pressed="${pressed(d)}">${d} дней</button>`)}</div>
+            <button class="btn btn--sm btn--ghost" data-chair-an="refresh">Обновить</button>
+        </section>`;
+        if (S.demo === 'error') return html`${pagehead('Аналитика', 'Назначения консилиума и фактическая загрузка расписания')}${controls}<section class="panel"><div class="error" role="alert"><div class="error__title">Не удалось загрузить аналитику консилиума.</div></div></section>`;
+        const data = chairAnalyticsData();
+        const sch = data.schedule;
+        const sm = S.demo === 'empty' ? { total: 0, signed: 0, awaiting: 0, inReview: 0, returned: 0, needsSpecialists: 0 } : data.summary;
         return html`
-            ${pagehead('Аналитика консилиума', 'Назначения консилиума и фактическая загрузка расписания', html`<button class="btn" data-action="registry">Реестры (XLSX)</button>`)}
+            ${pagehead('Аналитика', 'Назначения консилиума и фактическая загрузка расписания')}
+            ${controls}
             <div class="stack">
                 ${metrics([
-                    { label: 'Всего записей', value: S.consilium.length, note: 'за выбранный день' },
-                    { label: 'Подписано', value: signed.length },
-                    { label: 'Ожидают решения', value: S.consilium.filter(c => ['recorded', 'in_review', 'revised'].includes(c.status)).length },
-                    { label: 'Возвращено', value: S.consilium.filter(c => c.status === 'needs_revision').length, tone: 'warn', note: 'ожидают доработки врача' },
+                    { label: 'Всего записей', value: sm.total, note: 'за выбранный период' },
+                    { label: 'Подписано', value: sm.signed, note: 'решение утверждено' },
+                    { label: 'Ожидают решения', value: sm.awaiting, note: `${sm.inReview} на рассмотрении` },
+                    { label: 'Возвращено', value: sm.returned, tone: 'warn', note: 'ожидают доработки врача' },
                 ])}
                 <div class="grid grid--3">
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Назначенное лечение</h2></div>${stateful(bars(treat), { rows: 5 })}</section>
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Загруженность расписания</h2></div>${stateful(bars(load), { rows: 3 })}</section>
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Назначенные схемы лечения</h2></div>${stateful(schemes.length ? bars(schemes) : html`<div class="empty">Схем ещё не назначено</div>`, { rows: 3 })}</section>
+                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Назначенное лечение</h2></div>
+                        ${stateful(anBars(data.treatments, r => r.label, r => r.count ? 'подписанных решений' : 'назначений нет', 'Подписанных назначений за период пока нет.'), { rows: 5, emptyTitle: 'Подписанных назначений за период пока нет.', emptyText: '' })}</section>
+                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Загруженность расписания</h2></div>
+                        ${stateful(html`<div class="an-load"><div class="an-load__value">${String(sch.loadPercent).replace('.', ',')}%</div><div class="muted">занятости доступных слотов в дни с записями</div>
+                            <progress max="100" value="${Math.min(100, sch.loadPercent)}" aria-label="Загрузка расписания ${sch.loadPercent}%"></progress>
+                            <div class="an-load__meta">${sch.occupiedSlots} занятых слотов из ${sch.capacitySlots} · активных дней: ${sch.activeDays}</div>
+                            <div class="an-load__meta">Дополнительно: специалистов требуют ${data.summary.needsSpecialists} записей.</div></div>`, { rows: 3, emptyTitle: 'Записей за период нет.', emptyText: '' })}</section>
+                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Назначенные схемы лечения</h2></div>
+                        ${stateful(anBars(data.schemes, r => `${r.code ? r.code + ' — ' : ''}${r.label}`, r => `${r.count} назначений`, 'Подписанных химиотерапевтических схем за период пока нет.'), { rows: 3, emptyTitle: 'Подписанных химиотерапевтических схем за период пока нет.', emptyText: '' })}</section>
                 </div>
+                <p class="demo-hint">Показатели считаются по синтетическим записям во вкладке по тем же правилам, что analytics_summary на сервере; сервер не вызывается.</p>
             </div>`;
     }
+    document.addEventListener('change', (e) => {
+        if (e.target.id === 'chairAnFrom' || e.target.id === 'chairAnTo') { S.chairAn[e.target.id === 'chairAnFrom' ? 'from' : 'to'] = e.target.value; render(); }
+    });
+    document.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-chair-an]');
+        if (!b || !consIsChair()) return;
+        if (b.dataset.chairAn !== 'refresh') S.chairAn = presetRange(b.dataset.chairAn);
+        render();
+    });
 
     function viewAnalytics() {
         if (S.role === 'chair') return viewConsiliumAnalytics();
@@ -1032,7 +1093,6 @@
         'new-patient': () => patientModal(),
         export: () => toast('В прототипе файл не формируется — экспорт работает в приложении.'),
         import: () => toast('В прототипе файл не загружается — импорт с проверкой и подтверждением работает в приложении.'),
-        registry: () => toast('Реестры XLSX выгружаются в приложении; в прототипе — только кнопка.'),
         calview: (el) => { S.calView = el.dataset.v; render(); },
         period: (el) => { S.period = el.dataset.v; render(); },
         decide: (el) => decisionModal(el.dataset.id),

@@ -637,6 +637,22 @@ button.tl__step { cursor: pointer; }
 .btn.is-favorite { color: var(--warn); }
 .empty--compact { padding: var(--s4) var(--s5); justify-items: start; text-align: left; color: var(--text-3); }
 
+/* ---------- Этап 3.4: аналитика председателя ---------- */
+.an-controls { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); padding: var(--s3) var(--s5); margin-bottom: var(--s5); }
+.an-controls .input { width: auto; }
+.an-bars { display: grid; gap: var(--s3); padding: 0 var(--s5) var(--s5); }
+.an-bar { display: grid; gap: 4px; min-width: 0; }
+.an-bar__top { display: flex; justify-content: space-between; gap: var(--s3); font-size: var(--t-sm); }
+.an-bar__label { color: var(--text-2); overflow-wrap: anywhere; min-width: 0; }
+.an-bar__meta { font-size: var(--t-xs); color: var(--text-3); }
+.an-bar progress, .an-load progress { width: 100%; height: 8px; appearance: none; border: 0; border-radius: 4px; background: var(--sunken); overflow: hidden; }
+.an-bar progress::-webkit-progress-bar, .an-load progress::-webkit-progress-bar { background: var(--sunken); }
+.an-bar progress::-webkit-progress-value, .an-load progress::-webkit-progress-value { background: var(--chart-1); border-radius: 4px; }
+.an-bar progress::-moz-progress-bar, .an-load progress::-moz-progress-bar { background: var(--chart-1); }
+.an-load { display: grid; gap: var(--s2); padding: 0 var(--s5) var(--s5); }
+.an-load__value { font-size: var(--t-2xl); font-weight: 600; font-variant-numeric: tabular-nums; }
+.an-load__meta { font-size: var(--t-sm); color: var(--text-2); }
+
 /* ---------- Сообщения пациентам ---------- */
 .nav__badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent-soft); color: var(--accent-text); font-variant-numeric: tabular-nums; }
 .msg-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent); color: var(--on-accent); font-variant-numeric: tabular-nums; flex: none; }
@@ -789,6 +805,8 @@ button.tl__step { cursor: pointer; }
     .demo-switch__label { display: none; }
 }
 @media (max-width: 640px) {
+    .an-controls { padding: var(--s3) var(--s4); }
+    .an-controls .input { flex: 1 1 140px; }
     .cons-details { grid-template-columns: minmax(0, 1fr); }
     .cons-gen { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 0 var(--s4) var(--s4); }
     .cons-gen__submit { grid-column: 1 / -1; }
