@@ -17,14 +17,30 @@
     };
     const STAGE_ORDER = ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'completed'];
 
+    // Причины внимания и их порядок — как ATTENTION_REASON_LABELS в приложении.
     const ATTENTION_REASONS = {
+        emergency_hospitalization: 'Экстренная госпитализация',
+        route_change: 'Изменение маршрута пациента',
         critical_overdue: 'Критичная просрочка',
         doctor_decision_required: 'Требуется решение врача',
         department_head_decision_required: 'Требуется решение заведующего',
+        organizational_issue: 'Организационная проблема',
         documents_or_data_issue: 'Проблема с документами или данными',
         patient_unavailable: 'Не удалось связаться / пациент временно недоступен',
-        route_change: 'Изменение маршрута пациента',
+        other: 'Другая причина',
     };
+    // Справочники карточки — тексты из static/app.js.
+    const PRIORITY = { urgent: 'Срочно', high: 'Высокий', normal: 'Обычный' };
+    const EVENT_TREATMENT = { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия', hormone: 'Гормонотерапия' };
+    const DECISIONS = { treatment_strategy_defined: 'Определение тактики лечения', treatment_strategy_changed: 'Изменение тактики лечения', dispensary_observation: 'Диспансерное наблюдение' };
+    const PGI = { '': 'Не указано', confirmed: 'Подтверждено', not_confirmed: 'Не подтверждено' };
+    // Шаблоны SMS — как NOTIFICATION_TEMPLATE_SEED в backend/app/db.py.
+    const SMS_BODY = 'Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией.';
+    const SMS_TEMPLATES = [
+        { code: 'appointment_reminder', name: 'Напоминание о посещении', body: SMS_BODY },
+        { code: 'examination_reminder', name: 'Напоминание о посещении', body: SMS_BODY },
+        { code: 'custom_reminder', name: 'Ручное напоминание', body: SMS_BODY },
+    ];
 
     const GROUPS = {
         general: 'Общеонкологическая', thoracic: 'Торакальная', abdominal: 'Абдоминальная',
@@ -57,21 +73,15 @@
         melanoma: { label: 'Меланома кожи', group: 'general', icd: ['C43.5', 'C43.6'], loc: 'Кожа' },
     };
 
-    const CHECKLISTS = {
-        lung34: ['КТ ОГК и ОБП с контрастом', 'ВИЧ, гепатит В и С', 'Общий анализ крови', 'Биохимический анализ', 'Коагулограмма', 'ЭКГ', 'ФВД', 'Направление на бронхоскопию', 'Гистологическое исследование', 'ИГХ и генетические исследования'],
-        lung12: ['КТ ОГК и ОБП с контрастом', 'Анализ на ВИЧ', 'Общий анализ крови', 'Биохимический анализ крови', 'ЭКГ', 'ФВД', 'ЭГДС'],
-        breast: ['УЗИ молочной железы и лимфатических узлов', 'Биопсия молочной железы и/или л/у', 'Гистологическое исследование', 'Общий анализ крови', 'ЭКГ', 'КТ или рентген ОГК'],
-        colon: ['КТ ОГК, ОБП, ОМТ с контрастом', 'Маркеры крови СА19.9, РЭА', 'Общий анализ крови', 'Коагулограмма', 'ЭКГ', 'Гистологическое исследование'],
-        stomach: ['КТ ОГК, ОБП, ОМТ с контрастом', 'Гистологическое исследование'],
-        prostate: ['Направление на биопсию', 'Выполнение биопсии', 'Гистологическое исследование', 'Оценка результатов гистологии'],
-        uterus: ['МРТ ОМТ с контрастом', 'КТ ОГК, ОБП с контрастом', 'Биохимический анализ крови', 'Коагулограмма'],
-        melanoma: ['Общий анализ крови', 'Биохимический анализ крови', 'ЭКГ', 'УЗИ регионарных лимфатических узлов', 'Гистологическое исследование'],
-    };
+    // Чек-листы и сроки этапов — из справочника приложения (nosology.js).
+    const REF = window.NOSOLOGY_REF || {};
 
     const DEPARTMENTS = [
         { id: 'd-thor', name: 'Торакальное отделение' },
         { id: 'd-abd', name: 'Абдоминальное отделение' },
     ];
+    // Заведующие — синтетические (в приложении список HEAD_OPTIONS содержит реальных сотрудников).
+    const HEADS = { 'd-thor': 'Орлов Дмитрий Николаевич', 'd-abd': 'Лаврова Софья Игоревна' };
 
     const USERS = {
         doctor: { id: 'u-smirnova', name: 'Смирнова Елена Викторовна', short: 'Смирнова Е. В.', role: 'doctor', roleLabel: 'Врач-онколог', dept: 'd-thor' },
@@ -114,50 +124,148 @@
     const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
     const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
-    const EVENT_KINDS = ['КТ ОГК и ОБП с контрастом', 'Приём онколога', 'Биопсия', 'Гистологическое исследование', 'МРТ ОМТ с контрастом',
-        'Контрольный осмотр', 'Курс химиотерапии', 'Консультация радиолога', 'УЗИ лимфоузлов', 'ЭГДС'];
+    // Карточка устроена как в приложении: история этапов (history), у каждого
+    // этапа — события с плановой и фактической датой, примечание и чек-лист.
+    // Пути — только переходы, которые предлагает интерфейс приложения.
+    const PATHS = {
+        'primary-appointment': ['primary-appointment'],
+        exam: ['primary-appointment', 'exam'],
+        appointment: ['primary-appointment', 'exam', 'appointment'],
+        consult: ['primary-appointment', 'exam', 'appointment', 'consult'],
+        'treatment-prep': ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep'],
+        treatment: ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment'],
+        completed: ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'completed'],
+        'dispensary-observation': ['primary-appointment', 'exam', 'appointment', 'consult', 'dispensary-observation'],
+        'diagnosis-not-confirmed': ['primary-appointment', 'exam', 'diagnosis-not-confirmed'],
+    };
+    const SCHEDULED = ['exam', 'appointment', 'consult', 'treatment-prep', 'treatment'];
+    const TERMINAL = ['completed', 'dispensary-observation', 'diagnosis-not-confirmed'];
+    const EVENT_TITLE = { 'primary-appointment': 'Первичный приём', exam: 'Обследование', appointment: 'Приём врача', consult: 'Онкоконсилиум', 'treatment-prep': 'Лечение', treatment: 'Лечение' };
+    const NOTES = ['Пациент проинформирован о плане обследования.', 'Результаты КТ получены, ждём гистологию.', 'Перенос по просьбе пациента.', ''];
+    const COMPLAINTS = ['Жалобы на кашель, одышку при нагрузке. Направлен из поликлиники по месту жительства.', 'Самостоятельно обнаружила образование, обратилась в ЦАОП.', ''];
+    const hm = () => `${String(8 + Math.floor(rnd() * 9)).padStart(2, '0')}:${pick(['00', '15', '30', '45'])}`;
+    const stamp = (d, time) => `${iso(d)}T${time}`;
+    const checklistFor = (nos, stage) => {
+        const ref = REF[nos];
+        if (!ref) return { required: [], optional: [] };
+        return stage === 'exam'
+            ? { required: ref.checklistRequired || [], optional: ref.checklistOptional || [] }
+            : { required: ref.checklistRequiredStage2 || [], optional: ref.checklistOptionalStage2 || [] };
+    };
+
+    function buildHistory(stage, i, nos) {
+        const path = PATHS[stage].slice();
+        if (i === 4) path.splice(0, path.length, 'primary-appointment', 'exam', 'appointment', 'exam');   // «Дополнительное обследование»
+        let t = addDays(today, -(path.length * 8 + 3 + Math.floor(rnd() * 8)));
+        return path.map((s, k) => {
+            const current = k === path.length - 1;
+            const occ = { stage: s, enteredAt: stamp(t, hm()), events: [], note: rnd() > 0.8 ? pick(NOTES) : '', checklist: {} };
+            const cl = checklistFor(nos, s);
+            cl.required.forEach((name, n) => { occ.checklist[name] = !current || n === 0 || rnd() > 0.45; });
+            if (s === 'primary-appointment') {
+                if (!(current && i % 2)) occ.events.push({ date: '', time: '', actualDate: iso(t), actualTime: hm(), matchedPlan: null, noPlan: true });
+            } else if (SCHEDULED.includes(s)) {
+                const plan = addDays(t, current ? 0 : 3 + Math.floor(rnd() * 4));
+                const ev = { date: iso(plan), time: hm(), actualDate: '', actualTime: '', matchedPlan: null, noPlan: false };
+                if (s === 'treatment-prep' || s === 'treatment') ev.treatmentType = rnd() > 0.15 ? pick(['surgery', 'radiation', 'chemo', 'hormone']) : '';
+                if (current) {
+                    // Текущий этап: плановая дата впереди или уже прошла без факта; иногда дата ещё не назначена.
+                    if (rnd() > 0.15) { ev.date = iso(addDays(today, Math.floor(rnd() * 16) - 5)); occ.events.push(ev); }
+                } else {
+                    const late = rnd() > 0.8;
+                    ev.actualDate = late ? iso(addDays(plan, 1)) : ev.date;
+                    ev.actualTime = ev.time;
+                    ev.matchedPlan = !late;
+                    occ.events.push(ev);
+                    t = parseIso(ev.actualDate);
+                }
+                if (s === 'consult' && !current) {
+                    const next = path[k + 1];
+                    ev.consiliumDecision = next === 'dispensary-observation' ? 'dispensary_observation' : next === 'treatment-prep' ? pick(['treatment_strategy_defined', 'treatment_strategy_defined', 'treatment_strategy_changed']) : undefined;
+                    if (!ev.consiliumDecision) delete ev.consiliumDecision;
+                }
+            }
+            if (!current && !SCHEDULED.includes(s)) t = addDays(t, 2 + Math.floor(rnd() * 5));
+            return occ;
+        });
+    }
+    const parseIso = (s) => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+
+    // Поля, которые читают остальные экраны прототипа (список, «Сегодня»,
+    // календарь, аналитика, уведомления, ИИ-помощник), выводятся из карточки.
+    function derive(p) {
+        const todayIso = iso(today);
+        p.stage = p.history.length ? p.history[p.history.length - 1].stage : p.stage;
+        p.events = p.history.flatMap((occ, k) => occ.events.map((ev, j) => ({
+            id: `${p.id}-${k}-${j}`, title: EVENT_TITLE[occ.stage] || 'Событие', date: ev.actualDate || ev.date, time: ev.actualTime || ev.time || '', done: !!ev.actualDate,
+        }))).filter(e => e.date).sort((a, b) => a.date.localeCompare(b.date));
+        p.overdue = p.events.filter(e => !e.done && e.date < todayIso).length;
+        const cur = p.history[p.history.length - 1];
+        const cl = checklistFor(p.nosology, p.stage);
+        p.checklist = cur ? cl.required.map(title => ({ title, done: !!cur.checklist[title] })) : [];
+        p.attention = p.attentionIssues.filter(x => x.status === 'open').map(x => ({ code: x.reasonCode, since: x.createdAt.slice(0, 10), comment: x.comment }));
+        const stamps = [p.createdAt, ...p.history.map(o => o.enteredAt), ...p.history.flatMap(o => o.events.map(e => e.actualDate)), ...p.attentionIssues.map(x => x.closedAt || x.createdAt)].filter(Boolean).map(s => s.slice(0, 10)).filter(s => s <= todayIso).sort();
+        p.updated = p.updatedAt ? p.updatedAt.slice(0, 10) : stamps[stamps.length - 1];
+        return p;
+    }
 
     const nosKeys = Object.keys(NOSOLOGY);
+    // Последний пациент создан председателем консилиума: председатель становится
+    // лечащим врачом созданных им пациентов (resolve_create_doctor), отделения у него нет.
+    const CHAIR_PATIENT = NAMES.length - 1;
     const patients = NAMES.map(([last, first, middle, sex], i) => {
         const nos = i < 9 ? pick(['lung34', 'lung12']) : pick(nosKeys);
         const n = NOSOLOGY[nos];
-        const doctor = i < 14 ? DOCTORS[0] : pick(DOCTORS);
-        const stage = pick(['exam', 'exam', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'treatment', 'primary-appointment', 'completed', 'dispensary-observation']);
-        const stageIdx = Math.max(0, STAGE_ORDER.indexOf(stage));
-        const enteredDaysAgo = 2 + Math.floor(rnd() * 28);
-        const history = STAGE_ORDER.slice(0, stage === 'dispensary-observation' ? STAGE_ORDER.length : stageIdx + 1)
-            .map((s, k, arr) => ({ stage: s, at: iso(addDays(today, -enteredDaysAgo - (arr.length - 1 - k) * (6 + Math.floor(rnd() * 9)))) }));
-        if (stage === 'dispensary-observation') history.push({ stage, at: iso(addDays(today, -enteredDaysAgo + 3)) });
-        const events = [];
-        const evCount = 2 + Math.floor(rnd() * 3);
-        // Завершённые маршруты: только прошедшие и выполненные события.
-        const closed = ['completed', 'dispensary-observation', 'diagnosis-not-confirmed'].includes(stage);
-        for (let k = 0; k < evCount; k++) {
-            const offset = closed ? -3 - Math.floor(rnd() * 20) : Math.floor(rnd() * 20) - 5;
-            const done = offset < 0 && (closed || rnd() > 0.3);
-            events.push({ id: `ev-${i}-${k}`, title: pick(EVENT_KINDS), date: iso(addDays(today, offset)), time: `${String(8 + Math.floor(rnd() * 9)).padStart(2, '0')}:${pick(['00', '15', '30', '45'])}`, done });
+        const chairOwn = i === CHAIR_PATIENT;
+        const doctor = chairOwn ? { id: USERS.chair.id, short: USERS.chair.short, name: USERS.chair.name, dept: null } : i < 14 ? DOCTORS[0] : pick(DOCTORS);
+        const stage = chairOwn ? 'exam' : i === 4 ? 'exam' : pick(['exam', 'exam', 'exam', 'appointment', 'consult', 'consult', 'treatment-prep', 'treatment', 'treatment', 'primary-appointment', 'completed', 'dispensary-observation', 'diagnosis-not-confirmed']);
+        const history = buildHistory(stage, i, nos);
+        const closed = TERMINAL.includes(stage);
+        const createdAt = history[0].enteredAt;
+        const pendingLate = history[history.length - 1].events.some(e => !e.actualDate && e.date && e.date < iso(today));
+        const attentionIssues = [];
+        if (!closed && (i % 6 === 1 || pendingLate && i % 3 === 0)) attentionIssues.push({
+            id: `att-${i}-1`, reasonCode: pendingLate ? 'critical_overdue' : pick(['doctor_decision_required', 'documents_or_data_issue', 'patient_unavailable', 'department_head_decision_required']),
+            status: 'open', eventDate: '', comment: pendingLate ? 'Плановая дата прошла без отметки о выполнении.' : 'Уточнить у пациента дату повторного обращения.',
+            createdByName: doctor.short, createdAt: stamp(addDays(today, -1 - Math.floor(rnd() * 5)), hm()),
+        });
+        if (i % 5 === 2) attentionIssues.push({
+            id: `att-${i}-0`, reasonCode: 'organizational_issue', status: 'closed', eventDate: '', comment: 'Не поступили результаты анализов из лаборатории.',
+            createdByName: doctor.short, createdAt: stamp(addDays(today, -14), '10:20'),
+            closedByName: doctor.short, closedAt: stamp(addDays(today, -11), '15:05'), resolutionComment: 'Результаты получены.',
+        });
+        const consent = pick(['granted', 'granted', 'not_recorded', 'revoked']);
+        const curEv = history[history.length - 1].events.find(e => !e.actualDate && e.date >= iso(today));
+        const sms = [];
+        if (consent === 'granted') {
+            sms.push({ id: `sms-${i}-1`, template: 'appointment_reminder', scheduledAt: stamp(addDays(today, -6), '18:00'), source: 'event', status: 'sent', reason: '' });
+            if (curEv) sms.push({ id: `sms-${i}-2`, template: 'examination_reminder', scheduledAt: stamp(addDays(parseIso(curEv.date), -1), '18:00'), source: 'event', status: 'pending', reason: '' });
+        } else if (consent === 'revoked') {
+            sms.push({ id: `sms-${i}-1`, template: 'appointment_reminder', scheduledAt: stamp(addDays(today, -3), '18:00'), source: 'event', status: 'cancelled', reason: '' });
+        } else if (i % 4 === 0) {
+            sms.push({ id: `sms-${i}-1`, template: 'appointment_reminder', scheduledAt: stamp(addDays(today, -2), '18:00'), source: 'event', status: 'skipped', reason: 'no_consent' });
         }
-        events.sort((a, b) => a.date.localeCompare(b.date));
-        const overdue = events.filter(e => !e.done && e.date < iso(today)).length;
-        const checklist = (CHECKLISTS[nos] || []).map((title, k) => ({ title, done: stage !== 'exam' || rnd() > 0.45 || k === 0 }));
-        const attention = (!closed && (i % 6 === 1 || overdue > 1)) ? [{
-            code: overdue > 1 ? 'critical_overdue' : pick(['doctor_decision_required', 'documents_or_data_issue', 'patient_unavailable', 'department_head_decision_required']),
-            since: iso(addDays(today, -Math.floor(rnd() * 6))),
-            comment: overdue > 1 ? 'Две плановые даты прошли без отметки о выполнении.' : 'Уточнить у пациента дату повторного обращения.',
-        }] : [];
-        return {
+        const icd = pick(n.icd);
+        const p = {
             id: `p-${String(i + 1).padStart(3, '0')}`,
             name: `${last} ${first} ${middle}`, sex,
             age: 41 + Math.floor(rnd() * 39),
-            policy: `77${String(10000000000000 + Math.floor(rnd() * 89999999999999)).slice(0, 14)}`,
+            policy: i % 11 === 6 ? '' : `77${String(10000000000000 + Math.floor(rnd() * 89999999999999)).slice(0, 14)}`,
             phone: `+7 (9${10 + Math.floor(rnd() * 89)}) ${100 + Math.floor(rnd() * 899)}-${10 + Math.floor(rnd() * 89)}-${10 + Math.floor(rnd() * 89)}`,
-            nosology: nos, nosologyLabel: n.label, icd: pick(n.icd), localization: n.loc,
+            nosology: nos, nosologyLabel: n.label, icd, localization: n.loc,
             doctorId: doctor.id, doctor: doctor.short, doctorFull: doctor.name, dept: doctor.dept,
-            stage, history, events, checklist, attention, overdue,
-            updated: iso(addDays(today, -Math.floor(rnd() * 5))),
-            priority: rnd() > 0.85 ? 'high' : 'normal',
-            comments: rnd() > 0.5 ? [{ author: doctor.short, at: iso(addDays(today, -2)), text: 'Пациент проинформирован о плане обследования.' }] : [],
+            head: doctor.dept ? HEADS[doctor.dept] : '',
+            createdBy: chairOwn ? USERS.chair.id : doctor.id,
+            priority: rnd() > 0.85 ? 'high' : rnd() > 0.93 ? 'urgent' : 'normal',
+            createdAt, history, attentionIssues,
+            complaint: rnd() > 0.5 ? pick(COMPLAINTS) : '',
+            pgiResult: ['treatment-prep', 'treatment', 'completed'].includes(stage) ? 'confirmed' : stage === 'diagnosis-not-confirmed' ? 'not_confirmed' : '',
+            pgiResultDate: '',
+            diagnosisHistory: i % 7 === 3 ? [{ changedAt: stamp(addDays(parseIso(createdAt.slice(0, 10)), 4), '11:40'), oldDiagnosis: n.icd[0] === icd ? 'C80.9' : n.icd[0], newDiagnosis: icd }] : [],
+            notifications: { smsEnabled: consent === 'granted', consent, consentAt: consent === 'not_recorded' ? '' : stamp(parseIso(createdAt.slice(0, 10)), '12:00'), consentBy: consent === 'not_recorded' ? '' : doctor.short, items: sms },
         };
+        if (p.pgiResult) p.pgiResultDate = history[Math.min(2, history.length - 1)].enteredAt.slice(0, 10);
+        return derive(p);
     });
 
     // Консилиум: записи текущего дня в торакальной и маммологической группах.
@@ -229,8 +337,8 @@
     });
 
     window.DEMO = {
-        today: iso(today), STAGES, STAGE_ORDER, ATTENTION_REASONS, GROUPS, TREATMENTS, SCHEMES, NOSOLOGY,
+        today: iso(today), STAGES, STAGE_ORDER, ATTENTION_REASONS, PRIORITY, EVENT_TREATMENT, DECISIONS, PGI, SMS_TEMPLATES, HEADS, PATHS, TERMINAL, SCHEDULED, GROUPS, TREATMENTS, SCHEMES, NOSOLOGY,
         DEPARTMENTS, USERS, DOCTORS, patients, consilium, slots, byStage, weeks, conversations,
-        helpers: { iso, addDays },
+        helpers: { iso, addDays, derive, checklistFor },
     };
 })();

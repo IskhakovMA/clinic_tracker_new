@@ -172,7 +172,7 @@
                 ${cols.includes('patient') ? html`<td><div class="cell-title">${p.name}</div><div class="cell-sub"><span class="mono">${p.icd}</span> · ${p.nosologyLabel} · ${p.age} лет</div></td>` : ''}
                 ${cols.includes('stage') ? html`<td data-label="Этап">${routeMini(p)}</td>` : ''}
                 ${cols.includes('status') ? html`<td data-label="Внимание">${attentionStatus(p)}</td>` : ''}
-                ${cols.includes('doctor') ? html`<td data-label="Врач">${p.doctor}</td>` : ''}
+                ${cols.includes('doctor') ? html`<td data-label="Врач">${p.doctor || '—'}</td>` : ''}
                 ${cols.includes('updated') ? html`<td class="num muted" data-label="Изменён">${fmtDate(p.updated)}</td>` : ''}
             </tr>`)}</tbody></table></div>`;
 
@@ -251,7 +251,7 @@
                     <div class="panel__body--flush">${stateful(html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Пациент</th><th>Причина</th><th>С какого дня</th><th>Лечащий врач</th><th>Этап</th></tr></thead><tbody>
                         ${queue.map(p => html`<tr class="is-link ${p.overdue ? 'row-mark' : ''}" data-href="#/patient/${p.id}" tabindex="0"><td><div class="cell-title">${p.name}</div><div class="cell-sub mono">${p.icd}</div></td>
                             <td data-label="Причина">${p.attention.length ? html`<span class="status status--warn">${D.ATTENTION_REASONS[p.attention[0].code]}</span>` : html`<span class="status status--danger">Просрочено событий: ${p.overdue}</span>`}</td>
-                            <td data-label="С" class="muted">${p.attention.length ? relDay(p.attention[0].since) : '—'}</td><td data-label="Врач">${p.doctor}</td><td data-label="Этап">${D.STAGES[p.stage]}</td></tr>`)}
+                            <td data-label="С" class="muted">${p.attention.length ? relDay(p.attention[0].since) : '—'}</td><td data-label="Врач">${p.doctor || '—'}</td><td data-label="Этап">${D.STAGES[p.stage]}</td></tr>`)}
                     </tbody></table></div>`, { emptyTitle: 'Очередь пуста', emptyText: 'Нет открытых отметок внимания и просрочек.' })}</div>
                 </section>
             </div>`;
@@ -276,62 +276,6 @@
                 </div>
                 ${stateful(list.length ? patientRows(list) : html`<div class="empty"><div class="empty__title">Ничего не найдено</div><div>Измените запрос или сбросьте фильтры.</div></div>`, { rows: 8, emptyTitle: 'Пациентов пока нет', emptyText: readOnly ? 'Пациенты появятся после внесения их врачами.' : 'Добавьте первого пациента кнопкой «Новый пациент».' })}
             </section>`;
-    }
-
-    function viewPatient(id) {
-        const p = patient(id);
-        if (!p || !R().scope(p)) return html`${pagehead('Карточка недоступна', '')}<section class="panel"><div class="error"><div class="error__title">Пациент вне вашей области доступа</div><div>Карточки видны лечащему врачу, заведующему отделением и руководству.</div><button class="btn btn--sm" data-href="#/patients">К списку пациентов</button></div></section>`;
-        const curIdx = p.stage === 'dispensary-observation' ? 7 : stageIdx(p.stage);
-        const cons = S.consilium.find(c => c.patientId === p.id);
-        const can = R().can;
-        const done = p.checklist.filter(c => c.done).length;
-        return html`
-            <div style="margin-bottom:var(--s4)"><a href="#/patients">← Пациенты</a></div>
-            <section class="panel" style="margin-bottom:var(--s5)">
-                <div class="panel__body" style="padding-top:var(--s5)">
-                    <div class="ptitle">
-                        <div><h1 style="font-size:var(--t-2xl);font-weight:600;line-height:1.2">${p.name}</h1>
-                        <div class="facts"><span><b>${p.age}</b> лет</span><span>Полис ОМС <b class="mono">${p.policy}</b></span><span>Диагноз <b class="mono">${p.icd}</b> · ${p.nosologyLabel}</span><span>Лечащий врач <b>${p.doctor}</b></span></div></div>
-                        <div class="pagehead__actions">${convFor(p.id) ? html`<a class="btn" href="#/messages/${convFor(p.id).id}?back=patient/${p.id}">${icon('messages')}<span>Переписка с пациентом</span>${convFor(p.id).unread ? html`<span class="msg-badge" aria-label="Непрочитанных: ${convFor(p.id).unread}">${convFor(p.id).unread}</span>` : ''}</a>` : ''}<button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-помощника по пациенту: ${p.name}">Спросить помощника</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Режим просмотра</span>`}</div>
-                    </div>
-                </div>
-                <div class="route" aria-label="Маршрут лечения">${D.STAGE_ORDER.map((s, k) => {
-                    const h = p.history.find(x => x.stage === s);
-                    const cls = k < curIdx ? 'is-done' : k === curIdx ? 'is-current' : '';
-                    return html`<div class="route__step ${cls}"><div class="route__name">${D.STAGES[s]}</div><div class="route__date">${h ? fmtNum(h.at) : ''}</div></div>`;
-                })}</div>
-            </section>
-            <div class="grid grid--main-side">
-                <div class="stack">
-                    ${p.attention.length || p.overdue ? html`<section class="panel"><div class="panel__head"><h2 class="panel__title">Требует внимания</h2></div>
-                        ${p.overdue ? html`<div class="callout"><div class="callout__title">Просрочено событий: ${p.overdue}</div><div class="callout__text">Плановые даты прошли без отметки о выполнении.</div></div>` : ''}
-                        ${p.attention.map(a => html`<div class="callout callout--warn"><div class="callout__title">${D.ATTENTION_REASONS[a.code]}</div><div class="callout__text">${a.comment} · отмечено ${relDay(a.since)}</div></div>`)}
-                    </section>` : ''}
-                    <section class="panel">
-                        <div class="panel__head"><div><h2 class="panel__title">Чек-лист этапа</h2><div class="panel__meta">${D.STAGES[p.stage]} · выполнено ${done} из ${p.checklist.length}</div></div></div>
-                        ${stateful(html`<ul class="checklist">${p.checklist.map((c, k) => html`<li class="${c.done ? 'is-done' : ''}"><input type="checkbox" id="ck-${k}" data-action="check" data-id="${p.id}" data-k="${k}" ${raw(c.done ? 'checked' : '')} ${raw(can.write ? '' : 'disabled')}><label for="ck-${k}"><span>${c.title}</span></label></li>`)}</ul>`, { rows: 6 })}
-                    </section>
-                    <section class="panel">
-                        <div class="panel__head"><h2 class="panel__title">Лента событий</h2></div>
-                        ${stateful(html`<ul class="feed">${p.events.map(e => html`<li><span class="feed__date">${fmtNum(e.date)}</span><div><div>${e.title}</div><div class="muted" style="font-size:var(--t-sm)">${e.time}</div></div>${e.done ? html`<span class="status status--ok">Выполнено</span>` : e.date < D.today ? html`<span class="status status--danger">Просрочено</span>` : html`<span class="status">${relDay(e.date)}</span>`}</li>`)}</ul>`, { rows: 4 })}
-                    </section>
-                    <section class="panel">
-                        <div class="panel__head"><h2 class="panel__title">Комментарии</h2></div>
-                        <div class="panel__body">${p.comments.length ? p.comments.map(c => html`<div style="margin-bottom:var(--s3)"><div class="muted" style="font-size:var(--t-xs)">${c.author} · ${fmtNum(c.at)}</div><div>${c.text}</div></div>`) : html`<div class="muted">Комментариев нет.</div>`}
-                        ${can.write ? html`<div class="field" style="margin-top:var(--s3)"><textarea class="textarea" placeholder="Комментарий для коллег" aria-label="Новый комментарий"></textarea><div><button class="btn btn--sm" data-action="comment">Добавить</button></div></div>` : ''}</div>
-                    </section>
-                </div>
-                <div class="stack">
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Сведения</h2></div>
-                        <dl class="dl"><dt>Локализация</dt><dd>${p.localization}</dd><dt>Нозология</dt><dd>${p.nosologyLabel}</dd><dt>Телефон</dt><dd class="mono">${p.phone}</dd><dt>Отделение</dt><dd>${D.DEPARTMENTS.find(d => d.id === p.dept).name}</dd><dt>Приоритет</dt><dd>${p.priority === 'high' ? html`<span class="tag tag--warn">Высокий</span>` : 'Обычный'}</dd></dl>
-                    </section>
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Онкологический консилиум</h2></div>
-                        <div class="panel__body">${cons ? html`<div style="display:grid;gap:var(--s2)"><div>${fmtNum(cons.date)}, <span class="mono">${cons.time}</span> · ${D.GROUPS[cons.group]}</div><div>${consTag(cons)}</div>
-                            ${cons.status === 'signed' ? html`<div class="muted" style="font-size:var(--t-sm)">${D.TREATMENTS[cons.treatment]}${cons.scheme ? ` · ${cons.scheme.name}` : ''}<br>Этап маршрута на момент решения: ${D.STAGES[cons.routeStage]}</div>` : ''}</div>`
-                            : html`<div class="muted">Записи нет.</div>${R().can.book ? html`<button class="btn btn--sm" style="margin-top:var(--s3)" data-href="#/consilium">Записать</button>` : ''}`}</div>
-                    </section>
-                </div>
-            </div>`;
     }
 
     function viewCalendar() {
@@ -644,10 +588,6 @@
             if (bad.some(Boolean)) { $('#modal').querySelector('[aria-invalid="true"]').focus(); return; }
             toast('В прототипе карточка не сохраняется — форма показывает поведение и проверки.'); closeModal();
         },
-        check: (el) => { const p = patient(el.dataset.id); p.checklist[Number(el.dataset.k)].done = el.checked; render(); },
-        attention: () => toast('Отметка внимания открывается тем же окном, что и в приложении (в прототипе не реализована).'),
-        advance: () => toast('Перевод на этап выполняется в приложении; в прототипе показан маршрут.'),
-        comment: () => toast('Комментарий в прототипе не сохраняется.'),
     };
 
     /* ---------- Сообщения пациентам (демонстрация) ----------
@@ -776,7 +716,7 @@
         other: ['Сколько пациентов требуют внимания?', 'Какая самая частая причина внимания?', 'Что у меня на сегодня?'],
     };
     const aiAvailable = () => S.demo !== 'error';
-    const aiRef = (p, sub) => ({ id: p.id, title: p.name, sub: sub || `${D.STAGES[p.stage]} · ${p.doctor}` });
+    const aiRef = (p, sub) => ({ id: p.id, title: p.name, sub: sub || `${D.STAGES[p.stage]} · ${p.doctor || 'врач не назначен'}` });
 
     function aiAnswer(text) {
         const q = text.toLowerCase();
@@ -966,10 +906,10 @@
 
     // --- Подтверждение опасного действия: Promise<boolean>, фокус на «Отмена» ---
     S.confirmResolve = null;
-    function confirmDialog({ title, text, confirmLabel = 'Подтвердить', danger = false }) {
+    function confirmDialog({ title, text, confirmLabel = 'Подтвердить', danger = false, note = '' }) {
         return new Promise((resolve) => {
             S.confirmResolve = resolve;
-            openModal(modalShell(title, '', html`<p class="confirm__text">${text}</p>`,
+            openModal(modalShell(title, '', html`<p class="confirm__text">${text}</p>${note ? html`<p class="demo-hint">${note}</p>` : ''}`,
                 html`<span class="spacer"></span><button class="btn" data-confirm="no">Отмена</button><button class="btn ${danger ? 'btn--danger-solid' : 'btn--primary'}" data-confirm="yes">${confirmLabel}</button>`));
             $('#modal').classList.add('modal--confirm');
         });
@@ -1077,6 +1017,7 @@
             <span class="field__hint" id="${id}-hint">Начните вводить код или часть названия.</span>
         </div>`;
     const ICD_STATE = {};
+    const ICD_ON_CHOOSE = {};   // id поля → обработчик выбора (вкладка «Данные» карточки)
     function renderIcdList(id) {
         const input = document.getElementById(id), list = document.getElementById(`${id}-list`), box = input.closest('[data-icd]');
         const locSel = box.dataset.locFrom ? document.getElementById(box.dataset.locFrom) : null;
@@ -1099,6 +1040,7 @@
         const hint = document.getElementById(`${id}-hint`);
         hint.textContent = `Выбрано: ${d.code} · ${d.locLabel}`;
         input.removeAttribute('aria-invalid');
+        if (ICD_ON_CHOOSE[id]) ICD_ON_CHOOSE[id](d);
     }
     document.addEventListener('input', (e) => {
         const box = e.target.closest && e.target.closest('[data-icd]');
@@ -1360,6 +1302,646 @@
         }
     });
 
+    /* ===================== Карточка пациента (этап 1) =====================
+       Состав, тексты и порядок действий — как в static/app.js (renderPatientSide,
+       TABS, tabOverview … tabHistory, advanceToStage/changeStage). Изменения
+       живут в памяти вкладки: сервер, база и отправка SMS не подключены. */
+    const STAGE_NAME = (s) => D.STAGES[s] || s;
+    const PT_TABS = [
+        { value: 'overview', label: 'Обзор' }, { value: 'notifications', label: 'Уведомления' }, { value: 'data', label: 'Данные' },
+        { value: 'complaints', label: 'Комментарии' }, { value: 'events', label: 'События и даты' }, { value: 'checklist', label: 'Чек-лист' },
+        { value: 'notes', label: 'Заметки' }, { value: 'history', label: 'История' },
+    ];
+    const SCHEDULE_LABEL = { exam: 'обследования', appointment: 'приёма', consult: 'онкоконсилиума', 'treatment-prep': 'лечения', treatment: 'лечения' };
+    const ADD_EVENT_LABEL = { exam: 'Добавить дату обследования', appointment: 'Добавить приём', consult: 'Добавить дату консилиума', 'treatment-prep': 'Добавить дату лечения', treatment: 'Добавить дату лечения' };
+    const SMS_STATUS = { pending: ['Ожидает отправки', 'tag--accent'], processing: ['Отправляется', 'tag--accent'], sent: ['Отправлено', 'tag--ok'], failed: ['Ошибка отправки', 'tag--danger'], cancelled: ['Отменено', ''], skipped: ['Пропущено', 'tag--warn'] };
+    const SMS_SOURCE = { manual: 'Ручное напоминание', event: 'Плановое событие' };
+    const SMS_REASON = { no_consent: 'Нет согласия', invalid_phone: 'Некорректный телефон', missing_phone: 'Телефон отсутствует', patient_unavailable: 'Пациент недоступен', template_disabled: 'Шаблон отключён', provider_failed: 'Ошибка отправки в тестовом режиме' };
+    const CONSENT_LABEL = { not_recorded: 'Согласие не зафиксировано', granted: 'Согласие получено', revoked: 'Согласие отозвано' };
+    const READONLY_TEXT = 'Режим просмотра — изменение данных недоступно';
+    const OK_NOTE = 'Демонстрация: это отметка решения ОК при переводе этапа, как в карточке приложения. Она не является подписанным решением консилиума и не связана с ним — подпись ставит председатель в разделе «Консилиум». В прототипе ничего не сохраняется.';
+    S.pt = { sel: {} };
+
+    const nowStamp = () => { const d = new Date(); return `${D.today}T${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+    const pad2 = (n) => String(n).padStart(2, '0');
+    // formatDateTime приложения: «Сегодня, 10:20», «Вчера, 10:20», иначе дд.мм.гггг.
+    function fmtStamp(s) {
+        if (!s) return '—';
+        const [d, t] = s.split('T');
+        const diff = Math.round((parse(d) - parse(D.today)) / 86400000);
+        if (diff === 0) return `Сегодня, ${t || '00:00'}`;
+        if (diff === -1) return `Вчера, ${t || '00:00'}`;
+        return fmtNum(d);
+    }
+    const fmtStampFull = (s) => s ? `${fmtNum(s.split('T')[0])}, ${s.split('T')[1] || '00:00'}` : '—';
+    const canEdit = (p) => R().can.write && R().scope(p);
+    const stageLabelOf = (occ) => occ.stage === 'appointment' && occ.events.length && occ.events[occ.events.length - 1].actualDate ? 'Приём врача' : STAGE_NAME(occ.stage);
+    const touch = (p) => { p.updatedAt = nowStamp(); D.helpers.derive(p); };
+    const daysUntil = (iso) => iso ? Math.floor((parse(iso) - parse(D.today)) / 86400000) : null;
+
+    // buildTimelineNodes приложения: совпадения с шаблоном маршрута, остальное — «(доп.)».
+    function timelineNodes(p) {
+        const nodes = []; let ti = 0; const last = p.history.length - 1;
+        p.history.forEach((occ, i) => {
+            const match = ti < D.STAGE_ORDER.length && occ.stage === D.STAGE_ORDER[ti];
+            nodes.push({ stage: occ.stage, status: i === last ? 'current' : 'done', extra: !match, occIndex: i });
+            if (match) ti++;
+        });
+        if (p.history.length && D.TERMINAL.includes(p.history[last].stage)) return nodes;
+        for (let j = ti; j < D.STAGE_ORDER.length; j++) nodes.push({ stage: D.STAGE_ORDER[j], status: 'future', templateIndex: j, isNext: j === ti });
+        return nodes;
+    }
+    // getStageDeadline: рабочие дни от фактической даты предыдущего этапа × коэффициент приоритета.
+    function effectiveDate(occ) {
+        if (!occ) return null;
+        for (let i = occ.events.length - 1; i >= 0; i--) if (occ.events[i].actualDate) return parse(occ.events[i].actualDate);
+        return occ.enteredAt ? parse(occ.enteredAt.split('T')[0]) : null;
+    }
+    function addWorkingDays(start, days) {
+        const d = new Date(start); const total = Math.max(1, Math.round(days)); let n = 0;
+        while (n < total) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n++; }
+        return d;
+    }
+    function stageDeadline(p, stage) {
+        const ref = (window.NOSOLOGY_REF || {})[p.nosology];
+        if (!ref) return null;
+        const factor = p.priority === 'urgent' ? 0.5 : p.priority === 'high' ? 0.7 : 1;
+        const base = stage === 'appointment' ? p.history.find(o => o.stage === 'primary-appointment') : stage === 'consult' ? p.history.find(o => o.stage === 'appointment') : null;
+        const start = effectiveDate(base);
+        if (!start) return null;
+        return addWorkingDays(start, (stage === 'appointment' ? ref.stage1Days : ref.stage2Standard) * factor);
+    }
+    const fmtD = (d) => `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()}`;
+    const dateChipText = (days, time) => days === null ? 'дата не установлена' : days < 0 ? `просрочено ${-days} дн.${time ? ' ' + time : ''}` : days === 0 ? `сегодня${time ? ' ' + time : ''}` : `${days} дн.${time ? ' ' + time : ''}`;
+    const dateChipTone = (days) => days === null ? '' : days <= 3 ? 'tag--danger' : days <= 7 ? 'tag--warn' : 'tag--ok';
+    function eventText(ev, pending) {
+        if (ev.noPlan) return { text: `факт ${ev.actualDate || '—'}${ev.actualTime ? ' ' + ev.actualTime : ''}`, status: 'состоялось' };
+        const parts = [ev.date ? `план ${ev.date}${ev.time ? ' ' + ev.time : ''}` : 'план не указан'];
+        if (ev.actualDate) parts.push(`факт ${ev.actualDate}${ev.actualTime ? ' ' + ev.actualTime : ''}`);
+        if (ev.treatmentType) parts.push(D.EVENT_TREATMENT[ev.treatmentType] || ev.treatmentType);
+        if (ev.consiliumDecision) parts.push(`Решение: ${D.DECISIONS[ev.consiliumDecision]}`);
+        return { text: parts.join(' · '), status: ev.actualDate ? (ev.matchedPlan ? 'состоялось по плану' : 'состоялось с отклонением') : (pending ? 'ожидается' : 'без отметки') };
+    }
+    const statusChip = (p) => p.stage === 'completed' ? html`<span class="tag tag--ok">Завершил лечение</span>`
+        : p.stage === 'dispensary-observation' ? html`<span class="tag tag--ok">Диспансерное наблюдение</span>`
+        : p.stage === 'diagnosis-not-confirmed' ? html`<span class="tag">Диагноз не подтверждён</span>`
+        : ['treatment', 'treatment-prep'].includes(p.stage) ? html`<span class="tag tag--accent">На лечении</span>`
+        : html`<span class="tag tag--accent">В процессе обследования</span>`;
+    const progress = (p) => D.TERMINAL.includes(p.stage) ? 100 : Math.round((stageIdx(p.stage) + 1) / D.STAGE_ORDER.length * 100);
+
+    // generateSummary приложения — тот же текст и порядок строк.
+    function summaryText(p) {
+        const L = [`Пациент: ${p.name}, ${p.age} лет.`, `Номер полиса ОМС: ${p.policy || 'не указан'}.`, `Диагноз (МКБ-10): ${p.icd || 'не указан'}.`];
+        const ref = (window.NOSOLOGY_REF || {})[p.nosology];
+        if (ref) L.push(`Локализация/клиентский путь: ${ref.label}.`);
+        L.push(`Приоритет: ${D.PRIORITY[p.priority]}.`, `Заведующий: ${p.head || 'не указан'}.`, `Лечащий врач: ${p.doctor || 'не указан'}.`, '', `Текущий этап: ${stageLabelOf(p.history[p.history.length - 1])}.`, '', 'Хронология:');
+        let prev = null;
+        p.history.forEach((occ, i) => {
+            const eff = effectiveDate(occ);
+            const dur = prev && eff ? ` (по фактическим датам: ${Math.round((eff - prev) / 86400000)} дн. от предыдущего этапа)` : '';
+            L.push(`${i + 1}. ${stageLabelOf(occ)} — статус проставлен ${fmtStampFull(occ.enteredAt)}${dur}`);
+            if (occ.note) L.push(`   Примечание: ${occ.note}`);
+            occ.events.forEach((ev, idx) => {
+                const { text, status } = eventText(ev, i === p.history.length - 1 && idx === occ.events.length - 1 && !ev.actualDate);
+                L.push(`${occ.events.length > 1 ? `   – событие ${idx + 1}: ` : '   – '}${text} — ${status}`);
+                if (ev.consiliumDecision) L.push(`     ОК — Решение: ${D.DECISIONS[ev.consiliumDecision]}`);
+            });
+            if (eff) prev = eff;
+        });
+        const left = timelineNodes(p).filter(n => n.status === 'future').length;
+        L.push('', left > 0 ? `Осталось этапов: ${left}.` : 'Лечение завершено, дальнейших этапов нет.');
+        return L.join('\n');
+    }
+
+    // Состояния демонстрации внутри вкладки: загрузка, пусто (тексты приложения), ошибка.
+    const tabState = (body, emptyText, rows = 5) => {
+        if (S.demo === 'loading') return html`<div class="skeleton" aria-busy="true" aria-label="Загрузка">${Array.from({ length: rows }, () => html`<span></span>`)}</div>`;
+        if (S.demo === 'error') return html`<div class="error" role="alert"><div class="error__title">Не удалось загрузить данные</div><div>Сервер не ответил. Повторите попытку.</div><button class="btn btn--sm" data-action="retry">Повторить</button></div>`;
+        if (S.demo === 'empty') return html`<div class="empty"><div class="empty__title">${emptyText}</div></div>`;
+        return body;
+    };
+
+    function viewPatient(id, params) {
+        const p = patient(id);
+        if (!p || !R().scope(p)) return html`${pagehead('Карточка недоступна', '')}<section class="panel"><div class="error"><div class="error__title">Пациент не найден или вне вашей области доступа</div><div>Сервер не отдаёт карточку пациента вне области доступа роли; удалённая карточка тоже недоступна.</div><button class="btn btn--sm" data-href="#/patients">К списку пациентов</button></div></section>`;
+        const tab = PT_TABS.some(t => t.value === params.get('tab')) ? params.get('tab') : 'overview';
+        const edit = canEdit(p);
+        const conv = convFor(p.id);
+        const openIssues = p.attentionIssues.filter(x => x.status === 'open').length;
+        const panes = { overview: ptOverview, notifications: ptNotifications, data: ptData, complaints: ptComplaints, events: ptEvents, checklist: ptChecklist, notes: ptNotes, history: ptHistory };
+        return html`
+            <nav class="crumbs" aria-label="Навигация"><a href="#/patients">Пациенты</a><span aria-hidden="true">/</span><span>${p.name}</span></nav>
+            ${edit ? html`<div class="demo-note">Демонстрация: изменения в карточке применяются только в этой вкладке браузера, не отправляются на сервер и пропадают при перезагрузке.</div>` : ''}
+            <section class="panel pcard-head">
+                <div class="ptitle">
+                    <div class="ptitle__main">
+                        <span class="avatar avatar--lg avatar--${p.priority}" aria-hidden="true">${initials(p.name)}</span>
+                        <div class="ptitle__text">
+                            <h1 class="ptitle__name">${p.name}</h1>
+                            <div class="facts"><span><b>${p.age}</b> лет · приоритет: <b>${D.PRIORITY[p.priority]}</b></span><span class="mono">${p.phone}</span><span>Полис ОМС: <b class="mono">${p.policy || 'Не указан'}</b></span><span>Диагноз <b class="mono">${p.icd}</b> · ${p.nosologyLabel}</span></div>
+                            <div class="ptitle__chips">${statusChip(p)}${openIssues ? html`<span class="tag tag--warn">Требует внимания${openIssues > 1 ? ` · ${openIssues}` : ''}</span>` : ''}${edit ? '' : html`<span class="tag">Режим просмотра</span>`}</div>
+                        </div>
+                    </div>
+                    <div class="pagehead__actions">
+                        ${conv ? html`<a class="btn" href="#/messages/${conv.id}?back=patient/${p.id}">${icon('messages')}<span>Переписка с пациентом</span>${conv.unread ? html`<span class="msg-badge" aria-label="Непрочитанных: ${conv.unread}">${conv.unread}</span>` : ''}</a>` : ''}
+                        <button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить помощника по пациенту: ${p.name}">Спросить помощника</button>
+                        <button class="btn btn--ghost" data-pt="copy" data-id="${p.id}">Скопировать сводку</button>
+                        ${R().perms.deletePatients ? html`<button class="btn btn--danger" data-pt="delete" data-id="${p.id}">Удалить пациента</button>` : ''}
+                    </div>
+                </div>
+                ${ptTimeline(p, edit)}
+            </section>
+            <div class="grid grid--main-side pcard">
+                <div class="pcard__main panel">
+                    ${tabsView('pt', PT_TABS, tab, 'Разделы карточки пациента')}
+                    <div class="pcard__panel" role="tabpanel" id="pt-panel" aria-labelledby="tab-pt-${tab}">${panes[tab](p, edit)}</div>
+                </div>
+                <aside class="stack">${ptSide(p, edit)}</aside>
+            </div>`;
+    }
+
+    function ptTimeline(p, edit) {
+        const sel = S.pt.sel[p.id];
+        const nodes = timelineNodes(p);
+        // В приложении для ролей просмотра все кнопки панели скрываются (applyReadOnlyToPatientView),
+        // вместе с шагами маршрута. Прототип показывает маршрут без действий — см. README.
+        return html`<ol class="tl" aria-label="Маршрут лечения">${nodes.map((n, idx) => {
+            const isNext = n.status === 'future' && n.isNext;
+            const key = n.status === 'future' ? `future:${n.templateIndex}` : `occ:${n.occIndex}`;
+            const label = (n.occIndex !== undefined ? stageLabelOf(p.history[n.occIndex]) : STAGE_NAME(n.stage)) + (n.extra ? ' (доп.)' : '');
+            const state = n.status === 'done' ? 'Завершён' : n.status === 'current' ? 'Текущий' : isNext ? 'Следующий' : 'Запланирован';
+            const dl = ['appointment', 'consult'].includes(n.stage) ? stageDeadline(p, n.stage) : null;
+            const inner = html`<span class="tl__mark">${n.status === 'done' ? '✓' : idx + 1}</span><span class="tl__label">${label}</span><span class="tl__state">${state}</span>${dl ? html`<span class="tl__deadline">до ${fmtD(dl)}</span>` : ''}`;
+            const cls = `tl__step tl__step--${n.status === 'future' ? (isNext ? 'next' : 'future') : n.status} ${sel === key ? 'is-selected' : ''}`;
+            return html`<li>${edit
+                ? html`<button type="button" class="${cls}" data-pt="${isNext ? 'next-node' : 'node'}" data-id="${p.id}" data-key="${key}" data-stage="${n.stage}" aria-label="${STAGE_NAME(n.stage)}: ${state}. ${isNext ? 'Перевести пациента на этот этап' : 'Показать даты этапа'}">${inner}</button>`
+                : html`<div class="${cls}">${inner}</div>`}</li>`;
+        })}</ol>`;
+    }
+
+    function ptSide(p, edit) {
+        const nodes = timelineNodes(p);
+        const next = nodes.find(n => n.status === 'future' && n.isNext);
+        const open = p.attentionIssues.filter(x => x.status === 'open').length;
+        const cons = S.consilium.filter(c => c.patientId === p.id);
+        const act = (stage, label, cls = 'btn', decision = '') => html`<button class="${cls}" data-pt="advance" data-id="${p.id}" data-stage="${stage}" data-decision="${decision}">${label}</button>`;
+        return html`
+            <section class="panel"><div class="panel__head"><h2 class="panel__title">Этап лечения</h2></div>
+                <div class="panel__body pside">
+                    <div class="pside__value">${stageLabelOf(p.history[p.history.length - 1])}</div>
+                    <div class="progress"><progress max="100" value="${progress(p)}" aria-label="Пройдено этапов маршрута"></progress><span class="mono">${progress(p)}%</span></div>
+                    ${edit ? html`<div class="pside__actions">
+                        ${next && p.stage !== 'consult' ? act(next.stage, `Перевести: ${STAGE_NAME(next.stage)}`, 'btn btn--primary') : ''}
+                        ${p.stage === 'appointment' ? act('exam', 'Дополнительное обследование', 'btn btn--ghost') : ''}
+                        ${p.stage === 'consult' ? html`<p class="demo-hint">Решение ОК здесь — отметка при переводе этапа, не подписанное решение консилиума.</p>${act('treatment-prep', 'Определение тактики лечения', 'btn btn--primary', 'treatment_strategy_defined')}${act('treatment-prep', 'Изменение тактики лечения', 'btn', 'treatment_strategy_changed')}${act('exam', 'Направить на дообследование', 'btn')}${act('dispensary-observation', 'Диспансерное наблюдение', 'btn', 'dispensary_observation')}` : ''}
+                        ${['exam', 'appointment', 'consult'].includes(p.stage) ? act('diagnosis-not-confirmed', 'Диагноз не подтверждён', 'btn btn--ghost') : ''}
+                    </div>` : ''}
+                </div></section>
+            <section class="panel"><div class="panel__head"><h2 class="panel__title">Контроль внимания</h2></div>
+                <div class="panel__body pside">
+                    ${open ? html`<span class="tag tag--warn">Требует внимания${open > 1 ? ` · ${open}` : ''}</span>` : html`<div class="muted">Пациент не отмечен как требующий внимания</div>`}
+                    ${edit ? html`<div><button class="btn btn--sm" data-pt="attention-add" data-id="${p.id}">Добавить проблему</button></div>` : html`<div class="muted">${READONLY_TEXT}</div>`}
+                </div></section>
+            <section class="panel"><div class="panel__head"><h2 class="panel__title">Ответственные</h2></div>
+                <div class="panel__body pside">
+                    <div class="pside__value">${p.doctorFull || p.doctor || 'Врач не указан'}</div>
+                    ${p.doctorId ? '' : html`<div class="muted">Учётная запись врача не сопоставлена</div>`}
+                    <div class="muted">${p.head ? `Заведующий: ${p.head}` : 'Заведующий не указан'}</div>
+                    ${R().perms.changeTreatingDoctor ? html`<div><button class="btn btn--sm btn--ghost" data-pt="doctor" data-id="${p.id}">Сменить лечащего врача</button></div>` : ''}
+                </div></section>
+            <section class="panel"><div class="panel__head"><h2 class="panel__title">Последняя активность</h2></div>
+                <div class="panel__body pside"><div class="pside__value">${fmtStamp(p.updatedAt || p.history[p.history.length - 1].enteredAt)}</div><div class="muted">Добавлен ${fmtStamp(p.createdAt)}</div></div></section>
+            <section class="panel"><div class="panel__head"><h2 class="panel__title">Онкологический консилиум</h2><span class="tag">Предложение</span></div>
+                <div class="panel__body pside">
+                    <div class="muted">В действующей карточке этого блока нет: записи ведутся в разделе «Консилиум», решение ОК фиксируется при переводе с этапа «Направлен на ОК».</div>
+                    ${cons.length ? cons.map(c => html`<div class="pside__cons"><div>${fmtNum(c.date)}, <span class="mono">${c.time}</span> · ${D.GROUPS[c.group]}</div><div>${consTag(c)}</div>${c.status === 'signed' ? html`<div class="muted">${D.TREATMENTS[c.treatment]}${c.scheme ? ` · ${c.scheme.name}` : ''}</div>` : ''}</div>`) : html`<div class="muted">Записей на консилиум нет.</div>`}
+                    ${R().can.consilium ? html`<div><button class="btn btn--sm btn--ghost" data-href="#/consilium">Открыть раздел «Консилиум»</button></div>` : ''}
+                </div></section>`;
+    }
+
+    const issueNode = (p, x, writable) => html`<li class="issue ${x.reasonCode === 'emergency_hospitalization' ? 'issue--emergency' : ''}">
+        <div class="issue__head"><b>${D.ATTENTION_REASONS[x.reasonCode] || 'Причина не указана'}</b><span class="tag ${x.status === 'open' ? 'tag--warn' : ''}">${x.status === 'open' ? 'Открыта' : 'Закрыта'}</span></div>
+        ${x.eventDate ? html`<div class="muted">Дата события: ${x.eventDate}</div>` : ''}
+        <div class="muted">Добавил: ${x.createdByName || 'Сотрудник'} · ${fmtStamp(x.createdAt)}</div>
+        ${x.comment ? html`<p class="issue__comment">${x.comment}</p>` : ''}
+        ${x.status === 'closed' ? html`<div class="muted">Закрыта: ${x.closedByName || 'Сотрудник'} · ${fmtStamp(x.closedAt)}</div>${x.resolutionComment ? html`<p class="issue__comment">${x.resolutionComment}</p>` : ''}` : ''}
+        ${x.status === 'open' && writable ? html`<div><button class="btn btn--sm btn--ghost" data-pt="attention-close" data-id="${p.id}" data-issue="${x.id}">Закрыть</button></div>` : ''}
+    </li>`;
+
+    function feedEntries(p) {
+        const out = [];
+        p.history.forEach(occ => {
+            out.push({ at: occ.enteredAt, tone: 'info', title: 'Изменение этапа', text: `Пациент переведён на этап: ${stageLabelOf(occ)}` });
+            occ.events.forEach(ev => {
+                const { text } = eventText(ev, false);
+                if (ev.actualDate) out.push({ at: ev.setAt || `${ev.actualDate}T${ev.actualTime || '00:00'}`, tone: ev.matchedPlan === false ? 'warn' : 'ok', title: 'Событие состоялось', text: `${stageLabelOf(occ)}: ${text}` });
+                else if (ev.date) out.push({ at: ev.setAt || occ.enteredAt, tone: 'info', title: 'Запланировано событие', text: `${stageLabelOf(occ)}: ${text}` });
+            });
+            if (occ.note) out.push({ at: occ.enteredAt, tone: 'warn', title: 'Заметка', text: occ.note });
+        });
+        p.diagnosisHistory.forEach(d => out.push({ at: d.changedAt, tone: 'info', title: 'Изменение диагноза', text: `${d.oldDiagnosis || 'не указан'} → ${d.newDiagnosis || 'не указан'}` }));
+        return out.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 12);
+    }
+
+    function ptOverview(p, edit) {
+        const active = p.attentionIssues.filter(x => x.status === 'open'), closed = p.attentionIssues.filter(x => x.status === 'closed');
+        const feed = feedEntries(p);
+        const fields = [['ФИО', p.name], ['Телефон', p.phone], ['Номер полиса ОМС', p.policy], ['Диагноз', p.icd], ['Текущий этап', p.stage], ['Лечащий врач', p.doctorId]];
+        const missing = fields.filter(f => !f[1]).map(f => f[0]);
+        const score = Math.round((fields.length - missing.length) / fields.length * 100);
+        // Тексты правил — из services/data_quality.py; смоделированы только эти два.
+        const findings = [
+            !p.doctorId && ['Не назначен лечащий врач', 'Пациент не сопоставлен с учётной записью лечащего врача; для врачей и заведующих такая запись не входит в scope.'],
+            !p.policy && ['Не указан номер полиса ОМС', 'Номер полиса ОМС повышает полноту регистрационной карточки.'],
+        ].filter(Boolean);
+        const cur = p.history[p.history.length - 1];
+        const cl = D.helpers.checklistFor(p.nosology, cur.stage);
+        const ref = (window.NOSOLOGY_REF || {})[p.nosology];
+        return html`<div class="pt-stack">
+            <section class="pt-block ${active.length ? 'pt-block--attention' : ''}">
+                <div class="pt-block__head"><h2 class="pt-block__title">Требует внимания</h2>${edit ? html`<button class="btn btn--sm btn--ghost" data-pt="attention-add" data-id="${p.id}">Добавить проблему</button>` : ''}</div>
+                ${S.demo === 'error' ? html`<div class="muted" role="alert">Не удалось загрузить отметки внимания: сервер не ответил.</div>`
+                : S.demo === 'loading' ? html`<div class="muted">Загрузка…</div>`
+                : html`${active.length && S.demo !== 'empty' ? html`<ul class="issues">${active.map(x => issueNode(p, x, edit))}</ul>` : html`<div class="muted">Пациент не отмечен как требующий внимания</div>`}
+                    ${closed.length && S.demo !== 'empty' ? html`<details class="pt-details"><summary>История внимания · ${closed.length}</summary><ul class="issues">${closed.map(x => issueNode(p, x, false))}</ul></details>` : ''}`}
+            </section>
+            <section class="pt-block"><div class="pt-block__head"><h2 class="pt-block__title">Лента событий</h2></div>
+                ${tabState(html`<ul class="feed feed--flush">${feed.map(e => html`<li><span class="feed__date">${fmtNum(e.at.split('T')[0])}<br><span class="muted">${e.at.split('T')[1] || ''}</span></span><div><div class="feed__title">${e.title}</div><div class="muted">${e.text}</div></div><span class="status status--${e.tone}"></span></li>`)}</ul>`, 'Событий пока нет — они появятся после первых отметок дат.', 4)}
+            </section>
+            <div class="grid grid--2">
+                <section class="pt-block"><div class="pt-block__head"><h2 class="pt-block__title">Качество данных</h2></div>
+                    ${S.demo === 'loading' ? html`<div class="muted">Загрузка…</div>` : S.demo === 'error' ? html`<div class="muted" role="alert">Не удалось загрузить качество данных.</div>` : html`
+                    <div class="quality"><span class="quality__value">${score}%</span><span class="muted">Заполненность обязательных полей</span></div>
+                    <p class="muted">${missing.length ? `Не заполнено: ${missing.join(', ')}.` : 'Обязательные поля заполнены.'}</p>
+                    ${findings.length ? findings.map(f => html`<div class="finding"><span class="tag tag--danger">Проблема</span><div class="finding__title">${f[0]}</div><div class="muted">${f[1]}</div></div>`) : html`<div class="muted">По действующим правилам качества проблем не обнаружено.</div>`}
+                    <p class="demo-hint">В прототипе посчитаны только заполненность, лечащий врач и полис; остальные правила качества работают на сервере.</p>`}
+                </section>
+                <section class="pt-block"><div class="pt-block__head"><h2 class="pt-block__title">Чек-лист этапа</h2>${cl.required.length ? html`<span class="muted">${cl.required.filter(n => cur.checklist[n]).length} из ${cl.required.length}</span>` : ''}</div>
+                    ${!ref ? html`<div class="muted">Чек-лист доступен после указания профиля клиентского пути.</div>` : !cl.required.length ? html`<div class="muted">Для текущего этапа чек-лист не предусмотрен.</div>` : html`
+                    <ul class="mini-check">${cl.required.slice(0, 5).map(n => html`<li class="${cur.checklist[n] ? 'is-done' : ''}">${cur.checklist[n] ? '✓' : '○'} ${n}</li>`)}</ul>
+                    <button class="btn btn--sm btn--ghost" data-pt="tab" data-id="${p.id}" data-tab="checklist">Открыть полный чек-лист</button>`}
+                </section>
+            </div>
+            <section class="pt-block"><div class="pt-block__head"><h2 class="pt-block__title">Сводка для отчётности</h2></div>
+                ${tabState(html`<pre class="summary">${summaryText(p)}</pre>`, 'Этапов пока нет.', 6)}</section>
+        </div>`;
+    }
+
+    function ptNotifications(p, edit) {
+        const n = p.notifications;
+        const tpl = D.SMS_TEMPLATES;
+        const upcoming = n.items.filter(x => x.status === 'pending').sort((a, b) => a.scheduledAt.localeCompare(b.scheduledAt))[0];
+        const def = new Date(Date.now() + 3600000);
+        const defVal = `${D.today}T${pad2(def.getHours())}:${pad2(def.getMinutes())}`;
+        return html`<div class="pt-stack">
+            <h2 class="pt-block__title">Уведомления</h2>
+            <div class="callout callout--info callout--flush"><div class="callout__title">Тестовый режим: реальные SMS не отправляются</div><div class="callout__text">В прототипе уведомления не создаются на сервере и не отправляются; история ниже — синтетическая.</div></div>
+            ${tabState(html`
+            <div class="pt-facts"><div>${n.smsEnabled ? 'SMS включены' : 'SMS выключены'}</div><div>${CONSENT_LABEL[n.consent]}</div>
+                ${n.consentAt ? html`<div>Дата фиксации: ${fmtStamp(n.consentAt)}</div>` : ''}${n.consentBy ? html`<div>Зафиксировал: ${n.consentBy}</div>` : ''}
+                ${upcoming ? html`<div>Ближайшее уведомление: ${fmtStamp(upcoming.scheduledAt)}</div>` : ''}</div>
+            ${edit ? html`
+                <div class="kit-row"><button class="btn btn--sm btn--ghost" data-pt="consent" data-id="${p.id}" data-v="granted">Зафиксировать согласие</button>
+                    <button class="btn btn--sm btn--ghost" data-pt="consent" data-id="${p.id}" data-v="revoked" ${raw(n.consent !== 'granted' ? 'disabled' : '')} title="${n.consent !== 'granted' ? 'Согласие ещё не получено' : 'Ожидающие уведомления будут отменены'}">Отозвать согласие</button></div>
+                <div class="form__row">
+                    <div class="field"><label class="field__label" for="smsTpl">Шаблон</label><select class="select" id="smsTpl" data-sms-preview>${tpl.map(t => html`<option value="${t.code}">${t.name}</option>`)}</select></div>
+                    <div class="field"><label class="field__label" for="smsAt">Дата и время отправки</label><input class="input" type="datetime-local" id="smsAt" value="${defVal}" data-sms-preview></div>
+                </div>
+                <div class="field"><label class="field__label" for="smsPreview">Предварительный просмотр</label><textarea class="textarea" id="smsPreview" rows="3" readonly>${smsPreview(tpl[0].code, defVal)}</textarea>
+                    <p class="field__hint">Свободный текст недоступен: используется только утверждённый шаблон.</p></div>
+                <div><button class="btn btn--primary" data-pt="sms-create" data-id="${p.id}">Создать напоминание</button></div>`
+            : html`<p class="muted">${READONLY_TEXT}</p>`}
+            <h3 class="pt-block__title">История уведомлений</h3>
+            ${n.items.length ? html`<ul class="sms-list">${n.items.slice().sort((a, b) => b.scheduledAt.localeCompare(a.scheduledAt)).map(x => html`<li><div><div class="cell-title">${(tpl.find(t => t.code === x.template) || {}).name || x.template}</div><div class="muted">${fmtStamp(x.scheduledAt)} · ${SMS_SOURCE[x.source]}</div><div class="muted">${SMS_REASON[x.reason] || x.reason || '—'}</div></div><span class="tag ${SMS_STATUS[x.status][1]}">${SMS_STATUS[x.status][0]}</span></li>`)}</ul>` : html`<div class="muted">Уведомления ещё не создавались.</div>`}
+            `, 'Уведомления ещё не создавались.')}
+        </div>`;
+    }
+    function smsPreview(code, at) {
+        const t = D.SMS_TEMPLATES.find(x => x.code === code) || D.SMS_TEMPLATES[0];
+        const [d, tm] = (at || '').split('T');
+        return t.body.replaceAll('{date}', d ? fmtNum(d) : 'дата').replaceAll('{time}', tm || 'время');
+    }
+
+    function ptData(p, edit) {
+        const dis = raw(edit ? '' : 'disabled');
+        const heads = [...new Set([...Object.values(D.HEADS), p.head].filter(Boolean))];
+        return tabState(html`<form class="form pt-form" novalidate data-pt-form="${p.id}">
+            <fieldset class="pt-fieldset"><legend class="form__section">Личные данные</legend>
+                <div class="field"><label class="field__label" for="pfName">ФИО</label><input class="input" id="pfName" data-pf="name" value="${p.name}" ${dis}></div>
+                <div class="form__row"><div class="field"><label class="field__label" for="pfAge">Возраст</label><input class="input" id="pfAge" type="number" min="0" max="150" data-pf="age" value="${p.age}" ${dis}></div>
+                    <div class="field"><label class="field__label" for="pfPhone">Телефон</label><input class="input" id="pfPhone" type="tel" data-pf="phone" value="${p.phone}" ${dis}></div></div>
+                <div class="field"><label class="field__label" for="pfPolicy">Номер полиса ОМС</label><input class="input mono" id="pfPolicy" data-pf="policy" value="${p.policy}" ${dis}></div>
+            </fieldset>
+            <fieldset class="pt-fieldset"><legend class="form__section">Медицинская информация</legend>
+                ${edit ? html`<div class="form__row"><div class="field"><label class="field__label" for="pfLoc">Локализация</label><select class="select" id="pfLoc"><option value="">Любая</option>${Object.entries(window.ICD10 || {}).map(([k, v]) => html`<option value="${k}">${v.label}</option>`)}</select></div>
+                    ${icdField({ id: 'pfIcd', label: `Диагноз — сейчас ${p.icd}`, locSelectId: 'pfLoc' })}</div>
+                    <p class="field__hint">Локализация ограничивает список диагнозов; клиентский путь определяется автоматически. В прототипе клиентский путь при смене диагноза не пересчитывается.</p>`
+                : html`<div class="field"><span class="field__label">Диагноз</span><input class="input" value="${p.icd} · ${p.nosologyLabel}" disabled aria-label="Диагноз"></div>`}
+                <div class="form__row"><div class="field"><label class="field__label" for="pfPgi">Результат ПГИ</label><select class="select" id="pfPgi" data-pgi ${dis}>${Object.entries(D.PGI).map(([k, v]) => html`<option value="${k}" ${raw(p.pgiResult === k ? 'selected' : '')}>${v}</option>`)}</select></div>
+                    <div class="field"><label class="field__label" for="pfPgiDate">Дата результата ПГИ</label><input class="input" type="date" id="pfPgiDate" data-pgi value="${p.pgiResultDate}" ${dis} aria-describedby="pfPgiHint"></div></div>
+                <p class="field__hint" id="pfPgiHint">Не переводит маршрут автоматически.</p>
+            </fieldset>
+            <fieldset class="pt-fieldset"><legend class="form__section">Классификация и ответственные</legend>
+                <div class="form__row"><div class="field"><label class="field__label" for="pfPriority">Приоритет</label><select class="select" id="pfPriority" data-pf="priority" ${dis}>${Object.entries(D.PRIORITY).map(([k, v]) => html`<option value="${k}" ${raw(p.priority === k ? 'selected' : '')}>${v}</option>`)}</select></div>
+                    <div class="field"><label class="field__label" for="pfDoctor">Лечащий врач</label><input class="input" id="pfDoctor" value="${p.doctorFull || p.doctor || ''}" disabled aria-label="Лечащий врач (изменяется Разработчиком)"></div></div>
+                <div class="field"><label class="field__label" for="pfHead">Заведующий</label><select class="select" id="pfHead" data-pf="head" ${dis}><option value="" ${raw(p.head ? '' : 'selected')}>Не указан</option>${heads.map(h => html`<option ${raw(p.head === h ? 'selected' : '')}>${h}</option>`)}</select></div>
+            </fieldset>
+            ${edit ? html`<p class="demo-hint">Поля применяются при выходе из поля — как в приложении, но только в этой вкладке; сервер не вызывается.</p>` : html`<p class="muted">${READONLY_TEXT}</p>`}
+        </form>`, 'Этапов пока нет.');
+    }
+
+    function ptComplaints(p, edit) {
+        return tabState(html`<div class="pt-stack"><h2 class="pt-block__title">Комментарии</h2>
+            <textarea class="textarea" rows="10" aria-label="Комментарии" data-pf="complaint" ${raw(edit ? '' : 'disabled')}>${p.complaint}</textarea>
+            <p class="field__hint">${edit ? 'В приложении изменения сохраняются на сервере при выходе из поля. В прототипе — только в этой вкладке.' : READONLY_TEXT}</p></div>`, 'Комментариев нет.');
+    }
+
+    const noteField = (p, i, note, edit) => html`<div class="field"><label class="field__label" for="note-${i}">Примечание к этапу</label><textarea class="textarea" id="note-${i}" rows="3" placeholder="Свободный комментарий по этому этапу…" data-note="${i}" ${raw(edit ? '' : 'disabled')}>${note}</textarea></div>`;
+
+    function ptEvents(p, edit) {
+        if (S.demo !== 'ok') return tabState('', 'Этапов пока нет.');
+        const sel = S.pt.sel[p.id];
+        if (sel && sel.startsWith('future:')) {
+            const stage = D.STAGE_ORDER[Number(sel.split(':')[1])];
+            return html`<div class="pt-stack"><h2 class="pt-block__title">${STAGE_NAME(stage)}</h2>
+                <p class="field__hint">Этап ещё не наступил. Для перехода отметьте фактические данные текущего события.</p>
+                ${edit ? html`<div><button class="btn btn--primary" data-pt="advance" data-id="${p.id}" data-stage="${stage}" data-decision="">Перевести пациента на этот этап</button></div>` : ''}</div>`;
+        }
+        const i = sel && sel.startsWith('occ:') ? Number(sel.split(':')[1]) : p.history.length - 1;
+        const occ = p.history[i];
+        if (!occ) return html`<div class="muted">Этапов пока нет.</div>`;
+        const dis = raw(edit ? '' : 'disabled');
+        const evInput = (j, f, type, val, label) => html`<input class="input" type="${type}" value="${val || ''}" aria-label="${label}" data-ev="${i}:${j}:${f}" ${dis}>`;
+        const pickHint = p.history.length > 1 ? html`<p class="muted">Выберите этап на маршруте выше, чтобы открыть его даты.</p>` : '';
+        if (occ.stage === 'primary-appointment') {
+            const ev = occ.events[0] || { actualDate: '', actualTime: '' };
+            return html`<div class="pt-stack">${pickHint}<h2 class="pt-block__title">Первичный приём — фактические дата и время</h2>
+                ${!ev.actualDate ? html`<div class="callout callout--danger callout--flush"><div class="callout__text">Дата фактического первичного приёма не заполнена — это обязательное поле.</div></div>` : ''}
+                <div class="evcard"><div class="form__row">${evInput(0, 'actualDate', 'date', ev.actualDate, 'Фактическая дата')}${evInput(0, 'actualTime', 'time', ev.actualTime, 'Фактическое время')}</div></div>
+                ${noteField(p, i, occ.note, edit)}</div>`;
+        }
+        if (!SCHEDULE_LABEL[occ.stage]) return html`<div class="pt-stack">${pickHint}<p class="muted">Для завершённого лечения плановые даты не заполняются.</p>${noteField(p, i, occ.note, edit)}</div>`;
+        const evs = occ.events, isCur = i === p.history.length - 1, showType = ['treatment', 'treatment-prep'].includes(occ.stage);
+        const warning = !evs.length ? `Дата ${SCHEDULE_LABEL[occ.stage]} не заполнена.` : showType && !evs[evs.length - 1].treatmentType ? 'Тип лечения не указан.' : '';
+        let deadline = '';
+        if (['appointment', 'consult'].includes(occ.stage)) {
+            const dl = stageDeadline(p, occ.stage);
+            if (dl) {
+                const last = evs[evs.length - 1], check = last ? (last.actualDate || last.date) : null;
+                const over = check && parse(check) > dl;
+                const label = window.NOSOLOGY_REF[p.nosology].label;
+                deadline = html`<div class="callout ${over ? 'callout--danger' : 'callout--warn'} callout--flush"><div class="callout__text">${over ? `Регламентный срок нарушен: событие должно было состояться не позднее ${fmtD(dl)} (${label}).` : `Регламентный срок: не позднее ${fmtD(dl)} (${label}${p.priority !== 'normal' ? ', приоритет учтён' : ''}).`}</div></div>`;
+            }
+        }
+        return html`<div class="pt-stack">${pickHint}<h2 class="pt-block__title">Плановые и фактические даты — ${STAGE_NAME(occ.stage)}</h2>
+            ${deadline}${warning ? html`<div class="callout callout--danger callout--flush"><div class="callout__text">${warning}</div></div>` : ''}
+            ${evs.map((ev, j) => {
+                const pending = isCur && j === evs.length - 1 && !ev.actualDate;
+                const st = !pending && ev.actualDate ? html`<span class="tag ${ev.matchedPlan === false ? 'tag--warn' : 'tag--ok'}">${ev.matchedPlan === false ? 'Состоялось с отклонением' : 'Состоялось по плану'}</span>`
+                    : pending && ev.date ? html`<span class="tag ${dateChipTone(daysUntil(ev.date))}">${dateChipText(daysUntil(ev.date), ev.time)}</span>` : '';
+                return html`<div class="evcard">
+                    <div class="evcard__head"><span class="evcard__title">${evs.length > 1 ? `Событие ${j + 1}` : 'Дата события'}</span>${st}
+                        ${edit ? html`<button type="button" class="iconbtn" data-pt="event-delete" data-id="${p.id}" data-occ="${i}" data-ev="${j}" aria-label="Удалить событие ${j + 1}" title="Удалить событие"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg></button>` : ''}</div>
+                    ${ev.consiliumDecision ? html`<div class="evcard__group"><div class="evcard__legend">ОК</div><span class="tag tag--accent">Решение: ${D.DECISIONS[ev.consiliumDecision]}</span><p class="demo-hint">Отметка при переводе этапа (как в приложении), а не подписанное решение консилиума.</p></div>` : ''}
+                    <div class="evcard__group"><div class="evcard__legend">План</div><div class="form__row">${evInput(j, 'date', 'date', ev.date, 'Плановая дата')}${evInput(j, 'time', 'time', ev.time, 'Плановое время')}</div></div>
+                    <div class="evcard__group"><div class="evcard__legend">${occ.stage === 'appointment' ? 'Факт (заполните после приёма)' : 'Факт'}</div><div class="form__row">${evInput(j, 'actualDate', 'date', ev.actualDate, 'Фактическая дата')}${evInput(j, 'actualTime', 'time', ev.actualTime, 'Фактическое время')}</div></div>
+                    ${showType ? html`<div class="evcard__group"><div class="evcard__legend">Тип лечения</div><select class="select" aria-label="Тип лечения" data-ev="${i}:${j}:treatmentType" ${dis}><option value="">Не указан</option>${Object.entries(D.EVENT_TREATMENT).map(([k, v]) => html`<option value="${k}" ${raw(ev.treatmentType === k ? 'selected' : '')}>${v}</option>`)}</select></div>` : ''}
+                </div>`;
+            })}
+            ${edit ? html`<div><button class="btn btn--ghost" data-pt="event-add" data-id="${p.id}" data-occ="${i}">+ ${ADD_EVENT_LABEL[occ.stage]}</button></div>` : ''}
+            ${noteField(p, i, occ.note, edit)}</div>`;
+    }
+
+    function ptChecklist(p, edit) {
+        const i = p.history.length - 1, occ = p.history[i];
+        const ref = (window.NOSOLOGY_REF || {})[p.nosology];
+        if (!occ || !ref) return html`<div class="muted">Чек-лист доступен после указания профиля клиентского пути.</div>`;
+        const cl = D.helpers.checklistFor(p.nosology, occ.stage);
+        if (!cl.required.length && !cl.optional.length) return tabState(html`<div class="empty"><div class="empty__title">Для текущего этапа чек-лист не предусмотрен.</div></div>`, 'Для текущего этапа чек-лист не предусмотрен.');
+        const item = (name, req, k) => html`<li class="${occ.checklist[name] ? 'is-done' : ''}"><input type="checkbox" id="cl-${k}" data-cl="${name}" ${raw(occ.checklist[name] ? 'checked' : '')} ${raw(edit ? '' : 'disabled')}><label for="cl-${k}"><span>${name}</span>${req ? html`<span class="req"> *</span>` : ''}</label></li>`;
+        return tabState(html`<div class="pt-stack">
+            <div class="pt-block__head"><h2 class="pt-block__title">Чек-лист: ${ref.label}</h2><span class="muted">${cl.required.filter(n => occ.checklist[n]).length} из ${cl.required.length}</span></div>
+            <ul class="checklist checklist--flush">${cl.required.map((n, k) => item(n, true, k))}</ul>
+            ${cl.optional.length ? html`<h3 class="form__section">Опционально / по показаниям</h3><ul class="checklist checklist--flush">${cl.optional.map((n, k) => item(n, false, `o${k}`))}</ul>` : ''}
+            ${edit ? '' : html`<p class="muted">${READONLY_TEXT}</p>`}</div>`, 'Для текущего этапа чек-лист не предусмотрен.');
+    }
+
+    function ptNotes(p, edit) {
+        return tabState(html`<div class="pt-stack">${p.history.map((occ, i) => html`<div class="evcard"><div class="evcard__head"><span class="evcard__title">${stageLabelOf(occ)}</span><span class="muted">${fmtStamp(occ.enteredAt)}</span></div>${noteField(p, i, occ.note, edit)}</div>`)}</div>`, 'Этапов пока нет.');
+    }
+
+    function ptHistory(p) {
+        return tabState(html`<div class="pt-stack">${p.history.map((occ, i) => {
+            const cur = i === p.history.length - 1;
+            return html`<div class="evcard"><div class="evcard__head"><span class="evcard__title">${i + 1}. ${stageLabelOf(occ)}</span>${cur ? html`<span class="tag tag--accent">Текущий этап</span>` : ''}</div>
+                <div class="muted">Статус проставлен: ${fmtStampFull(occ.enteredAt)}</div>
+                ${occ.events.length ? occ.events.map((ev, j) => { const { text, status } = eventText(ev, cur && j === occ.events.length - 1 && !ev.actualDate); return html`<div class="plan-row"><span class="mono">${text}</span><span class="tag ${ev.actualDate ? (ev.matchedPlan === false ? 'tag--warn' : 'tag--ok') : ''}">${status}</span></div>`; }) : html`<p class="muted">Плановая дата не указана.</p>`}
+                ${occ.note ? html`<div class="callout callout--warn callout--flush"><div class="callout__text">Заметка: ${occ.note}</div></div>` : ''}</div>`;
+        })}</div>`, 'История пуста.');
+    }
+
+    /* --- Действия карточки (демонстрация) --- */
+    TAB_HANDLERS.pt = (v) => {
+        const id = location.hash.slice(2).split('?')[0].split('/')[1];
+        history.replaceState(null, '', `#/patient/${id}?tab=${v}`);
+        render();
+    };
+    const openPtTab = (id, tab) => TAB_HANDLERS.pt(tab);
+
+    function promptFactDate({ title, text, date, time }) {
+        return new Promise((resolve) => {
+            S.confirmResolve = resolve;   // Esc и «Отмена» — отказ (null через settleConfirm(false))
+            openModal(modalShell(title, '', html`<p class="confirm__text">${text}</p>
+                <div class="form__row"><div class="field"><label class="field__label" for="pfdDate">Дата</label><input class="input" type="date" id="pfdDate" value="${date}" max="${D.today}"><span class="field__error" id="pfdErr" hidden>Укажите дату.</span></div>
+                <div class="field"><label class="field__label" for="pfdTime">Время</label><input class="input" type="time" id="pfdTime" value="${time}"></div></div>`,
+                html`<span class="spacer"></span><button class="btn" data-confirm="no">Отмена</button><button class="btn btn--primary" data-pt="fact-save">Сохранить</button>`));
+        });
+    }
+
+    async function changeStage(p, newStage, decision) {
+        if (p.stage === newStage) return;
+        const occ = p.history[p.history.length - 1];
+        let update = null;
+        const last = occ.events.length ? occ.events[occ.events.length - 1] : null;
+        if (!last || !last.actualDate) {
+            const lt = last || { date: '', time: '' };
+            if (!lt.date) update = { actualDate: D.today, actualTime: '', matchedPlan: null };
+            else if (lt.date === D.today) update = { actualDate: D.today, actualTime: lt.time || '', matchedPlan: true };
+            else {
+                const ans = await promptFactDate({ title: 'Фактическая дата события', text: `Плановая дата этапа «${STAGE_NAME(occ.stage)}»: ${lt.date}${lt.time ? ' ' + lt.time : ''}. Укажите фактическую дату события.`, date: D.today, time: lt.time || '' });
+                if (!ans) return;
+                update = { actualDate: ans.date, actualTime: ans.time || '', matchedPlan: ans.date === lt.date && (ans.time || '') === (lt.time || '') };
+            }
+        }
+        if (decision) update = update || { actualDate: last.actualDate, actualTime: last.actualTime, matchedPlan: last.matchedPlan };
+        if (update) {
+            if (decision) update.consiliumDecision = decision;
+            if (last) Object.assign(last, update); else occ.events.push({ date: '', time: '', noPlan: false, ...update });
+        }
+        p.history.push({ stage: newStage, enteredAt: nowStamp(), events: [], note: '', checklist: {} });
+        // Как в приложении: переход на завершающий этап отменяет ожидающие напоминания.
+        if (D.TERMINAL.includes(newStage)) p.notifications.items.forEach(x => { if (x.status === 'pending') x.status = 'cancelled'; });
+        touch(p);
+        S.pt.sel[p.id] = `occ:${p.history.length - 1}`;
+        render(); updateBell();
+        toast(`Пациент переведён: ${STAGE_NAME(newStage)}.`);
+    }
+
+    async function advance(p, stage, decision) {
+        const ok = await confirmDialog({ title: 'Перевести на следующий этап?', text: `Пациент будет переведён на этап «${STAGE_NAME(stage)}».${decision ? ` Решение ОК: ${D.DECISIONS[decision]}.` : ''}`, confirmLabel: 'Перевести', note: decision ? OK_NOTE : '' });
+        if (ok) await changeStage(p, stage, decision);
+    }
+
+    function attentionModal(p) {
+        openModal(modalShell('Добавить проблему', p.name, html`<form class="form" id="attForm" novalidate>
+            <div class="field"><label class="field__label" for="attReason">Причина <span class="req">*</span></label><select class="select" id="attReason" aria-describedby="attReasonErr"><option value="">Выберите причину</option>${Object.entries(D.ATTENTION_REASONS).map(([k, v]) => html`<option value="${k}">${v}</option>`)}</select><span class="field__error" id="attReasonErr" hidden>Выберите причину.</span></div>
+            <div class="field"><label class="field__label" for="attDate" id="attDateLabel">Дата события</label><input class="input" type="date" id="attDate" max="${D.today}" aria-describedby="attDateErr"><span class="field__error" id="attDateErr" hidden>Укажите дату события.</span></div>
+            <div class="field"><label class="field__label" for="attComment">Комментарий</label><textarea class="textarea" id="attComment" rows="4" maxlength="800"></textarea></div></form>`,
+            html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-pt="attention-save" data-id="${p.id}">Сохранить</button>`), (m) => {
+            m.querySelector('#attReason').addEventListener('change', (e) => { m.querySelector('#attDateLabel').textContent = e.target.value === 'emergency_hospitalization' ? 'Дата события *' : 'Дата события'; });
+        });
+    }
+    function attentionCloseModal(p, issueId) {
+        openModal(modalShell('Закрыть проблему', p.name, html`<div class="field"><label class="field__label" for="attResolution">Комментарий к закрытию</label><textarea class="textarea" id="attResolution" rows="4" maxlength="800"></textarea></div>`,
+            html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-pt="attention-close-save" data-id="${p.id}" data-issue="${issueId}">Закрыть</button>`));
+    }
+    const doctorHint = (id) => {
+        const d = D.DOCTORS.find(x => x.id === id);
+        if (!d) return 'Пациент попадёт в список «Несопоставленные лечащие врачи».';
+        const dep = D.DEPARTMENTS.find(x => x.id === d.dept);
+        return dep ? `Отделение врача: ${dep.name}.` : 'Врач не состоит ни в одном отделении — заведующие его пациентов не увидят.';
+    };
+    function doctorModal(p) {
+        openModal(modalShell('Сменить лечащего врача', '', html`
+            <p class="confirm__text">Текущий врач: ${p.doctorFull || 'не сопоставлен'}. Пациент: ${p.name}.</p>
+            <div class="field"><label class="field__label" for="docSelect">Новый лечащий врач</label><select class="select" id="docSelect"><option value="">— Не сопоставлен —</option>${D.DOCTORS.map(d => html`<option value="${d.id}" ${raw(d.id === p.doctorId ? 'selected' : '')}>${d.name}</option>`)}</select>
+                <span class="field__hint" id="docHint">${doctorHint(p.doctorId)}</span></div>
+            <div class="callout callout--warn callout--flush"><div class="callout__text">Область доступа изменится немедленно: прежний врач и его заведующий потеряют доступ к пациенту, новый врач и его заведующий — получат.</div></div>`,
+            html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-pt="doctor-save" data-id="${p.id}">Подтвердить смену</button>`), (m) => {
+            m.querySelector('#docSelect').addEventListener('change', (e) => { m.querySelector('#docHint').textContent = doctorHint(e.target.value); });
+        });
+    }
+
+    document.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-pt]');
+        if (!b) return;
+        const act = b.dataset.pt;
+        if (act === 'fact-save') {
+            const d = $('#pfdDate');
+            if (!d.value) { $('#pfdErr').hidden = false; d.setAttribute('aria-invalid', 'true'); d.focus(); return; }
+            const r = S.confirmResolve; S.confirmResolve = null;
+            const ans = { date: d.value, time: $('#pfdTime').value };
+            closeModal(); if (r) r(ans);
+            return;
+        }
+        const p = patient(b.dataset.id);
+        if (!p) return;
+        if (act === 'tab') { openPtTab(p.id, b.dataset.tab); return; }
+        if (act === 'copy') {
+            try { await navigator.clipboard.writeText(summaryText(p)); toast('Сводка скопирована в буфер обмена.'); }
+            catch (err) { toast('Не удалось скопировать. Текст сводки доступен во вкладке «Обзор».'); }
+            return;
+        }
+        if (!canEdit(p) && !['delete', 'doctor', 'doctor-save'].includes(act)) return;   // как сервер: запись только в своей области
+        if (act === 'node') { const k = b.dataset.key; S.pt.sel[p.id] = S.pt.sel[p.id] === k ? undefined : k; openPtTab(p.id, 'events'); return; }
+        if (act === 'next-node' || act === 'advance') { await advance(p, b.dataset.stage, b.dataset.decision || ''); return; }
+        if (act === 'attention-add') { attentionModal(p); return; }
+        if (act === 'attention-save') {
+            const reason = $('#attReason'), date = $('#attDate');
+            const badReason = !reason.value, badDate = reason.value === 'emergency_hospitalization' && !date.value;
+            setInvalid(reason, badReason); $('#attReasonErr').hidden = !badReason;
+            setInvalid(date, badDate); $('#attDateErr').hidden = !badDate;
+            if (badReason || badDate) { (badReason ? reason : date).focus(); return; }
+            p.attentionIssues.unshift({ id: `att-${Date.now()}`, reasonCode: reason.value, status: 'open', eventDate: date.value, comment: $('#attComment').value.trim(), createdByName: R().user.short, createdAt: nowStamp() });
+            touch(p); closeModal(); render(); updateBell(); toast('Проблема добавлена.');
+            return;
+        }
+        if (act === 'attention-close') { attentionCloseModal(p, b.dataset.issue); return; }
+        if (act === 'attention-close-save') {
+            const x = p.attentionIssues.find(i => i.id === b.dataset.issue);
+            Object.assign(x, { status: 'closed', closedByName: R().user.short, closedAt: nowStamp(), resolutionComment: $('#attResolution').value.trim() });
+            touch(p); closeModal(); render(); updateBell(); toast('Проблема закрыта.');
+            return;
+        }
+        if (act === 'event-add') { p.history[Number(b.dataset.occ)].events.push({ date: '', time: '', actualDate: '', actualTime: '', matchedPlan: null, noPlan: false }); touch(p); render(); return; }
+        if (act === 'event-delete') { p.history[Number(b.dataset.occ)].events.splice(Number(b.dataset.ev), 1); touch(p); render(); return; }
+        if (act === 'consent') {
+            const granted = b.dataset.v === 'granted';
+            Object.assign(p.notifications, { consent: b.dataset.v, smsEnabled: granted, consentAt: nowStamp(), consentBy: R().user.short });
+            if (!granted) p.notifications.items.forEach(x => { if (x.status === 'pending') x.status = 'cancelled'; });
+            render(); toast(granted ? 'Согласие зафиксировано.' : 'Согласие отозвано.');
+            return;
+        }
+        if (act === 'sms-create') {
+            const code = $('#smsTpl').value, at = $('#smsAt').value;
+            if (!code || !at) { toast('Укажите шаблон, дату и время отправки.'); return; }
+            const dup = p.notifications.items.some(x => x.status === 'pending' && x.template === code && x.scheduledAt === at);
+            if (!dup) p.notifications.items.push({ id: `sms-${Date.now()}`, template: code, scheduledAt: at, source: 'manual', status: 'pending', reason: '' });
+            render(); toast(dup ? 'Такое напоминание уже ожидает отправки.' : 'Напоминание создано (демо: SMS не будет отправлено).');
+            return;
+        }
+        if (act === 'delete' && R().perms.deletePatients) {
+            const ok = await confirmDialog({ title: 'Удалить пациента?', text: `Запись «${p.name}» и вся её история будут удалены безвозвратно.`, confirmLabel: 'Удалить', danger: true });
+            if (!ok) return;
+            // Как сервер: при записях консилиума карточку удалить нельзя (409).
+            if (S.consilium.some(c => c.patientId === p.id)) { toast('Не удалось удалить: У пациента есть записи онкологического консилиума; карточку удалить нельзя.'); return; }
+            S.patients = S.patients.filter(x => x.id !== p.id);
+            location.hash = '#/patients'; updateBell();
+            toast('Пациент удалён (демо: только в этой вкладке, после перезагрузки вернётся).');
+            return;
+        }
+        if (act === 'doctor' && R().perms.changeTreatingDoctor) { doctorModal(p); return; }
+        if (act === 'doctor-save' && R().perms.changeTreatingDoctor) {
+            const d = D.DOCTORS.find(x => x.id === $('#docSelect').value);
+            Object.assign(p, d ? { doctorId: d.id, doctor: d.short, doctorFull: d.name, dept: d.dept } : { doctorId: null, doctor: '', doctorFull: '', dept: null });
+            touch(p); closeModal(); render(); updateBell(); toast('Лечащий врач изменён. Область доступа обновлена.');
+        }
+    });
+
+    // Поля сохраняются на change, как в приложении (updatePatientField / updateEvent / note / checklist).
+    document.addEventListener('change', (e) => {
+        const t = e.target;
+        const pid = (location.hash.match(/^#\/patient\/([^?/]+)/) || [])[1];
+        const p = pid && patient(pid);
+        if (!p || !canEdit(p) || !t.closest('#view')) return;
+        if (t.dataset.pf) {
+            const f = t.dataset.pf; let v = t.value;
+            if (f === 'name' && !v.trim()) { toast('Не удалось сохранить: name must not be empty'); t.value = p.name; return; }   // текст ошибки сервера как есть
+            if (f === 'age') v = Math.min(150, Math.max(0, parseInt(v, 10) || 0));
+            p[f] = v; touch(p); render();
+            return;
+        }
+        if (t.matches('[data-pgi]')) {
+            const res = $('#pfPgi').value, date = $('#pfPgiDate').value, hint = $('#pfPgiHint');
+            if (res && !date) { hint.textContent = 'Укажите дату результата ПГИ.'; hint.classList.add('field__error'); $('#pfPgiDate').setAttribute('aria-invalid', 'true'); $('#pfPgiDate').focus(); return; }
+            p.pgiResult = res; p.pgiResultDate = date; touch(p); render();
+            return;
+        }
+        if (t.dataset.ev) {
+            const [i, j, f] = t.dataset.ev.split(':');
+            const ev = p.history[Number(i)].events[Number(j)] || (p.history[Number(i)].events[Number(j)] = { date: '', time: '', actualDate: '', actualTime: '', matchedPlan: null, noPlan: false });
+            ev[f] = t.value;
+            if ((f === 'actualDate' || f === 'actualTime') && !ev.noPlan) ev.matchedPlan = ev.actualDate === ev.date && (ev.actualTime || '') === (ev.time || '');
+            touch(p); render();
+            return;
+        }
+        if (t.dataset.note !== undefined) { p.history[Number(t.dataset.note)].note = t.value; touch(p); return; }
+        if (t.dataset.cl) { p.history[p.history.length - 1].checklist[t.dataset.cl] = t.checked; touch(p); render(); updateBell(); }
+    });
+    document.addEventListener('input', (e) => {
+        if (!e.target.matches('[data-sms-preview]')) return;
+        const pv = $('#smsPreview'); if (pv) pv.value = smsPreview($('#smsTpl').value, $('#smsAt').value);
+    });
+    // Выбор диагноза в комбобоксе вкладки «Данные» — сразу применяется, как change в приложении.
+    ICD_ON_CHOOSE.pfIcd = (d) => {
+        const pid = (location.hash.match(/^#\/patient\/([^?/]+)/) || [])[1];
+        const p = pid && patient(pid);
+        if (!p || !canEdit(p) || p.icd === d.code) return;
+        p.diagnosisHistory.push({ changedAt: nowStamp(), oldDiagnosis: p.icd, newDiagnosis: d.code });
+        p.icd = d.code; touch(p); render();
+        toast(`Диагноз изменён: ${d.code}.`);
+    };
+
     /* ---------- Навигация и отрисовка ---------- */
     const currentSection = () => (location.hash || R().home).slice(2).split('?')[0].split('/')[0];
     function renderNav(active) {
@@ -1388,7 +1970,7 @@
         else if (section === 'today') out = viewToday();
         else if (section === 'department') out = viewDepartment();
         else if (section === 'patients') out = viewPatients(params.get('q'));
-        else if (section === 'patient') out = viewPatient(id);
+        else if (section === 'patient') out = viewPatient(id, params);
         else if (section === 'calendar') out = viewCalendar();
         else if (section === 'consilium') out = viewConsilium();
         else if (section === 'analytics') out = viewAnalytics();
@@ -1401,6 +1983,8 @@
         if (S.notif && S.notif.open) renderNotif();
         bindView(params);
         const log = $('#msgLog'); if (log) log.scrollTop = log.scrollHeight;
+        const tl = $('.tl'), cur = tl && tl.querySelector('.tl__step--current');
+        if (tl && cur && tl.scrollWidth > tl.clientWidth) tl.scrollLeft = cur.parentElement.offsetLeft - tl.offsetLeft - 16;
     }
 
     function bindView() {
@@ -1422,7 +2006,6 @@
             $('#app').classList.remove('is-nav-open'); $('#menuBtn').setAttribute('aria-expanded', 'false');
         }
     });
-    document.addEventListener('change', (e) => { const act = e.target.closest('[data-action="check"]'); if (act) ACTIONS.check(act); });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             if (!$('#modal').hidden) { settleConfirm(false); closeModal(); }
