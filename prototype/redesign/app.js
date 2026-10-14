@@ -982,48 +982,424 @@
         render();
     });
 
+    /* ---------- Общая аналитика (этап 3.5) ----------
+       По static/app.js (renderAnalytics и связанные функции), backend/app/analytics
+       (filters.py, service.py: dashboard, details, export_csv) и
+       services/data_quality.py (evaluate). Сервер не вызывается: те же расчёты
+       выполняются в браузере по синтетическим пациентам вкладки. */
+    const AN_FILTERS = { dateFrom: '', dateTo: '', stage: '', nosology: '', doctor: '', department: '', attentionReason: '' };
+    S.an = { ...AN_FILTERS };   // как analytics.filters: по умолчанию период не задан
+    S.anDetail = null;          // открытая детализация; сбрасывается при каждом пересчёте, как analyticsDetailsPanel
+    S.anOpts = { docs: [], depts: [] };   // варианты фильтров врача и отделения из последнего ответа
+    // Выход в приложении перезагружает страницу (logout → location.reload): фильтры аналитики, общие с председателем, сбрасываются.
+    const resetAnalytics = () => { S.an = { ...AN_FILTERS }; S.anDetail = null; S.anOpts = { docs: [], depts: [] }; S.chairAn = { from: '', to: '' }; };
+    const cpCmp = (u, v) => (u < v ? -1 : u > v ? 1 : 0);   // sorted() в Python и ORDER BY в SQLite — по кодовым точкам
+    const AN_STAGES = ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'completed', 'dispensary-observation', 'diagnosis-not-confirmed'];   // models.STAGES
+    // Подписи этапов в ответах аналитики (analytics/metrics.py STAGE_LABELS) — не те, что в списке пациентов.
+    const AN_STAGE_LABEL = {
+        'primary-appointment': 'Первичный приём', exam: 'Обследование', appointment: 'Назначение', consult: 'Консилиум',
+        'treatment-prep': 'Подготовка к лечению', treatment: 'Лечение', completed: 'Завершено',
+        'dispensary-observation': 'Диспансерное наблюдение', 'diagnosis-not-confirmed': 'Диагноз не подтверждён',
+    };
+    // Подписи фильтра этапа — stageNames в static/app.js.
+    const AN_STAGE_OPTION = {
+        'primary-appointment': 'Первичный прием', exam: 'На обследовании', appointment: 'Записан на прием', consult: 'Направлен на ОК',
+        'treatment-prep': 'Направлен на лечение', treatment: 'Проходит лечение', completed: 'Завершил лечение',
+        'dispensary-observation': 'Диспансерное наблюдение', 'diagnosis-not-confirmed': 'Диагноз не подтверждён',
+    };
+    const AN_QUALITY_LABEL = {   // service.py QUALITY_CODE_LABELS
+        missing_treating_doctor: 'Не назначен лечащий врач', missing_required_field: 'Не заполнено поле', missing_policy_number: 'Не указан номер полиса ОМС',
+        missing_diagnosis: 'Не указан диагноз', missing_stage: 'Не указан текущий этап', invalid_phone: 'Некорректный телефон',
+        actual_date_in_future: 'Фактическая дата в будущем', stage_sequence_violation: 'Нарушение маршрута', overdue_event: 'Просроченное событие',
+        incomplete_required_checklist: 'Незавершённый чек-лист', possible_duplicate: 'Возможный дубль',
+    };
+    const AN_DEFINITIONS = {   // service.py SUMMARY_DEFINITIONS — попадают в CSV
+        total_patients: 'Все пациенты, доступные текущей роли с учётом фильтров.',
+        active_patients: 'Доступные пациенты в этапах маршрута до завершения.',
+        completed_patients: 'Доступные пациенты на этапе «Завершено».',
+        patients_need_attention: 'Пациенты с минимум одной активной ручной отметкой «требует внимания».',
+        data_quality_issues: 'Все текущие критические проблемы и предупреждения Центра качества данных по доступным пациентам.',
+        unassigned_patients: 'Доступные пациенты без закреплённой учётной записи лечащего врача.',
+        patients_with_overdue: 'Пациенты с текущими просроченными событиями по правилам Центра качества данных.',
+        overdue_events: 'Текущие плановые события в прошлом без фактического выполнения по правилам Центра качества данных.',
+        critical_quality: 'Текущие критические проблемы Центра качества данных.',
+        warning_quality: 'Текущие предупреждения Центра качества данных.',
+        incomplete_required_checklists: 'Обязательные пункты чек-листа, не отмеченные выполненными.',
+        pending_notifications: 'Уведомления, ожидающие отправки.',
+        failed_notifications: 'Уведомления с ошибкой отправки.',
+    };
+    // Локализации с одинаковой подписью в localization_catalog (has_client_path) — сервер объединяет их в фильтре и в разбивке.
+    const AN_SAME_LABEL = [['lung12', 'lung34'], ['headneckConfirmed', 'headneckSuspected'], ['thyroidConfirmed', 'thyroidSuspected'], ['cervixCytology', 'cervixInvasive']];
+    const anCodes = (code) => { const c = (code || '').trim(); if (!c) return []; return AN_SAME_LABEL.find(g => g.includes(c)) || [c]; };
+    const anRef = () => window.NOSOLOGY_REF || {};
+    // REQUIRED_CHECKLISTS сервера: обследование у всех профилей, консилиум — у желудка и яичника.
+    const anRequired = (nos, stage) => { const ref = anRef()[nos]; if (!ref) return []; if (stage === 'exam') return ref.checklistRequired || []; return stage === 'consult' && (nos === 'stomach' || nos === 'ovary') ? ref.checklistRequiredStage2 || [] : []; };
+    const anDate = (v) => { const s = String(v || '').slice(0, 10); return /^\d{4}-\d{2}-\d{2}$/.test(s) && D.helpers.iso(parse(s)) === s ? s : null; };
+    const anDays = (a, b) => Math.round((parse(b) - parse(a)) / 86400000);
+    const anPercent = (part, total) => {   // round(part / total * 100, 1); точная половина — к чётному, как round() в Python
+        if (!total) return 0;
+        const num = part * 1000; let q = Math.floor(num / total); const r = num - q * total;
+        if (2 * r > total || (2 * r === total && q % 2)) q += 1;
+        return q / 10;
+    };
+    const anDoctorName = (p) => p.doctorFull || p.doctor || 'Не назначен';
+    const anDeptIds = (p) => (p.dept ? [p.dept] : []);
+    const anDeptNames = (p) => anDeptIds(p).map(id => (D.DEPARTMENTS.find(d => d.id === id) || {}).name).filter(Boolean);
+
+    // data_quality.evaluate: проблемы качества по всей области доступа роли (сводку заполненности аналитика не получает — расхождение 27).
+    function anQuality(scope) {
+        const issues = [];
+        const add = (p, code, category, severity, title, extra = {}) => issues.push({ patientId: p.id, code, category, severity, title, ...extra });
+        scope.forEach(p => {
+            if (!p.name) add(p, 'missing_required_field', 'completeness', 'critical', 'Не заполнено ФИО');
+            if (!p.stage) add(p, 'missing_stage', 'completeness', 'critical', 'Не указан текущий этап');
+            if (!p.icd) add(p, 'missing_diagnosis', 'completeness', 'critical', 'Не указан диагноз');
+            if (!p.phone) add(p, 'missing_required_field', 'completeness', 'warning', 'Не заполнен телефон');
+            if (!p.policy) add(p, 'missing_policy_number', 'completeness', 'info', 'Не указан номер полиса ОМС');
+            if (!p.doctorId) add(p, 'missing_treating_doctor', 'assignment', 'warning', 'Не назначен лечащий врач');
+            const phone = (p.phone || '').trim(), digits = phone.replace(/\D/g, '');
+            if (phone && (/[A-Za-zА-Яа-я]/.test(phone) || digits.length < 10 || digits.length > 15)) add(p, 'invalid_phone', 'format', 'warning', 'Телефон выглядит некорректно');
+            const arrival = anDate(p.createdAt);
+            const last = p.history.length ? p.history[p.history.length - 1].stage : null;
+            if (last !== null && p.stage && last !== p.stage) add(p, 'stage_sequence_violation', 'stage', 'critical', 'Текущий этап не совпадает с историей');
+            const closed = D.TERMINAL.includes(p.stage);
+            let prevIdx = -1, prevEntered = null;
+            p.history.forEach(occ => {
+                const entered = anDate(occ.enteredAt), idx = AN_STAGES.indexOf(occ.stage);
+                if (idx < 0) add(p, 'stage_sequence_violation', 'stage', 'critical', 'В истории есть неизвестный этап');
+                else {
+                    if (idx < prevIdx && !(prevIdx === AN_STAGES.indexOf('appointment') && occ.stage === 'exam')) add(p, 'stage_sequence_violation', 'stage', 'warning', 'Этапы идут не по маршруту');
+                    prevIdx = Math.max(prevIdx, idx);
+                }
+                if (entered && prevEntered && entered < prevEntered) add(p, 'stage_sequence_violation', 'stage', 'critical', 'Дата начала этапа раньше предыдущего');
+                if (entered) prevEntered = entered;
+                occ.events.forEach(ev => {
+                    const actual = anDate(ev.actualDate), planned = anDate(ev.date);
+                    if (ev.actualDate && !actual) add(p, 'actual_date_in_future', 'dates', 'critical', 'Фактическая дата некорректна');
+                    else if (actual && actual > D.today) add(p, 'actual_date_in_future', 'dates', 'critical', 'Фактическая дата в будущем');
+                    if (actual && arrival && actual < arrival) add(p, 'stage_sequence_violation', 'dates', 'warning', 'Фактическая дата раньше создания карточки');
+                    if (actual && entered && actual < entered) add(p, 'stage_sequence_violation', 'dates', 'warning', 'Фактическая дата раньше начала этапа');
+                    if (p.nosology && planned && planned < D.today && !actual && !ev.noPlan && !closed) add(p, 'overdue_event', 'dates', 'warning', 'Плановое событие просрочено', { plannedDate: planned, daysOverdue: anDays(planned, D.today) });
+                });
+            });
+            const latest = p.history.length && !closed ? p.history[p.history.length - 1] : null;
+            if (latest) {
+                const req = anRequired(p.nosology, latest.stage);
+                if (req.length && req.some(n => latest.checklist[n] !== true)) add(p, 'incomplete_required_checklist', 'checklist', 'warning', 'Обязательный чек-лист не завершён');
+            }
+        });
+        // _duplicate_groups: совпадение телефона, ФИО+возраст, ФИО+диагноз, ФИО+локализация.
+        const buckets = new Map();
+        const put = (key, p) => { if (!buckets.has(key)) buckets.set(key, new Set()); buckets.get(key).add(p.id); };
+        scope.forEach(p => {
+            let phone = (p.phone || '').replace(/\D/g, ''); if (phone.length === 11 && phone[0] === '8') phone = '7' + phone.slice(1);
+            const name = (p.name || '').trim().toLowerCase().replace(/ё/g, 'е').split(/\s+/).filter(Boolean).join(' ');
+            const diag = (p.icd || '').trim().toLowerCase().split(/\s+/).filter(Boolean).join(' '), nos = (p.nosology || '').trim().toLowerCase();
+            if (phone.length >= 10) put(`phone|${phone}`, p);
+            if (name && p.age) put(`name_age|${name}|${p.age}`, p);
+            if (name && diag) put(`name_diagnosis|${name}|${diag}`, p);
+            if (name && nos) put(`name_nosology|${name}|${nos}`, p);
+        });
+        const dup = new Set();
+        buckets.forEach(ids => { if (ids.size > 1) ids.forEach(id => dup.add(id)); });
+        scope.filter(p => dup.has(p.id)).forEach(p => add(p, 'possible_duplicate', 'duplicates', 'info', 'Возможный дубль'));
+        const rank = { critical: 0, warning: 1, info: 2 }, nameOf = new Map(scope.map(p => [p.id, p.name]));
+        issues.sort((a, b) => rank[a.severity] - rank[b.severity] || cpCmp(a.category, b.category) || cpCmp(a.code, b.code) || cpCmp(nameOf.get(a.patientId), nameOf.get(b.patientId)));
+        return issues;
+    }
+
+    // _filtered_patient_ids + _patient_rows: область доступа, затем фильтры (И), порядок — ФИО, id.
+    function anFilter(scope, f) {
+        const codes = anCodes(f.nosology);
+        return scope.filter(p => (!f.department || anDeptIds(p).includes(f.department)) && (!f.doctor || p.doctorId === f.doctor)
+            && (!f.stage || p.stage === f.stage) && (!codes.length || codes.includes(p.nosology))
+            && (!f.attentionReason || p.attentionIssues.some(x => x.status === 'open' && x.reasonCode === f.attentionReason)))
+            .sort((a, b) => cpCmp(a.name, b.name) || cpCmp(a.id, b.id));
+    }
+    const anRefRow = (p) => ({ id: p.id, name: p.name, stageLabel: AN_STAGE_LABEL[p.stage] || p.stage || 'Не указан', doctor: anDoctorName(p) });
+    // _checklist_state: обязательные пункты текущего этапа у всех пациентов (и с закрытым маршрутом).
+    function anChecklist(list) {
+        let incomplete = 0; const patients = [], byPatient = new Map();
+        list.forEach(p => {
+            const cur = p.history[p.history.length - 1], stage = (cur && cur.stage) || p.stage;
+            const req = anRequired(p.nosology, stage), done = req.filter(n => cur && cur.checklist[n] === true).length;
+            incomplete += req.length - done; byPatient.set(p.id, req.length - done);
+            if (req.length - done) patients.push({ ...anRefRow(p), stageLabel: AN_STAGE_LABEL[stage] || stage });
+        });
+        return { incomplete, patients, byPatient };
+    }
+    const anNotif = (p, status) => p.notifications.items.filter(n => n.status === status).length;
+    const anOpenIssues = (p) => p.attentionIssues.filter(x => x.status === 'open');
+
+    function anDashboard(f) {
+        const scope = S.demo === 'empty' ? [] : scoped();
+        const list = anFilter(scope, f), ids = new Set(list.map(p => p.id));
+        const issues = anQuality(scope).filter(i => ids.has(i.patientId));
+        const critical = issues.filter(i => i.severity === 'critical'), warnings = issues.filter(i => i.severity === 'warning');
+        const overdueIssues = issues.filter(i => i.code === 'overdue_event');
+        const overdueIds = new Set(overdueIssues.map(i => i.patientId)), qualityIds = new Set(issues.map(i => i.patientId));
+        const attentionIds = new Set(list.filter(p => anOpenIssues(p).length).map(p => p.id));
+        const cl = anChecklist(list);
+        const active = list.filter(p => !D.TERMINAL.includes(p.stage)).length;
+        const card = (code, label, value, detail) => ({ code, label, value, kind: 'current', detail, definition: AN_DEFINITIONS[code] });
+        const cards = [
+            card('total_patients', 'Всего доступных пациентов', list.length, 'patients'),
+            card('active_patients', 'Активные', active, 'patients'),
+            card('completed_patients', 'Завершённые', list.filter(p => p.stage === 'completed').length, 'patients'),
+            card('patients_need_attention', 'Явно требуют внимания', attentionIds.size, 'attention_patients'),
+            card('data_quality_issues', 'Проблемы качества данных', critical.length + warnings.length, 'quality_warning'),
+            card('unassigned_patients', 'Пациенты без назначенного врача', list.filter(p => !p.doctorId).length, 'unassigned_patients'),
+            card('patients_with_overdue', 'Пациенты с просроченными событиями', overdueIds.size, 'overdue_events'),
+            card('overdue_events', 'Просроченные события', overdueIssues.length, 'overdue_events'),
+            card('critical_quality', 'Критические проблемы качества данных', critical.length, 'quality_critical'),
+            card('warning_quality', 'Предупреждения качества данных', warnings.length, 'quality_warning'),
+            card('incomplete_required_checklists', 'Незавершённые обязательные чек-листы', cl.incomplete, 'incomplete_checklists'),
+            card('pending_notifications', 'Ожидающие уведомления', list.reduce((n, p) => n + anNotif(p, 'pending'), 0), 'notifications_pending'),
+            card('failed_notifications', 'Ошибки уведомлений', list.reduce((n, p) => n + anNotif(p, 'failed'), 0), 'notifications_failed'),
+        ];
+        const stages = AN_STAGES.map(stage => {
+            const ps = list.filter(p => p.stage === stage);
+            return { stage, label: AN_STAGE_LABEL[stage], count: ps.length, overdue: ps.filter(p => overdueIds.has(p.id)).length, quality: ps.filter(p => qualityIds.has(p.id)).length };
+        }).filter(r => r.count);
+        const prof = new Map();
+        list.forEach(p => { const codes = anCodes(p.nosology), key = codes[0] || ''; prof.set(key, (prof.get(key) || 0) + 1); });
+        const profiles = [...prof.entries()].sort((a, b) => b[1] - a[1] || cpCmp(a[0] || 'zz', b[0] || 'zz'))
+            .map(([key, count]) => ({ key, label: key ? (anRef()[key] || {}).label || key : 'Не указан', count, percent: anPercent(count, list.length) }));
+        const stageCount = (s) => list.filter(p => p.stage === s).length;
+        const route = [
+            { label: 'Активные', count: active, detail: 'patients', stage: '' },
+            { label: 'Завершённые', count: stageCount('completed'), detail: 'patients', stage: 'completed' },
+            { label: 'Диспансерное наблюдение', count: stageCount('dispensary-observation'), detail: 'patients', stage: 'dispensary-observation' },
+            { label: 'Диагноз не подтверждён', count: stageCount('diagnosis-not-confirmed'), detail: 'patients', stage: 'diagnosis-not-confirmed' },
+            { label: 'Операционные сигналы', count: qualityIds.size, detail: 'quality_warning', stage: '', overlap: true },
+        ].map(r => ({ ...r, percent: anPercent(r.count, list.length) }));
+        const byCode = new Map(); issues.forEach(i => byCode.set(i.code, (byCode.get(i.code) || 0) + 1));
+        const qualityRows = [...byCode.entries()].sort((a, b) => b[1] - a[1] || cpCmp(a[0], b[0])).map(([code, count]) => ({
+            code, label: AN_QUALITY_LABEL[code] || code, count, detail: issues.some(i => i.code === code && i.severity === 'critical') ? 'quality_critical' : 'quality_warning' }));
+        // _trend_rows: без дат — последние 30 дней; больше 90 дней — обрезается до последних 90.
+        const end = f.dateTo || D.today;
+        let start = f.dateFrom || D.helpers.iso(D.helpers.addDays(parse(D.today), -29));
+        if (anDays(start, end) > 89) start = D.helpers.iso(D.helpers.addDays(parse(end), -89));
+        const trend = [];
+        for (let k = 0; k <= anDays(start, end); k++) {
+            const day = D.helpers.iso(D.helpers.addDays(parse(start), k));
+            trend.push({ day, label: `${day.slice(8, 10)}.${day.slice(5, 7)}`,
+                added: list.filter(p => anDate(p.createdAt) === day).length,
+                completed: list.reduce((n, p) => n + p.history.filter(o => o.stage === 'completed' && anDate(o.enteredAt) === day).length, 0) });
+        }
+        const wl = new Map();
+        list.forEach(p => {
+            const name = anDoctorName(p);
+            if (!wl.has(name)) wl.set(name, { id: p.doctorId, name, depts: anDeptIds(p), deptNames: anDeptNames(p), active: 0, overdue: 0, checklists: 0, critical: 0, pending: 0, failed: 0 });
+            const w = wl.get(name);
+            if (!D.TERMINAL.includes(p.stage)) w.active++;
+            if (overdueIds.has(p.id)) w.overdue++;
+            w.checklists += cl.byPatient.get(p.id) || 0;
+            w.critical += critical.filter(i => i.patientId === p.id).length;
+            w.pending += anNotif(p, 'pending'); w.failed += anNotif(p, 'failed');
+        });
+        // workload(): order по умолчанию «asc», интерфейс его не передаёт — по возрастанию активных (расхождение 28).
+        const workload = [...wl.values()].sort((a, b) => a.active - b.active || cpCmp(a.name, b.name)).slice(0, 50);
+        const reasons = new Map(); list.forEach(p => anOpenIssues(p).forEach(x => reasons.set(x.reasonCode, (reasons.get(x.reasonCode) || 0) + 1)));
+        const reasonTotal = [...reasons.values()].reduce((s, x) => s + x, 0);
+        const attention = [...reasons.entries()].map(([code, count]) => ({ code, label: D.ATTENTION_REASONS[code] || code, count, percent: anPercent(count, reasonTotal) }))
+            .sort((a, b) => b.count - a.count || cpCmp(a.label, b.label));
+        const operations = [
+            { label: 'Пациенты с проблемами качества данных', count: qualityIds.size, detail: 'quality_warning' },
+            { label: 'Пациенты с просроченными событиями', count: overdueIds.size, detail: 'overdue_events' },
+            { label: 'Без назначенного лечащего врача', count: list.filter(p => !p.doctorId).length, detail: 'unassigned_patients' },
+            { label: 'Критические проблемы', count: critical.length, detail: 'quality_critical' },
+            { label: 'Незавершённые обязательные чек-листы', count: cl.incomplete, detail: 'incomplete_checklists' },
+        ].sort((a, b) => b.count - a.count || cpCmp(a.label, b.label));
+        return { cards, stages, profiles, route, qualityRows, trend, workload, attention, operations };
+    }
+
+    // service.details: тот же отбор плюс уточнение из нажатого элемента (Object.assign, как analyticsParams(extra)).
+    function anDetails(type, extra) {
+        const f = { ...S.an, ...extra };
+        const scope = S.demo === 'empty' ? [] : scoped();
+        const list = anFilter(scope, f), ids = new Set(list.map(p => p.id)), byId = new Map(list.map(p => [p.id, p]));
+        let items = [];
+        if (type === 'patients') items = list.map(anRefRow);
+        else if (type === 'unassigned_patients') items = list.filter(p => !p.doctorId).map(anRefRow);
+        else if (type === 'attention_patients') items = list.filter(p => anOpenIssues(p).some(x => !f.attentionReason || x.reasonCode === f.attentionReason)).map(anRefRow);
+        else if (type === 'overdue_events') {
+            items = anQuality(scope).filter(i => i.code === 'overdue_event' && ids.has(i.patientId))
+                .filter(i => (!f.dateFrom || i.plannedDate >= f.dateFrom) && (!f.dateTo || i.plannedDate <= f.dateTo))
+                .map(i => ({ ...anRefRow(byId.get(i.patientId)), daysOverdue: i.daysOverdue }))
+                .sort((a, b) => b.daysOverdue - a.daysOverdue || cpCmp(a.name, b.name) || cpCmp(a.id, b.id));
+        } else if (type === 'quality_critical' || type === 'quality_warning') {
+            const sev = type === 'quality_critical' ? 'critical' : 'warning';
+            items = anQuality(scope).filter(i => i.severity === sev && ids.has(i.patientId)).map(i => anRefRow(byId.get(i.patientId)));
+        } else if (type === 'incomplete_checklists') items = anChecklist(list).patients;
+        return { total: items.length, items: items.slice(0, 50) };
+    }
+
+    // export_csv(report_type=summary, detail_level=aggregate): BOM, csv.DictWriter (QUOTE_MINIMAL, \r\n), защита от формул.
+    function anCsv() {
+        const cell = (v) => {
+            let s = String(v);
+            if (typeof v === 'string' && /^[=+\-@\t\r\n]/.test(v.replace(/^[ \t\r\n\v\f]+/, ''))) s = `'${s}`;
+            return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+        };
+        const lines = [['metric', 'label', 'value', 'kind', 'definition'].join(',')];
+        anDashboard(S.an).cards.forEach(c => lines.push([c.code, c.label, c.value, c.kind, c.definition].map(cell).join(',')));
+        const now = new Date(), two = (n) => String(n).padStart(2, '0');
+        const name = `analytics_summary_${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}_${two(now.getHours())}${two(now.getMinutes())}${two(now.getSeconds())}.csv`;
+        return { blob: new Blob(['﻿' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' }), name, count: lines.length - 1 };
+    }
+
+    const AN_TONE = { active_patients: 'info', patients_need_attention: 'warn', patients_with_overdue: 'danger', data_quality_issues: 'danger' };
+    const anRows = (rows, o = {}) => rows.length ? html`<div class="an-bars">${rows.slice(0, 8).map(r => {
+        const max = Math.max(1, ...rows.map(x => x.count)), label = o.label ? o.label(r) : r.label, meta = o.meta ? o.meta(r) : `${r.count} · ${String(r.percent || 0).replace('.', ',')}%`;
+        const tone = o.tone ? o.tone(r) : '', attrs = o.attrs ? o.attrs(r) : '';
+        return html`<${raw(attrs ? 'button' : 'div')} class="an-bar ${attrs ? 'an-bar--button' : ''} ${tone ? 'an-bar--' + tone : ''}" ${raw(attrs)}>
+            <span class="an-bar__top"><span class="an-bar__label">${label}</span> <strong class="mono">${r.count}</strong></span>
+            <progress max="${max}" value="${r.count}" aria-hidden="true"></progress><span class="an-bar__meta">${meta}</span></${raw(attrs ? 'button' : 'div')}>`; })}</div>`
+        : html`<div class="empty empty--compact"><div>${o.empty || 'Данных по выбранным условиям нет.'}</div></div>`;
+    const anAttr = (type, title, extra = {}) => `data-an-detail="${type}" data-title="${esc(title)}"${extra.stage ? ` data-stage="${extra.stage}"` : ''}${extra.nosology ? ` data-nosology="${extra.nosology}"` : ''}${extra.attentionReason ? ` data-reason="${extra.attentionReason}"` : ''}`;
+
+    function anTrend(rows) {
+        if (!rows.length) return html`<div class="empty empty--compact"><div>Данных по динамике за период нет.</div></div>`;
+        const max = Math.max(3, ...rows.map(r => Math.max(r.added, r.completed)));
+        const W = 640, H = 210, L = 42, Rt = W - 22, T = 18, B = H - 48;
+        const pt = (r, i, k) => [Math.round((L + (rows.length === 1 ? 0 : i * ((Rt - L) / (rows.length - 1)))) * 10) / 10, Math.round((B - (r[k] / max) * (B - T)) * 10) / 10];
+        const path = (k) => rows.map((r, i) => `${i ? 'L' : 'M'} ${pt(r, i, k).join(' ')}`).join(' ');
+        const grid = [...new Set([0, Math.ceil(max / 2), max])];
+        const ticks = [...new Set([0, Math.floor(rows.length / 2), rows.length - 1])];
+        const first = pt(rows[0], 0, 'added'), last = pt(rows[rows.length - 1], rows.length - 1, 'added');
+        return html`<div class="chart"><svg class="an-trend" viewBox="0 0 ${W} ${H}" role="img" aria-label="Динамика новых и завершённых пациентов за выбранный период">
+            ${grid.map(v => { const y = Math.round((B - (v / max) * (B - T)) * 10) / 10; return html`<line class="an-trend__grid" x1="${L}" x2="${Rt}" y1="${y}" y2="${y}"/><text x="12" y="${y + 4}" text-anchor="middle">${v}</text>`; })}
+            <path class="an-trend__area" d="${path('added')} L ${last[0]} ${B} L ${first[0]} ${B} Z"/>
+            ${['added', 'completed'].map(k => html`<path class="an-trend__line an-trend__line--${k}" d="${path(k)}" fill="none"/>
+                ${rows.map((r, i) => { const [x, y] = pt(r, i, k); return html`<circle class="an-trend__pt an-trend__pt--${k}" cx="${x}" cy="${y}" r="${r[k] ? 3.5 : 2.5}"><title>${r.label}: ${r[k]}</title></circle>`; })}`)}
+            <line class="an-trend__axis" x1="${L}" x2="${Rt}" y1="${B}" y2="${B}"/>
+            ${ticks.map(i => html`<text x="${pt(rows[i], i, 'added')[0]}" y="${H - 12}" text-anchor="middle">${rows[i].label}</text>`)}
+        </svg></div>
+        <div class="legend an-trend__legend"><span>Новые пациенты</span><span class="l2">Завершения</span>
+            <span class="an-trend__sum">${rows.reduce((s, r) => s + r.added, 0)} новых пациентов</span><span class="an-trend__sum">${rows.reduce((s, r) => s + r.completed, 0)} завершений по истории этапов</span></div>`;
+    }
+    function anStages(rows) {
+        if (!rows.length) return html`<div class="empty empty--compact"><div>Пациентов по этапам нет.</div></div>`;
+        const total = rows.reduce((s, r) => s + r.count, 0), C = 82, Rr = 58, len = 2 * Math.PI * Rr;
+        let off = 0;
+        const segs = rows.map((r, i) => { const v = r.count / total, seg = html`<circle class="an-donut__seg an-donut__seg--${(i % 5) + 1}" cx="${C}" cy="${C}" r="${Rr}" fill="none" stroke-width="22" stroke-dasharray="${Math.max(0, v * len - 1)} ${len}" stroke-dashoffset="${-off}" transform="rotate(-90 ${C} ${C})"/>`; off += v * len; return seg; });
+        const word = (n) => { const m100 = n % 100, m10 = n % 10; return m100 >= 11 && m100 <= 14 ? 'пациентов' : m10 === 1 ? 'пациент' : m10 >= 2 && m10 <= 4 ? 'пациента' : 'пациентов'; };
+        return html`<div class="an-stages"><div class="an-donut"><svg viewBox="0 0 164 164" role="img" aria-label="Пациенты по этапам маршрута, всего ${total}">${segs}</svg>
+            <div class="an-donut__center" aria-hidden="true"><strong>${total}</strong><span>${word(total)}</span></div></div>
+            <ul class="an-stage-list">${rows.map(r => html`<li><button class="an-stage-row" ${raw(anAttr('patients', r.label, { stage: r.stage }))}><span>${r.label}</span><strong class="mono">${r.count}</strong><small>Просрочки: ${r.overdue}; проблемы: ${r.quality}</small></button></li>`)}</ul></div>`;
+    }
+    function anDetailPanel() {
+        const d = S.anDetail;
+        if (!d) return '';
+        const data = anDetails(d.type, d.extra);
+        return html`<section class="panel" id="anDetailPanel" tabindex="-1"><div class="panel__head"><h2 class="panel__title">${d.title || 'Детальный список'}</h2></div>
+            <p class="an-detail__lead">Показано ${data.items.length} из ${data.total}. Данные ограничены текущей областью доступа.</p>
+            ${data.items.length ? html`<ul class="an-detail">${data.items.map(it => html`<li><div><div class="cell-title">${it.name}</div><div class="cell-sub">${it.stageLabel} · ${it.doctor}${it.daysOverdue ? ` · Просрочено: ${it.daysOverdue} дн.` : ''}</div></div>
+                <button class="btn btn--sm btn--ghost" data-href="#/patient/${it.id}">Открыть пациента</button></li>`)}</ul>`
+            : html`<div class="empty empty--compact"><div>По выбранным условиям записей нет.</div></div>`}</section>`;
+    }
+
     function viewAnalytics() {
         if (S.role === 'chair') return viewConsiliumAnalytics();
-        const list = scoped();
-        const period = S.period || '12w';
-        const loc = Object.values(list.reduce((acc, p) => { (acc[p.localization] ||= { label: p.localization, value: 0 }).value++; return acc; }, {})).sort((a, b) => b.value - a.value);
-        const reasons = Object.entries(D.ATTENTION_REASONS).map(([k, v]) => ({ label: v, value: list.filter(p => p.attention.some(a => a.code === k)).length })).filter(r => r.value);
-        const stages = D.byStage.filter(s => s.value);
-        const bars = (items) => { const max = Math.max(1, ...items.map(i => i.value)); return html`<div class="bars">${items.map(b => html`<div class="bars__row"><span class="bars__label" title="${b.label}">${b.label}</span><span class="bars__track"><span class="bars__fill" style="width:${(b.value / max) * 100}%"></span></span><span class="bars__value">${b.value}</span></div>`)}</div>`; };
-        const weeks = D.weeks.slice(period === '4w' ? -4 : 0);
-        const W = 640, H = 200, pad = 28, bw = (W - pad * 2) / weeks.length;
-        const maxW = Math.max(...weeks.map(w => Math.max(w.added, w.completed)));
-        const y = (v) => H - pad - (v / maxW) * (H - pad * 2);
-        const chart = html`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Новые и завершившие лечение пациенты по неделям">
-            ${[0, 0.5, 1].map(f => html`<line x1="${pad}" x2="${W - pad / 2}" y1="${y(maxW * f)}" y2="${y(maxW * f)}" stroke="var(--border)" stroke-width="1"/><text x="${pad - 6}" y="${y(maxW * f) + 4}" text-anchor="end">${Math.round(maxW * f)}</text>`)}
-            ${weeks.map((w, i) => html`<rect x="${pad + i * bw + bw * 0.18}" y="${y(w.added)}" width="${bw * 0.3}" height="${H - pad - y(w.added)}" rx="2" fill="var(--chart-1)"><title>${w.label}: новых ${w.added}</title></rect>
-                <rect x="${pad + i * bw + bw * 0.52}" y="${y(w.completed)}" width="${bw * 0.3}" height="${H - pad - y(w.completed)}" rx="2" fill="var(--chart-2)"><title>${w.label}: завершили ${w.completed}</title></rect>
-                <text x="${pad + i * bw + bw / 2}" y="${H - 8}" text-anchor="middle">${w.label}</text>`)}</svg>`;
-        const doctors = D.DOCTORS.map(d => { const ps = list.filter(p => p.doctorId === d.id); return { ...d, n: ps.length, att: ps.filter(p => p.attention.length || p.overdue).length, over: ps.reduce((n, p) => n + p.overdue, 0) }; }).filter(d => d.n);
-        return html`
-            ${pagehead('Аналитика', isReadOnly() || S.role === 'developer' ? 'Состояние маршрутов пациентов по клинике' : 'Показатели в пределах вашей области доступа',
-                html`<div class="segmented" role="group" aria-label="Период"><button aria-pressed="${period === '4w'}" data-action="period" data-v="4w">4 недели</button><button aria-pressed="${period === '12w'}" data-action="period" data-v="12w">12 недель</button></div>${S.role !== 'chair' ? html`<button class="btn" data-action="export">Выгрузить CSV</button>` : ''}`,
-                isReadOnly() ? 'Управленческая аналитика' : '')}
+        const f = S.an;
+        const pressed = (d) => { const r = presetRange(d); return f.dateFrom === r.from && f.dateTo === r.to; };
+        const failed = S.demo === 'error' || (f.dateFrom && f.dateTo && f.dateFrom > f.dateTo);   // filters.py: date_from <= date_to, иначе 422
+        const data = failed || S.demo === 'loading' ? null : anDashboard(f);
+        // Списки врачей и отделений — из строк нагрузки текущего ответа (renderAnalyticsFilterOptions).
+        // При ошибке или загрузке списки не перестраиваются — остаются от последнего ответа.
+        if (data) {
+            const docs = data.workload.filter(w => w.id).map(w => ({ id: w.id, name: w.name })).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+            const depts = []; data.workload.forEach(w => w.depts.forEach((id, k) => { if (!depts.some(d => d.id === id)) depts.push({ id, name: w.deptNames[k] || id }); }));
+            S.anOpts = { docs, depts: depts.sort((a, b) => a.name.localeCompare(b.name, 'ru')) };
+        }
+        const { docs, depts } = S.anOpts;
+        const locs = []; Object.entries(anRef()).forEach(([code, r]) => { if (!locs.some(l => l.label === (r.label || code))) locs.push({ code, label: r.label || code }); });
+        const opt = (v, label, cur) => html`<option value="${v}" ${raw(v === cur ? 'selected' : '')}>${label}</option>`;
+        const controls = html`<section class="panel an-controls an-controls--general" aria-label="Период и фильтры аналитики">
+            <div class="an-controls__row"><span class="field__label">Период</span>
+                <input class="input" type="date" id="anFrom" value="${f.dateFrom}" aria-label="Дата от">
+                <input class="input" type="date" id="anTo" value="${f.dateTo}" aria-label="Дата до">
+                <div class="segmented" role="group" aria-label="Быстрый выбор периода">${[7, 30, 90].map(d => html`<button data-an="${d}" aria-pressed="${pressed(d)}">${d} дней</button>`)}</div>
+                <span class="spacer"></span><button class="btn btn--sm btn--ghost" data-an="refresh">Обновить</button><button class="btn btn--sm btn--ghost" data-an="csv">CSV</button></div>
+            <div class="an-controls__row an-controls__filters">
+                <select class="select" id="anStage" aria-label="Этап">${opt('', 'Все этапы', f.stage)}${AN_STAGES.map(s => opt(s, AN_STAGE_OPTION[s], f.stage))}</select>
+                <select class="select" id="anNosology" aria-label="Локализация">${opt('', 'Любая локализация', f.nosology)}${locs.map(l => opt(l.code, l.label, f.nosology))}</select>
+                <select class="select" id="anDoctor" aria-label="Лечащий врач">${opt('', 'Любой лечащий врач', f.doctor)}${docs.map(d => opt(d.id, d.name, f.doctor))}</select>
+                <select class="select" id="anDept" aria-label="Отделение">${opt('', 'Любое отделение', f.department)}${depts.map(d => opt(d.id, d.name, f.department))}</select>
+                <select class="select" id="anReason" aria-label="Причина внимания">${opt('', 'Любая причина внимания', f.attentionReason)}${Object.entries(D.ATTENTION_REASONS).map(([c, l]) => opt(c, l, f.attentionReason))}</select>
+                <button class="btn btn--sm btn--ghost" data-an="reset">Сбросить фильтры</button></div>
+        </section>
+        <p class="an-note"><strong>Текущее состояние</strong> <span class="muted">Карточки, качество данных и нагрузка считаются на момент запроса; динамика и просрочки учитывают выбранный период.</span></p>`;
+        const head = pagehead('Аналитика', 'Организационные показатели маршрутов, просрочек и заполненности данных');
+        if (failed) return html`${head}${controls}<section class="panel"><div class="error" role="alert"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">${raw(STATE_ICON.error)}</svg><div class="error__title">Не удалось загрузить аналитику. Попробуйте обновить данные.</div></div></section>`;
+        if (!data) return html`${head}${controls}<div class="stack" aria-busy="true">${stateful('', { rows: 4 })}<div class="grid grid--2"><section class="panel">${stateful('', { rows: 6 })}</section><section class="panel">${stateful('', { rows: 6 })}</section></div></div>`;
+        const kpis = data.cards.filter(c => ['total_patients', 'active_patients', 'patients_need_attention', 'patients_with_overdue', 'data_quality_issues'].includes(c.code));
+        const panel = (title, body, text = '') => html`<section class="panel"><div class="panel__head"><h2 class="panel__title">${title}</h2></div>${text ? html`<p class="an-panel__text">${text}</p>` : ''}${body}</section>`;
+        return html`${head}${controls}
             <div class="stack">
-                ${metrics([
-                    { label: 'Всего пациентов', value: list.length },
-                    { label: 'В работе', value: list.filter(p => !['completed', 'dispensary-observation', 'diagnosis-not-confirmed'].includes(p.stage)).length },
-                    { label: 'Явно требуют внимания', value: list.filter(p => p.attention.length).length, tone: 'warn' },
-                    { label: 'С просроченными событиями', value: list.filter(p => p.overdue).length, tone: 'danger' },
-                ])}
-                <section class="panel"><div class="panel__head"><div><h2 class="panel__title">Динамика пациентов</h2><div class="panel__meta">Новые и завершившие лечение по неделям</div></div></div>
-                    ${stateful(html`<div class="chart">${chart}</div><div class="legend"><span>Новые</span><span class="l2">Завершили лечение</span></div>`, { rows: 6 })}</section>
-                <div class="grid grid--3">
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">По этапам маршрута</h2></div>${stateful(bars(stages), { rows: 6 })}</section>
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">По локализациям</h2></div>${stateful(bars(loc), { rows: 6 })}</section>
-                    <section class="panel"><div class="panel__head"><h2 class="panel__title">Причины внимания</h2></div>${stateful(reasons.length ? bars(reasons) : html`<div class="empty">Открытых отметок нет</div>`, { rows: 4 })}</section>
+                <div class="metrics an-kpis">${kpis.map(c => html`<button class="metric" ${raw(anAttr(c.detail, c.label))}><div class="metric__label">${c.label}</div><div class="metric__value ${AN_TONE[c.code] ? 'is-' + AN_TONE[c.code] : ''}">${c.value}</div><div class="metric__note">текущее состояние</div></button>`)}
+</div>
+                <div class="grid grid--2">
+                    ${panel('Динамика пациентов', anTrend(data.trend))}
+                    ${panel('Пациенты по этапам маршрута', anStages(data.stages))}
                 </div>
-                <section class="panel"><div class="panel__head"><div><h2 class="panel__title">Нагрузка врачей</h2><div class="panel__meta">Пациенты в области доступа</div></div></div>
-                    <div class="panel__body--flush">${stateful(html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Врач</th><th>Отделение</th><th class="num">Пациенты</th><th class="num">Требуют внимания</th><th class="num">Просроченные события</th></tr></thead><tbody>
-                        ${doctors.map(d => html`<tr><td class="cell-title">${d.name}</td><td data-label="Отделение">${D.DEPARTMENTS.find(x => x.id === d.dept).name}</td><td class="num" data-label="Пациенты">${d.n}</td><td class="num" data-label="Внимание">${d.att || '—'}</td><td class="num" data-label="Просрочки">${d.over ? html`<span class="status status--danger">${d.over}</span>` : '—'}</td></tr>`)}
-                    </tbody></table></div>`, { rows: 5 })}</div></section>
+                <div class="grid grid--3">
+                    ${panel('Пациенты по локализациям', anRows(data.profiles, { empty: 'Доступных пациентов с профилем клиентского пути нет.', attrs: r => (r.key ? anAttr('patients', r.label, { nosology: r.key }) : '') }))}
+                    ${panel('Причины внимания', anRows(data.attention, { empty: 'Пациентов с активной ручной отметкой внимания нет.', tone: r => (r.code === 'critical_overdue' || r.code === 'emergency_hospitalization' ? 'danger' : 'warn'), attrs: r => anAttr('attention_patients', r.label, { attentionReason: r.code }) }))}
+                    ${panel('Нагрузка врачей', anRows(data.workload.map(w => ({ label: w.name, count: w.active, meta: `Просрочки: ${w.overdue}; чек-листы: ${w.checklists}; ошибки отправки: ${w.failed}` })), { empty: 'Нет данных по нагрузке в текущей области доступа.', tone: () => 'info', meta: r => r.meta }))}
+                </div>
+                <div class="grid grid--3">
+                    ${panel('Качество данных', html`<div class="an-quality"><div class="an-quality__ring"><svg viewBox="0 0 96 96" role="img" aria-label="Заполненность обязательных полей 100%"><circle class="an-quality__seg" cx="48" cy="48" r="39" fill="none" stroke-width="10"/></svg>
+                        <div class="an-quality__center" aria-hidden="true"><strong>100%</strong><span>заполнено</span></div></div>
+                        <div class="an-quality__text"><strong>0 проблем качества данных</strong><span>0 пациентов требуют проверки данных</span></div></div>
+                        <p class="demo-hint an-quality__hint">Как в приложении: ответ dashboard не содержит сводки качества, поэтому кольцо и две строки выше всегда показывают 100% и нули (расхождение 27). Список ниже считается по данным.</p>
+                        ${data.qualityRows.length ? html`<ul class="an-list">${data.qualityRows.slice(0, 5).map(r => html`<li><button class="an-list__row an-list__row--danger" ${raw(anAttr(r.detail, r.label))}><span>${r.label}</span><strong class="mono">${r.count}</strong></button></li>`)}</ul>`
+                        : html`<div class="empty empty--compact"><div>Проблем качества данных по выбранным условиям нет.</div></div>`}`)}
+                    ${panel('Состояние маршрутов', anRows(data.route, { meta: r => (r.overlap ? 'Может пересекаться с другими состояниями' : 'Текущее состояние'), attrs: r => anAttr(r.detail, r.label, { stage: r.stage }) }), 'Операционные сигналы считаются автоматически и не создают ручную отметку внимания.')}
+                    ${panel('Требуют внимания сейчас', html`<ul class="an-list">${data.operations.map(r => html`<li><button class="an-list__row" ${raw(anAttr(r.detail, r.label))}><span>${r.label}</span><strong class="mono">${r.count}</strong></button></li>`)}</ul>`)}
+                </div>
+                ${anDetailPanel()}
+                <p class="demo-hint">Показатели считаются в браузере по синтетическим пациентам вкладки по тем же правилам, что сервер (analytics/service.py, data_quality.py); сервер не вызывается.</p>
             </div>`;
     }
+    const AN_FIELD = { anFrom: 'dateFrom', anTo: 'dateTo', anStage: 'stage', anNosology: 'nosology', anDoctor: 'doctor', anDept: 'department', anReason: 'attentionReason' };
+    document.addEventListener('change', (e) => {
+        const key = AN_FIELD[e.target.id];
+        if (!key || S.role === 'chair') return;
+        S.an[key] = e.target.value; S.anDetail = null; render();
+    });
+    document.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-an]');
+        if (b && S.role !== 'chair') {
+            const v = b.dataset.an;
+            if (v === 'csv') {
+                // exportAnalyticsCsv: доступно всем ролям общей аналитики, включая роли только для просмотра.
+                // Ошибка — как в exportAnalyticsCsv: текст detail ответа (422 из filters.py) или сбой запроса в демо-состоянии «Ошибка».
+                if (S.an.dateFrom && S.an.dateTo && S.an.dateFrom > S.an.dateTo) { toast('Не удалось сформировать CSV: date_from must be <= date_to'); return; }
+                if (S.demo === 'error') { toast('Не удалось сформировать CSV: сервер не ответил.'); return; }
+                const out = anCsv(), link = document.createElement('a');
+                link.href = URL.createObjectURL(out.blob); link.download = out.name;
+                document.body.append(link); link.click();
+                setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 0);
+                toast(`CSV отчёт сформирован. Демонстрация: файл «${out.name}» (${out.count} ${plural(out.count, 'показатель', 'показателя', 'показателей')}) собран в браузере из синтетических данных, сервер не вызывался.`);
+                return;
+            }
+            if (v === 'reset') S.an = { ...AN_FILTERS };
+            else if (v !== 'refresh') { const r = presetRange(v); S.an.dateFrom = r.from; S.an.dateTo = r.to; }
+            S.anDetail = null; render();
+            return;
+        }
+        const d = e.target.closest('[data-an-detail]');
+        if (!d || S.role === 'chair') return;
+        const extra = {};
+        if (d.dataset.stage) extra.stage = d.dataset.stage;
+        if (d.dataset.nosology) extra.nosology = d.dataset.nosology;
+        if (d.dataset.reason) extra.attentionReason = d.dataset.reason;
+        S.anDetail = { type: d.dataset.anDetail, title: d.dataset.title, extra };
+        render();
+        const panel = $('#anDetailPanel'); if (panel) panel.focus({ preventScroll: false });
+    });
 
     function denied(id) {
         return html`${pagehead(NAV_LABEL[id] || 'Раздел', '')}<section class="panel"><div class="error"><div class="error__title">Раздел недоступен для вашей роли</div><div>Права проверяет сервер; в прототипе они повторяют правила приложения.</div><button class="btn btn--sm" data-href="${R().home}">На главную</button></div></section>`;
@@ -1094,7 +1470,6 @@
         export: () => toast('В прототипе файл не формируется — экспорт работает в приложении.'),
         import: () => toast('В прототипе файл не загружается — импорт с проверкой и подтверждением работает в приложении.'),
         calview: (el) => { S.calView = el.dataset.v; render(); },
-        period: (el) => { S.period = el.dataset.v; render(); },
         decide: (el) => decisionModal(el.dataset.id),
         book: (el) => bookModal({ id: el.dataset.id, time: el.dataset.time, date: el.dataset.date, group: el.dataset.group }),
         'save-patient': () => {
@@ -1637,6 +2012,7 @@
     });
     function enterAs(role) {
         S.role = role;
+        resetAnalytics();
         try { localStorage.setItem('proto-role', role); } catch (err) { /* ok */ }
         $('#roleSelect').value = role;
         showAuth('in');
@@ -2805,6 +3181,7 @@
         try { localStorage.setItem('proto-role', S.role); } catch (err) { /* ok */ }
         // Как при выходе в приложении: история и контекст другого пользователя не переносятся.
         S.ai.messages = []; S.ai.ctx = null; S.ai.loading = false;
+        resetAnalytics();
         closeNotif(false); closeSheet();
         location.hash = R().home; render(); renderAI();
     });
@@ -2815,7 +3192,15 @@
         try { localStorage.setItem('proto-theme', next); } catch (err) { /* ok */ }
     });
     $('#menuBtn').addEventListener('click', () => { const open = $('#app').classList.toggle('is-nav-open'); $('#menuBtn').setAttribute('aria-expanded', String(open)); });
-    window.addEventListener('hashchange', () => { render(); $('#view').focus({ preventScroll: true }); window.scrollTo(0, 0); });
+    // Новый вход в «Аналитику» из другого раздела закрывает детализацию — как showView → renderAnalytics в приложении.
+    const sectionOf = (hash) => (hash || '').slice(2).split('?')[0].split('/')[0];
+    let lastSection = sectionOf(location.hash || R().home);
+    window.addEventListener('hashchange', () => {
+        const section = sectionOf(location.hash);
+        if (section === 'analytics' && lastSection !== 'analytics') S.anDetail = null;
+        lastSection = section;
+        render(); $('#view').focus({ preventScroll: true }); window.scrollTo(0, 0);
+    });
 
     if (!location.hash) location.hash = R().home; else render();
 })();

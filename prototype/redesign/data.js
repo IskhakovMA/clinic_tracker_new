@@ -312,14 +312,6 @@
         hasBenefit: false, additionalDiagnosis: '', additionalParticipant: '', uvRuv: false, archived: false,
     });
 
-    // Аналитика: агрегаты считаются по тем же синтетическим пациентам.
-    const byStage = Object.keys(STAGES).map(code => ({ code, label: STAGES[code], value: patients.filter(p => p.stage === code).length }));
-    const weeks = [];
-    for (let w = 11; w >= 0; w--) {
-        const start = addDays(today, -7 * w - 6);
-        weeks.push({ label: `${String(start.getDate()).padStart(2, '0')}.${String(start.getMonth() + 1).padStart(2, '0')}`, added: 3 + Math.floor(rnd() * 9), completed: 1 + Math.floor(rnd() * 6) });
-    }
-
     // Переписка врача с пациентом (по модели Patient Portal v0.5.1): диалог
     // существует только в рамках отношения врач–пациент. Со стороны клиники
     // участник — лечащий врач (аналог ASSIGNED_CARE_TEAM). Тексты синтетические.
@@ -361,7 +353,7 @@
 
     window.DEMO = {
         today: iso(today), STAGES, STAGE_ORDER, ATTENTION_REASONS, PRIORITY, EVENT_TREATMENT, DECISIONS, PGI, SMS_TEMPLATES, HEADS, PATHS, TERMINAL, SCHEDULED, GROUPS, TREATMENTS, SCHEMES, NOSOLOGY,
-        DEPARTMENTS, USERS, DOCTORS, patients, consilium, consSlots, slots, byStage, weeks, conversations,
+        DEPARTMENTS, USERS, DOCTORS, patients, consilium, consSlots, slots, conversations,
         helpers: { iso, addDays, derive, checklistFor },
     };
 })();
