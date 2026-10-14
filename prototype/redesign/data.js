@@ -275,7 +275,8 @@
     const slots = [];
     for (let h = 9; h < 13; h++) for (const m of ['00', '15', '30', '45']) slots.push(`${String(h).padStart(2, '0')}:${m}`);
     const consPatients = patients.filter(p => ['thoracic', 'breast'].includes(NOSOLOGY[p.nosology].group)).slice(0, 9);
-    const statuses = ['signed', 'signed', 'in_review', 'recorded', 'recorded', 'needs_revision', 'recorded', 'resubmitted', 'recorded'];
+    // Статусы — как public_status в services/consilium.py: «revised» = возвращена с доработки.
+    const statuses = ['signed', 'signed', 'in_review', 'recorded', 'recorded', 'needs_revision', 'recorded', 'revised', 'recorded'];
     const consilium = consPatients.map((p, k) => {
         const status = statuses[k];
         const scheme = status === 'signed' && k === 0 ? SCHEMES[0] : null;
@@ -288,8 +289,22 @@
             treatment: status === 'signed' ? (k === 0 ? 'chemotherapy' : 'surgery') : null,
             scheme, goc: status === 'signed' && k === 0, goc65: false,
             routeStage: status === 'signed' ? p.stage : null,
-            revisions: (status === 'needs_revision' || status === 'resubmitted') ? [{ round: 1, author: 'Волкова И. С.', at: iso(addDays(today, -1)), text: 'Приложите заключение КТ с контрастом и результаты ИГХ.' }] : [],
+            revisions: (status === 'needs_revision' || status === 'revised') ? [{ round: 1, author: 'Волкова И. С.', at: iso(addDays(today, -1)), text: 'Приложите заключение КТ с контрастом и результаты ИГХ.' }] : [],
         };
+    });
+
+    // Сетка консилиума (как schedule_slots на сервере): текущая неделя открыта
+    // автоматически (09:00–16:45, шаг 15 минут, все группы), следующие даты —
+    // слоты, созданные председателем. Здесь — один синтетический день на
+    // следующей неделе в торакальной группе и одна запись на нём.
+    const nextMonday = addDays(today, 7 - ((today.getDay() + 6) % 7));
+    const consSlots = [];
+    for (let m = 9 * 60; m < 12 * 60; m += 30) consSlots.push({ id: `slot-${consSlots.length + 1}`, date: iso(nextMonday), time: `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`, group: 'thoracic', createdBy: USERS.chair.id });
+    const futurePatient = patients.find(p => NOSOLOGY[p.nosology].group === 'thoracic' && p.doctorId === DOCTORS[0].id && !consPatients.includes(p));
+    if (futurePatient) consilium.push({
+        id: `c-${consilium.length + 1}`, patientId: futurePatient.id, patientName: futurePatient.name, policy: futurePatient.policy, icd: futurePatient.icd, localization: futurePatient.localization,
+        group: 'thoracic', date: iso(nextMonday), time: '10:00', doctor: futurePatient.doctor, createdBy: futurePatient.doctorId, status: 'recorded',
+        needsSurgeon: true, needsRadiotherapist: false, comment: 'Обсудить тактику лечения.', treatment: null, scheme: null, goc: false, goc65: false, routeStage: null, revisions: [],
     });
 
     // Аналитика: агрегаты считаются по тем же синтетическим пациентам.
@@ -341,7 +356,7 @@
 
     window.DEMO = {
         today: iso(today), STAGES, STAGE_ORDER, ATTENTION_REASONS, PRIORITY, EVENT_TREATMENT, DECISIONS, PGI, SMS_TEMPLATES, HEADS, PATHS, TERMINAL, SCHEDULED, GROUPS, TREATMENTS, SCHEMES, NOSOLOGY,
-        DEPARTMENTS, USERS, DOCTORS, patients, consilium, slots, byStage, weeks, conversations,
+        DEPARTMENTS, USERS, DOCTORS, patients, consilium, consSlots, slots, byStage, weeks, conversations,
         helpers: { iso, addDays, derive, checklistFor },
     };
 })();

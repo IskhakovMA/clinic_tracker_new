@@ -609,6 +609,28 @@ button.tl__step { cursor: pointer; }
 .stage-bars progress::-moz-progress-bar { background: var(--accent); }
 .stage-bars .mono { text-align: right; }
 
+/* ---------- Этап 3.1: консилиум — навигация и сетка ---------- */
+.cons-nav { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto; gap: var(--s4); align-items: end; padding: var(--s4) var(--s5); }
+.cons-nav__text .field__hint { margin-top: 4px; }
+.cons-nav__actions { display: flex; gap: var(--s2); align-items: center; flex-wrap: wrap; }
+.cons-nav__actions .input { width: auto; }
+.group-picker { position: relative; }
+.group-picker__summary { list-style: none; display: flex; align-items: center; cursor: pointer; min-width: 220px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.group-picker__summary::-webkit-details-marker { display: none; }
+.group-picker__menu { position: absolute; z-index: 25; top: calc(100% + 4px); right: 0; width: min(300px, calc(100vw - 32px)); display: grid; gap: 4px; padding: var(--s3); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--r-md); box-shadow: var(--shadow-pop); }
+.group-picker__all { padding-bottom: var(--s2); border-bottom: 1px solid var(--border); margin-bottom: 2px; font-weight: 500; }
+.cons-gen { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto; gap: var(--s3); align-items: end; padding: 0 var(--s5) var(--s4); }
+.cons-gen__hint, .cons-gen__error { grid-column: 1 / -1; }
+.cons-groups { display: grid; gap: var(--s4); padding: 0 0 var(--s4); }
+.cons-group__title { font-size: var(--t-md); font-weight: 600; padding: var(--s2) var(--s5); border-top: 1px solid var(--border); }
+.cons-actions { display: flex; gap: var(--s2); align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.cons-patient { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--accent-text); text-align: left; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .cons-patient:hover { text-decoration: underline; } }
+.cons-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3) var(--s4); }
+.cons-detail { font-size: var(--t-md); overflow-wrap: anywhere; }
+.cons-detail--wide { grid-column: 1 / -1; }
+.empty--compact { padding: var(--s4) var(--s5); justify-items: start; text-align: left; color: var(--text-3); }
+
 /* ---------- Сообщения пациентам ---------- */
 .nav__badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent-soft); color: var(--accent-text); font-variant-numeric: tabular-nums; }
 .msg-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent); color: var(--on-accent); font-variant-numeric: tabular-nums; flex: none; }
@@ -728,6 +750,8 @@ button.tl__step { cursor: pointer; }
     .demo-switch #roleSelect { max-width: none; }
 }
 @media (max-width: 1180px) {
+    .cons-nav { grid-template-columns: minmax(0, 1fr); }
+    .cons-gen { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .grid--main-side { grid-template-columns: minmax(0, 1fr); }
     .grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
@@ -759,6 +783,14 @@ button.tl__step { cursor: pointer; }
     .demo-switch__label { display: none; }
 }
 @media (max-width: 640px) {
+    .cons-details { grid-template-columns: minmax(0, 1fr); }
+    .cons-gen { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 0 var(--s4) var(--s4); }
+    .cons-gen__submit { grid-column: 1 / -1; }
+    .cons-nav { padding: var(--s4); }
+    .group-picker__summary { min-width: 0; max-width: none; }
+    .cons-nav__actions > * { flex: 1 1 140px; }
+    .group-picker__menu { left: 0; right: auto; }
+    .cons-actions { justify-content: flex-start; }
     .list-filters { display: none; }
     .list-filters-btn { display: inline-flex; }
     .cal-list li { grid-template-columns: minmax(0, 1fr) auto; padding: var(--s3) var(--s4); }

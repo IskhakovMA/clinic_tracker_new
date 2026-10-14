@@ -130,8 +130,9 @@
         return next ? html`<span class="status status--ok">${next.title} · ${relDay(next.date)}</span>` : html`<span class="status">Нет плановых событий</span>`;
     };
     const CONS_STATUS = {
-        recorded: ['Записан', 'tag'], in_review: ['На рассмотрении', 'tag tag--accent'], needs_revision: ['На доработке у врача', 'tag tag--warn'],
-        resubmitted: ['Исправлено врачом', 'tag tag--accent'], signed: ['Подписано', 'tag tag--ok'],
+        // Как STATUS_LABELS в services/consilium.py.
+        recorded: ['Записан', 'tag'], in_review: ['На рассмотрении', 'tag tag--accent'], needs_revision: ['На доработке', 'tag tag--warn'],
+        revised: ['Возвращен с доработки', 'tag tag--accent'], signed: ['Подписан', 'tag tag--ok'],
     };
     const consTag = (c) => html`<span class="${CONS_STATUS[c.status][1]}">${CONS_STATUS[c.status][0]}</span>`;
 
@@ -176,49 +177,256 @@
                 ${cols.includes('updated') ? html`<td class="num muted" data-label="Изменён">${fmtDate(p.updated)}</td>` : ''}
             </tr>`)}</tbody></table></div>`;
 
+    /* ---------- Онкологический консилиум: навигация и сетка (этап 3.1) ----------
+       По static/app.js (renderConsilium, renderConsiliumSchedule,
+       renderConsiliumDoctorSchedule, renderConsiliumStats) и
+       services/consilium.py (schedule_slots, generate_schedule,
+       delete_schedule_slot, _slot_appointment). Слоты и записи — синтетические,
+       живут в памяти вкладки; сервер не вызывается. */
+    S.consSlots = (D.consSlots || []).map(x => ({ ...x }));
+    S.cons = { chairDate: D.today, doctorDate: D.today, chairGroups: null, groups: null, onlyFree: false, mineOnly: false, search: '' };
+    const CONS_GROUP_KEYS = Object.keys(D.GROUPS);
+    const consWeekDates = () => {
+        const t = parse(D.today); const monday = D.helpers.addDays(t, -((t.getDay() + 6) % 7));
+        return Array.from({ length: 7 }, (_, k) => D.helpers.iso(D.helpers.addDays(monday, k)));
+    };
+    const DEFAULT_TIMES = []; for (let h = 9; h < 17; h++) for (const m of ['00', '15', '30', '45']) DEFAULT_TIMES.push(`${String(h).padStart(2, '0')}:${m}`);
+    // schedule_slots: сохранённые слоты + автоматически открытая текущая неделя (isDefaultWeek).
+    function consAllSlots() {
+        const out = S.consSlots.map(x => ({ ...x, isDefaultWeek: false }));
+        const keys = new Set(out.map(x => `${x.date}|${x.time}|${x.group}`));
+        for (const date of consWeekDates()) for (const group of CONS_GROUP_KEYS) for (const time of DEFAULT_TIMES) {
+            if (!keys.has(`${date}|${time}|${group}`)) out.push({ id: `current-week-${date}-${time}-${group}`, date, time, group, isDefaultWeek: true });
+        }
+        return out;
+    }
+    const consAt = (date, time, group) => S.consilium.find(c => c.date === date && c.time === time && c.group === group);
+    const consIsChair = () => !!R().perms.consiliumChair;
+    const consSelectedGroups = (chair) => { const sel = chair ? S.cons.chairGroups : S.cons.groups; return sel === null ? CONS_GROUP_KEYS : sel; };
+    const consEditable = (c) => ['recorded', 'needs_revision', 'revised'].includes(c.status);
+    // _slot_appointment: полные сведения — председателю и разработчику (управление
+    // консилиумом) и автору записи по пациенту в своей области; заведующему по
+    // пациенту отделения — ФИО, врач и статус; остальным — только «Занято».
+    function consView(c) {
+        const p = patient(c.patientId);
+        const inScope = !!p && R().scope(p);
+        const mine = c.createdBy === R().user.id;
+        if (R().perms.manageConsilium || R().perms.decideConsilium || (mine && inScope)) return { kind: 'full', mine };
+        if (S.role === 'head' && inScope) return { kind: 'department', mine: false };
+        return null;
+    }
+    const consSearchHit = (c) => { const q = S.cons.search.trim().toLowerCase(); return !q || c.patientName.toLowerCase().includes(q) || (c.policy || '').toLowerCase().includes(q); };
+
+    function consGroupPicker(chair) {
+        const sel = chair ? S.cons.chairGroups : S.cons.groups;
+        const all = sel === null;
+        const labels = CONS_GROUP_KEYS.filter(k => (sel || []).includes(k)).map(k => D.GROUPS[k]);
+        const summary = all ? 'Все консилиумные группы' : !labels.length ? 'Группы не выбраны' : labels.length === 1 ? labels[0] : `Выбрано групп: ${labels.length}`;
+        return html`<details class="group-picker" id="consGroupPicker"><summary class="select group-picker__summary">${summary}</summary>
+            <div class="group-picker__menu" role="group" aria-label="Консилиумные группы">
+                <label class="check group-picker__all"><input type="checkbox" data-cons-group="*" ${raw(all ? 'checked' : '')}> Все консилиумные группы</label>
+                ${CONS_GROUP_KEYS.map(k => html`<label class="check"><input type="checkbox" data-cons-group="${k}" ${raw(all || (sel || []).includes(k) ? 'checked' : '')}> ${D.GROUPS[k]}</label>`)}
+            </div></details>`;
+    }
+
     function viewConsilium() {
         const can = R().can;
         if (!can.consilium) return denied('consilium');
-        const group = S.consGroup || 'thoracic';
-        const rows = D.slots.map(t => ({ t, c: S.consilium.find(c => c.group === group && c.time === t) }));
-        const all = S.consilium;
-        const counts = {
-            total: all.length, review: all.filter(c => c.status === 'in_review').length,
-            revision: all.filter(c => c.status === 'needs_revision').length, signed: all.filter(c => c.status === 'signed').length,
-        };
-        const isMine = (c) => c.createdBy === R().user.id;
-        const action = (c) => {
-            if (can.decide) {
-                if (c.status === 'signed') return html`<button class="btn btn--sm btn--ghost" data-action="decide" data-id="${c.id}">Открыть</button>`;
-                if (c.status === 'needs_revision') return html`<span class="muted" style="font-size:var(--t-sm)">Ожидает врача</span>`;
-                return html`<button class="btn btn--sm ${c.status === 'in_review' ? 'btn--primary' : ''}" data-action="decide" data-id="${c.id}">${c.status === 'in_review' ? 'Продолжить' : 'Рассмотреть'}</button>`;
-            }
-            if (isMine(c) && ['recorded', 'needs_revision', 'resubmitted'].includes(c.status)) return html`<button class="btn btn--sm" data-action="book" data-id="${c.id}">Изменить</button>`;
-            return isMine(c) ? html`<span class="muted" style="font-size:var(--t-sm)">Моя запись</span>` : '';
-        };
-        const d = parse(D.today);
+        const chair = consIsChair();
+        const date = chair ? S.cons.chairDate : S.cons.doctorDate;
+        const groups = consSelectedGroups(chair);
+        // renderConsiliumStats: у председателя — записи дня по выбранным группам, у остальных — свои записи.
+        const rows = (chair ? S.consilium.filter(c => c.date === date && groups.includes(c.group)) : S.consilium.filter(c => c.createdBy === R().user.id)).filter(consSearchHit);
+        const stats = [
+            { label: 'Всего записей', value: rows.length, note: chair ? 'общая очередь консилиума' : 'созданы вами' },
+            { label: 'Предстоящие', value: rows.filter(c => c.date >= D.today).length, note: 'сегодня и позже' },
+            { label: 'Группы', value: new Set(rows.map(c => c.group)).size, note: 'задействовано' },
+            chair ? { label: 'Подписано', value: rows.filter(c => c.status === 'signed').length, note: 'решение председателя' }
+                : { label: 'Нужны специалисты', value: rows.filter(c => c.needsSurgeon || c.needsRadiotherapist).length, note: 'хирург или лучевой терапевт' },
+        ];
         return html`
-            ${pagehead('Онкологический консилиум', can.decide ? 'Записи всех врачей на выбранный день — рассмотрение и подписание решений' : 'Свободные и занятые слоты; записать можно своих пациентов',
-                can.decide ? html`<button class="btn" data-action="registry">Реестры (XLSX)</button>` : html`<button class="btn btn--primary" data-action="book">Записать пациента</button>`,
-                `${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`)}
+            ${pagehead('Онкологический консилиум', chair ? 'Все пациенты клиники, записанные на консилиум, в хронологическом порядке' : 'Ваши пациенты, записанные на рассмотрение консилиумной группой',
+                html`${chair ? html`<button class="btn" data-action="registry">Реестры (XLSX)</button>` : ''}${can.book ? html`<button class="btn btn--primary" data-action="book">Запись</button>` : ''}`)}
             ${S.role === 'developer' ? html`<div class="demo-note">Расхождение, не согласовано: сервер разрешает разработчику управлять сеткой, реестрами и аналитикой консилиума (manageConsilium), а действующий интерфейс показывает эти функции только председателю. Прототип повторяет действующий интерфейс; это не продуктовое решение.</div>` : ''}
+            <div class="callout callout--info callout--flush"><div class="callout__text">${chair ? 'Все дни текущей недели открыты автоматически. Следующие недели становятся доступны врачам после создания слотов председателем.' : 'Текущая неделя доступна автоматически. Следующие недели отображаются только после открытия расписания председателем.'}</div></div>
             <div class="stack">
-                ${metrics([
-                    { label: 'Записано на день', value: counts.total },
-                    { label: 'На рассмотрении', value: counts.review },
-                    { label: 'Ждут исправлений врача', value: counts.revision, tone: counts.revision ? 'warn' : '' },
-                    { label: 'Решения подписаны', value: counts.signed },
-                ])}
-                <section class="panel slots">
-                    <div class="panel__head"><div><h2 class="panel__title">Сетка расписания</h2><div class="panel__meta">${D.GROUPS[group]} группа · слоты по 15 минут</div></div>
-                        <select class="select" style="width:auto" id="groupSelect" aria-label="Консилиумная группа">${Object.entries(D.GROUPS).map(([k, v]) => html`<option value="${k}" ${raw(k === group ? 'selected' : '')}>${v}</option>`)}</select></div>
-                    <div class="panel__body--flush">${stateful(html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th style="width:72px">Время</th><th>Пациент</th><th>Лечащий врач</th><th>Статус</th><th class="num actions"><span class="sr-only">Действие</span></th></tr></thead><tbody>
-                        ${rows.map(({ t, c }) => c ? html`<tr><td class="mono">${t}</td><td data-label="Пациент"><div class="cell-title">${c.patientName}</div><div class="cell-sub"><span class="mono">${c.icd}</span> · ${c.comment}</div></td><td class="nowrap" data-label="Врач">${c.doctor}</td><td data-label="Статус">${consTag(c)}</td><td class="num actions">${action(c)}</td></tr>`
-                            : html`<tr><td class="mono slot-free">${t}</td><td class="slot-free" colspan="3">Свободно</td><td class="num actions">${can.book ? html`<button class="btn btn--sm btn--ghost" data-action="book" data-time="${t}">Записать</button>` : ''}</td></tr>`)}
-                    </tbody></table></div>`, { rows: 10, emptyTitle: 'На этот день слоты не открыты', emptyText: 'Председатель открывает слоты на будущие недели.' })}</div>
+                <section class="panel cons-nav">
+                    <div class="cons-nav__text"><span class="field__label">День и консилиумная группа</span><p class="field__hint">Выберите один день и нужную группу для просмотра сетки свободных и занятых слотов.</p></div>
+                    <div class="field cons-nav__search"><label class="field__label" for="consSearch">Поиск по ФИО или полису</label><input class="input" type="search" id="consSearch" placeholder="ФИО или полис…" autocomplete="off" value="${S.cons.search}"></div>
+                    <div class="cons-nav__actions">
+                        <input class="input" type="date" id="consDate" value="${date}" aria-label="День расписания">
+                        ${consGroupPicker(chair)}
+                        <button class="btn btn--sm btn--ghost" data-cons="today">Сегодня</button>
+                    </div>
+                </section>
+                ${metrics(stats)}
+                <section class="panel">
+                    <div class="panel__head panel__head--wrap"><div><h2 class="panel__title">Сетка расписания консилиума</h2><div class="panel__meta">${chair ? 'Текущая неделя открыта автоматически. Здесь можно открыть слоты на любую будущую дату.' : 'Выберите день текущей недели или будущую дату, которую открыл председатель.'}</div></div>
+                        <div class="kit-row">
+                            <button class="btn btn--sm ${S.cons.onlyFree ? 'btn--primary' : ''}" data-cons="free" aria-pressed="${S.cons.onlyFree}">Только свободные слоты</button>
+                            ${chair ? '' : html`<button class="btn btn--sm ${S.cons.mineOnly ? 'btn--primary' : ''}" data-cons="mine" aria-pressed="${S.cons.mineOnly}">Мои записи</button>`}
+                        </div></div>
+                    ${chair ? consGenerateForm() : ''}
+                    ${stateful(chair ? consChairGrid(date, groups) : consDoctorGrid(date, groups), { rows: 8, emptyTitle: 'На выбранный день слотов нет.', emptyText: '' })}
                 </section>
             </div>`;
     }
+
+    // openConsiliumDetails: просмотр записи без действий; у председателя в подвале только «Закрыть».
+    function consDetailsModal(c) {
+        const f = (label, value, wide) => html`<div class="field ${wide ? 'cons-detail--wide' : ''}"><span class="field__label">${label}</span><div class="cons-detail">${value || 'Не указано'}</div></div>`;
+        const specialists = [c.needsSurgeon && 'Хирург', c.needsRadiotherapist && 'Лучевой терапевт'].filter(Boolean).join(', ') || 'Не требуются';
+        const lastReturn = c.revisions.length ? c.revisions[c.revisions.length - 1].text : '';
+        openModal(modalShell(`Запись: ${c.patientName}`, '', html`
+            <div class="form__section">Пациент и запись</div>
+            <div class="cons-details">${f('ФИО пациента', c.patientName)}${f('Полис ОМС', c.policy)}${f('Консилиумная группа', D.GROUPS[c.group])}${f('Дата и время', `${fmtNum(c.date)}, ${c.time}`)}${f('Лечащий врач', c.doctor)}</div>
+            <div class="form__section">Сведения для консилиума</div>
+            <div class="cons-details">${f('Локализация', c.localization)}${f('Основной диагноз', c.icd)}${f('Дополнительный диагноз', '')}${f('Участники', specialists)}${f('Статус', CONS_STATUS[c.status][0])}${f('Назначенное лечение', c.treatment ? D.TREATMENTS[c.treatment] : '')}${c.status === 'signed' ? f('Этап маршрута на момент решения', c.routeStage ? D.STAGES[c.routeStage] : 'Не установлен') : ''}${f('Отметки ГОК', [c.goc && 'ГОК', c.goc65 && 'ГОК 65+'].filter(Boolean).join(', '))}
+                ${f('Схема лечения', c.scheme ? `${c.scheme.code} — ${c.scheme.name}` : '', true)}${f('Комментарий врача', c.comment, true)}${lastReturn ? f('Комментарий председателя', lastReturn, true) : ''}</div>
+            <p class="demo-hint">Только просмотр. Льгота и отметка УВ/РУВ в синтетических данных прототипа пока не заполняются (подэтап 3.2).</p>`,
+            html`<span class="spacer"></span><button class="btn btn--primary" data-close>Закрыть</button>`));
+    }
+
+    function consGenerateForm() {
+        const g = S.cons.gen || { date: '', group: CONS_GROUP_KEYS[0], start: '09:00', end: '17:00', interval: '15', error: '' };
+        return html`<form class="cons-gen" id="consGenForm" novalidate>
+            <div class="field"><label class="field__label" for="genDate">Дата</label><input class="input" type="date" id="genDate" min="${D.today}" value="${g.date}" aria-describedby="genHint"></div>
+            <div class="field"><label class="field__label" for="genGroup">Группа</label><select class="select" id="genGroup">${CONS_GROUP_KEYS.map(k => html`<option value="${k}" ${raw(k === g.group ? 'selected' : '')}>${D.GROUPS[k]}</option>`)}</select></div>
+            <div class="field"><label class="field__label" for="genStart">Начало</label><input class="input" type="time" id="genStart" value="${g.start}"></div>
+            <div class="field"><label class="field__label" for="genEnd">Окончание</label><input class="input" type="time" id="genEnd" value="${g.end}"></div>
+            <div class="field"><label class="field__label" for="genInterval">Интервал</label><select class="select" id="genInterval">${['15', '30', '60'].map(v => html`<option value="${v}" ${raw(v === g.interval ? 'selected' : '')}>${v} минут</option>`)}</select></div>
+            <div class="cons-gen__submit"><button class="btn btn--primary" data-cons="generate">Создать слоты</button></div>
+            <p class="field__hint cons-gen__hint" id="genHint">Прошедшие дни и даты с уже открытым расписанием для выбранной группы недоступны. Демонстрация: слоты создаются только в этой вкладке.</p>
+            ${g.error ? html`<div class="callout callout--danger callout--flush cons-gen__error" role="alert"><div class="callout__text">${g.error}</div></div>` : ''}
+        </form>`;
+    }
+
+    const consNameCell = (c) => html`<button type="button" class="cons-patient" data-cons="details" data-id="${c.id}">${c.patientName}</button>${c.comment ? html`<div class="cell-sub">${c.comment}</div>` : ''}`;
+    function consChairActions(c) {
+        if (c.status === 'signed' || c.status === 'needs_revision') return consTag(c);
+        return html`${consTag(c)}<button class="btn btn--sm btn--primary" data-action="decide" data-id="${c.id}">${c.status === 'in_review' ? 'Продолжить рассмотрение' : c.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть'}</button>`;
+    }
+    const consTable = (rows) => html`<div class="table-wrap"><table class="table table--cards cons-grid"><thead><tr><th>Время записи</th><th>ФИО пациента</th><th>Код МКБ-10</th><th>ФИО врача</th><th><span class="sr-only">Действия</span></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+
+    function consChairGrid(date, groups) {
+        if (!groups.length) return html`<div class="empty"><div class="empty__title">Выберите одну или несколько консилиумных групп.</div></div>`;
+        const searching = !!S.cons.search.trim();
+        const slots = consAllSlots().filter(x => x.date === date && groups.includes(x.group));
+        const slotKeys = new Set(slots.map(x => `${x.date}|${x.time}|${x.group}`));
+        // Записи без слота в сетке (как в приложении) показываются как занятые строки.
+        let rows = [...slots.map(slot => ({ slot, c: consAt(slot.date, slot.time, slot.group) })),
+            ...S.consilium.filter(c => c.date === date && groups.includes(c.group) && !slotKeys.has(`${c.date}|${c.time}|${c.group}`)).map(c => ({ slot: { date: c.date, time: c.time, group: c.group, occupied: true }, c }))]
+            .sort((a, b) => `${a.slot.time}|${a.slot.group}`.localeCompare(`${b.slot.time}|${b.slot.group}`));
+        if (searching) rows = rows.filter(r => r.c && consSearchHit(r.c));
+        if (S.cons.onlyFree) rows = rows.filter(r => !r.c);
+        return html`<div class="cons-groups">${groups.map(g => {
+            const gr = rows.filter(r => r.slot.group === g);
+            return html`<section class="cons-group"><h3 class="cons-group__title">${D.GROUPS[g]}</h3>${gr.length ? consTable(gr.map(({ slot, c }) => html`<tr>
+                <td class="mono">${slot.time}</td>
+                <td data-label="Пациент">${c ? consNameCell(c) : html`<span class="muted">—</span>`}</td>
+                <td class="mono" data-label="МКБ-10">${c ? c.icd : '—'}</td>
+                <td data-label="Врач">${c ? c.doctor : '—'}</td>
+                <td class="actions"><div class="cons-actions">${c ? consChairActions(c) : slot.isDefaultWeek ? html`<span class="muted">—</span>` : html`<button class="btn btn--sm btn--ghost" data-cons="delete-slot" data-id="${slot.id}">Удалить</button>`}</div></td></tr>`))
+                : html`<div class="empty empty--compact"><div>${searching ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.'}</div></div>`}</section>`;
+        })}</div>`;
+    }
+
+    function consDoctorGrid(date, groups) {
+        if (!groups.length) return html`<div class="empty"><div class="empty__title">Выберите одну или несколько консилиумных групп.</div></div>`;
+        const q = S.cons.search.trim();
+        let slots = consAllSlots().filter(x => x.date === date && groups.includes(x.group)).map(slot => {
+            const c = consAt(slot.date, slot.time, slot.group);
+            return { slot, c, v: c ? consView(c) : null };
+        }).sort((a, b) => `${a.slot.time}|${a.slot.group}`.localeCompare(`${b.slot.time}|${b.slot.group}`));
+        if (q) slots = slots.filter(r => r.c && r.v && consSearchHit(r.c));
+        if (S.cons.onlyFree) slots = slots.filter(r => !r.c);
+        if (S.cons.mineOnly) slots = slots.filter(r => r.v && r.v.mine);
+        return html`<div class="cons-groups">${groups.map(g => {
+            const gr = slots.filter(r => r.slot.group === g);
+            return html`<section class="cons-group"><h3 class="cons-group__title">${D.GROUPS[g]}</h3>${gr.length ? consTable(gr.map(({ slot, c, v }) => {
+                const visible = c && v;
+                const cell = !c ? html`<span class="muted">—</span>` : !v ? html`<span class="muted">Занято</span>` : html`<div class="cell-title">${c.patientName}</div>`;
+                const actions = !c ? (R().can.book ? html`<button class="btn btn--sm btn--primary" data-action="book" data-date="${slot.date}" data-group="${slot.group}" data-time="${slot.time}">Запись</button>` : '')
+                    : !v ? html`<span class="tag">Занято</span>`
+                    : html`${v.mine ? html`<span class="tag tag--warn">Моя запись</span>` : ''}${v.kind === 'department' ? html`<span class="tag">${CONS_STATUS[c.status][0]}</span>` : ''}${v.mine && consEditable(c) ? html`<button class="btn btn--sm btn--ghost" data-action="book" data-id="${c.id}">Изменить</button>` : ''}`;
+                return html`<tr><td class="mono">${slot.time}</td><td data-label="Пациент">${cell}</td>
+                    <td class="mono" data-label="МКБ-10">${visible && v.kind === 'full' ? c.icd : '—'}</td>
+                    <td data-label="Врач">${visible ? c.doctor : '—'}</td>
+                    <td class="actions"><div class="cons-actions">${actions}</div></td></tr>`;
+            })) : html`<div class="empty empty--compact"><div>${q ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.'}</div></div>`}</section>`;
+        })}</div>`;
+    }
+
+    // Управление навигацией, фильтрами и сеткой.
+    document.addEventListener('change', (e) => {
+        const t = e.target;
+        if (t.id === 'consDate') { if (!t.value) return; if (consIsChair()) S.cons.chairDate = t.value; else S.cons.doctorDate = t.value; render(); return; }
+        const g = t.closest('[data-cons-group]');
+        if (g) {
+            const chair = consIsChair(), key = chair ? 'chairGroups' : 'groups';
+            if (g.dataset.consGroup === '*') S.cons[key] = t.checked ? null : [];
+            else {
+                const cur = new Set(S.cons[key] === null ? CONS_GROUP_KEYS : S.cons[key]);
+                if (t.checked) cur.add(g.dataset.consGroup); else cur.delete(g.dataset.consGroup);
+                S.cons[key] = cur.size === CONS_GROUP_KEYS.length ? null : [...cur];
+            }
+            render();
+            const pk = $('#consGroupPicker'); if (pk) pk.open = true;
+            const again = document.querySelector(`[data-cons-group="${g.dataset.consGroup}"]`); if (again) again.focus({ preventScroll: true });
+            return;
+        }
+        if (['genDate', 'genGroup', 'genStart', 'genEnd', 'genInterval'].includes(t.id)) {
+            S.cons.gen = { date: $('#genDate').value, group: $('#genGroup').value, start: $('#genStart').value, end: $('#genEnd').value, interval: $('#genInterval').value, error: (S.cons.gen || {}).error || '' };
+        }
+    });
+    document.addEventListener('input', (e) => {
+        if (e.target.id !== 'consSearch') return;
+        const pos = e.target.selectionStart; S.cons.search = e.target.value; render();
+        const n = $('#consSearch'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+    });
+    document.addEventListener('click', (e) => {
+        const pk = $('#consGroupPicker');
+        if (pk && pk.open && !pk.contains(e.target)) pk.open = false;
+        const b = e.target.closest('[data-cons]');
+        if (!b) return;
+        const act = b.dataset.cons;
+        if (act === 'today') { if (consIsChair()) S.cons.chairDate = D.today; else S.cons.doctorDate = D.today; render(); return; }
+        if (act === 'free') { S.cons.onlyFree = !S.cons.onlyFree; if (S.cons.onlyFree) S.cons.mineOnly = false; render(); return; }
+        if (act === 'mine') { S.cons.mineOnly = !S.cons.mineOnly; if (S.cons.mineOnly) S.cons.onlyFree = false; render(); return; }
+        if (act === 'details') { const c = S.consilium.find(x => x.id === b.dataset.id); if (c && consView(c) && consView(c).kind === 'full') consDetailsModal(c); return; }
+        if (!consIsChair()) return;   // генерация и удаление слотов — только у председателя (как в действующем интерфейсе)
+        if (act === 'generate') {
+            e.preventDefault();
+            const g = { date: $('#genDate').value, group: $('#genGroup').value, start: $('#genStart').value, end: $('#genEnd').value, interval: $('#genInterval').value, error: '' };
+            const opened = new Set(consAllSlots().filter(x => x.group === g.group).map(x => x.date));
+            const toMin = (v) => { const [h, m] = v.split(':').map(Number); return h * 60 + m; };
+            if (!g.date || g.date < D.today || opened.has(g.date)) g.error = 'Выберите доступную дату в календаре.';
+            else if (!g.start || !g.end || toMin(g.end) <= toMin(g.start)) g.error = 'Не удалось создать сетку: Время окончания должно быть позже времени начала';
+            else if (toMin(g.end) - toMin(g.start) > 12 * 60) g.error = 'Не удалось создать сетку: Сетка расписания не может быть длиннее 12 часов';
+            if (g.error) { S.cons.gen = g; render(); return; }
+            const keys = new Set(S.consSlots.map(x => `${x.date}|${x.time}|${x.group}`));
+            let created = 0;
+            for (let m = toMin(g.start); m < toMin(g.end); m += Number(g.interval)) {
+                const time = `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+                if (keys.has(`${g.date}|${time}|${g.group}`)) continue;   // INSERT OR IGNORE
+                S.consSlots.push({ id: `slot-${Date.now()}-${created}`, date: g.date, time, group: g.group, createdBy: R().user.id });
+                created++;
+            }
+            S.cons.gen = { ...g, date: '', error: '' };
+            S.cons.chairDate = g.date; if (S.cons.chairGroups !== null && !S.cons.chairGroups.includes(g.group)) S.cons.chairGroups = [...S.cons.chairGroups, g.group];
+            render();
+            toast(created ? `Создано свободных слотов: ${created}. Демонстрация: только в этой вкладке.` : 'Такие слоты уже существуют.');
+            return;
+        }
+        if (act === 'delete-slot') {
+            const slot = S.consSlots.find(x => x.id === b.dataset.id);
+            if (!slot) return;
+            if (consAt(slot.date, slot.time, slot.group)) { toast('Не удалось удалить слот: Нельзя удалить занятый слот'); return; }
+            S.consSlots = S.consSlots.filter(x => x.id !== slot.id);
+            render(); toast('Свободный слот удалён (демо).');
+        }
+    });
+    document.addEventListener('submit', (e) => { if (e.target.id === 'consGenForm') { e.preventDefault(); const b = $('[data-cons="generate"]'); if (b) b.click(); } });
 
     function viewConsiliumAnalytics() {
         const signed = S.consilium.filter(c => c.status === 'signed');
@@ -233,7 +441,7 @@
                 ${metrics([
                     { label: 'Всего записей', value: S.consilium.length, note: 'за выбранный день' },
                     { label: 'Подписано', value: signed.length },
-                    { label: 'Ожидают решения', value: S.consilium.filter(c => ['recorded', 'in_review', 'resubmitted'].includes(c.status)).length },
+                    { label: 'Ожидают решения', value: S.consilium.filter(c => ['recorded', 'in_review', 'revised'].includes(c.status)).length },
                     { label: 'Возвращено', value: S.consilium.filter(c => c.status === 'needs_revision').length, tone: 'warn', note: 'ожидают доработки врача' },
                 ])}
                 <div class="grid grid--3">
@@ -371,9 +579,12 @@
         const existing = opts.id ? S.consilium.find(c => c.id === opts.id) : null;
         const booked = new Set(S.consilium.map(c => c.patientId));
         const options = scoped().filter(p => !booked.has(p.id) || (existing && existing.patientId === p.id));
-        const group = S.consGroup || 'thoracic';
-        const free = D.slots.filter(t => !S.consilium.some(c => c.group === group && c.time === t) || (existing && existing.time === t));
-        openModal(modalShell(existing ? 'Изменение записи на консилиум' : 'Запись на онкологический консилиум', `${D.GROUPS[group]} группа · ${fmtNum(D.today)}`, html`
+        // Дата и группа — из выбранного слота или записи; без слота — день и первая выбранная группа сетки.
+        const date = existing ? existing.date : opts.date || S.cons.doctorDate;
+        const group = existing ? existing.group : opts.group || consSelectedGroups(false)[0] || CONS_GROUP_KEYS[0];
+        const free = consAllSlots().filter(x => x.date === date && x.group === group).map(x => x.time).sort()
+            .filter(t => !consAt(date, t, group) || (existing && existing.time === t));
+        openModal(modalShell(existing ? 'Изменение записи на консилиум' : 'Запись на онкологический консилиум', `${D.GROUPS[group]} группа · ${fmtNum(date)}`, html`
             ${existing && existing.revisions.length ? html`<ul class="history">${existing.revisions.map(r => html`<li><div class="history__meta">Возврат · раунд ${r.round} · ${r.author}</div><div>${r.text}</div></li>`)}</ul>` : ''}
             <form class="form" id="bookForm" novalidate>
                 <div class="form__section">Пациент и слот</div>
@@ -381,14 +592,14 @@
                     <select class="select" id="bkPatient" ${raw(existing ? 'disabled' : '')}><option value="">Выберите пациента</option>${options.map(p => html`<option value="${p.id}" ${raw(existing && existing.patientId === p.id ? 'selected' : '')}>${p.name} · ${p.icd}</option>`)}</select>
                     <span class="field__hint">Показаны ваши пациенты без записи на консилиум.</span><span class="field__error" id="bkPatientErr" hidden>Выберите пациента.</span></div>
                 <div class="form__row">
-                    <div class="field"><label class="field__label" for="bkTime">Время <span class="req">*</span></label><select class="select" id="bkTime">${free.map(t => html`<option ${raw(t === (existing ? existing.time : opts.time) ? 'selected' : '')}>${t}</option>`)}</select></div>
+                    <div class="field"><label class="field__label" for="bkTime">Время <span class="req">*</span></label><select class="select" id="bkTime">${free.map(t => html`<option ${raw(t === (existing ? existing.time : opts.time) ? 'selected' : '')}>${t}</option>`)}</select>${free.length ? '' : html`<span class="field__hint">На этот день свободных слотов нет — выберите другой день в сетке.</span>`}</div>
                     <div class="field"><label class="field__label" for="bkPolicy">Полис ОМС</label><input class="input mono" id="bkPolicy" readonly value="${existing ? existing.policy : ''}" placeholder="Подставляется из карточки"></div>
                 </div>
                 <div class="form__section">Сведения для консилиума</div>
                 <div class="field"><label class="field__label" for="bkComment">Комментарий</label><textarea class="textarea" id="bkComment" placeholder="Что обсудить на консилиуме">${existing ? existing.comment : ''}</textarea></div>
                 <div style="display:flex;gap:var(--s5);flex-wrap:wrap"><label class="check"><input type="checkbox" id="bkSurgeon" ${raw(!existing || existing.needsSurgeon ? 'checked' : '')}> Нужен хирург</label><label class="check"><input type="checkbox" id="bkRadio" ${raw(existing && existing.needsRadiotherapist ? 'checked' : '')}> Нужен радиотерапевт</label></div>
             </form>`,
-            html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-action="save-booking" data-id="${existing ? existing.id : ''}">${existing ? 'Сохранить и отправить' : 'Записать'}</button>`), (m) => {
+            html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-action="save-booking" data-id="${existing ? existing.id : ''}" data-date="${date}" data-group="${group}" ${raw(free.length ? '' : 'disabled')}>${existing ? 'Сохранить и отправить' : 'Записать'}</button>`), (m) => {
             m.querySelector('#bkPatient').addEventListener('change', (e) => { const p = patient(e.target.value); m.querySelector('#bkPolicy').value = p ? p.policy : ''; m.querySelector('#bkPatientErr').hidden = true; e.target.removeAttribute('aria-invalid'); });
         });
     }
@@ -422,7 +633,7 @@
         calview: (el) => { S.calView = el.dataset.v; render(); },
         period: (el) => { S.period = el.dataset.v; render(); },
         decide: (el) => decisionModal(el.dataset.id),
-        book: (el) => bookModal({ id: el.dataset.id, time: el.dataset.time }),
+        book: (el) => bookModal({ id: el.dataset.id, time: el.dataset.time, date: el.dataset.date, group: el.dataset.group }),
         start: (el) => { const c = S.consilium.find(x => x.id === el.dataset.id); c.status = 'in_review'; render(); decisionModal(c.id); toast('Рассмотрение начато.'); },
         return: (el) => returnModal(el.dataset.id),
         'confirm-return': (el) => {
@@ -448,11 +659,11 @@
             const time = $('#bkTime').value;
             if (el.dataset.id) {
                 const c = S.consilium.find(x => x.id === el.dataset.id);
-                Object.assign(c, { time, comment: $('#bkComment').value || c.comment, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, status: c.status === 'needs_revision' ? 'resubmitted' : c.status });
+                Object.assign(c, { time, comment: $('#bkComment').value || c.comment, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, status: c.status === 'needs_revision' ? 'revised' : c.status });
                 toast('Запись обновлена.');
             } else {
                 const p = patient(sel.value);
-                S.consilium.push({ id: `c-${Date.now()}`, patientId: p.id, patientName: p.name, policy: p.policy, icd: p.icd, localization: p.localization, group: S.consGroup || 'thoracic', date: D.today, time, doctor: p.doctor, status: 'recorded', createdBy: R().user.id, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, comment: $('#bkComment').value || 'Обсудить тактику лечения.', revisions: [] });
+                S.consilium.push({ id: `c-${Date.now()}`, patientId: p.id, patientName: p.name, policy: p.policy, icd: p.icd, localization: p.localization, group: el.dataset.group, date: el.dataset.date, time, doctor: p.doctor, status: 'recorded', createdBy: R().user.id, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, comment: $('#bkComment').value || 'Обсудить тактику лечения.', revisions: [] });
                 toast('Пациент записан на консилиум.');
             }
             closeModal(); render();
@@ -2134,7 +2345,6 @@
     function bindView() {
         const s = $('#patientSearch');
         if (s) s.addEventListener('input', () => { const pos = s.selectionStart; history.replaceState(null, '', `#/patients${s.value ? `?q=${encodeURIComponent(s.value)}` : ''}`); render(); const n = $('#patientSearch'); n.focus(); n.setSelectionRange(pos, pos); });
-        const g = $('#groupSelect'); if (g) g.addEventListener('change', () => { S.consGroup = g.value; render(); });
     }
 
     document.addEventListener('click', (e) => {
