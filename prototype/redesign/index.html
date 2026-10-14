@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru" data-theme="light">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Система планирования — прототип редизайна</title>
+    <script>
+        // Тема до первой отрисовки: сохранённый выбор, иначе системная.
+        (function () {
+            var t = null;
+            try { t = localStorage.getItem('proto-theme'); } catch (e) {}
+            if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            document.documentElement.setAttribute('data-theme', t);
+        })();
+    </script>
+    <!-- Шрифты IBM Plex из основного приложения (встроены, сеть не нужна) -->
+    <link rel="stylesheet" href="../../static/fonts.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app" id="app">
+    <aside class="sidebar" id="sidebar" aria-label="Основная навигация">
+        <div class="brand">
+            <div class="brand__mark" aria-hidden="true">СП</div>
+            <div>
+                <div class="brand__name">Система планирования</div>
+                <div class="brand__sub">Маршрут онкологического пациента</div>
+            </div>
+        </div>
+        <nav id="nav"></nav>
+        <div class="sidebar__foot">
+            <div class="user">
+                <div class="avatar" id="userAvatar"></div>
+                <div style="min-width:0">
+                    <div class="user__name" id="userName"></div>
+                    <div class="user__role" id="userRole"></div>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <div class="main">
+        <header class="topbar">
+            <button class="iconbtn topbar__menu" id="menuBtn" aria-label="Открыть меню" aria-controls="sidebar" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <label class="search" for="globalSearch">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                <input id="globalSearch" type="search" placeholder="ФИО, полис ОМС, МКБ-10…" autocomplete="off">
+                <span class="kbd">/</span>
+            </label>
+            <div class="topbar__spacer"></div>
+            <div class="demo-switch" title="Только для демонстрации">
+                <span class="demo-switch__label">Роль</span>
+                <select class="select" id="roleSelect" aria-label="Демонстрационная роль">
+                    <option value="doctor">Врач</option>
+                    <option value="head">Заведующий</option>
+                    <option value="chair">Председатель ОК</option>
+                    <option value="management">Руководство</option>
+                </select>
+                <span class="demo-switch__label">Состояние</span>
+                <select class="select" id="stateSelect" aria-label="Демонстрационное состояние данных">
+                    <option value="ok">Данные</option>
+                    <option value="loading">Загрузка</option>
+                    <option value="empty">Пусто</option>
+                    <option value="error">Ошибка</option>
+                </select>
+            </div>
+            <button class="iconbtn" id="themeBtn" aria-label="Переключить тему">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
+            </button>
+            <button class="iconbtn" id="notifBtn" aria-label="Уведомления">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
+                <span class="dot-badge" aria-hidden="true"></span>
+            </button>
+        </header>
+        <main class="content" id="view" tabindex="-1"></main>
+    </div>
+</div>
+
+<div class="scrim" id="scrim" hidden></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" hidden></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
