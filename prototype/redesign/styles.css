@@ -417,7 +417,7 @@ fieldset[disabled] .choice, fieldset[disabled] .check { cursor: not-allowed; }
 }
 @starting-style { .toast { transform: translateY(8px); opacity: 0; } }
 
-/* ---------- ИИ-ассистент: боковая панель ---------- */
+/* ---------- ИИ-помощник: боковая панель ---------- */
 .ai-trigger { height: 34px; padding: 0 var(--s3); color: var(--text-2); border-color: var(--border); }
 .ai-trigger svg { width: 16px; height: 16px; color: var(--accent-text); }
 .ai-trigger.is-muted svg { color: var(--text-3); }

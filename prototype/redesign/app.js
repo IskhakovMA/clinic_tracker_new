@@ -274,7 +274,7 @@
                     <div class="ptitle">
                         <div><h1 style="font-size:var(--t-2xl);font-weight:600;line-height:1.2">${p.name}</h1>
                         <div class="facts"><span><b>${p.age}</b> лет</span><span>Полис ОМС <b class="mono">${p.policy}</b></span><span>Диагноз <b class="mono">${p.icd}</b> · ${p.nosologyLabel}</span><span>Лечащий врач <b>${p.doctor}</b></span></div></div>
-                        <div class="pagehead__actions"><button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-ассистента по пациенту: ${p.name}">Спросить ассистента</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
+                        <div class="pagehead__actions"><button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-помощника по пациенту: ${p.name}">Спросить помощника</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
                     </div>
                 </div>
                 <div class="route" aria-label="Маршрут лечения">${D.STAGE_ORDER.map((s, k) => {
@@ -629,7 +629,7 @@
         comment: () => toast('Комментарий в прототипе не сохраняется.'),
     };
 
-    /* ---------- ИИ-ассистент (демонстрационный сценарий) ----------
+    /* ---------- ИИ-помощник (демонстрационный сценарий) ----------
        В приложении: POST /api/ai/chat, только чтение, данные — через
        инструменты с проверкой области доступа на сервере. Здесь модели нет:
        ответы заготовлены и считаются по синтетическим данным в той же
@@ -651,13 +651,13 @@
         const needs = list.filter(p => p.overdue || p.attention.length);
         const ctx = S.ai.ctx && patient(S.ai.ctx);
         if (/(измени|переведи|перевед|отметь|удали|создай|запиши|назначь|закрой|отправь|исправь)/.test(q)) {
-            return { text: 'Режим ассистента — только просмотр: он не создаёт, не изменяет и не удаляет данные, не отмечает уведомления и не отправляет сообщения. Это действие выполняется в соответствующем разделе системы.' };
+            return { text: 'Режим помощника — только просмотр: он не создаёт, не изменяет и не удаляет данные, не отмечает уведомления и не отправляет сообщения. Это действие выполняется в соответствующем разделе системы.' };
         }
         if (/(диагноз постав|какое лечение|назначить лечение|тяжест|прогноз|дозиров)/.test(q)) {
-            return { text: 'Ассистент не ставит диагнозы, не назначает лечение и не оценивает медицинскую тяжесть — это решение врача и консилиума. Могу показать сведения о маршруте и событиях в пределах вашей области доступа.' };
+            return { text: 'Помощник не ставит диагнозы, не назначает лечение и не оценивает медицинскую тяжесть — это решение врача и консилиума. Могу показать сведения о маршруте и событиях в пределах вашей области доступа.' };
         }
         if (/(телефон|полис|снилс|паспорт)/.test(q)) {
-            return { text: 'Телефоны, полисы ОМС и другие персональные идентификаторы ассистент не запрашивает и не раскрывает. Их можно посмотреть в карточке пациента, если она вам доступна.' };
+            return { text: 'Телефоны, полисы ОМС и другие персональные идентификаторы помощник не запрашивает и не раскрывает. Их можно посмотреть в карточке пациента, если она вам доступна.' };
         }
         if (ctx && !/(мои|отделени|нагрузк|сколько пациентов|причин)/.test(q)) {
             const next = ctx.events.find(e => !e.done && e.date >= D.today);
@@ -712,31 +712,31 @@
         const sugg = AI_SUGGESTIONS[S.role === 'doctor' ? 'doctor' : S.role === 'head' ? 'head' : 'other'];
         const msgs = S.ai.messages.map(m => html`
             <article class="ai-msg ai-msg--${m.role}">
-                <div class="ai-msg__role">${m.role === 'user' ? 'Вы' : 'Ассистент'}</div>
+                <div class="ai-msg__role">${m.role === 'user' ? 'Вы' : 'Помощник'}</div>
                 <div class="ai-msg__text">${m.text}</div>
                 ${m.role === 'assistant' ? html`<span class="ai-demo-tag">Демо-ответ прототипа · не модель</span>` : ''}
                 ${m.refs && m.refs.length ? html`<div class="ai-refs">${m.refs.map(r => html`<div class="ai-ref"><div class="ai-ref__body"><div class="ai-ref__title">${r.title}</div><div class="ai-ref__sub">${r.sub}</div></div><button class="btn btn--sm btn--ghost" data-ai-open="${r.id}" aria-label="Открыть пациента: ${r.title}">Открыть</button></div>`)}</div>` : ''}
             </article>`);
         body.innerHTML = String(html`
             <div class="ai-scroll" id="aiScroll">
-            <div class="ai-note"><b>Только просмотр.</b> Ассистент не изменяет данные и не заменяет медицинское решение. Видит только пациентов в вашей области доступа. История хранится в этой вкладке.
+            <div class="ai-note"><b>Только просмотр.</b> Помощник не изменяет данные и не заменяет медицинское решение. Видит только пациентов в вашей области доступа. История хранится в этой вкладке.
                 <br><b>Прототип:</b> модель не подключена — ответы заготовлены по синтетическим данным.</div>
             ${ctx ? html`<div class="ai-context"><span>Пациент: ${ctx.name}</span><button class="btn btn--sm btn--ghost" data-ai-clearctx aria-label="Убрать контекст пациента">Убрать</button></div>` : ''}
             ${avail ? html`
                 <div class="ai-suggest">${sugg.map(s => html`<button class="ai-chip" data-ai-suggest="${s}">${s}</button>`)}</div>
                 <div class="ai-log" id="aiLog" role="log" aria-live="polite">
                     ${msgs.length ? msgs : html`<div class="ai-empty"><b>Спросите о доступных пациентах, внимании или просрочках</b><span>${ctx ? 'Вопросы о пациенте из контекста — например, «Какой этап и что дальше?».' : 'Подсказки выше подставляются в поле ввода.'}</span></div>`}
-                    ${S.ai.loading ? html`<div class="ai-thinking">Ассистент готовит ответ…</div>` : ''}
+                    ${S.ai.loading ? html`<div class="ai-thinking">Помощник готовит ответ…</div>` : ''}
                 </div>
                 </div>
                 <form class="ai-composer" id="aiForm">
-                    <label class="sr-only" for="aiInput">Сообщение ИИ-ассистенту</label>
+                    <label class="sr-only" for="aiInput">Сообщение ИИ-помощнику</label>
                     <textarea class="textarea" id="aiInput" rows="2" maxlength="4000" placeholder="Задайте вопрос по доступным данным" ${raw(S.ai.loading ? 'disabled' : '')}></textarea>
                     <div class="ai-composer__row"><span class="ai-composer__hint">Enter — отправить, Shift+Enter — новая строка</span>
                         <button type="button" class="btn btn--sm btn--ghost" data-ai-clear ${raw(S.ai.messages.length && !S.ai.loading ? '' : 'disabled')}>Очистить</button>
                         <button type="submit" class="btn btn--sm btn--primary" ${raw(S.ai.loading ? 'disabled' : '')}>Отправить</button></div>
                 </form>`
-            : html`<div class="ai-unavailable" role="status"><b>ИИ-ассистент временно недоступен</b><span>Основная система продолжает работать. Локальный AI-сервис недоступен.</span><button class="btn btn--sm" data-ai-retry>Проверить снова</button></div></div>`}`);
+            : html`<div class="ai-unavailable" role="status"><b>ИИ-помощник временно недоступен</b><span>Основная система продолжает работать. Локальный AI-сервис недоступен.</span><button class="btn btn--sm" data-ai-retry>Проверить снова</button></div></div>`}`);
         const sc = $('#aiScroll'); if (sc && S.ai.messages.length) sc.scrollTop = sc.scrollHeight;
         $('#aiBtn').classList.toggle('is-muted', !avail);
     }
