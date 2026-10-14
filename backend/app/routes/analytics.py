@@ -102,12 +102,13 @@ def notifications(
 @router.get("/details", response_model=schemas.DetailsOut)
 def details(
     type: str = Query(..., max_length=60),
+    code: str | None = Query(None, max_length=60),
     filters: AnalyticsFilters = Depends(analytics_filters),
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     try:
-        return service.details(conn, user, filters, type)
+        return service.details(conn, user, filters, type, code=code)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
 

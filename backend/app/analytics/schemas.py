@@ -39,6 +39,23 @@ class DashboardChartRow(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class DataQualitySummary(BaseModel):
+    """Сводка качества данных по выборке пациентов (область доступа + фильтры)."""
+
+    total_patients: int
+    patients_with_issues: int
+    total_issues: int
+    critical_count: int
+    warning_count: int
+    info_count: int
+    # Группы возможных дублей, затрагивающие выборку: в группу входит хотя бы один
+    # пациент выборки. Дубли ищутся только внутри области доступа роли.
+    possible_duplicate_groups: int
+    unresolved_patients: int
+    average_completeness: int | None = None
+    computed_at: str | None = None
+
+
 class DashboardTrendRow(BaseModel):
     date: str
     label: str
@@ -52,13 +69,17 @@ class DashboardSection(BaseModel):
     rows: list[DashboardChartRow] = Field(default_factory=list)
 
 
+class DashboardDataQualitySection(DashboardSection):
+    summary: DataQualitySummary
+
+
 class AnalyticsDashboardOut(BaseModel):
     meta: AnalyticsMeta
     summary: AnalyticsSummaryOut
     stages: "AnalyticsStagesOut"
     profiles: DashboardSection
     route_state: DashboardSection
-    data_quality: DashboardSection
+    data_quality: DashboardDataQualitySection
     trend: dict[str, Any]
     workload: "WorkloadOut"
     attention: DashboardSection

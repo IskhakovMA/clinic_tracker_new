@@ -399,6 +399,7 @@ const app = {
         checklists: null,
         notifications: null,
         details: null,
+        detailsToken: 0,
         filters: {
             dateFrom: '',
             dateTo: '',
@@ -4800,8 +4801,9 @@ const app = {
         if (f.doctor) params.set('doctor_user_id', f.doctor);
         if (f.department) params.set('department_id', f.department);
         if (f.attentionReason) params.set('attention_reason', f.attentionReason);
+        if (f.code) params.set('code', f.code);
         params.set('limit', '50');
-        params.set('offset', '0');
+        params.set('offset', String(f.offset || 0));
         return params.toString();
     },
 
@@ -4869,6 +4871,9 @@ const app = {
         $('analyticsTrendChart').replaceChildren();
         $('analyticsAttentionList').replaceChildren();
         $('analyticsOperationsList').replaceChildren();
+        // Пересчёт закрывает детализацию; запоздавшие ответы её страниц игнорируются.
+        this.analytics.details = null;
+        this.analytics.detailsToken += 1;
         $('analyticsDetailsPanel').replaceChildren();
         try {
             await this.loadAnalytics();
@@ -5029,14 +5034,21 @@ const app = {
         ]));
         const qualitySummary = this.analytics.dataQuality && this.analytics.dataQuality.summary;
         if (qualitySummary) {
-            nodes.push(el('button', {
-                type: 'button',
-                class: `stat stat--button stat--quality ${qualitySummary.total_issues ? 'stat--danger' : 'stat--good'}`,
-                on: { click: () => this.renderAnalyticsDetails('quality_warning', 'Проблемы качества данных') },
+            // Пустая выборка — нет данных, а не 100 % заполненности.
+            const hasPatients = qualitySummary.average_completeness != null;
+            nodes.push(el('div', {
+                class: `stat stat--quality ${!hasPatients ? '' : qualitySummary.total_issues ? 'stat--danger' : 'stat--good'}`,
             }, [
                 el('div', { class: 'stat__label', text: 'Заполненность обязательных полей' }),
-                el('div', { class: 'stat__value', text: `${qualitySummary.average_completeness ?? 100}%` }),
-                el('div', { class: 'stat__meta', text: `${qualitySummary.total_issues || 0} проблем отдельно` }),
+                el('div', { class: 'stat__value', text: hasPatients ? `${qualitySummary.average_completeness}%` : '—' }),
+                el('div', { class: 'stat__meta', text: hasPatients ? `${qualitySummary.total_issues} проблем отдельно` : 'нет пациентов в выборке' }),
+                // Проблемы — отдельный список всех уровней; процент заполненности на него не влияет.
+                hasPatients ? el('div', { class: 'stat__meta' }, el('button', {
+                    type: 'button',
+                    class: 'btn btn--ghost btn--sm',
+                    text: 'Посмотреть проблемы',
+                    on: { click: () => this.renderAnalyticsDetails('quality_all', 'Все проблемы качества данных') },
+                })) : null,
             ]));
         }
         $('analyticsStatsRow').replaceChildren(frag(nodes));
@@ -5210,13 +5222,15 @@ const app = {
         const data = this.analytics.dataQuality || {};
         const summary = data.summary || {};
         const rows = (this.analytics.dashboard && this.analytics.dashboard.data_quality && this.analytics.dashboard.data_quality.rows) || [];
-        const score = Number(summary.average_completeness ?? 100);
-        const safeScore = Math.max(0, Math.min(100, score));
+        // Сводка считается сервером по той же выборке, что и список ниже; без пациентов значения нет.
+        const hasPatients = summary.average_completeness != null;
+        const safeScore = hasPatients ? Math.max(0, Math.min(100, Number(summary.average_completeness))) : 0;
+        const ringLength = 2 * Math.PI * 39;
         const qualityRing = document.createElementNS(SVG_NS, 'svg');
         qualityRing.setAttribute('class', 'analytics-quality-ring');
         qualityRing.setAttribute('viewBox', '0 0 96 96');
         qualityRing.setAttribute('role', 'img');
-        qualityRing.setAttribute('aria-label', `Заполненность обязательных полей ${safeScore}%`);
+        qualityRing.setAttribute('aria-label', hasPatients ? `Заполненность обязательных полей ${safeScore}%` : 'Нет пациентов в выборке');
         const qualityCircle = document.createElementNS(SVG_NS, 'circle');
         qualityCircle.setAttribute('class', 'analytics-quality-ring__seg');
         qualityCircle.setAttribute('cx', '48');
@@ -5224,27 +5238,33 @@ const app = {
         qualityCircle.setAttribute('r', '39');
         qualityCircle.setAttribute('fill', 'none');
         qualityCircle.setAttribute('stroke-width', '10');
+        // Дуга пропорциональна заполненности: полное кольцо только при 100 %.
+        qualityCircle.setAttribute('stroke-dasharray', `${ringLength * safeScore / 100} ${ringLength}`);
+        qualityCircle.setAttribute('transform', 'rotate(-90 48 48)');
         qualityRing.append(qualityCircle);
         const panel = el('div', { class: 'analytics-quality-card' }, [
             el('div', { class: 'analytics-quality-card__score' }, [
                 el('div', { class: 'analytics-ring analytics-ring--quality' }, [
                     qualityRing,
                     el('div', { class: 'analytics-ring-center', 'aria-hidden': 'true' }, [
-                        el('div', { class: 'analytics-ring-value analytics-ring-value--quality', text: `${safeScore}%` }),
-                        el('div', { class: 'analytics-ring-label analytics-ring-label--quality', text: 'заполнено' }),
+                        el('div', { class: 'analytics-ring-value analytics-ring-value--quality', text: hasPatients ? `${safeScore}%` : '—' }),
+                        el('div', { class: 'analytics-ring-label analytics-ring-label--quality', text: hasPatients ? 'заполнено' : 'нет данных' }),
                     ]),
                 ]),
             ]),
-            el('div', { class: 'analytics-quality-card__text' }, [
-                el('strong', { text: `${summary.total_issues || 0} проблем качества данных` }),
-                el('span', { text: `${summary.patients_with_issues || 0} пациентов требуют проверки данных` }),
+            el('div', { class: 'analytics-quality-card__text' }, hasPatients ? [
+                el('strong', { text: `${summary.total_issues} проблем качества данных` }),
+                el('span', { text: `${summary.patients_with_issues} пациентов требуют проверки данных` }),
+            ] : [
+                el('strong', { text: 'Нет пациентов в выборке' }),
+                el('span', { text: 'Пациентов по выбранным условиям нет.' }),
             ]),
         ]);
         const list = rows.length
             ? el('div', { class: 'analytics-bars analytics-bars--compact' }, rows.slice(0, 5).map(row => el('button', {
                 type: 'button',
                 class: 'analytics-row analytics-row--button analytics-row--danger',
-                on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label) : null },
+                on: { click: () => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, row.filter || {}) : null },
             }, [
                 el('span', { text: row.label }),
                 el('strong', { text: String(row.count || 0) }),
@@ -5353,15 +5373,54 @@ const app = {
     },
 
     async renderAnalyticsDetails(type, title, extra = {}) {
-        const params = this.analyticsParams(extra);
-        const data = await apiGetJson(`/api/analytics/details?type=${encodeURIComponent(type)}&${params}`);
+        // Новая детализация начинается с первой страницы; ответы прежней игнорируются.
+        this.analytics.detailsToken += 1;
+        this.analytics.details = { token: this.analytics.detailsToken, type, title, extra, items: [], total: 0, loading: false, error: '' };
+        await this.loadAnalyticsDetailsPage(this.analytics.details);
+    },
+
+    async loadAnalyticsDetailsPage(state) {
+        if (this.analytics.details !== state || state.loading) return;
+        state.loading = true;
+        state.error = '';
+        this.drawAnalyticsDetails(state);
+        try {
+            const params = this.analyticsParams(Object.assign({}, state.extra, { offset: state.items.length }));
+            const data = await apiGetJson(`/api/analytics/details?type=${encodeURIComponent(state.type)}&${params}`);
+            if (this.analytics.details !== state || state.token !== this.analytics.detailsToken) return;
+            state.items = state.items.concat(data.items || []);
+            state.total = data.total || 0;
+        } catch (e) {
+            if (this.analytics.details !== state) return;
+            state.error = 'Не удалось загрузить детализацию. Попробуйте ещё раз.';
+        }
+        state.loading = false;
+        this.drawAnalyticsDetails(state);
+    },
+
+    // Уточнение для нескольких проблем одного кода у пациента: где в маршруте она найдена.
+    qualityIssueContextText(context) {
+        if (!context) return '';
+        const parts = [];
+        if (context.history_number) parts.push(`запись маршрута №${context.history_number}`);
+        if (context.event_number) parts.push(`событие №${context.event_number}`);
+        if (context.planned_date) parts.push(`плановая дата ${this.formatDeadlineDate(new Date(`${context.planned_date}T12:00:00`))}`);
+        return parts.length ? parts.join(', ').replace(/^./, ch => ch.toUpperCase()) : '';
+    },
+
+    drawAnalyticsDetails(state) {
         const panel = $('analyticsDetailsPanel');
-        const rows = data.items || [];
+        const rows = state.items;
+        const firstLoad = state.loading && !rows.length;
+        const more = !state.error && rows.length < state.total;
         panel.replaceChildren(frag([
-            el('h2', { class: 'panel__title', text: title || 'Детальный список' }),
-            el('p', { class: 'panel__text', text: `Показано ${rows.length} из ${data.total || 0}. Данные ограничены текущей областью доступа.` }),
+            el('h2', { class: 'panel__title', text: state.title || 'Детальный список' }),
+            firstLoad ? null : el('p', { class: 'panel__text', role: 'status', text: `Показано ${rows.length} из ${state.total}. Данные ограничены текущей областью доступа.` }),
             rows.length ? el('div', { class: 'analytics-list' }, rows.map(item => el('div', { class: 'analytics-detail' }, [
                 el('div', { class: 'person__name', text: item.patient_name || item.doctor_name || item.title || 'Запись' }),
+                item.severity ? el('div', { class: 'person__meta', text: `${this.QUALITY_SEVERITY_LABELS[item.severity] || item.severity}: ${item.title || item.code_label || item.code}` }) : null,
+                this.qualityIssueContextText(item.context) ? el('div', { class: 'person__meta', text: this.qualityIssueContextText(item.context) }) : null,
+                item.issue_count ? el('div', { class: 'person__meta', text: `Проблем качества данных: ${item.issue_count}` }) : null,
                 item.stage_label ? el('div', { class: 'person__meta', text: item.stage_label }) : null,
                 item.treating_doctor_name ? el('div', { class: 'person__meta', text: item.treating_doctor_name }) : null,
                 item.days_overdue ? el('div', { class: 'person__meta', text: `Просрочено: ${item.days_overdue} дн.` }) : null,
@@ -5372,7 +5431,21 @@ const app = {
                     text: 'Открыть пациента',
                     on: { click: () => this.openPatient(item.patient_id) },
                 }) : null,
-            ]))) : el('div', { class: 'empty', text: 'По выбранным условиям записей нет.' }),
+            ]))) : null,
+            firstLoad ? el('div', { class: 'empty', text: 'Загрузка…' }) : null,
+            !state.loading && !state.error && !rows.length ? el('div', { class: 'empty', text: 'По выбранным условиям записей нет.' }) : null,
+            state.error ? el('div', { class: 'empty', role: 'alert', text: state.error }) : null,
+            state.error ? el('button', {
+                type: 'button', class: 'btn btn--ghost btn--sm', text: 'Повторить',
+                on: { click: () => this.loadAnalyticsDetailsPage(state) },
+            }) : null,
+            more && rows.length ? el('button', {
+                type: 'button',
+                class: 'btn btn--ghost btn--sm',
+                text: state.loading ? 'Загрузка…' : `Показать ещё (осталось ${state.total - rows.length})`,
+                disabled: state.loading,
+                on: { click: () => this.loadAnalyticsDetailsPage(state) },
+            }) : null,
         ]));
     },
 

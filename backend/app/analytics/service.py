@@ -309,7 +309,7 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
         {"code": "active_patients", "label": "Активные", "value": sum(1 for r in rows if r["stage"] not in TERMINAL_STAGES), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["active_patients"]},
         {"code": "completed_patients", "label": "Завершённые", "value": sum(1 for r in rows if r["stage"] == "completed"), "kind": "current", "detail_type": "patients", "definition": SUMMARY_DEFINITIONS["completed_patients"]},
         {"code": "patients_need_attention", "label": "Явно требуют внимания", "value": len(attention_ids), "kind": "current", "detail_type": "attention_patients", "definition": SUMMARY_DEFINITIONS["patients_need_attention"]},
-        {"code": "data_quality_issues", "label": "Проблемы качества данных", "value": len(critical) + len(warnings), "kind": "current", "detail_type": "quality_warning", "definition": SUMMARY_DEFINITIONS["data_quality_issues"]},
+        {"code": "data_quality_issues", "label": "Проблемы качества данных", "value": len(critical) + len(warnings), "kind": "current", "detail_type": "quality_actionable", "definition": SUMMARY_DEFINITIONS["data_quality_issues"]},
         {"code": "unassigned_patients", "label": "Пациенты без назначенного врача", "value": sum(1 for r in rows if not r["treating_doctor_user_id"]), "kind": "current", "detail_type": "unassigned_patients", "definition": SUMMARY_DEFINITIONS["unassigned_patients"]},
         {"code": "patients_with_overdue", "label": "Пациенты с просроченными событиями", "value": len({i["patient_id"] for i in overdue_issues}), "kind": "current", "detail_type": "overdue_events", "definition": SUMMARY_DEFINITIONS["patients_with_overdue"]},
         {"code": "overdue_events", "label": "Просроченные события", "value": len(overdue_issues), "kind": "current", "detail_type": "overdue_events", "definition": SUMMARY_DEFINITIONS["overdue_events"]},
@@ -369,8 +369,36 @@ def _route_state_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[s
             {"code": "completed", "label": "Завершённые", "count": completed, "percent": percent(completed, total), "detail_type": "patients", "filter": {"stage": "completed"}, "meta": {"overlap": False}},
             {"code": "dispensary_observation", "label": "Диспансерное наблюдение", "count": dispensary, "percent": percent(dispensary, total), "detail_type": "patients", "filter": {"stage": "dispensary-observation"}, "meta": {"overlap": False}},
             {"code": "diagnosis_not_confirmed", "label": "Диагноз не подтверждён", "count": not_confirmed, "percent": percent(not_confirmed, total), "detail_type": "patients", "filter": {"stage": "diagnosis-not-confirmed"}, "meta": {"overlap": False}},
-            {"code": "operational_signals", "label": "Операционные сигналы", "count": attention, "percent": percent(attention, total), "detail_type": "quality_warning", "filter": {}, "meta": {"overlap": True}},
+            {"code": "operational_signals", "label": "Операционные сигналы", "count": attention, "percent": percent(attention, total), "detail_type": "quality_patients", "filter": {}, "meta": {"overlap": True}},
         ],
+    }
+
+
+def _quality_summary(quality: dict, rows: list[sqlite3.Row]) -> dict:
+    """Сводка качества данных строго по переданной выборке пациентов.
+
+    ``rows`` — пациенты в области доступа роли после фильтров аналитики. Все
+    величины считаются по этой выборке; общая ``quality["summary"]`` по всей
+    области доступа сюда не подмешивается. Правила проверок не меняются —
+    берутся готовые проблемы и заполненность из ``data_quality.evaluate``.
+    """
+    ids = {row["id"] for row in rows}
+    issues = [issue for issue in quality["issues"] if issue["patient_id"] in ids]
+    severity = Counter(issue["severity"] for issue in issues)
+    scores = [p["completeness"]["score"] for p in quality["patients"] if p["patient_id"] in ids]
+    return {
+        "total_patients": len(ids),
+        "patients_with_issues": len({issue["patient_id"] for issue in issues}),
+        "total_issues": len(issues),
+        "critical_count": severity["critical"],
+        "warning_count": severity["warning"],
+        "info_count": severity["info"],
+        # Группа возможных дублей учитывается, если в выборку входит хотя бы один её пациент.
+        "possible_duplicate_groups": sum(1 for g in quality["duplicate_groups"] if ids.intersection(g["patient_ids"])),
+        "unresolved_patients": sum(1 for row in rows if not row["treating_doctor_user_id"]),
+        # Пустая выборка — нет данных, а не 100 %.
+        "average_completeness": round(sum(scores) / len(scores)) if scores else None,
+        "computed_at": quality["summary"]["computed_at"],
     }
 
 
@@ -384,7 +412,7 @@ def _quality_code_rows(quality: dict, patient_ids: set[str]) -> dict:
             "label": QUALITY_CODE_LABELS.get(code, code),
             "count": count,
             "percent": percent(count, len(issues)),
-            "detail_type": _quality_detail_type_for_code(issues, code),
+            "detail_type": "quality_all",
             "filter": {"code": code},
             "meta": {"rule": data_quality.QUALITY_RULES.get(code, "")},
         })
@@ -406,18 +434,13 @@ QUALITY_CODE_LABELS = {
 }
 
 
-def _quality_detail_type_for_code(issues: list[dict], code: str) -> str:
-    severities = {issue["severity"] for issue in issues if issue["code"] == code}
-    return "quality_critical" if "critical" in severities else "quality_warning"
-
-
 def _attention_rows(rows: list[sqlite3.Row], quality: dict, patient_ids: set[str], checklist: dict) -> dict:
     issue_ids = _quality_issue_ids(quality) & patient_ids
     overdue_ids = _quality_issue_ids(quality, code="overdue_event") & patient_ids
     unassigned = sum(1 for row in rows if not row["treating_doctor_user_id"])
     critical = len([issue for issue in quality["issues"] if issue["severity"] == "critical" and issue["patient_id"] in patient_ids])
     rows_out = [
-        {"code": "quality", "label": "Пациенты с проблемами качества данных", "count": len(issue_ids), "detail_type": "quality_warning", "filter": {}, "meta": {}},
+        {"code": "quality", "label": "Пациенты с проблемами качества данных", "count": len(issue_ids), "detail_type": "quality_patients", "filter": {}, "meta": {}},
         {"code": "overdue", "label": "Пациенты с просроченными событиями", "count": len(overdue_ids), "detail_type": "overdue_events", "filter": {}, "meta": {}},
         {"code": "unassigned", "label": "Без назначенного лечащего врача", "count": unassigned, "detail_type": "unassigned_patients", "filter": {}, "meta": {}},
         {"code": "critical", "label": "Критические проблемы", "count": critical, "detail_type": "quality_critical", "filter": {}, "meta": {}},
@@ -486,7 +509,7 @@ def dashboard(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analy
         "stages": stages(conn, user, filters),
         "profiles": _profile_rows(rows),
         "route_state": _route_state_rows(rows, quality, ids),
-        "data_quality": _quality_code_rows(quality, ids),
+        "data_quality": {**_quality_code_rows(quality, ids), "summary": _quality_summary(quality, rows)},
         "trend": _trend_rows(conn, ids, filters),
         "workload": workload(conn, user, filters),
         "attention": patient_attention.active_reason_breakdown(conn, ids),
@@ -715,7 +738,8 @@ def _notification_status_by_patient(conn: sqlite3.Connection, patient_ids: set[s
 def data_quality_state(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
-    patient_map = {r["id"]: _patient_ref(r) for r in _patient_rows(conn, patient_ids)}
+    rows = _patient_rows(conn, patient_ids)
+    patient_map = {r["id"]: _patient_ref(r) for r in rows}
     issues = [i for i in quality["issues"] if i["patient_id"] in patient_map]
     by_severity = Counter(i["severity"] for i in issues)
     by_code = Counter(i["code"] for i in issues)
@@ -728,7 +752,7 @@ def data_quality_state(conn: sqlite3.Connection, user: policy.CurrentUser, filte
         "meta": _computed_meta(user, filters, {"history": "Центр качества данных не хранит историю проблем; показано текущее состояние."}),
         "title": "Текущее состояние качества данных",
         "current_state_only": True,
-        "summary": {**quality["summary"], "total_patients": len(patient_ids), "total_issues": len(issues)},
+        "summary": _quality_summary(quality, rows),
         "by_severity": [{"severity": k, "count": by_severity[k]} for k in data_quality.SEVERITIES],
         "by_code": [{"code": k, "count": v} for k, v in sorted(by_code.items())],
         "by_doctor": [{"doctor_name": k, "count": v} for k, v in sorted(by_doctor.items())],
@@ -842,8 +866,19 @@ def _notification_patient_preconditions(conn: sqlite3.Connection, patient_ids: s
     return no_consent, invalid_phone
 
 
+# Детализация проблем качества: тип -> уровни, которые в неё входят.
+QUALITY_DETAIL_SEVERITIES = {
+    "quality_critical": ("critical",),
+    "quality_warning": ("warning",),
+    "quality_actionable": ("critical", "warning"),
+    "quality_all": ("critical", "warning", "info"),
+}
+
 DETAIL_TYPES = {
     "patients",
+    "quality_actionable",
+    "quality_all",
+    "quality_patients",
     "unassigned_patients",
     "overdue_events",
     "quality_critical",
@@ -855,9 +890,47 @@ DETAIL_TYPES = {
 }
 
 
-def details(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters, detail_type: str) -> dict:
+def _quality_issue_sort_key(issue: dict, patient: dict) -> tuple:
+    details = issue.get("details") or {}
+    return (
+        data_quality.SEVERITY_RANK[issue["severity"]], issue["category"], issue["code"],
+        patient["patient_name"] or "", patient["patient_id"], issue.get("field") or "", issue["title"],
+        details.get("occurrence_index", -1), details.get("event_index", -1),
+    )
+
+
+def _quality_issue_context(issue: dict) -> dict:
+    """Где именно проблема: только номера записи маршрута и события и плановая дата.
+
+    Берётся из уже вычисленных ``details`` проверки; сам объект ``details``
+    наружу не отдаётся.
+    """
+    details = issue.get("details") or {}
+    context: dict[str, Any] = {}
+    if isinstance(details.get("occurrence_index"), int):
+        context["history_number"] = details["occurrence_index"] + 1
+    if isinstance(details.get("event_index"), int):
+        context["event_number"] = details["event_index"] + 1
+    if details.get("planned_date"):
+        context["planned_date"] = str(details["planned_date"])
+    return context
+
+
+def details(
+    conn: sqlite3.Connection,
+    user: policy.CurrentUser,
+    filters: AnalyticsFilters,
+    detail_type: str,
+    code: str | None = None,
+) -> dict:
     if detail_type not in DETAIL_TYPES:
         raise ValueError("unknown detail type")
+    if code is not None:
+        # Код проблемы — только из справочника правил и только для детализации проблем качества.
+        if detail_type not in QUALITY_DETAIL_SEVERITIES:
+            raise ValueError("code filter is allowed only for quality issue details")
+        if code not in data_quality.QUALITY_RULE_CODES:
+            raise ValueError("unknown quality code")
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
     items: list[dict[str, Any]]
@@ -870,12 +943,26 @@ def details(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
         items = [_patient_ref(r) for r in _patient_rows(conn, attention_ids)]
     elif detail_type == "overdue_events":
         items = _overdue_state(conn, user, filters)["items"]
-    elif detail_type in {"quality_critical", "quality_warning"}:
-        sev = "critical" if detail_type.endswith("critical") else "warning"
+    elif detail_type in QUALITY_DETAIL_SEVERITIES:
+        severities = QUALITY_DETAIL_SEVERITIES[detail_type]
         patient_map = {r["id"]: _patient_ref(r) for r in _patient_rows(conn, patient_ids)}
+        selected = [
+            i for i in quality["issues"]
+            if i["severity"] in severities and i["patient_id"] in patient_map and (code is None or i["code"] == code)
+        ]
+        # Стабильный порядок между страницами: те же данные — тот же порядок.
+        selected.sort(key=lambda i: _quality_issue_sort_key(i, patient_map[i["patient_id"]]))
         items = [
-            {"code": i["code"], "severity": i["severity"], "title": i["title"], **patient_map[i["patient_id"]]}
-            for i in quality["issues"] if i["severity"] == sev and i["patient_id"] in patient_map
+            {"code": i["code"], "code_label": QUALITY_CODE_LABELS.get(i["code"], i["code"]),
+             "severity": i["severity"], "title": i["title"], "context": _quality_issue_context(i),
+             **patient_map[i["patient_id"]]}
+            for i in selected
+        ]
+    elif detail_type == "quality_patients":
+        issue_counts = Counter(i["patient_id"] for i in quality["issues"] if i["patient_id"] in patient_ids)
+        items = [
+            {**_patient_ref(r), "issue_count": issue_counts[r["id"]]}
+            for r in _patient_rows(conn, set(issue_counts))
         ]
     elif detail_type == "incomplete_checklists":
         items = _checklist_state(conn, patient_ids)["patients"]
