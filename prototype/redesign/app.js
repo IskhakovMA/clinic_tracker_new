@@ -262,7 +262,7 @@
         ];
         return html`
             ${pagehead('Онкологический консилиум', chair ? 'Все пациенты клиники, записанные на консилиум, в хронологическом порядке' : 'Ваши пациенты, записанные на рассмотрение консилиумной группой',
-                html`${chair ? html`<button class="btn" data-action="registry">Реестры (XLSX)</button>` : ''}${can.book ? html`<button class="btn btn--ghost" data-cons="archive-list">Архив</button><button class="btn btn--primary" data-action="book">Запись</button>` : ''}`)}
+                html`${can.book ? html`<button class="btn btn--ghost" data-cons="archive-list">Архив</button><button class="btn btn--primary" data-action="book">Запись</button>` : ''}`)}
             ${S.role === 'developer' ? html`<div class="demo-note">Расхождение, не согласовано: сервер разрешает разработчику управлять сеткой, реестрами и аналитикой консилиума (manageConsilium), а действующий интерфейс показывает эти функции только председателю. Прототип повторяет действующий интерфейс; это не продуктовое решение.</div>` : ''}
             <div class="callout callout--info callout--flush"><div class="callout__text">${chair ? 'Все дни текущей недели открыты автоматически. Следующие недели становятся доступны врачам после создания слотов председателем.' : 'Текущая неделя доступна автоматически. Следующие недели отображаются только после открытия расписания председателем.'}</div></div>
             <div class="stack">
@@ -285,6 +285,7 @@
                     ${chair ? consGenerateForm() : ''}
                     ${stateful(chair ? consChairGrid(date, groups) : consDoctorGrid(date, groups), { rows: 8, emptyTitle: 'На выбранный день слотов нет.', emptyText: '' })}
                 </section>
+                ${consRegistries(date)}
             </div>`;
     }
 
@@ -320,8 +321,12 @@
 
     const consNameCell = (c) => html`<button type="button" class="cons-patient" data-cons="details" data-id="${c.id}">${c.patientName}</button>${c.comment ? html`<div class="cell-sub">${c.comment}</div>` : ''}`;
     function consChairActions(c) {
-        if (c.status === 'signed' || c.status === 'needs_revision') return consTag(c);
-        return html`${consTag(c)}<button class="btn btn--sm btn--primary" data-action="decide" data-id="${c.id}">${c.status === 'in_review' ? 'Продолжить рассмотрение' : c.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть'}</button>`;
+        // renderConsiliumChairActions: кнопка рассмотрения (кроме подписанных и «На доработке») и избранное — у всех записей.
+        const review = c.status === 'signed' || c.status === 'needs_revision' ? ''
+            : html`<button class="btn btn--sm btn--primary" data-action="decide" data-id="${c.id}">${c.status === 'in_review' ? 'Продолжить рассмотрение' : c.status === 'revised' ? 'Рассмотреть повторно' : 'Рассмотреть'}</button>`;
+        const fav = R().perms.useConsiliumFavorites
+            ? html`<button class="btn btn--sm btn--ghost ${consIsFav(c) ? 'is-favorite' : ''}" data-cons-fav="${c.id}" aria-pressed="${consIsFav(c)}">${consIsFav(c) ? '★ В избранном' : '☆ В избранное'}</button>` : '';
+        return html`${consTag(c)}${review}${fav}`;
     }
     const consTable = (rows) => html`<div class="table-wrap"><table class="table table--cards cons-grid"><thead><tr><th>Время записи</th><th>ФИО пациента</th><th>Код МКБ-10</th><th>ФИО врача</th><th><span class="sr-only">Действия</span></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 
@@ -749,6 +754,148 @@
         toast(archive ? 'Запись перенесена в архив. Демонстрация: только в этой вкладке.' : 'Запись восстановлена из архива.');
     });
     document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[data-cons-arch]')) { e.preventDefault(); openArch(e.target); } });
+
+    /* ---------- Консилиум: избранное председателя и реестры (этап 3.3) ----------
+       По static/app.js (renderConsiliumChairActions, toggleConsiliumFavorite,
+       renderConsiliumRegistries, setSurgicalReferralCompleted,
+       export*Registry) и серверу (routes/consilium.py: favorites, registries,
+       *.xlsx; services/consilium.py: add_favorite, registry_rows,
+       goc_registry_rows, set_referral_completed; services/xlsx_export.py). */
+
+    // Избранное — закладка председателя на пациента; доступ к карточке не даёт.
+    S.consFav = {};
+    const consFavSet = () => S.consFav[R().user.id] || (S.consFav[R().user.id] = new Set());
+    const consIsFav = (c) => consFavSet().has(c.patientId);
+
+    // registry_rows / goc_registry_rows: подписанные (архивные тоже), за выбранный день, по дате, времени и ФИО.
+    function consRegistry(kind, date) {
+        const signed = S.consilium.filter(c => c.status === 'signed' && (!date || c.date === date));
+        const rows = kind === 'surgical' ? signed.filter(c => c.treatment === 'surgery')
+            : kind === 'chemotherapy' ? signed.filter(c => c.treatment === 'chemotherapy')
+            : kind === 'goc' ? signed.filter(c => c.goc) : signed.filter(c => c.goc65);
+        return rows.sort((a, b) => `${a.date} ${a.time}`.localeCompare(`${b.date} ${b.time}`) || a.patientName.localeCompare(b.patientName, 'ru'));
+    }
+    const consSchemeText = (c) => c.scheme ? `${c.scheme.code ? c.scheme.code + ' — ' : ''}${c.scheme.name}` : '';
+    const REGISTRY_EXPORT = {
+        chemotherapy: { sheet: 'Химиотерапия', file: 'chemotherapy_registry', ok: 'Excel-реестр сформирован.',
+            header: ['Дата', 'Время', 'Пациент', 'Полис ОМС', 'Диагноз', 'Код схемы', 'Схема лечения', 'Лечащий врач', 'Консилиумная группа'],
+            row: (c) => [c.date, c.time, c.patientName, consPolicy(c), c.icd, c.scheme ? c.scheme.code : '', c.scheme ? c.scheme.name : '', consDoctor(c), D.GROUPS[c.group]] },
+        goc: { sheet: 'ГОК', file: 'goc_registry', ok: 'Excel-реестр ГОК сформирован.',
+            header: ['Дата', 'Время', 'Пациент', 'Полис ОМС', 'Диагноз', 'Назначенное лечение', 'Схема лечения', 'Лечащий врач', 'Консилиумная группа'],
+            row: (c) => [c.date, c.time, c.patientName, consPolicy(c), c.icd, c.treatment ? D.TREATMENTS[c.treatment] : '', c.scheme ? c.scheme.name : '', consDoctor(c), D.GROUPS[c.group]] },
+        goc65: { sheet: 'ГОК 65+', file: 'goc_65_plus_registry', ok: 'Excel-реестр ГОК 65+ сформирован.',
+            header: ['Дата', 'Время', 'Пациент', 'Полис ОМС', 'Диагноз', 'Назначенное лечение', 'Схема лечения', 'Лечащий врач', 'Консилиумная группа'],
+            row: (c) => [c.date, c.time, c.patientName, consPolicy(c), c.icd, c.treatment ? D.TREATMENTS[c.treatment] : '', c.scheme ? c.scheme.name : '', consDoctor(c), D.GROUPS[c.group]] },
+    };
+
+    function consRegistries(date) {
+        if (!consIsChair()) return '';
+        const who = (c) => html`<div class="cell-title">${c.patientName}</div><div class="cell-sub">${consDoctor(c)}</div>`;
+        const table = (kind, cols, cell, empty) => {
+            const rows = consRegistry(kind, date);
+            return stateful(rows.length ? html`<div class="table-wrap"><table class="table table--cards"><thead><tr>${cols.map(t => html`<th>${t}</th>`)}</tr></thead><tbody>${rows.map(c => html`<tr>
+                <td class="mono">${fmtNum(c.date)}, ${c.time}</td><td data-label="Пациент">${who(c)}</td><td class="mono" data-label="Полис">${consPolicy(c) || 'Не указан'}</td><td class="mono" data-label="Диагноз">${c.icd}</td>${cell(c)}</tr>`)}</tbody></table></div>`
+                : html`<div class="empty empty--compact"><div>${empty}</div></div>`, { rows: 3, emptyTitle: empty, emptyText: '' });
+        };
+        const exp = (kind) => html`<button class="btn btn--sm btn--ghost" data-cons-reg="${kind}" ${raw(S.demo === 'ok' ? '' : 'disabled')}>Экспорт в Excel</button>`;
+        const treat = (c) => c.scheme ? `${D.TREATMENTS[c.treatment]}: ${consSchemeText(c)}` : (c.treatment ? D.TREATMENTS[c.treatment] : 'Не указано');
+        const canMark = !!R().perms.markReferralCompletion;
+        return html`<div class="cons-registries">
+            <section class="panel"><div class="panel__head"><div><h2 class="panel__title">Реестр хирургического лечения</h2><div class="panel__meta">Формируется автоматически после подписания решения о хирургическом лечении.</div></div></div>
+                ${table('surgical', ['Дата и время', 'Пациент', 'Полис', 'Диагноз', 'Направление создано'], (c) => html`<td data-label="Направление"><label class="check"><input type="checkbox" data-cons-referral="${c.id}" ${raw(c.referralCompleted ? 'checked' : '')} ${raw(canMark ? '' : 'disabled')}> ${c.referralCompleted ? 'Отмечено' : 'Поставить отметку'}</label></td>`, 'В выбранном периоде хирургических назначений нет.')}</section>
+            <section class="panel"><div class="panel__head panel__head--wrap"><div><h2 class="panel__title">Реестр химиотерапевтического лечения</h2><div class="panel__meta">Содержит подписанные назначения и выбранные схемы лечения.</div></div>${exp('chemotherapy')}</div>
+                ${table('chemotherapy', ['Дата и время', 'Пациент', 'Полис', 'Диагноз', 'Схема лечения'], (c) => html`<td data-label="Схема">${consSchemeText(c) || 'Не указана'}</td>`, 'В выбранном периоде химиотерапевтических назначений нет.')}</section>
+            <section class="panel"><div class="panel__head panel__head--wrap"><div><h2 class="panel__title">Реестр ГОК</h2><div class="panel__meta">Формируется автоматически из подписанных решений с отметкой «ГОК».</div></div>${exp('goc')}</div>
+                ${table('goc', ['Дата и время', 'Пациент', 'Полис', 'Диагноз', 'Лечение'], (c) => html`<td data-label="Лечение">${treat(c)}</td>`, 'В выбранном периоде случаев ГОК нет.')}</section>
+            <section class="panel"><div class="panel__head panel__head--wrap"><div><h2 class="panel__title">Реестр ГОК 65+</h2><div class="panel__meta">Формируется автоматически из подписанных решений с отметкой «ГОК 65+».</div></div>${exp('goc65')}</div>
+                ${table('goc65', ['Дата и время', 'Пациент', 'Полис', 'Диагноз', 'Лечение'], (c) => html`<td data-label="Лечение">${treat(c)}</td>`, 'В выбранном периоде случаев ГОК 65+ нет.')}</section>
+            <p class="demo-hint">Реестры строятся из синтетических записей во вкладке за выбранный день. «Экспорт в Excel» формирует файл в браузере в том же формате, что сервер (все ячейки — текст, формулы не выполняются); в приложении файл формирует сервер и записывает выгрузку в журнал аудита.</p>
+        </div>`;
+    }
+
+    /* --- XLSX в браузере: тот же состав частей и правила, что services/xlsx_export.py --- */
+    // Как _XML_INVALID в services/xlsx_export.py: управляющие (кроме \t \n \r), U+FFFE/U+FFFF и одиночные
+    // суррогаты. С флагом u диапазон суррогатов совпадает только с непарными: корректные пары
+    // UTF-16 (emoji и другие символы вне BMP) сохраняются — в Python это один символ.
+    const XML_INVALID = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]|[\uD800-\uDFFF]/gu;
+    const xmlEscape = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // cell_text: недопустимые в XML символы удаляются, текст экранируется; ячейка — встроенная строка со стилем quotePrefix.
+    const xlsxCellText = (v) => xmlEscape(String(v === null || v === undefined ? '' : v).replace(XML_INVALID, ''));
+    const xlsxColumn = (i) => { let r = '', v = i + 1; while (v) { const m = (v - 1) % 26; r = String.fromCharCode(65 + m) + r; v = Math.floor((v - 1) / 26); } return r; };
+    function xlsxParts(sheetName, rows) {
+        const NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+        const safeSheet = xmlEscape(Array.from((sheetName || 'Реестр').replace(XML_INVALID, '')).slice(0, 31).join('')).replace(/"/g, '&quot;');   // 31 символ, как [:31] в Python
+        const sheetRows = rows.map((row, ri) => `<row r="${ri + 1}">${row.map((v, ci) => `<c r="${xlsxColumn(ci)}${ri + 1}" s="1" t="inlineStr"><is><t xml:space="preserve">${xlsxCellText(v)}</t></is></c>`).join('')}</row>`).join('');
+        const head = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>';
+        return [
+            ['[Content_Types].xml', `${head}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/></Types>`],
+            ['_rels/.rels', `${head}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
+            ['xl/workbook.xml', `${head}<workbook xmlns="${NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="${safeSheet}" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+            ['xl/_rels/workbook.xml.rels', `${head}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
+            ['xl/styles.xml', `${head}<styleSheet xmlns="${NS}"><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf/></cellStyleXfs><cellXfs count="2"><xf xfId="0"/><xf xfId="0" quotePrefix="1"/></cellXfs></styleSheet>`],
+            ['xl/worksheets/sheet1.xml', `${head}<worksheet xmlns="${NS}"><sheetData>${sheetRows}</sheetData></worksheet>`],
+        ];
+    }
+    // ZIP без сжатия (store): CRC-32 и заголовки по спецификации; Excel и LibreOffice такой архив читают.
+    const CRC_TABLE = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+    const crc32 = (bytes) => { let c = 0xFFFFFFFF; for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
+    function zipStore(files) {
+        const enc = new TextEncoder(), chunks = [], central = [];
+        let offset = 0;
+        const u16 = (v) => [v & 0xFF, (v >>> 8) & 0xFF], u32 = (v) => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+        for (const [name, text] of files) {
+            const nameBytes = enc.encode(name), data = enc.encode(text), crc = crc32(data);
+            const local = [...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(nameBytes.length), ...u16(0)];
+            chunks.push(new Uint8Array(local), nameBytes, data);
+            central.push(new Uint8Array([...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0), ...u16(0), ...u16(0x21), ...u32(crc), ...u32(data.length), ...u32(data.length), ...u16(nameBytes.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0), ...u32(0), ...u32(offset)]), nameBytes);
+            offset += local.length + nameBytes.length + data.length;
+        }
+        const centralSize = central.reduce((n, p) => n + p.length, 0);
+        const end = new Uint8Array([...u32(0x06054b50), ...u16(0), ...u16(0), ...u16(files.length), ...u16(files.length), ...u32(centralSize), ...u32(offset), ...u16(0)]);
+        return new Blob([...chunks, ...central, end], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+    function consRegistryXlsx(kind, date) {
+        const spec = REGISTRY_EXPORT[kind];
+        const rows = [spec.header, ...consRegistry(kind, date).map(spec.row)];
+        return { blob: zipStore(xlsxParts(spec.sheet, rows)), name: `${spec.file}_${date || 'all'}.xlsx`, count: rows.length - 1, rows };
+    }
+
+    document.addEventListener('click', (e) => {
+        const fav = e.target.closest('[data-cons-fav]');
+        if (fav) {
+            if (!R().perms.useConsiliumFavorites) return;   // _require_favorites: только председатель
+            const c = S.consilium.find(x => x.id === fav.dataset.consFav);
+            // Как сервер: пациент должен быть связан с действующей записью консилиума, иначе 404.
+            if (!c) { toast('Не удалось изменить избранное: Patient not found'); return; }
+            const set = consFavSet();
+            if (set.has(c.patientId)) { set.delete(c.patientId); toast('Пациент удалён из избранного.'); }
+            else { set.add(c.patientId); toast('Пациент добавлен в избранное консилиума.'); }
+            render();
+            return;
+        }
+        const reg = e.target.closest('[data-cons-reg]');
+        if (reg) {
+            if (!consIsChair()) return;   // интерфейс показывает реестры только председателю (сервер — и разработчику, расхождение 1)
+            const spec = REGISTRY_EXPORT[reg.dataset.consReg];
+            const out = consRegistryXlsx(reg.dataset.consReg, S.cons.chairDate);
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(out.blob); link.download = out.name;
+            document.body.append(link); link.click();
+            setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 0);
+            toast(`${spec.ok} Демонстрация: файл «${out.name}» (${out.count} ${plural(out.count, 'строка', 'строки', 'строк')}) сформирован в браузере из синтетических данных, сервер не вызывался.`);
+        }
+    });
+    document.addEventListener('change', (e) => {
+        const box = e.target.closest && e.target.closest('[data-cons-referral]');
+        if (!box) return;
+        const c = S.consilium.find(x => x.id === box.dataset.consReferral);
+        if (!R().perms.markReferralCompletion) { box.checked = !box.checked; return; }   // _require_referral_mark: только председатель
+        // set_referral_completed: только подписанное хирургическое направление.
+        if (!c || c.status !== 'signed' || c.treatment !== 'surgery') { toast('Не удалось сохранить отметку: Only signed surgical referrals can be completed'); render(); return; }
+        c.referralCompleted = box.checked;
+        render();
+        toast(box.checked ? 'Направление отмечено как созданное.' : 'Отметка направления снята.');
+    });
 
     function viewConsiliumAnalytics() {
         const signed = S.consilium.filter(c => c.status === 'signed');

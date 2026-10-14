@@ -633,6 +633,8 @@ button.tl__step { cursor: pointer; }
 .cons-history__title { font-size: var(--t-sm); font-weight: 600; color: var(--text-2); }
 .cons-optional-row { display: flex; gap: var(--s2); align-items: center; }
 .cons-optional-row .input { flex: 1; min-width: 0; }
+.cons-registries { display: grid; gap: var(--s5); }
+.btn.is-favorite { color: var(--warn); }
 .empty--compact { padding: var(--s4) var(--s5); justify-items: start; text-align: left; color: var(--text-3); }
 
 /* ---------- Сообщения пациентам ---------- */

@@ -287,7 +287,7 @@
             needsSurgeon: k % 2 === 0, needsRadiotherapist: k % 3 === 0,
             comment: k === 5 ? 'Обсудить тактику после ИГХ.' : 'Обсудить тактику лечения.',
             treatment: status === 'signed' ? (k === 0 ? 'chemotherapy' : 'surgery') : null,
-            scheme, goc: status === 'signed' && k === 0, goc65: false,
+            scheme, goc: status === 'signed' && k === 0, goc65: status === 'signed' && k === 1,
             routeStage: status === 'signed' ? p.stage : null,
             revisions: (status === 'needs_revision' || status === 'revised') ? [{ round: 1, author: 'Волкова И. С.', at: `${iso(addDays(today, -1))}T15:20`, text: 'Приложите заключение КТ с контрастом и результаты ИГХ.' }] : [],
             // Поля формы записи (ConsiliumAppointmentIn): льгота, доп. диагноз, доп. участник, УВ/РУВ.
