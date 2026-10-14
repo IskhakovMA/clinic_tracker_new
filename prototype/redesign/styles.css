@@ -580,6 +580,35 @@ button.tl__step { cursor: pointer; }
 .checklist--flush li { padding: 6px 0; }
 .checklist--flush .req { color: var(--danger); }
 
+/* ---------- Этап 2: рабочие экраны ---------- */
+.panel__head--wrap { flex-wrap: wrap; }
+.panel__head--wrap .btn { white-space: normal; height: auto; min-height: 28px; text-align: left; }
+.callout--row { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; }
+.toolbar--list { padding-top: var(--s4); }
+.toolbar--list .input { flex: 1; min-width: 0; }
+.list-filters { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--s3); padding: 0 var(--s5) var(--s3); align-items: end; }
+.list-filters .select { height: 32px; }
+.list-filters__reset { display: flex; align-items: end; }
+.list-filters-btn { display: none; }
+.list-count { padding: 0 var(--s5) var(--s3); }
+.person { display: flex; gap: var(--s3); align-items: flex-start; min-width: 0; }
+.person > div { min-width: 0; display: grid; gap: 2px; justify-items: start; }
+.cell-title--sm { font-size: var(--t-sm); }
+.progress--sm { font-size: var(--t-xs); gap: var(--s2); min-width: 120px; }
+.cal-list { list-style: none; margin: 0; padding: 0; }
+.cal-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: var(--s3); align-items: center; padding: var(--s3) var(--s5); border-top: 1px solid var(--border); }
+.cal-list__when { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; font-size: var(--t-xs); }
+.week__more { font-size: 11px; color: var(--text-3); padding-left: 4px; }
+.stage-bars { list-style: none; margin: 0; padding: 0 var(--s3) var(--s4); }
+.stage-bars__row { width: 100%; display: grid; grid-template-columns: minmax(0, 150px) minmax(0, 1fr) 28px; gap: var(--s3); align-items: center; padding: 6px var(--s2); border: 0; border-radius: var(--r-sm); background: none; color: var(--text); font: inherit; font-size: var(--t-sm); text-align: left; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .stage-bars__row:hover { background: var(--hover); } }
+.stage-bars__label { overflow-wrap: anywhere; color: var(--text-2); }
+.stage-bars progress { width: 100%; height: 8px; appearance: none; border: 0; border-radius: 4px; background: var(--sunken); overflow: hidden; }
+.stage-bars progress::-webkit-progress-bar { background: var(--sunken); }
+.stage-bars progress::-webkit-progress-value { background: var(--accent); border-radius: 4px; }
+.stage-bars progress::-moz-progress-bar { background: var(--accent); }
+.stage-bars .mono { text-align: right; }
+
 /* ---------- Сообщения пациентам ---------- */
 .nav__badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent-soft); color: var(--accent-text); font-variant-numeric: tabular-nums; }
 .msg-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent); color: var(--on-accent); font-variant-numeric: tabular-nums; flex: none; }
@@ -730,6 +759,11 @@ button.tl__step { cursor: pointer; }
     .demo-switch__label { display: none; }
 }
 @media (max-width: 640px) {
+    .list-filters { display: none; }
+    .list-filters-btn { display: inline-flex; }
+    .cal-list li { grid-template-columns: minmax(0, 1fr) auto; padding: var(--s3) var(--s4); }
+    .cal-list li .btn { grid-column: 1 / -1; }
+    .cal-list__when { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }
     .pcard-head { padding: var(--s4); }
     .ptitle__name { font-size: var(--t-xl); }
     .avatar--lg { width: 40px; height: 40px; font-size: 14px; }

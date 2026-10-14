@@ -176,132 +176,6 @@
                 ${cols.includes('updated') ? html`<td class="num muted" data-label="Изменён">${fmtDate(p.updated)}</td>` : ''}
             </tr>`)}</tbody></table></div>`;
 
-    function viewToday() {
-        const mine = scoped();
-        const needs = mine.filter(p => p.overdue || p.attention.length).sort((a, b) => b.overdue - a.overdue);
-        const todayEvents = mine.flatMap(p => p.events.filter(e => e.date === D.today).map(e => ({ ...e, p }))).sort((a, b) => a.time.localeCompare(b.time));
-        const myCons = S.consilium.filter(c => mine.some(p => p.id === c.patientId));
-        const d = parse(D.today);
-        return html`
-            ${pagehead(`Добрый день, ${R().user.name.split(' ')[1]}`, `${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} — ваши пациенты и задачи на сегодня`,
-                R().can.write ? html`<button class="btn" data-href="#/consilium">Записать на консилиум</button><button class="btn btn--primary" data-action="new-patient">Новый пациент</button>` : '', 'Рабочий день')}
-            <div class="stack">
-                ${metrics([
-                    { label: 'Мои пациенты', value: mine.length, note: `${mine.filter(p => !['completed', 'dispensary-observation'].includes(p.stage)).length} в работе`, href: '#/patients' },
-                    { label: 'Требуют внимания', value: needs.length, tone: needs.length ? 'warn' : '', note: 'просрочки и отметки' },
-                    { label: 'Просрочено событий', value: mine.reduce((n, p) => n + p.overdue, 0), tone: 'danger', note: 'без отметки о выполнении' },
-                    { label: 'Сегодня', value: todayEvents.length, note: `${plural(todayEvents.length, 'событие', 'события', 'событий')} по плану` },
-                ])}
-                <div class="grid grid--main-side">
-                    <section class="panel">
-                        <div class="panel__head"><div><h2 class="panel__title">Требуют действия</h2><div class="panel__meta">Сначала — просроченные события</div></div><button class="btn btn--sm btn--ghost" data-href="#/patients">Все пациенты</button></div>
-                        <div class="panel__body--flush">${stateful(patientRows(needs.slice(0, 8), ['patient', 'stage', 'status']), { emptyTitle: 'Всё под контролем', emptyText: 'Нет пациентов с просрочками и открытыми отметками.' })}</div>
-                    </section>
-                    <div class="stack">
-                        <section class="panel">
-                            <div class="panel__head"><h2 class="panel__title">Сегодня</h2><button class="btn btn--sm btn--ghost" data-href="#/calendar">Расписание</button></div>
-                            ${stateful(html`<ul class="queue">${todayEvents.length ? todayEvents.map(e => html`
-                                <li class="is-link" data-href="#/patient/${e.p.id}"><span class="queue__time">${e.time}</span><div><div class="queue__title">${e.title}</div><div class="queue__sub">${e.p.name}</div></div>${e.done ? html`<span class="status status--ok">Выполнено</span>` : ''}</li>`) : html`<li><span></span><div class="queue__sub">На сегодня событий нет</div></li>`}</ul>`, { rows: 4 })}
-                        </section>
-                        <section class="panel">
-                            <div class="panel__head"><h2 class="panel__title">Мои записи на консилиум</h2></div>
-                            ${stateful(html`<ul class="queue">${myCons.length ? myCons.map(c => html`
-                                <li class="is-link" data-href="#/consilium"><span class="queue__time">${c.time}</span><div><div class="queue__title">${c.patientName}</div><div class="queue__sub">${D.GROUPS[c.group]}</div></div>${consTag(c)}</li>`) : html`<li><span></span><div class="queue__sub">Записей нет</div></li>`}</ul>`, { rows: 3 })}
-                        </section>
-                    </div>
-                </div>
-            </div>`;
-    }
-
-    function viewDepartment() {
-        const list = scoped();
-        const dept = D.DEPARTMENTS.find(d => d.id === R().user.dept);
-        const queue = list.filter(p => p.attention.length || p.overdue).sort((a, b) => b.overdue - a.overdue);
-        const doctors = D.DOCTORS.filter(d => d.dept === dept.id).map(d => {
-            const ps = list.filter(p => p.doctorId === d.id);
-            return { ...d, total: ps.length, active: ps.filter(p => !['completed', 'dispensary-observation'].includes(p.stage)).length,
-                attention: ps.filter(p => p.attention.length).length, overdue: ps.reduce((n, p) => n + p.overdue, 0),
-                cons: S.consilium.filter(c => ps.some(p => p.id === c.patientId)).length };
-        });
-        const byStage = D.STAGE_ORDER.map(code => ({ label: D.STAGES[code], value: list.filter(p => p.stage === code).length }));
-        const max = Math.max(1, ...byStage.map(b => b.value));
-        return html`
-            ${pagehead(dept.name, 'Пациенты отделения, нагрузка врачей и вопросы, требующие решения', html`<button class="btn" data-href="#/analytics">Аналитика</button>`, 'Рабочее пространство заведующего')}
-            <div class="stack">
-                ${metrics([
-                    { label: 'Пациентов в отделении', value: list.length, href: '#/patients' },
-                    { label: 'Требуется решение заведующего', value: list.filter(p => p.attention.some(a => a.code === 'department_head_decision_required')).length, tone: 'warn' },
-                    { label: 'Пациенты с просрочками', value: list.filter(p => p.overdue).length, tone: 'danger' },
-                    { label: 'Записей на консилиум сегодня', value: S.consilium.filter(c => list.some(p => p.id === c.patientId)).length, href: '#/consilium' },
-                ])}
-                <div class="grid grid--main-side">
-                    <section class="panel">
-                        <div class="panel__head"><div><h2 class="panel__title">Нагрузка врачей</h2><div class="panel__meta">Только пациенты отделения</div></div></div>
-                        <div class="panel__body--flush">${stateful(html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Врач</th><th class="num">Пациенты</th><th class="num">В работе</th><th class="num">Внимание</th><th class="num">Просрочки</th><th class="num">Консилиум</th></tr></thead><tbody>
-                            ${doctors.map(d => html`<tr><td><div class="cell-title">${d.name}</div></td><td class="num" data-label="Пациенты">${d.total}</td><td class="num" data-label="В работе">${d.active}</td><td class="num" data-label="Внимание">${d.attention || '—'}</td><td class="num" data-label="Просрочки">${d.overdue ? html`<span class="status status--danger">${d.overdue}</span>` : '—'}</td><td class="num" data-label="Консилиум">${d.cons || '—'}</td></tr>`)}
-                        </tbody></table></div>`, { rows: 3 })}</div>
-                    </section>
-                    <section class="panel">
-                        <div class="panel__head"><h2 class="panel__title">По этапам маршрута</h2></div>
-                        ${stateful(html`<div class="bars">${byStage.map(b => html`<div class="bars__row"><span class="bars__label">${b.label}</span><span class="bars__track"><span class="bars__fill" style="width:${(b.value / max) * 100}%"></span></span><span class="bars__value">${b.value}</span></div>`)}</div>`, { rows: 6 })}
-                    </section>
-                </div>
-                <section class="panel">
-                    <div class="panel__head"><div><h2 class="panel__title">Очередь внимания</h2><div class="panel__meta">Отметки врачей и просрочки по отделению</div></div></div>
-                    <div class="panel__body--flush">${stateful(html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Пациент</th><th>Причина</th><th>С какого дня</th><th>Лечащий врач</th><th>Этап</th></tr></thead><tbody>
-                        ${queue.map(p => html`<tr class="is-link ${p.overdue ? 'row-mark' : ''}" data-href="#/patient/${p.id}" tabindex="0"><td><div class="cell-title">${p.name}</div><div class="cell-sub mono">${p.icd}</div></td>
-                            <td data-label="Причина">${p.attention.length ? html`<span class="status status--warn">${D.ATTENTION_REASONS[p.attention[0].code]}</span>` : html`<span class="status status--danger">Просрочено событий: ${p.overdue}</span>`}</td>
-                            <td data-label="С" class="muted">${p.attention.length ? relDay(p.attention[0].since) : '—'}</td><td data-label="Врач">${p.doctor || '—'}</td><td data-label="Этап">${D.STAGES[p.stage]}</td></tr>`)}
-                    </tbody></table></div>`, { emptyTitle: 'Очередь пуста', emptyText: 'Нет открытых отметок внимания и просрочек.' })}</div>
-                </section>
-            </div>`;
-    }
-
-    function viewPatients(query) {
-        const q = (query || '').toLowerCase();
-        let list = scoped();
-        if (q) list = list.filter(p => [p.name, p.policy, p.icd, p.doctor].some(v => v.toLowerCase().includes(q)));
-        if (S.stageFilter) list = list.filter(p => p.stage === S.stageFilter);
-        if (S.onlyAttention) list = list.filter(p => p.overdue || p.attention.length);
-        const readOnly = isReadOnly();
-        return html`
-            ${pagehead('Пациенты', ['doctor', 'chair'].includes(S.role) ? 'Пациенты, у которых вы лечащий врач' : S.role === 'head' ? 'Пациенты вашего отделения' : 'Все пациенты клиники',
-                readOnly ? html`<span class="tag">Режим просмотра</span>` : html`${R().can.export ? html`<button class="btn" data-action="export">Экспорт</button>` : ''}${R().can.create ? html`<button class="btn btn--primary" data-action="new-patient">Новый пациент</button>` : ''}`)}
-            <section class="panel">
-                <div class="panel__head" style="padding-bottom:var(--s3)"><div class="panel__meta">${S.demo === 'ok' ? `${list.length} ${plural(list.length, 'пациент', 'пациента', 'пациентов')}` : ''}</div></div>
-                <div class="toolbar">
-                    <input class="input" type="search" id="patientSearch" placeholder="Поиск по ФИО, полису, МКБ-10" value="${query || ''}" aria-label="Поиск пациентов">
-                    <select class="select" id="stageFilter" aria-label="Этап маршрута"><option value="">Все этапы</option>${Object.entries(D.STAGES).map(([k, v]) => html`<option value="${k}" ${raw(S.stageFilter === k ? 'selected' : '')}>${v}</option>`)}</select>
-                    <label class="check"><input type="checkbox" id="onlyAttention" ${raw(S.onlyAttention ? 'checked' : '')}> Только требующие внимания</label>
-                </div>
-                ${stateful(list.length ? patientRows(list) : html`<div class="empty"><div class="empty__title">Ничего не найдено</div><div>Измените запрос или сбросьте фильтры.</div></div>`, { rows: 8, emptyTitle: 'Пациентов пока нет', emptyText: readOnly ? 'Пациенты появятся после внесения их врачами.' : 'Добавьте первого пациента кнопкой «Новый пациент».' })}
-            </section>`;
-    }
-
-    function viewCalendar() {
-        const list = scoped();
-        const base = parse(D.today);
-        const monday = new Date(base); monday.setDate(base.getDate() - ((base.getDay() + 6) % 7));
-        const days = Array.from({ length: 5 }, (_, k) => D.helpers.addDays(monday, k));
-        const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16];
-        const evs = list.flatMap(p => p.events.map(e => ({ ...e, p })));
-        const cell = (day, h) => {
-            const key = D.helpers.iso(day);
-            const items = evs.filter(e => e.date === key && Number(e.time.split(':')[0]) === h);
-            return html`<div class="week__cell ${key === D.today ? 'is-today' : ''}">${items.slice(0, 2).map(e => html`<button class="ev ${e.done ? 'ev--done' : e.date < D.today ? 'ev--overdue' : ''}" data-href="#/patient/${e.p.id}" title="${e.time} · ${e.title} · ${e.p.name}"><span class="mono">${e.time}</span> ${e.p.name.split(' ')[0]} · ${e.title}</button>`)}${items.length > 2 ? html`<span class="muted" style="font-size:11px;padding-left:4px">ещё ${items.length - 2}</span>` : ''}</div>`;
-        };
-        const weekEvents = evs.filter(e => days.some(d => D.helpers.iso(d) === e.date));
-        return html`
-            ${pagehead('Расписание', `Плановые события ${S.role === 'doctor' ? 'ваших пациентов' : S.role === 'head' ? 'пациентов отделения' : 'всех пациентов'} на неделю`, html`<div class="segmented" role="group" aria-label="Вид"><button aria-pressed="${S.calView !== 'list'}" data-action="calview" data-v="week">Неделя</button><button aria-pressed="${S.calView === 'list'}" data-action="calview" data-v="list">Список</button></div>`)}
-            <section class="panel">
-                <div class="panel__head"><div><h2 class="panel__title">${fmtDate(D.helpers.iso(days[0]))} — ${fmtDate(D.helpers.iso(days[4]))}</h2><div class="panel__meta">${weekEvents.length} ${plural(weekEvents.length, 'событие', 'события', 'событий')} · <span class="status status--danger" style="font-size:inherit">просрочено</span> · <span class="status status--accent" style="font-size:inherit">запланировано</span></div></div></div>
-                ${stateful(S.calView === 'list'
-                    ? html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Дата</th><th>Время</th><th>Событие</th><th>Пациент</th><th>Статус</th></tr></thead><tbody>${weekEvents.sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time)).map(e => html`<tr class="is-link" data-href="#/patient/${e.p.id}"><td class="mono">${fmtNum(e.date)}</td><td class="mono" data-label="Время">${e.time}</td><td data-label="Событие">${e.title}</td><td data-label="Пациент">${e.p.name}</td><td data-label="Статус">${e.done ? html`<span class="status status--ok">Выполнено</span>` : e.date < D.today ? html`<span class="status status--danger">Просрочено</span>` : html`<span class="status status--accent">Запланировано</span>`}</td></tr>`)}</tbody></table></div>`
-                    : html`<div class="table-wrap"><div class="week"><div class="week__corner"></div>${days.map(d => html`<div class="week__head ${D.helpers.iso(d) === D.today ? 'is-today' : ''}">${WEEKDAYS[d.getDay()]}<b>${d.getDate()} ${MONTHS[d.getMonth()]}</b></div>`)}
-                        ${hours.map(h => html`<div class="week__hour">${String(h).padStart(2, '0')}:00</div>${days.map(d => cell(d, h))}`)}</div></div>`, { rows: 8, emptyTitle: 'Событий на неделе нет' })}
-            </section>`;
-    }
-
     function viewConsilium() {
         const can = R().can;
         if (!can.consilium) return denied('consilium');
@@ -543,6 +417,7 @@
         retry: () => { $('#stateSelect').value = 'ok'; S.demo = 'ok'; render(); },
         'new-patient': () => patientModal(),
         export: () => toast('В прототипе файл не формируется — экспорт работает в приложении.'),
+        import: () => toast('В прототипе файл не загружается — импорт с проверкой и подтверждением работает в приложении.'),
         registry: () => toast('Реестры XLSX выгружаются в приложении; в прототипе — только кнопка.'),
         calview: (el) => { S.calView = el.dataset.v; render(); },
         period: (el) => { S.period = el.dataset.v; render(); },
@@ -1942,6 +1817,275 @@
         toast(`Диагноз изменён: ${d.code}.`);
     };
 
+    /* ===================== Рабочие экраны (этап 2) =====================
+       Список пациентов и календарь повторяют приложение (getFiltered,
+       renderStats, renderPatients, renderCalendar). «Рабочий день» и
+       «Отделение» — предложения редизайна: в приложении таких экранов нет,
+       поэтому в них только данные, которые приложение уже считает
+       (внутренние уведомления, показатели и нагрузка из аналитики). */
+    const proposalNote = (text) => html`<div class="demo-note">Предложение редизайна: ${text}</div>`;
+    const pendingEvents = (p) => p.history.flatMap((occ, i) => occ.events.filter(ev => ev.date && !ev.actualDate).map(ev => ({ ...ev, occ, occIndex: i, p })));
+    const lastEventDays = (p) => { const occ = p.history[p.history.length - 1]; const ev = occ && occ.events[occ.events.length - 1]; return ev && ev.date ? daysUntil(ev.date) : null; };
+    const openIssues = (p) => p.attentionIssues.filter(x => x.status === 'open');
+    const firstVisit = (p) => { const ev = p.history.filter(o => o.stage === 'primary-appointment').flatMap(o => o.events).find(e => e.actualDate); return ev ? `${ev.actualDate}T${ev.actualTime || '00:00'}` : ''; };
+    const dateChip = (days, time) => html`<span class="tag ${dateChipTone(days)}">${dateChipText(days, time)}</span>`;
+
+    /* --- Список пациентов --- */
+    S.list = { stage: '', head: '', deadline: '', attention: '', reason: '', sort: 'updated-newest' };
+    const LIST_DEADLINE = [['', 'Любой срок'], ['overdue', 'Просрочено'], ['0-3', 'Ближайшие 3 дня'], ['4-7', '4–7 дней'], ['7+', 'Более 7 дней'], ['no-date', 'Дата не назначена']];
+    const LIST_ATTENTION = [['', 'Все пациенты'], ['active', 'Требуют внимания'], ['none', 'Без активных проблем']];
+    const LIST_SORT = [['updated-newest', 'Сначала изменённые'], ['attention', 'Сначала требуют внимания'], ['newest', 'Сначала новые'], ['oldest', 'Сначала давние'], ['first-visit-oldest', 'Первый визит: сначала ранние'], ['first-visit-newest', 'Первый визит: сначала поздние'], ['name', 'По алфавиту']];
+    const LIST_STAGE_ORDER = ['primary-appointment', 'exam', 'appointment', 'consult', 'treatment-prep', 'treatment', 'completed', 'dispensary-observation', 'diagnosis-not-confirmed'];
+    const listFilterCount = () => ['stage', 'head', 'deadline', 'attention', 'reason'].filter(k => S.list[k]).length;
+
+    function filteredPatients(q) {
+        const f = S.list;
+        let list = scoped();
+        if (!f.stage && !q) list = list.filter(p => !D.TERMINAL.includes(p.stage));   // как в приложении: завершённые скрыты без фильтра этапа и поиска
+        if (f.stage) list = list.filter(p => p.stage === f.stage);
+        if (f.head) list = list.filter(p => p.head === f.head);
+        if (f.deadline) list = list.filter(p => {
+            const d = lastEventDays(p);
+            if (f.deadline === 'no-date') return d === null;
+            if (d === null) return false;
+            return f.deadline === 'overdue' ? d < 0 : f.deadline === '0-3' ? d >= 0 && d <= 3 : f.deadline === '4-7' ? d >= 4 && d <= 7 : d > 7;
+        });
+        // Внимание и причина в приложении фильтруются сервером (?attention=&attention_reason=); выбор причины включает «Требуют внимания».
+        if (f.attention === 'active' || f.reason) list = list.filter(p => openIssues(p).length && (!f.reason || openIssues(p).some(x => x.reasonCode === f.reason)));
+        if (f.attention === 'none') list = list.filter(p => !openIssues(p).length);
+        if (q) list = list.filter(p => [p.name, p.policy, p.icd, p.doctor, p.head].some(v => (v || '').toLowerCase().includes(q)));
+        const by = (s) => s || '';
+        const name = (a, b) => a.name.localeCompare(b.name, 'ru');
+        const sorters = {
+            'updated-newest': (a, b) => by(b.updatedAt || b.createdAt).localeCompare(by(a.updatedAt || a.createdAt)),
+            attention: (a, b) => openIssues(b).length - openIssues(a).length || name(a, b),
+            newest: (a, b) => b.createdAt.localeCompare(a.createdAt),
+            oldest: (a, b) => a.createdAt.localeCompare(b.createdAt),
+            'first-visit-oldest': (a, b) => (firstVisit(a) || '9999').localeCompare(firstVisit(b) || '9999') || name(a, b),
+            'first-visit-newest': (a, b) => (firstVisit(b) || '0000').localeCompare(firstVisit(a) || '0000') || name(a, b),
+            name,
+        };
+        return list.slice().sort(sorters[f.sort] || sorters['updated-newest']);
+    }
+
+    const listFilterFields = (prefix) => {
+        const heads = [...new Set(scoped().map(p => p.head).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ru'));
+        const sel = (key, label, opts) => html`<div class="field"><label class="field__label" for="${prefix}-${key}">${label}</label><select class="select" id="${prefix}-${key}" data-list="${key}">${opts.map(([v, t]) => html`<option value="${v}" ${raw(S.list[key] === v ? 'selected' : '')}>${t}</option>`)}</select></div>`;
+        return html`
+            ${sel('stage', 'Этап', [['', 'Все этапы'], ...LIST_STAGE_ORDER.map(s => [s, D.STAGES[s]])])}
+            ${sel('head', 'Заведующий', [['', 'Все заведующие'], ...heads.map(h => [h, h])])}
+            ${sel('deadline', 'Срок', LIST_DEADLINE)}
+            ${sel('attention', 'Внимание', LIST_ATTENTION)}
+            ${sel('reason', 'Причина внимания', [['', 'Любая причина'], ...Object.entries(D.ATTENTION_REASONS)])}
+            ${sel('sort', 'Сортировка', LIST_SORT)}`;
+    };
+    const readListFields = (root) => { root.querySelectorAll('[data-list]').forEach(s => { S.list[s.dataset.list] = s.value; }); if (S.list.reason) S.list.attention = 'active'; };
+
+    function viewPatients(query) {
+        const q = (query || '').toLowerCase().trim();
+        const all = scoped();
+        const list = filteredPatients(q);
+        const readOnly = isReadOnly();
+        const weekAgo = D.helpers.iso(D.helpers.addDays(parse(D.today), -7));
+        const fresh = all.filter(p => p.createdAt.slice(0, 10) >= weekAgo).length;
+        const inTreatment = all.filter(p => ['treatment', 'treatment-prep'].includes(p.stage)).length;
+        const done = all.filter(p => p.stage === 'completed').length;
+        const share = (n) => all.length ? `${(n / all.length * 100).toFixed(1).replace('.', ',')}% от всех` : 'нет данных';
+        const unresolved = R().perms.changeTreatingDoctor ? all.filter(p => !p.doctorId).length : 0;
+        const n = listFilterCount();
+        const empty = !all.length
+            ? (R().can.create ? 'Пациентов пока нет. Нажмите «Новый пациент», чтобы добавить первого.' : 'В вашей области видимости пока нет пациентов.')
+            : 'По выбранным условиям никого не найдено. Измените фильтры или поиск.';
+        return html`
+            ${pagehead('Пациенты', ['doctor', 'chair'].includes(S.role) ? 'Пациенты, у которых вы лечащий врач' : S.role === 'head' ? 'Пациенты вашего отделения' : 'Все пациенты клиники',
+                readOnly ? html`<span class="tag">Режим просмотра</span>` : html`${R().perms.importData ? html`<button class="btn" data-action="import">Импорт</button>` : ''}${R().can.export ? html`<button class="btn" data-action="export">Экспорт</button>` : ''}${R().can.create ? html`<button class="btn btn--primary" data-action="new-patient">Новый пациент</button>` : ''}`)}
+            <div class="stack">
+                ${unresolved ? html`<div class="callout callout--warn callout--flush callout--row"><div class="callout__text">Пациентов без сопоставленного лечащего врача: ${unresolved}. Они не видны врачам и заведующим отделений.</div><button class="btn btn--sm" data-href="#/structure">Перейти к сопоставлению</button></div>` : ''}
+                ${metrics([
+                    { label: 'Всего пациентов', value: all.length, note: all.length ? 'в работе и завершённые' : 'список пуст' },
+                    { label: 'Новых за неделю', value: fresh, note: fresh ? 'добавлены за 7 дней' : 'новых нет' },
+                    { label: 'На лечении', value: inTreatment, note: share(inTreatment) },
+                    { label: 'Завершено', value: done, note: share(done) },
+                ])}
+                <section class="panel">
+                    <div class="toolbar toolbar--list">
+                        <input class="input" type="search" id="patientSearch" placeholder="Поиск по ФИО, полису ОМС, диагнозу, врачу…" value="${query || ''}" aria-label="Поиск пациентов">
+                        <button class="btn list-filters-btn" data-list-sheet aria-label="Фильтры и сортировка, активных фильтров: ${n}">${n ? `Фильтры · ${n}` : 'Фильтры'}</button>
+                    </div>
+                    <div class="list-filters">${listFilterFields('lf')}${n ? html`<div class="list-filters__reset"><button class="btn btn--sm btn--ghost" data-list-reset>Сбросить</button></div>` : ''}</div>
+                    <div class="panel__meta list-count">${S.demo === 'ok' ? `Показано: ${list.length}${!S.list.stage && !q ? ' · завершённые маршруты скрыты, пока не выбран этап или поиск' : ''}` : ''}</div>
+                    ${stateful(list.length ? listTable(list) : html`<div class="empty"><div class="empty__title">${empty}</div></div>`, { rows: 8, emptyTitle: 'Пациентов пока нет', emptyText: empty })}
+                </section>
+            </div>`;
+    }
+    function listTable(list) {
+        return html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Пациент</th><th>Этап лечения</th><th>Ближайший срок</th><th>Последняя активность</th><th>Заведующий</th></tr></thead><tbody>${list.map(p => {
+            const issues = openIssues(p).length;
+            const ev = pendingEvents(p).filter(e => e.occIndex === p.history.length - 1).pop();
+            return html`<tr class="is-link" data-href="#/patient/${p.id}" tabindex="0" aria-label="Открыть карточку: ${p.name}">
+                <td><div class="person"><span class="avatar avatar--${p.priority}" aria-hidden="true">${initials(p.name)}</span><div><div class="cell-title">${p.name}</div><div class="cell-sub">${p.age} лет · <span class="mono">${p.icd || 'диагноз не указан'}</span></div>${issues ? html`<span class="tag tag--warn">Требует внимания${issues > 1 ? ` · ${issues}` : ''}</span>` : ''}</div></div></td>
+                <td data-label="Этап"><div class="cell-title cell-title--sm">${stageLabelOf(p.history[p.history.length - 1])}</div><div class="progress progress--sm"><progress max="100" value="${progress(p)}" aria-label="Пройдено этапов маршрута"></progress><span class="mono">${progress(p)}%</span></div></td>
+                <td data-label="Срок">${ev ? html`${dateChip(daysUntil(ev.date), ev.time)}` : html`<span class="muted">—</span>`}</td>
+                <td class="muted" data-label="Изменён">${fmtStamp(p.updatedAt || p.createdAt)}</td>
+                <td data-label="Заведующий">${p.head || '—'}</td>
+            </tr>`;
+        })}</tbody></table></div>`;
+    }
+
+    /* --- Расписание (в приложении — «Календарь»: плановые события без факта) --- */
+    S.calWeek = 0;
+    function viewCalendar() {
+        const evs = scoped().flatMap(pendingEvents).sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
+        const sub = `Ближайшие плановые события ${S.role === 'doctor' ? 'ваших пациентов' : S.role === 'head' ? 'пациентов отделения' : 'по всем пациентам'}`;
+        const views = html`<div class="segmented" role="group" aria-label="Вид"><button aria-pressed="${S.calView !== 'week'}" data-action="calview" data-v="list">Список</button><button aria-pressed="${S.calView === 'week'}" data-action="calview" data-v="week">Неделя</button></div>`;
+        if (S.calView !== 'week') {
+            return html`${pagehead('Расписание', sub, views)}
+                <section class="panel"><div class="panel__head"><div><h2 class="panel__title">Плановые события</h2><div class="panel__meta">Все события без отметки о выполнении, включая просроченные · как «Календарь» в приложении</div></div></div>
+                ${stateful(evs.length ? html`<ul class="cal-list">${evs.map(e => html`<li>
+                    <div class="cal-list__who"><div class="cell-title">${e.p.name}</div><div class="cell-sub">${stageLabelOf(e.occ)} · ${e.p.head || 'заведующий не указан'}</div></div>
+                    <div class="cal-list__when">${dateChip(daysUntil(e.date), e.time)}<span class="mono muted">${fmtNum(e.date)}</span></div>
+                    <button class="btn btn--sm" data-href="#/patient/${e.p.id}?tab=events" aria-label="Открыть карточку: ${e.p.name}">Открыть</button></li>`)}</ul>`
+                    : html`<div class="empty"><div class="empty__title">Плановых событий нет.</div></div>`, { rows: 8, emptyTitle: 'Плановых событий нет.' })}</section>`;
+        }
+        const base = D.helpers.addDays(parse(D.today), S.calWeek * 7);
+        const monday = new Date(base); monday.setDate(base.getDate() - ((base.getDay() + 6) % 7));
+        const days = Array.from({ length: 5 }, (_, k) => D.helpers.iso(D.helpers.addDays(monday, k)));
+        const hours = [8, 9, 10, 11, 12, 13, 14, 15, 16];
+        const inWeek = evs.filter(e => days.includes(e.date));
+        const slot = (day, h) => inWeek.filter(e => e.date === day && (h === null ? !e.time : Number(e.time.split(':')[0]) === h));
+        const cell = (day, h) => { const items = slot(day, h); return html`<div class="week__cell ${day === D.today ? 'is-today' : ''}">${items.slice(0, 2).map(e => html`<button class="ev ${e.date < D.today ? 'ev--overdue' : ''}" data-href="#/patient/${e.p.id}?tab=events" title="${e.time || 'без времени'} · ${stageLabelOf(e.occ)} · ${e.p.name}"><span class="mono">${e.time || '—'}</span> ${e.p.name.split(' ')[0]} · ${stageLabelOf(e.occ)}</button>`)}${items.length > 2 ? html`<span class="week__more">ещё ${items.length - 2}</span>` : ''}</div>`; };
+        const noTime = days.some(d => slot(d, null).length);
+        return html`${pagehead('Расписание', sub, views)}
+            ${proposalNote('в приложении календарь — только список. Недельная сетка показывает те же плановые события без факта; выполненные события в ней не показываются.')}
+            <section class="panel">
+                <div class="panel__head"><div><h2 class="panel__title">${fmtDate(days[0])} — ${fmtDate(days[4])}</h2><div class="panel__meta">${inWeek.length} ${plural(inWeek.length, 'событие', 'события', 'событий')} на неделе</div></div>
+                    <div class="segmented" role="group" aria-label="Неделя"><button data-cal-week="-1" aria-label="Предыдущая неделя">‹</button><button data-cal-week="0" aria-pressed="${S.calWeek === 0}">Текущая</button><button data-cal-week="1" aria-label="Следующая неделя">›</button></div></div>
+                ${stateful(html`<div class="table-wrap"><div class="week"><div class="week__corner"></div>${days.map(d => { const x = parse(d); return html`<div class="week__head ${d === D.today ? 'is-today' : ''}">${WEEKDAYS[x.getDay()]}<b>${x.getDate()} ${MONTHS[x.getMonth()]}</b></div>`; })}
+                    ${noTime ? html`<div class="week__hour">без времени</div>${days.map(d => cell(d, null))}` : ''}
+                    ${hours.map(h => html`<div class="week__hour">${String(h).padStart(2, '0')}:00</div>${days.map(d => cell(d, h))}`)}</div></div>`, { rows: 8, emptyTitle: 'Плановых событий нет.' })}
+            </section>`;
+    }
+
+    /* --- Рабочий день (предложение): данные внутренних уведомлений врача --- */
+    function viewToday() {
+        const mine = scoped();
+        const items = notifItems();
+        const count = (t) => items.filter(n => n.type === t).length;
+        const needs = mine.filter(p => p.overdue || openIssues(p).length).sort((a, b) => b.overdue - a.overdue || openIssues(b).length - openIssues(a).length);
+        const todayEvents = mine.flatMap(pendingEvents).filter(e => e.date === D.today).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+        const soon = mine.flatMap(pendingEvents).filter(e => { const d = daysUntil(e.date); return d >= 1 && d <= 3; }).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
+        const myCons = S.consilium.filter(c => c.createdBy === R().user.id);
+        const d = parse(D.today);
+        const evRow = (e) => html`<li class="is-link" data-href="#/patient/${e.p.id}?tab=events" tabindex="0"><span class="queue__time">${e.date === D.today ? (e.time || '—') : fmtDate(e.date)}</span><div><div class="queue__title">${e.p.name}</div><div class="queue__sub">${stageLabelOf(e.occ)}</div></div>${dateChip(daysUntil(e.date), '')}</li>`;
+        return html`
+            ${pagehead(`Добрый день, ${R().user.name.split(' ')[1]}`, `${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]} — ваши пациенты и задачи на сегодня`,
+                html`${R().can.book ? html`<button class="btn" data-href="#/consilium">Записать на консилиум</button>` : ''}${R().can.create ? html`<button class="btn btn--primary" data-action="new-patient">Новый пациент</button>` : ''}`, 'Рабочий день')}
+            ${proposalNote('в приложении отдельного экрана нет. Здесь собраны те же сведения, что во внутренних уведомлениях (просрочено, на сегодня, скоро, требует внимания) и в записях консилиума, созданных вами.')}
+            <div class="stack">
+                ${metrics([
+                    { label: 'Просрочено', value: count('overdue'), tone: 'danger', note: 'события без отметки о выполнении' },
+                    { label: 'На сегодня', value: count('today'), note: 'плановые события' },
+                    { label: 'Скоро срок', value: count('upcoming'), note: 'через 1–3 дня' },
+                    { label: 'Требует внимания', value: count('attention'), tone: 'warn', note: 'открытые отметки', href: '#/patients' },
+                ])}
+                <div class="grid grid--main-side">
+                    <section class="panel">
+                        <div class="panel__head"><div><h2 class="panel__title">Требуют действия</h2><div class="panel__meta">Просроченные события и открытые отметки внимания</div></div><button class="btn btn--sm btn--ghost" data-list-preset="attention">Все требующие внимания</button></div>
+                        <div class="panel__body--flush">${stateful(needs.length ? patientRows(needs.slice(0, 8), ['patient', 'stage', 'status']) : html`<div class="empty"><div class="empty__title">Всё под контролем</div><div>Нет пациентов с просрочками и открытыми отметками.</div></div>`, { emptyTitle: 'Всё под контролем', emptyText: 'Нет пациентов с просрочками и открытыми отметками.' })}</div>
+                    </section>
+                    <div class="stack">
+                        <section class="panel"><div class="panel__head"><h2 class="panel__title">На сегодня</h2><button class="btn btn--sm btn--ghost" data-href="#/calendar">Расписание</button></div>
+                            ${stateful(html`<ul class="queue">${todayEvents.length ? todayEvents.map(evRow) : html`<li><span></span><div class="queue__sub">На сегодня плановых событий нет</div></li>`}</ul>`, { rows: 3 })}</section>
+                        <section class="panel"><div class="panel__head"><h2 class="panel__title">Скоро срок</h2><span class="panel__meta">1–3 дня</span></div>
+                            ${stateful(html`<ul class="queue">${soon.length ? soon.slice(0, 6).map(evRow) : html`<li><span></span><div class="queue__sub">Ближайших сроков нет</div></li>`}</ul>`, { rows: 3 })}</section>
+                        <section class="panel"><div class="panel__head"><h2 class="panel__title">Мои записи на консилиум</h2></div>
+                            ${stateful(html`<ul class="queue">${myCons.length ? myCons.map(c => html`<li class="is-link" data-href="#/consilium" tabindex="0"><span class="queue__time">${c.time}</span><div><div class="queue__title">${c.patientName}</div><div class="queue__sub">${fmtNum(c.date)} · ${D.GROUPS[c.group]}</div></div>${consTag(c)}</li>`) : html`<li><span></span><div class="queue__sub">Записей нет</div></li>`}</ul>`, { rows: 3 })}</section>
+                    </div>
+                </div>
+            </div>`;
+    }
+
+    /* --- Отделение (предложение): показатели и нагрузка из аналитики приложения --- */
+    function viewDepartment() {
+        const list = scoped();
+        const dept = D.DEPARTMENTS.find(d => d.id === R().user.dept);
+        const active = list.filter(p => !D.TERMINAL.includes(p.stage));
+        const incompleteChecklist = (p) => p.stage === 'exam' && p.checklist.some(c => !c.done);
+        // analytics/service.py workload: активные пациенты, просрочки, незавершённые обязательные чек-листы, уведомления.
+        const groups = [...D.DOCTORS.filter(d => d.dept === dept.id), ...(list.some(p => !p.doctorId) ? [{ id: null, name: 'Не назначен' }] : [])].map(d => {
+            const ps = active.filter(p => (p.doctorId || null) === d.id);
+            const sms = list.filter(p => (p.doctorId || null) === d.id).flatMap(p => p.notifications.items);
+            return { id: d.id, name: d.name, active: ps.length, overdue: ps.filter(p => p.overdue).length, checklists: ps.filter(incompleteChecklist).length, pending: sms.filter(x => x.status === 'pending').length, failed: sms.filter(x => x.status === 'failed').length };
+        }).filter(g => g.active || g.id !== null);
+        const byStage = LIST_STAGE_ORDER.map(code => ({ code, label: D.STAGES[code], value: list.filter(p => p.stage === code).length }));
+        const queue = list.flatMap(p => openIssues(p).map(x => ({ p, x }))).sort((a, b) => a.x.createdAt.localeCompare(b.x.createdAt));
+        const headDecision = queue.filter(q => q.x.reasonCode === 'department_head_decision_required').length;
+        return html`
+            ${pagehead(dept.name, 'Пациенты отделения, нагрузка врачей и открытые отметки внимания', html`<button class="btn" data-href="#/analytics">Аналитика</button>`, 'Рабочее пространство заведующего')}
+            ${proposalNote('в приложении отдельного экрана нет. Показатели и нагрузка — те же, что в «Аналитике» (в пределах области доступа), очередь — список «Требуют внимания».')}
+            <div class="stack">
+                ${metrics([
+                    { label: 'Всего доступных пациентов', value: list.length, href: '#/patients' },
+                    { label: 'Активные', value: active.length },
+                    { label: 'Явно требуют внимания', value: list.filter(p => openIssues(p).length).length, tone: 'warn' },
+                    { label: 'Пациенты с просроченными событиями', value: list.filter(p => p.overdue).length, tone: 'danger' },
+                ])}
+                <div class="grid grid--main-side">
+                    <section class="panel">
+                        <div class="panel__head"><div><h2 class="panel__title">Нагрузка врачей</h2><div class="panel__meta">Активные пациенты отделения</div></div></div>
+                        <div class="panel__body--flush">${stateful(html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Врач</th><th class="num">Активные пациенты</th><th class="num">Просрочки</th><th class="num">Чек-листы</th><th class="num">Ожидают отправки</th><th class="num">Ошибки отправки</th></tr></thead><tbody>
+                            ${groups.map(g => html`<tr><td><div class="cell-title">${g.name}</div></td><td class="num" data-label="Активные">${g.active}</td><td class="num" data-label="Просрочки">${g.overdue ? html`<span class="status status--danger">${g.overdue}</span>` : '—'}</td><td class="num" data-label="Чек-листы">${g.checklists || '—'}</td><td class="num" data-label="Ожидают">${g.pending || '—'}</td><td class="num" data-label="Ошибки">${g.failed || '—'}</td></tr>`)}
+                        </tbody></table></div>`, { rows: 3, emptyTitle: 'Нет данных по нагрузке в текущей области доступа.' })}</div>
+                        <div class="panel__foot">Как в аналитике приложения: просрочки — пациенты с просроченными событиями; чек-листы — незавершённые обязательные; SMS — по пациентам врача, в прототипе синтетические.</div>
+                    </section>
+                    <section class="panel">
+                        <div class="panel__head"><h2 class="panel__title">Пациенты по этапам маршрута</h2></div>
+                        ${stateful(byStage.some(b => b.value) ? html`<ul class="stage-bars">${byStage.map(b => html`<li><button class="stage-bars__row" data-list-preset="stage" data-v="${b.code}" aria-label="${b.label}: ${b.value}. Показать в списке"><span class="stage-bars__label">${b.label}</span><progress max="${Math.max(1, list.length)}" value="${b.value}"></progress><span class="mono">${b.value}</span></button></li>`)}</ul>` : html`<div class="empty"><div class="empty__title">Пациентов по этапам нет.</div></div>`, { rows: 6 })}
+                    </section>
+                </div>
+                <section class="panel">
+                    <div class="panel__head panel__head--wrap"><div><h2 class="panel__title">Требуют внимания</h2><div class="panel__meta">Открытые отметки по пациентам отделения, сначала давние</div></div>
+                        ${headDecision ? html`<button class="btn btn--sm" data-list-preset="reason" data-v="department_head_decision_required">Требуется решение заведующего · ${headDecision}</button>` : ''}</div>
+                    <div class="panel__body--flush">${stateful(queue.length ? html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Пациент</th><th>Причина</th><th>Добавлена</th><th>Лечащий врач</th><th>Этап</th></tr></thead><tbody>
+                        ${queue.map(({ p, x }) => html`<tr class="is-link" data-href="#/patient/${p.id}" tabindex="0" aria-label="Открыть карточку: ${p.name}"><td><div class="cell-title">${p.name}</div><div class="cell-sub mono">${p.icd}</div></td>
+                            <td data-label="Причина"><span class="status status--warn">${D.ATTENTION_REASONS[x.reasonCode]}</span></td>
+                            <td data-label="Добавлена" class="muted">${fmtStamp(x.createdAt)} · ${x.createdByName}</td><td data-label="Врач">${p.doctor || '—'}</td><td data-label="Этап">${D.STAGES[p.stage]}</td></tr>`)}
+                    </tbody></table></div>` : html`<div class="empty"><div class="empty__title">Открытых отметок нет</div></div>`, { emptyTitle: 'Открытых отметок нет', emptyText: '' })}</div>
+                </section>
+            </div>`;
+    }
+
+    // Фильтры списка: на широком экране — сразу, на телефоне — листом «Фильтры и сортировка».
+    document.addEventListener('change', (e) => {
+        const s = e.target.closest('.list-filters [data-list]');
+        if (!s) return;
+        S.list[s.dataset.list] = s.value;
+        if (s.dataset.list === 'reason' && s.value) S.list.attention = 'active';
+        render();
+        const again = document.getElementById(s.id); if (again) again.focus({ preventScroll: true });
+    });
+    document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t.closest('[data-list-reset]')) { Object.assign(S.list, { stage: '', head: '', deadline: '', attention: '', reason: '' }); render(); return; }
+        if (t.closest('[data-list-sheet]')) {
+            openSheet({ title: 'Фильтры и сортировка', body: html`<div class="form">${listFilterFields('ls')}</div>`,
+                onApply: (sh) => { readListFields(sh); render(); },
+                onReset: (sh) => { sh.querySelectorAll('[data-list]').forEach(x => { x.value = x.dataset.list === 'sort' ? S.list.sort : ''; }); } });
+            return;
+        }
+        const pr = t.closest('[data-list-preset]');
+        if (pr) {
+            Object.assign(S.list, { stage: '', head: '', deadline: '', attention: '', reason: '' });
+            if (pr.dataset.listPreset === 'attention') S.list.attention = 'active';
+            if (pr.dataset.listPreset === 'stage') S.list.stage = pr.dataset.v;
+            if (pr.dataset.listPreset === 'reason') { S.list.reason = pr.dataset.v; S.list.attention = 'active'; }
+            location.hash = '#/patients';
+            return;
+        }
+        const w = t.closest('[data-cal-week]');
+        if (w) { S.calWeek = w.dataset.calWeek === '0' ? 0 : S.calWeek + Number(w.dataset.calWeek); render(); }
+    });
+
     /* ---------- Навигация и отрисовка ---------- */
     const currentSection = () => (location.hash || R().home).slice(2).split('?')[0].split('/')[0];
     function renderNav(active) {
@@ -1990,8 +2134,6 @@
     function bindView() {
         const s = $('#patientSearch');
         if (s) s.addEventListener('input', () => { const pos = s.selectionStart; history.replaceState(null, '', `#/patients${s.value ? `?q=${encodeURIComponent(s.value)}` : ''}`); render(); const n = $('#patientSearch'); n.focus(); n.setSelectionRange(pos, pos); });
-        const st = $('#stageFilter'); if (st) st.addEventListener('change', () => { S.stageFilter = st.value; render(); });
-        const oa = $('#onlyAttention'); if (oa) oa.addEventListener('change', () => { S.onlyAttention = oa.checked; render(); });
         const g = $('#groupSelect'); if (g) g.addEventListener('change', () => { S.consGroup = g.value; render(); });
     }
 
@@ -2014,7 +2156,7 @@
             else if (S.ai.open) closeAI();
             $('#app').classList.remove('is-nav-open');
         }
-        if (e.key === 'Enter' && e.target.matches('tr[data-href]')) location.hash = e.target.dataset.href;
+        if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('tr[data-href], li[data-href]')) { e.preventDefault(); location.hash = e.target.dataset.href; }
         if (e.key === '/' && !e.target.closest('input, textarea, select')) { e.preventDefault(); $('#globalSearch').focus(); }
     });
     $('#globalSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') { location.hash = `#/patients?q=${encodeURIComponent(e.target.value)}`; e.target.blur(); } });

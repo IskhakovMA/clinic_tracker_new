@@ -265,6 +265,9 @@
             notifications: { smsEnabled: consent === 'granted', consent, consentAt: consent === 'not_recorded' ? '' : stamp(parseIso(createdAt.slice(0, 10)), '12:00'), consentBy: consent === 'not_recorded' ? '' : doctor.short, items: sms },
         };
         if (p.pgiResult) p.pgiResultDate = history[Math.min(2, history.length - 1)].enteredAt.slice(0, 10);
+        // Последняя активность — последнее изменение карточки: этап, факт события или отметка внимания.
+        p.updatedAt = [createdAt, ...history.map(o => o.enteredAt), ...history.flatMap(o => o.events.filter(e => e.actualDate).map(e => `${e.actualDate}T${e.actualTime || '00:00'}`)), ...attentionIssues.map(x => x.closedAt || x.createdAt)]
+            .filter(x => x && x.slice(0, 10) <= iso(today)).sort().pop();
         return derive(p);
     });
 
