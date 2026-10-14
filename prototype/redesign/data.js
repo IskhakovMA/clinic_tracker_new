@@ -289,7 +289,11 @@
             treatment: status === 'signed' ? (k === 0 ? 'chemotherapy' : 'surgery') : null,
             scheme, goc: status === 'signed' && k === 0, goc65: false,
             routeStage: status === 'signed' ? p.stage : null,
-            revisions: (status === 'needs_revision' || status === 'revised') ? [{ round: 1, author: 'Волкова И. С.', at: iso(addDays(today, -1)), text: 'Приложите заключение КТ с контрастом и результаты ИГХ.' }] : [],
+            revisions: (status === 'needs_revision' || status === 'revised') ? [{ round: 1, author: 'Волкова И. С.', at: `${iso(addDays(today, -1))}T15:20`, text: 'Приложите заключение КТ с контрастом и результаты ИГХ.' }] : [],
+            // Поля формы записи (ConsiliumAppointmentIn): льгота, доп. диагноз, доп. участник, УВ/РУВ.
+            hasBenefit: k % 4 === 1, additionalDiagnosis: '', additionalParticipant: k === 3 ? 'Морфолог' : '', uvRuv: k === 4,
+            // Одна подписанная запись перенесена автором в архив (set_archived).
+            archived: k === 1,
         };
     });
 
@@ -305,6 +309,7 @@
         id: `c-${consilium.length + 1}`, patientId: futurePatient.id, patientName: futurePatient.name, policy: futurePatient.policy, icd: futurePatient.icd, localization: futurePatient.localization,
         group: 'thoracic', date: iso(nextMonday), time: '10:00', doctor: futurePatient.doctor, createdBy: futurePatient.doctorId, status: 'recorded',
         needsSurgeon: true, needsRadiotherapist: false, comment: 'Обсудить тактику лечения.', treatment: null, scheme: null, goc: false, goc65: false, routeStage: null, revisions: [],
+        hasBenefit: false, additionalDiagnosis: '', additionalParticipant: '', uvRuv: false, archived: false,
     });
 
     // Аналитика: агрегаты считаются по тем же синтетическим пациентам.

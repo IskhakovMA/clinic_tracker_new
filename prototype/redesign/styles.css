@@ -629,6 +629,10 @@ button.tl__step { cursor: pointer; }
 .cons-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--s3) var(--s4); }
 .cons-detail { font-size: var(--t-md); overflow-wrap: anywhere; }
 .cons-detail--wide { grid-column: 1 / -1; }
+.cons-history { display: grid; gap: var(--s2); }
+.cons-history__title { font-size: var(--t-sm); font-weight: 600; color: var(--text-2); }
+.cons-optional-row { display: flex; gap: var(--s2); align-items: center; }
+.cons-optional-row .input { flex: 1; min-width: 0; }
 .empty--compact { padding: var(--s4) var(--s5); justify-items: start; text-align: left; color: var(--text-3); }
 
 /* ---------- Сообщения пациентам ---------- */

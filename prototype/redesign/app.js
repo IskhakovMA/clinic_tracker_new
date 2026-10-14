@@ -215,7 +215,23 @@
         if (S.role === 'head' && inScope) return { kind: 'department', mine: false };
         return null;
     }
-    const consSearchHit = (c) => { const q = S.cons.search.trim().toLowerCase(); return !q || c.patientName.toLowerCase().includes(q) || (c.policy || '').toLowerCase().includes(q); };
+    // Полис записи: сохранённый в записи, иначе из карточки (COALESCE(a.policy_number, patients.policy_number)).
+    const consPolicy = (c) => c.policy || (patient(c.patientId) || {}).policy || '';
+    // Лечащий врач: сервер сохраняет врача пациента (_current_treating_doctor_name), в списках показывает
+    // текущего лечащего врача, а после подписи — снимок на момент подписи (signed_treating_doctor_name).
+    const consPatientDoctor = (p) => p ? (p.doctorFull || p.doctor || '') : '';
+    const consDoctor = (c) => c.status === 'signed' && c.signedDoctor ? c.signedDoctor : consPatientDoctor(patient(c.patientId)) || c.doctor || '';
+    // normalize_policy_number (backend/app/models.py): пробелы и дефисы убираются, затем проверки.
+    function normalizeConsPolicy(v) {
+        const raw = String(v || '').trim();
+        if (!raw) return { value: '' };
+        if ([...raw].some(ch => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127)) return { error: 'Номер полиса ОМС содержит недопустимые управляющие символы' };
+        if (raw.includes('<') || raw.includes('>')) return { error: 'Номер полиса ОМС не должен содержать HTML или JavaScript' };
+        const value = raw.replace(/[ -]+/g, '');
+        if (value.length > 32) return { error: 'Номер полиса ОМС не должен быть длиннее 32 символов' };
+        return { value };
+    }
+    const consSearchHit = (c) => { const q = S.cons.search.trim().toLowerCase(); return !q || c.patientName.toLowerCase().includes(q) || consPolicy(c).toLowerCase().includes(q); };
 
     function consGroupPicker(chair) {
         const sel = chair ? S.cons.chairGroups : S.cons.groups;
@@ -236,7 +252,7 @@
         const date = chair ? S.cons.chairDate : S.cons.doctorDate;
         const groups = consSelectedGroups(chair);
         // renderConsiliumStats: у председателя — записи дня по выбранным группам, у остальных — свои записи.
-        const rows = (chair ? S.consilium.filter(c => c.date === date && groups.includes(c.group)) : S.consilium.filter(c => c.createdBy === R().user.id)).filter(consSearchHit);
+        const rows = (chair ? S.consilium.filter(c => c.date === date && groups.includes(c.group)) : S.consilium.filter(c => c.createdBy === R().user.id && !c.archived)).filter(consSearchHit);
         const stats = [
             { label: 'Всего записей', value: rows.length, note: chair ? 'общая очередь консилиума' : 'созданы вами' },
             { label: 'Предстоящие', value: rows.filter(c => c.date >= D.today).length, note: 'сегодня и позже' },
@@ -246,7 +262,7 @@
         ];
         return html`
             ${pagehead('Онкологический консилиум', chair ? 'Все пациенты клиники, записанные на консилиум, в хронологическом порядке' : 'Ваши пациенты, записанные на рассмотрение консилиумной группой',
-                html`${chair ? html`<button class="btn" data-action="registry">Реестры (XLSX)</button>` : ''}${can.book ? html`<button class="btn btn--primary" data-action="book">Запись</button>` : ''}`)}
+                html`${chair ? html`<button class="btn" data-action="registry">Реестры (XLSX)</button>` : ''}${can.book ? html`<button class="btn btn--ghost" data-cons="archive-list">Архив</button><button class="btn btn--primary" data-action="book">Запись</button>` : ''}`)}
             ${S.role === 'developer' ? html`<div class="demo-note">Расхождение, не согласовано: сервер разрешает разработчику управлять сеткой, реестрами и аналитикой консилиума (manageConsilium), а действующий интерфейс показывает эти функции только председателю. Прототип повторяет действующий интерфейс; это не продуктовое решение.</div>` : ''}
             <div class="callout callout--info callout--flush"><div class="callout__text">${chair ? 'Все дни текущей недели открыты автоматически. Следующие недели становятся доступны врачам после создания слотов председателем.' : 'Текущая неделя доступна автоматически. Следующие недели отображаются только после открытия расписания председателем.'}</div></div>
             <div class="stack">
@@ -275,16 +291,17 @@
     // openConsiliumDetails: просмотр записи без действий; у председателя в подвале только «Закрыть».
     function consDetailsModal(c) {
         const f = (label, value, wide) => html`<div class="field ${wide ? 'cons-detail--wide' : ''}"><span class="field__label">${label}</span><div class="cons-detail">${value || 'Не указано'}</div></div>`;
-        const specialists = [c.needsSurgeon && 'Хирург', c.needsRadiotherapist && 'Лучевой терапевт'].filter(Boolean).join(', ') || 'Не требуются';
-        const lastReturn = c.revisions.length ? c.revisions[c.revisions.length - 1].text : '';
+        const specialists = [c.needsSurgeon && 'Хирург', c.needsRadiotherapist && 'Лучевой терапевт', c.additionalParticipant].filter(Boolean).join(', ') || 'Не требуются';
+        // revisionComment в приложении очищается при подписи; здесь — последний возврат, пока запись не подписана.
+        const lastReturn = c.status !== 'signed' && c.revisions.length && consCanSeeHistory(c) ? c.revisions[c.revisions.length - 1].text : '';
         openModal(modalShell(`Запись: ${c.patientName}`, '', html`
             <div class="form__section">Пациент и запись</div>
-            <div class="cons-details">${f('ФИО пациента', c.patientName)}${f('Полис ОМС', c.policy)}${f('Консилиумная группа', D.GROUPS[c.group])}${f('Дата и время', `${fmtNum(c.date)}, ${c.time}`)}${f('Лечащий врач', c.doctor)}</div>
+            <div class="cons-details">${f('ФИО пациента', c.patientName)}${f('Полис ОМС', consPolicy(c))}${f('Консилиумная группа', D.GROUPS[c.group])}${f('Дата и время', `${fmtNum(c.date)}, ${c.time}`)}${f('Льгота', c.hasBenefit ? 'Да' : 'Нет')}${f('Лечащий врач', consDoctor(c))}</div>
             <div class="form__section">Сведения для консилиума</div>
-            <div class="cons-details">${f('Локализация', c.localization)}${f('Основной диагноз', c.icd)}${f('Дополнительный диагноз', '')}${f('Участники', specialists)}${f('Статус', CONS_STATUS[c.status][0])}${f('Назначенное лечение', c.treatment ? D.TREATMENTS[c.treatment] : '')}${c.status === 'signed' ? f('Этап маршрута на момент решения', c.routeStage ? D.STAGES[c.routeStage] : 'Не установлен') : ''}${f('Отметки ГОК', [c.goc && 'ГОК', c.goc65 && 'ГОК 65+'].filter(Boolean).join(', '))}
-                ${f('Схема лечения', c.scheme ? `${c.scheme.code} — ${c.scheme.name}` : '', true)}${f('Комментарий врача', c.comment, true)}${lastReturn ? f('Комментарий председателя', lastReturn, true) : ''}</div>
-            <p class="demo-hint">Только просмотр. Льгота и отметка УВ/РУВ в синтетических данных прототипа пока не заполняются (подэтап 3.2).</p>`,
-            html`<span class="spacer"></span><button class="btn btn--primary" data-close>Закрыть</button>`));
+            <div class="cons-details">${f('Локализация', c.diagnosisLocalization)}${f('Основной диагноз', c.icd)}${f('Дополнительный диагноз', c.additionalDiagnosis)}${f('Участники', specialists)}${f('Отметка УВ/РУВ', c.uvRuv ? 'Да' : 'Нет')}${f('Статус', CONS_STATUS[c.status][0])}${f('Назначенное лечение', c.treatment ? D.TREATMENTS[c.treatment] : '')}${c.status === 'signed' ? f('Этап маршрута на момент решения', c.routeStage ? D.STAGES[c.routeStage] : 'Не установлен') : ''}${f('Отметки ГОК', [c.goc && 'ГОК', c.goc65 && 'ГОК 65+'].filter(Boolean).join(', '))}
+                ${f('Схема лечения', c.scheme ? `${c.scheme.code ? c.scheme.code + ' — ' : ''}${c.scheme.name}` : '', true)}${f('Комментарий врача', c.comment, true)}${lastReturn ? f('Комментарий председателя', lastReturn, true) : ''}</div>
+            <p class="demo-hint">Только просмотр.</p>`,
+            html`${consCanArchive(c) ? html`<button class="btn btn--ghost" data-cons-archive="${c.archived ? 'restore' : 'archive'}" data-id="${c.id}">${c.archived ? 'Восстановить из архива' : 'Перенести в архив'}</button>` : ''}<span class="spacer"></span><button class="btn btn--primary" data-close>Закрыть</button>`));
     }
 
     function consGenerateForm() {
@@ -325,8 +342,8 @@
                 <td class="mono">${slot.time}</td>
                 <td data-label="Пациент">${c ? consNameCell(c) : html`<span class="muted">—</span>`}</td>
                 <td class="mono" data-label="МКБ-10">${c ? c.icd : '—'}</td>
-                <td data-label="Врач">${c ? c.doctor : '—'}</td>
-                <td class="actions"><div class="cons-actions">${c ? consChairActions(c) : slot.isDefaultWeek ? html`<span class="muted">—</span>` : html`<button class="btn btn--sm btn--ghost" data-cons="delete-slot" data-id="${slot.id}">Удалить</button>`}</div></td></tr>`))
+                <td data-label="Врач">${c ? consDoctor(c) || '—' : '—'}</td>
+                <td class="actions"><div class="cons-actions">${c && c.uvRuv ? html`<span class="tag tag--danger">УВ/РУВ</span>` : ''}${c ? consChairActions(c) : slot.isDefaultWeek ? html`<span class="muted">—</span>` : html`<button class="btn btn--sm btn--ghost" data-cons="delete-slot" data-id="${slot.id}">Удалить</button>`}</div></td></tr>`))
                 : html`<div class="empty empty--compact"><div>${searching ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.'}</div></div>`}</section>`;
         })}</div>`;
     }
@@ -345,13 +362,13 @@
             const gr = slots.filter(r => r.slot.group === g);
             return html`<section class="cons-group"><h3 class="cons-group__title">${D.GROUPS[g]}</h3>${gr.length ? consTable(gr.map(({ slot, c, v }) => {
                 const visible = c && v;
-                const cell = !c ? html`<span class="muted">—</span>` : !v ? html`<span class="muted">Занято</span>` : html`<div class="cell-title">${c.patientName}</div>`;
+                const cell = !c ? html`<span class="muted">—</span>` : !v ? html`<span class="muted">Занято</span>` : v.mine && !c.archived ? html`<button type="button" class="cons-patient" data-cons="details" data-id="${c.id}">${c.patientName}</button>` : html`<div class="cell-title">${c.patientName}</div>`;
                 const actions = !c ? (R().can.book ? html`<button class="btn btn--sm btn--primary" data-action="book" data-date="${slot.date}" data-group="${slot.group}" data-time="${slot.time}">Запись</button>` : '')
                     : !v ? html`<span class="tag">Занято</span>`
-                    : html`${v.mine ? html`<span class="tag tag--warn">Моя запись</span>` : ''}${v.kind === 'department' ? html`<span class="tag">${CONS_STATUS[c.status][0]}</span>` : ''}${v.mine && consEditable(c) ? html`<button class="btn btn--sm btn--ghost" data-action="book" data-id="${c.id}">Изменить</button>` : ''}`;
+                    : html`${v.kind === 'full' && c.uvRuv ? html`<span class="tag tag--danger">УВ/РУВ</span>` : ''}${v.mine ? html`<span class="tag tag--warn">Моя запись</span>` : ''}${v.kind === 'department' ? html`<span class="tag">${CONS_STATUS[c.status][0]}</span>` : ''}${v.mine && consEditable(c) ? html`<button class="btn btn--sm btn--ghost" data-action="book" data-id="${c.id}">Изменить</button>` : ''}`;
                 return html`<tr><td class="mono">${slot.time}</td><td data-label="Пациент">${cell}</td>
                     <td class="mono" data-label="МКБ-10">${visible && v.kind === 'full' ? c.icd : '—'}</td>
-                    <td data-label="Врач">${visible ? c.doctor : '—'}</td>
+                    <td data-label="Врач">${visible ? consDoctor(c) || '—' : '—'}</td>
                     <td class="actions"><div class="cons-actions">${actions}</div></td></tr>`;
             })) : html`<div class="empty empty--compact"><div>${q ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.'}</div></div>`}</section>`;
         })}</div>`;
@@ -393,6 +410,7 @@
         if (act === 'today') { if (consIsChair()) S.cons.chairDate = D.today; else S.cons.doctorDate = D.today; render(); return; }
         if (act === 'free') { S.cons.onlyFree = !S.cons.onlyFree; if (S.cons.onlyFree) S.cons.mineOnly = false; render(); return; }
         if (act === 'mine') { S.cons.mineOnly = !S.cons.mineOnly; if (S.cons.mineOnly) S.cons.onlyFree = false; render(); return; }
+        if (act === 'archive-list') { if (R().can.book) consArchiveModal(); return; }
         if (act === 'details') { const c = S.consilium.find(x => x.id === b.dataset.id); if (c && consView(c) && consView(c).kind === 'full') consDetailsModal(c); return; }
         if (!consIsChair()) return;   // генерация и удаление слотов — только у председателя (как в действующем интерфейсе)
         if (act === 'generate') {
@@ -427,6 +445,310 @@
         }
     });
     document.addEventListener('submit', (e) => { if (e.target.id === 'consGenForm') { e.preventDefault(); const b = $('[data-cons="generate"]'); if (b) b.click(); } });
+
+    /* ---------- Консилиум: запись и жизненный цикл (этап 3.2) ----------
+       По static/app.js (openConsiliumModal, submitConsiliumAppointment,
+       deleteConsiliumAppointment, openConsiliumDecision, submitConsiliumDecision,
+       submitConsiliumRevision, openConsiliumDetails, openConsiliumArchive) и
+       services/consilium.py (create, update, delete_owned, start_review, sign,
+       return_for_revision, set_archived). Хранимый на сервере статус
+       recorded → in_review → signed здесь хранится сразу публичным:
+       «На доработке» = возвращена и не отправлена, «Возвращен с доработки» =
+       отправлена повторно. Всё — в памяти вкладки. */
+    S.consDeleted = [];   // «мягко» удалённые записи с историей возвратов (delete_owned): в списках не видны
+    const CONS_DIAG_RE = /^C(?:0[0-9]|[1-8][0-9]|9[0-7])(?:\.[0-9A-Z]{1,2})?$/;
+    const validConsDiagnosis = (value, required = true) => { const v = String(value || '').trim().toUpperCase(); if (!v && !required) return ''; return CONS_DIAG_RE.test(v) ? v : null; };
+    // group_for_diagnosis — то же правило, что на сервере и в приложении.
+    function consGroupForDiagnosis(value) {
+        const m = String(value || '').trim().toUpperCase().match(/^C(\d{2})(?:\.|$)/);
+        if (!m) return 'general';
+        const code = Number(m[1]);
+        if ((code >= 0 && code <= 14) || (code >= 30 && code <= 32)) return 'head_neck';
+        if ((code >= 15 && code <= 16) || (code >= 22 && code <= 25)) return 'abdominal';
+        if (code === 34) return 'thoracic';
+        if (code >= 51 && code <= 57) return 'gynecology';
+        if (code >= 60 && code <= 68) return 'urology';
+        if (code === 50) return 'breast';
+        if (code >= 17 && code <= 20) return 'colorectal';
+        return 'general';
+    }
+    const ICD_ALL = Object.values(window.ICD10 || {}).flatMap(v => v.diagnoses.map(d => ({ ...d, locLabel: v.label })));
+    const icdLocLabel = (code) => (ICD_ALL.find(d => d.code === code) || {}).locLabel || '';
+    S.consilium.forEach(c => { if (c.diagnosisLocalization === undefined) c.diagnosisLocalization = icdLocLabel(c.icd) || c.localization; });
+    const consRevisionHistory = (c) => c.revisions.length ? html`<section class="cons-history" aria-label="История возвратов"><h3 class="cons-history__title">История возвратов</h3>
+        <ol class="history">${c.revisions.map(r => html`<li><div class="history__meta">Раунд ${r.round} · ${fmtStamp(r.at.includes('T') ? r.at : `${r.at}T00:00`)} · ${r.author}</div><div>${r.text}</div></li>`)}</ol></section>` : '';
+    // Историю возвратов сервер отдаёт только председателю и автору записи.
+    const consCanSeeHistory = (c) => R().perms.decideConsilium || c.createdBy === R().user.id;
+    const consFreeTimes = (date, group, record) => {
+        const times = consAllSlots().filter(x => x.date === date && x.group === group).map(x => x.time)
+            .filter(t => !consAt(date, t, group) || (record && record.date === date && record.time === t && record.group === group));
+        if (record && record.date === date && record.group === group && !times.includes(record.time)) times.unshift(record.time);
+        return [...new Set(times)].sort();
+    };
+    const consBookablePatients = (group, record) => {
+        const booked = new Set(S.consilium.map(c => c.patientId));
+        let list = scoped().filter(p => canEdit(p) && (!booked.has(p.id) || (record && record.patientId === p.id)));
+        list = list.filter(p => consGroupForDiagnosis(p.icd) === group || (record && record.patientId === p.id));
+        return list.sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+    };
+
+    /* --- Форма записи: создание и изменение/перенос --- */
+    function bookModal(opts) {
+        const record = opts.id ? S.consilium.find(c => c.id === opts.id) : null;
+        // can_book_consilium: разработчик, заведующий, врач; председатель и руководство не записывают.
+        if (!R().can.book) { toast('Запись на консилиум недоступна для вашей роли.'); return; }
+        if (opts.id && !record) { toast('Запись не найдена.'); return; }
+        if (record && !(record.createdBy === R().user.id && consEditable(record))) { toast('Запись недоступна для изменения.'); return; }
+        // Без выбранного слота — первый свободный слот с сегодняшнего дня (как в приложении).
+        const firstFree = !record && !opts.time ? consAllSlots().filter(x => x.date >= D.today && !consAt(x.date, x.time, x.group)).sort((a, b) => `${a.date}${a.time}`.localeCompare(`${b.date}${b.time}`))[0] : null;
+        const st = record ? { group: record.group, date: record.date, time: record.time, patientId: record.patientId }
+            : { group: opts.group || (firstFree && firstFree.group) || CONS_GROUP_KEYS[0], date: opts.date || (firstFree && firstFree.date) || D.today, time: opts.time || (firstFree && firstFree.time) || '', patientId: '' };
+        const patients = consBookablePatients(st.group, record);
+        if (!record && patients.length) st.patientId = patients[0].id;
+        const p0 = patient(st.patientId);
+        const v = record ? { ...record, policy: consPolicy(record) } : { policy: p0 ? p0.policy : '', diagnosisLocalization: p0 ? icdLocLabel(p0.icd) : '', icd: p0 && validConsDiagnosis(p0.icd, false) || '', additionalDiagnosis: '', hasBenefit: false, comment: '', additionalParticipant: '', uvRuv: false, needsSurgeon: false, needsRadiotherapist: false };
+        S.consForm = { id: record ? record.id : '', ...st };
+        openModal(modalShell(record ? 'Изменение и перенос записи на консилиум' : 'Запись на онкологический консилиум', '', consFormBody(record, v, patients),
+            html`${record && consEditable(record) ? html`<button class="btn btn--danger" data-cons-form="delete">Удалить</button>` : ''}<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-cons-form="save" ${raw(patients.length ? '' : 'disabled')}>${record ? 'Сохранить изменения' : 'Создать запись'}</button>`));
+    }
+    function consFormBody(record, v, patients) {
+        const f = S.consForm;
+        const times = consFreeTimes(f.date, f.group, record);
+        const locs = Object.values(window.ICD10 || {}).map(x => x.label);
+        const yn = (id, label, val) => html`<div class="field"><label class="field__label" for="${id}">${label} <span class="req">*</span></label><select class="select" id="${id}"><option value="no" ${raw(val ? '' : 'selected')}>Нет</option><option value="yes" ${raw(val ? 'selected' : '')}>Да</option></select></div>`;
+        return html`<form class="form" id="consForm" novalidate>
+            <div class="callout callout--danger callout--flush" id="cfError" role="alert" hidden><div class="callout__text" id="cfErrorText"></div></div>
+            ${record && consCanSeeHistory(record) ? consRevisionHistory(record) : ''}
+            <div class="form__section">Пациент и группа</div>
+            <div class="field"><label class="field__label" for="cfPatient">ФИО пациента <span class="req">*</span></label>
+                <select class="select" id="cfPatient" ${raw(record ? 'disabled' : '')}><option value="">${patients.length ? 'Выберите пациента' : 'Нет пациентов с подходящим кодом МКБ‑10'}</option>${patients.map(p => html`<option value="${p.id}" ${raw(p.id === f.patientId ? 'selected' : '')}>${p.name}${p.icd ? ` · ${p.icd}` : ''}</option>`)}</select>
+                <p class="field__hint" id="cfPatientHint">Доступных пациентов по коду МКБ‑10: ${patients.length}. Уже записанные и прошедшие консилиум исключены.</p></div>
+            <div class="field"><label class="field__label" for="cfPolicy">Номер полиса ОМС</label><input class="input mono" id="cfPolicy" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="Предзаполняется из карточки пациента" value="${v.policy || ''}"></div>
+            <div class="field"><label class="field__label" for="cfGroup">Консилиумная группа <span class="req">*</span></label><select class="select" id="cfGroup" ${raw(record ? 'disabled' : '')}>${CONS_GROUP_KEYS.map(k => html`<option value="${k}" ${raw(k === f.group ? 'selected' : '')}>${D.GROUPS[k]}</option>`)}</select></div>
+            <div class="form__section">Свободный слот</div>
+            <div class="form__row">
+                <div class="field"><label class="field__label" for="cfDate">Дата <span class="req">*</span></label><input class="input" type="date" id="cfDate" min="${D.today}" value="${f.date}" ${raw(record ? '' : 'disabled')} aria-describedby="cfLockedHint"></div>
+                <div class="field"><label class="field__label" for="cfTime">Время <span class="req">*</span></label><select class="select" id="cfTime" ${raw(record ? '' : 'disabled')} aria-describedby="cfLockedHint"><option value="">Выберите свободный слот</option>${times.map(t => html`<option value="${t}" ${raw(t === f.time ? 'selected' : '')}>${record && f.date === record.date && t === record.time ? `${t} — текущее время` : t}</option>`)}</select></div>
+            </div>
+            <p class="field__hint" id="cfSlotHint">${times.length ? 'Показаны свободные слоты из расписания председателя.' : 'На выбранную дату и группу свободных слотов нет.'}</p>
+            <p class="field__hint" id="cfLockedHint">При создании слот закреплён. В режиме изменения можно перенести запись на другую дату и только на свободное время в той же консилиумной группе.</p>
+            <div class="form__section">Сведения для консилиума</div>
+            <div class="form__row">${yn('cfBenefit', 'Наличие льготы', v.hasBenefit)}
+                <div class="field"><label class="field__label" for="cfDoctor">ФИО лечащего врача</label><input class="input" id="cfDoctor" readonly value="${consPatientDoctor(patient(f.patientId))}"><p class="field__hint">Лечащий врач пациента — это значение сохраняется в записи.</p></div></div>
+            <div class="field"><label class="field__label" for="cfLoc">Локализация <span class="req">*</span></label><input class="input" type="search" id="cfLoc" list="cfLocList" autocomplete="off" placeholder="Начните вводить локализацию" value="${v.diagnosisLocalization || ''}"><datalist id="cfLocList">${locs.map(l => html`<option value="${l}"></option>`)}</datalist><p class="field__hint">После выбора список кодов МКБ‑10 будет отфильтрован по локализации.</p></div>
+            <div class="field"><label class="field__label" for="cfPrimary">Основной диагноз МКБ‑10 (C00–C97) <span class="req">*</span></label><input class="input mono" type="search" id="cfPrimary" list="cfDiagList" autocomplete="off" placeholder="Начните вводить код или выберите из списка" value="${v.icd || ''}"></div>
+            <div class="field" ${raw(v.additionalDiagnosis ? 'hidden' : '')} id="cfAddWrap"><button type="button" class="btn btn--ghost btn--sm" data-cons-form="add-diag" aria-expanded="false">+ Добавить дополнительный диагноз</button></div>
+            <div class="field" id="cfAdditionalField" ${raw(v.additionalDiagnosis ? '' : 'hidden')}><label class="field__label" for="cfAdditional">Дополнительный диагноз МКБ‑10</label>
+                <div class="cons-optional-row"><input class="input mono" type="search" id="cfAdditional" list="cfDiagList" autocomplete="off" placeholder="Начните вводить код" value="${v.additionalDiagnosis || ''}"><button type="button" class="btn btn--ghost btn--sm" data-cons-form="remove-diag" aria-label="Удалить дополнительный диагноз">×</button></div></div>
+            <datalist id="cfDiagList">${consDiagOptions(v.diagnosisLocalization)}</datalist>
+            <div class="field"><label class="field__label" for="cfComment">Комментарий</label><textarea class="textarea" id="cfComment" rows="4" maxlength="4000" placeholder="Любая дополнительная информация для консилиума">${v.comment || ''}</textarea></div>
+            <div class="field"><label class="field__label" for="cfParticipant">Дополнительный участник</label><input class="input" id="cfParticipant" maxlength="200" placeholder="ФИО или роль участника" value="${v.additionalParticipant || ''}"></div>
+            <label class="check"><input type="checkbox" id="cfUvRuv" ${raw(v.uvRuv ? 'checked' : '')}> УВ/РУВ</label>
+            <div class="form__row">${yn('cfSurgeon', 'Нужен хирург', v.needsSurgeon)}${yn('cfRadio', 'Нужен лучевой терапевт', v.needsRadiotherapist)}</div>
+            <p class="demo-hint">Демонстрация: запись сохраняется только в этой вкладке; проверки повторяют правила сервера.</p>
+        </form>`;
+    }
+    function consDiagOptions(locLabel) {
+        const loc = Object.values(window.ICD10 || {}).find(x => x.label.toLowerCase() === String(locLabel || '').trim().toLowerCase());
+        const list = (loc ? loc.diagnoses : ICD_ALL).filter(d => CONS_DIAG_RE.test(d.code));
+        const seen = new Set();
+        return list.filter(d => !seen.has(d.code) && seen.add(d.code)).map(d => html`<option value="${d.code}">${d.label}</option>`);
+    }
+    const cfShowError = (text) => { const b = $('#cfError'); $('#cfErrorText').textContent = text; b.hidden = false; b.scrollIntoView({ block: 'nearest' }); };
+    function consRefreshForm(changed) {
+        // Пересобираем тело формы, сохраняя введённые значения (как обновление полей в приложении).
+        const f = S.consForm, record = f.id ? S.consilium.find(c => c.id === f.id) : null;
+        const v = { policy: $('#cfPolicy').value, diagnosisLocalization: $('#cfLoc').value, icd: $('#cfPrimary').value, additionalDiagnosis: $('#cfAdditionalField').hidden ? '' : $('#cfAdditional').value,
+            hasBenefit: $('#cfBenefit').value === 'yes', comment: $('#cfComment').value, additionalParticipant: $('#cfParticipant').value, uvRuv: $('#cfUvRuv').checked,
+            needsSurgeon: $('#cfSurgeon').value === 'yes', needsRadiotherapist: $('#cfRadio').value === 'yes' };
+        if (changed === 'patient' || changed === 'group') {
+            const p = patient(f.patientId);
+            if (changed === 'patient' && p) { v.policy = p.policy; v.icd = validConsDiagnosis(p.icd, false) || ''; v.diagnosisLocalization = icdLocLabel(v.icd); f.group = consGroupForDiagnosis(v.icd); }
+        }
+        const patients = consBookablePatients(f.group, record);
+        if (!record && !patients.some(p => p.id === f.patientId)) { f.patientId = patients[0] ? patients[0].id : ''; const p = patient(f.patientId); if (p) { v.policy = p.policy; v.icd = validConsDiagnosis(p.icd, false) || ''; v.diagnosisLocalization = icdLocLabel(v.icd); } }
+        const times = consFreeTimes(f.date, f.group, record);
+        if (!times.includes(f.time)) f.time = record && f.date === record.date ? record.time : '';
+        $('#modal .modal__body').innerHTML = String(consFormBody(record, v, patients));
+        const save = $('[data-cons-form="save"]'); if (save) save.disabled = !patients.length;
+    }
+    document.addEventListener('change', (e) => {
+        const t = e.target;
+        if (!t.closest || !t.closest('#consForm')) return;
+        const f = S.consForm;
+        if (t.id === 'cfPatient') { f.patientId = t.value; consRefreshForm('patient'); $('#cfPatient').focus(); }
+        else if (t.id === 'cfGroup') { f.group = t.value; consRefreshForm('group'); $('#cfGroup').focus(); }
+        else if (t.id === 'cfDate') { f.date = t.value; consRefreshForm('date'); $('#cfDate').focus(); }
+        else if (t.id === 'cfTime') { f.time = t.value; }
+        else if (t.id === 'cfLoc') { $('#cfDiagList').innerHTML = String(html`${consDiagOptions(t.value)}`); }
+    });
+    document.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-cons-form]');
+        if (!b) return;
+        const act = b.dataset.consForm, f = S.consForm;
+        if (act === 'add-diag') { $('#cfAddWrap').hidden = true; $('#cfAdditionalField').hidden = false; $('#cfAdditional').focus(); return; }
+        if (act === 'remove-diag') { $('#cfAdditional').value = ''; $('#cfAdditionalField').hidden = true; $('#cfAddWrap').hidden = false; return; }
+        const record = f.id ? S.consilium.find(c => c.id === f.id) : null;
+        if (act === 'delete') {
+            if (!record || record.createdBy !== R().user.id || !consEditable(record)) return;
+            const ok = await confirmDialog({ title: 'Удалить запись на консилиум?', text: `${record.patientName}. Слот ${fmtNum(record.date)}, ${record.time} освободится для новой записи.`, confirmLabel: 'Удалить запись', danger: true });
+            if (!ok) return;
+            // delete_owned: запись с историей возвратов удаляется «мягко» — история сохраняется.
+            S.consilium.splice(S.consilium.indexOf(record), 1);   // на месте: S.consilium и DEMO.consilium — один массив
+            if (record.revisions.length) S.consDeleted.push({ ...record, deletedAt: nowStamp() });
+            render(); updateBell(); toast('Запись удалена, слот снова свободен. Демонстрация: только в этой вкладке.');
+            return;
+        }
+        if (act !== 'save') return;
+        const primary = validConsDiagnosis($('#cfPrimary').value);
+        const additional = $('#cfAdditionalField').hidden ? '' : validConsDiagnosis($('#cfAdditional').value, false);
+        if (!primary) return cfShowError('Укажите основной диагноз кодом МКБ‑10 от C00 до C97.');
+        if (additional === null) return cfShowError('Дополнительный диагноз должен быть кодом МКБ‑10 от C00 до C97.');
+        const time = $('#cfTime').value, date = $('#cfDate').value, loc = $('#cfLoc').value.trim();
+        if (!f.patientId || !date || !time || !f.group || !loc) return cfShowError('Заполните пациента, группу, дату, свободный слот и локализацию.');
+        const p = patient(f.patientId);
+        // Проверки сервера (create/update): права на пациента, группа по МКБ, пациент без записи, слот есть и свободен.
+        if (!p || !canEdit(p) || !R().can.book) return cfShowError('Не удалось сохранить запись: Forbidden');
+        if (consGroupForDiagnosis(p.icd) !== f.group) return cfShowError('Не удалось сохранить запись: Консилиумная группа должна соответствовать коду МКБ-10 из карточки пациента');
+        if (!record && S.consilium.some(c => c.patientId === p.id)) return cfShowError('Не удалось сохранить запись: Пациент уже записан на онкологический консилиум. Используйте перенос существующей записи.');
+        const sameSlot = record && record.date === date && record.time === time;
+        if (!sameSlot) {
+            if (!consAllSlots().some(x => x.date === date && x.time === time && x.group === f.group)) return cfShowError('Не удалось сохранить запись: Выбранный слот отсутствует в расписании председателя');
+            if (consAt(date, time, f.group)) return cfShowError('Не удалось сохранить запись: Выбранный слот уже занят');
+        }
+        const pol = normalizeConsPolicy($('#cfPolicy').value);
+        if (pol.error) return cfShowError(`Не удалось сохранить запись: ${pol.error}`);
+        const fields = { date, time, policy: record ? pol.value : pol.value || p.policy, hasBenefit: $('#cfBenefit').value === 'yes', diagnosisLocalization: loc, icd: primary, additionalDiagnosis: additional,
+            comment: $('#cfComment').value.trim(), additionalParticipant: $('#cfParticipant').value.trim(), uvRuv: $('#cfUvRuv').checked,
+            needsSurgeon: $('#cfSurgeon').value === 'yes', needsRadiotherapist: $('#cfRadio').value === 'yes' };
+        if (record) {
+            if (record.createdBy !== R().user.id || !consEditable(record)) return cfShowError('Не удалось сохранить запись: Запись на рассмотрении у председателя недоступна для редактирования');
+            // update: правка возвращённой записи — повторная отправка председателю.
+            Object.assign(record, fields, { doctor: consPatientDoctor(p), status: record.status === 'needs_revision' ? 'revised' : record.status });
+            closeModal(); render(); updateBell(); toast('Запись обновлена.');
+        } else {
+            S.consilium.push({ id: `c-${Date.now()}`, patientId: p.id, patientName: p.name, localization: p.localization, group: f.group, doctor: consPatientDoctor(p), createdBy: R().user.id, status: 'recorded',
+                treatment: null, scheme: null, goc: false, goc65: false, routeStage: null, revisions: [], archived: false, ...fields });
+            closeModal(); render(); updateBell(); toast('Пациент записан на консилиум.');
+        }
+    });
+
+    /* --- Решение председателя: рассмотрение, подпись, возврат --- */
+    function decisionModal(id, error) {
+        const c = S.consilium.find(x => x.id === id);
+        if (!c) return;
+        if (!R().perms.decideConsilium || !['recorded', 'revised', 'in_review'].includes(c.status)) { if (c.status === 'signed') consDetailsModal(c); return; }
+        const inReview = c.status === 'in_review';
+        const schemeValue = c.scheme ? c.scheme.name : '';
+        openModal(modalShell('Подписание консилиума', '', html`
+            <div class="callout callout--info callout--flush"><div class="callout__text">${c.patientName} · ${fmtNum(c.date)}, ${c.time} · ${D.GROUPS[c.group]}</div></div>
+            ${inReview ? '' : html`<div class="callout callout--warn callout--flush"><div class="callout__text">Рассмотрение ещё не начато. Подписать решение можно после того, как вы начнёте рассмотрение.</div></div>`}
+            <div class="callout callout--danger callout--flush" id="decError" role="alert" ${raw(error ? '' : 'hidden')}><div class="callout__text">${error || ''}</div></div>
+            ${consRevisionHistory(c)}
+            <form class="form" id="decForm" novalidate>
+                <div class="field"><label class="field__label" for="decTreatment">Назначенное лечение <span class="req">*</span></label>
+                    <select class="select" id="decTreatment"><option value="">Выберите лечение</option>${Object.entries(D.TREATMENTS).map(([k, t]) => html`<option value="${k}" ${raw(c.treatment === k ? 'selected' : '')}>${t}</option>`)}</select></div>
+                <div class="form__row" id="decSchemeRow" ${raw(c.treatment === 'chemotherapy' ? '' : 'hidden')}>
+                    <div class="field"><label class="field__label" for="decScheme">Схема лечения <span class="req">*</span></label><input class="input" type="search" id="decScheme" list="decSchemeList" maxlength="1000" autocomplete="off" placeholder="Введите название или код схемы" value="${schemeValue}">
+                        <datalist id="decSchemeList">${D.SCHEMES.map(s => html`<option value="${s.code} — ${s.name}">${s.name}</option>`)}</datalist>
+                        <p class="field__hint">Можно найти схему по названию или коду sh…, либо ввести собственный вариант.</p></div>
+                    <div class="field"><label class="field__label" for="decSchemeCode">Код схемы</label><input class="input mono" id="decSchemeCode" maxlength="32" readonly placeholder="Заполнится автоматически" value="${c.scheme ? c.scheme.code : ''}"></div>
+                </div>
+                <div class="kit-row"><label class="check"><input type="checkbox" id="decGoc" ${raw(c.goc ? 'checked' : '')}> ГОК</label><label class="check"><input type="checkbox" id="decGoc65" ${raw(c.goc65 ? 'checked' : '')}> ГОК 65+</label></div>
+            </form>`,
+            html`${inReview ? html`<button class="btn btn--ghost" data-cons-dec="return" data-id="${c.id}">Вернуть на доработку</button>` : ''}<span class="spacer"></span>
+                ${inReview ? html`<button class="btn btn--primary" data-cons-dec="sign" data-id="${c.id}">Подписать</button>` : html`<button class="btn btn--primary" data-cons-dec="start" data-id="${c.id}">Начать рассмотрение</button>`}`));
+    }
+    const consSyncScheme = () => {
+        const input = $('#decScheme'); if (!input) return;
+        const val = input.value.trim().toLowerCase();
+        const s = D.SCHEMES.find(x => x.code.toLowerCase() === val || x.name.toLowerCase() === val || `${x.code} — ${x.name}`.toLowerCase() === val);
+        $('#decSchemeCode').value = s ? s.code : '';
+        if (s && input.value.includes('—')) input.value = s.name;
+    };
+    function returnModal(id, error) {
+        const c = S.consilium.find(x => x.id === id);
+        openModal(modalShell('Вернуть на доработку', c.patientName, html`
+            <div class="field"><label class="field__label" for="retComment">Комментарий врачу <span class="req">*</span></label>
+                <textarea class="textarea" id="retComment" rows="5" maxlength="4000" placeholder="Укажите, что необходимо уточнить или исправить"></textarea></div>
+            <div class="callout callout--danger callout--flush" id="retError" role="alert" ${raw(error ? '' : 'hidden')}><div class="callout__text">${error || ''}</div></div>`,
+            html`<span class="spacer"></span><button class="btn btn--ghost" data-close>Отмена</button><button class="btn btn--danger" data-cons-dec="confirm-return" data-id="${c.id}">Вернуть врачу</button>`));
+    }
+    document.addEventListener('change', (e) => {
+        if (e.target.id === 'decTreatment') {
+            const chemo = e.target.value === 'chemotherapy';
+            $('#decSchemeRow').hidden = !chemo;
+            if (!chemo) { $('#decScheme').value = ''; $('#decSchemeCode').value = ''; }
+        }
+        if (e.target.id === 'decScheme') consSyncScheme();
+    });
+    document.addEventListener('input', (e) => { if (e.target.id === 'decScheme') consSyncScheme(); });
+    document.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-cons-dec]');
+        if (!b) return;
+        const c = S.consilium.find(x => x.id === b.dataset.id);
+        if (!c || !R().perms.decideConsilium) return;   // решение — только председатель (can_decide_consilium)
+        const act = b.dataset.consDec;
+        if (act === 'start') {
+            if (!['recorded', 'revised'].includes(c.status)) { decisionModal(c.id, 'Не удалось начать рассмотрение: Рассмотрение можно начать только для записи, ожидающей председателя'); return; }
+            c.status = 'in_review'; render(); decisionModal(c.id); return;
+        }
+        if (act === 'sign') {
+            const treatment = $('#decTreatment').value; consSyncScheme();
+            const schemeName = $('#decScheme').value.trim(), code = $('#decSchemeCode').value.trim();
+            if (!treatment || (treatment === 'chemotherapy' && !schemeName)) { const box = $('#decError'); box.querySelector('.callout__text').textContent = treatment ? 'Для химиотерапевтического лечения укажите схему.' : 'Выберите назначенное лечение.'; box.hidden = false; return; }
+            if (c.status !== 'in_review') { decisionModal(c.id, 'Не удалось подписать: Подписать можно только запись, рассмотрение которой начато'); return; }
+            const p = patient(c.patientId);
+            // sign: схема — только для химиотерапии; этап маршрута фиксируется, но не меняется.
+            c.signedDoctor = consDoctor(c);
+            Object.assign(c, { status: 'signed', treatment, scheme: treatment === 'chemotherapy' ? { code, name: schemeName } : null, goc: $('#decGoc').checked, goc65: $('#decGoc65').checked, routeStage: p ? p.stage : null });
+            closeModal(); render(); updateBell(); toast('Решение консилиума подписано. Демонстрация: только в этой вкладке.');
+            return;
+        }
+        if (act === 'return') { if (c.status === 'in_review') returnModal(c.id); return; }
+        if (act === 'confirm-return') {
+            const text = $('#retComment').value.trim();
+            if (!text) { const box = $('#retError'); box.querySelector('.callout__text').textContent = 'Комментарий для врача обязателен.'; box.hidden = false; $('#retComment').focus(); return; }
+            const last = c.revisions[c.revisions.length - 1];
+            if (last && last.text === text) { const box = $('#retError'); box.querySelector('.callout__text').textContent = 'Не удалось вернуть запись: Комментарий должен отличаться от предыдущего возврата'; box.hidden = false; return; }
+            if (c.status !== 'in_review') { const box = $('#retError'); box.querySelector('.callout__text').textContent = 'Не удалось вернуть запись: Вернуть на доработку можно только запись, рассмотрение которой начато'; box.hidden = false; return; }
+            // return_for_revision: новый раунд с автором, временем и текстом сохраняется навсегда.
+            c.revisions.push({ round: c.revisions.length + 1, author: R().user.short, at: nowStamp(), text });
+            c.status = 'needs_revision';
+            closeModal(); render(); updateBell(); toast('Запись возвращена врачу на доработку.');
+        }
+    });
+
+    /* --- Архив подписанных записей автора (set_archived, openConsiliumArchive) --- */
+    const consCanArchive = (c) => c.status === 'signed' && R().can.book && !consIsChair() && c.createdBy === R().user.id;
+    S.consArchive = { date: '', q: '' };
+    function consArchiveModal() {
+        const a = S.consArchive, q = a.q.trim().toLowerCase();
+        const rows = S.consilium.filter(c => c.archived && c.createdBy === R().user.id && (!a.date || c.date === a.date) && (!q || c.patientName.toLowerCase().includes(q) || (c.policy || '').toLowerCase().includes(q)));
+        openModal(modalShell('Архив консилиумов', 'Подписанные консилиумы, которые вы перенесли в архив. Нажмите на случай, чтобы открыть его или восстановить.', html`
+            <div class="form__row"><div class="field"><label class="field__label" for="arDate">Дата консилиума</label><input class="input" type="date" id="arDate" value="${a.date}"></div>
+                <div class="field"><label class="field__label" for="arSearch">Поиск по ФИО или полису</label><input class="input" type="search" id="arSearch" placeholder="ФИО или полис…" autocomplete="off" value="${a.q}"></div></div>
+            ${rows.length ? html`<div class="table-wrap"><table class="table table--cards"><thead><tr><th>Дата и время</th><th>Пациент</th><th>Группа</th><th>МКБ-10</th><th>Назначение</th><th>Статус</th></tr></thead><tbody>${rows.map(c => html`
+                <tr class="is-link" data-cons-arch="${c.id}" tabindex="0" aria-label="Открыть архивный консилиум: ${c.patientName}"><td class="mono">${fmtNum(c.date)}, ${c.time}</td><td data-label="Пациент"><div class="cell-title">${c.patientName}</div><div class="cell-sub">${consPolicy(c) || 'Полис не указан'}</div></td>
+                <td data-label="Группа">${D.GROUPS[c.group]}</td><td class="mono" data-label="МКБ-10">${c.icd}</td><td data-label="Назначение">${c.treatment ? D.TREATMENTS[c.treatment] : '—'}</td><td data-label="Статус"><span class="status status--ok">В архиве</span></td></tr>`)}</tbody></table></div>`
+                : html`<div class="empty"><div class="empty__title">Подписанные консилиумы по заданным условиям не найдены.</div></div>`}`,
+            html`<span class="spacer"></span><button class="btn btn--primary" data-close>Закрыть</button>`));
+    }
+    document.addEventListener('input', (e) => { if (e.target.id === 'arSearch') { S.consArchive.q = e.target.value; consArchiveModal(); const n = $('#arSearch'); n.focus(); n.setSelectionRange(n.value.length, n.value.length); } });
+    document.addEventListener('change', (e) => { if (e.target.id === 'arDate') { S.consArchive.date = e.target.value; consArchiveModal(); } });
+    const openArch = (el) => { const c = S.consilium.find(x => x.id === el.dataset.consArch); if (c) consDetailsModal(c); };
+    document.addEventListener('click', (e) => {
+        const r = e.target.closest('[data-cons-arch]'); if (r) { openArch(r); return; }
+        const b = e.target.closest('[data-cons-archive]');
+        if (!b) return;
+        const c = S.consilium.find(x => x.id === b.dataset.id);
+        if (!c || !consCanArchive(c)) return;   // как сервер: только автор, только подписанная запись
+        const archive = b.dataset.consArchive === 'archive';
+        c.archived = archive;
+        closeModal(); render();
+        toast(archive ? 'Запись перенесена в архив. Демонстрация: только в этой вкладке.' : 'Запись восстановлена из архива.');
+    });
+    document.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('[data-cons-arch]')) { e.preventDefault(); openArch(e.target); } });
 
     function viewConsiliumAnalytics() {
         const signed = S.consilium.filter(c => c.status === 'signed');
@@ -538,72 +860,6 @@
             <button class="iconbtn" data-close aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
         <div class="modal__body">${body}</div><div class="modal__foot">${foot}</div>`;
 
-    function decisionModal(id) {
-        const c = S.consilium.find(x => x.id === id);
-        const signed = c.status === 'signed';
-        const started = c.status === 'in_review';
-        const history = c.revisions.length ? html`<div><div class="form__section" style="padding:0 0 6px">История возвратов</div><ul class="history">${c.revisions.map(r => html`<li><div class="history__meta">Раунд ${r.round} · ${r.author} · ${fmtNum(r.at)}</div><div>${r.text}</div></li>`)}</ul></div>` : '';
-        const body = signed
-            ? html`<div class="callout callout--info" style="margin:0"><div class="callout__title">Решение подписано и не изменяется</div><div class="callout__text">${D.TREATMENTS[c.treatment]}${c.scheme ? ` · ${c.scheme.name}` : ''}. Этап маршрута на момент решения: ${D.STAGES[c.routeStage]}.</div></div>${history}`
-            : html`
-                ${started ? '' : html`<div class="callout callout--warn" style="margin:0"><div class="callout__title">Рассмотрение ещё не начато</div><div class="callout__text">Подписать решение или вернуть запись можно после начала рассмотрения.</div></div>`}
-                ${history}
-                <dl class="dl" style="padding:0;grid-template-columns:120px 1fr"><dt>Диагноз</dt><dd><span class="mono">${c.icd}</span> · ${c.localization}</dd><dt>Участники</dt><dd>${[c.needsSurgeon && 'Хирург', c.needsRadiotherapist && 'Радиотерапевт'].filter(Boolean).join(', ') || '—'}</dd><dt>Комментарий врача</dt><dd>${c.comment}</dd></dl>
-                <fieldset ${raw(started ? '' : 'disabled')} style="border:0;padding:0;margin:0;display:grid;gap:var(--s4)">
-                    <div class="field"><span class="field__label">Назначенное лечение <span class="req">*</span></span>
-                        <div class="decision-grid">${Object.entries(D.TREATMENTS).map(([k, v]) => html`<label class="choice"><input type="radio" name="treatment" value="${k}"> ${v}</label>`)}</div>
-                        <span class="field__error" id="treatErr" hidden>Выберите назначенное лечение.</span></div>
-                    <div class="field" id="schemeField" hidden><label class="field__label" for="scheme">Схема лечения <span class="req">*</span></label>
-                        <select class="select" id="scheme"><option value="">Выберите схему</option>${D.SCHEMES.map(s => html`<option value="${s.code}">${s.name} (${s.code})</option>`)}</select>
-                        <span class="field__error" id="schemeErr" hidden>Для химиотерапии нужна схема лечения.</span></div>
-                    <div style="display:flex;gap:var(--s5)"><label class="check"><input type="checkbox" id="goc"> ГОК</label><label class="check"><input type="checkbox" id="goc65"> ГОК 65+</label></div>
-                </fieldset>`;
-        const foot = signed ? html`<button class="btn" data-close>Закрыть</button>`
-            : started ? html`<button class="btn btn--danger" data-action="return" data-id="${c.id}">Вернуть на доработку</button><span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-action="sign" data-id="${c.id}">Подписать решение</button>`
-            : html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-action="start" data-id="${c.id}">Начать рассмотрение</button>`;
-        openModal(modalShell(signed ? 'Решение консилиума' : 'Рассмотрение записи', html`${c.patientName} · ${fmtNum(c.date)}, ${c.time} · ${D.GROUPS[c.group]}`, body, foot), (m) => {
-            m.querySelectorAll('input[name="treatment"]').forEach(r => r.addEventListener('change', () => { m.querySelector('#schemeField').hidden = r.value !== 'chemotherapy' || !r.checked; m.querySelector('#treatErr').hidden = true; }));
-        });
-    }
-
-    function returnModal(id) {
-        const c = S.consilium.find(x => x.id === id);
-        openModal(modalShell('Вернуть на доработку', c.patientName, html`
-            <div class="field"><label class="field__label" for="retComment">Комментарий врачу <span class="req">*</span></label>
-            <textarea class="textarea" id="retComment" placeholder="Что нужно уточнить или приложить"></textarea>
-            <span class="field__hint">Текст сохраняется в истории возвратов и не попадает в журнал аудита.</span><span class="field__error" id="retErr" hidden>Укажите, что нужно исправить.</span></div>`,
-            html`<span class="spacer"></span><button class="btn" data-action="decide" data-id="${c.id}">Назад</button><button class="btn btn--danger" data-action="confirm-return" data-id="${c.id}">Вернуть врачу</button>`));
-    }
-
-    function bookModal(opts) {
-        const existing = opts.id ? S.consilium.find(c => c.id === opts.id) : null;
-        const booked = new Set(S.consilium.map(c => c.patientId));
-        const options = scoped().filter(p => !booked.has(p.id) || (existing && existing.patientId === p.id));
-        // Дата и группа — из выбранного слота или записи; без слота — день и первая выбранная группа сетки.
-        const date = existing ? existing.date : opts.date || S.cons.doctorDate;
-        const group = existing ? existing.group : opts.group || consSelectedGroups(false)[0] || CONS_GROUP_KEYS[0];
-        const free = consAllSlots().filter(x => x.date === date && x.group === group).map(x => x.time).sort()
-            .filter(t => !consAt(date, t, group) || (existing && existing.time === t));
-        openModal(modalShell(existing ? 'Изменение записи на консилиум' : 'Запись на онкологический консилиум', `${D.GROUPS[group]} группа · ${fmtNum(date)}`, html`
-            ${existing && existing.revisions.length ? html`<ul class="history">${existing.revisions.map(r => html`<li><div class="history__meta">Возврат · раунд ${r.round} · ${r.author}</div><div>${r.text}</div></li>`)}</ul>` : ''}
-            <form class="form" id="bookForm" novalidate>
-                <div class="form__section">Пациент и слот</div>
-                <div class="field"><label class="field__label" for="bkPatient">Пациент <span class="req">*</span></label>
-                    <select class="select" id="bkPatient" ${raw(existing ? 'disabled' : '')}><option value="">Выберите пациента</option>${options.map(p => html`<option value="${p.id}" ${raw(existing && existing.patientId === p.id ? 'selected' : '')}>${p.name} · ${p.icd}</option>`)}</select>
-                    <span class="field__hint">Показаны ваши пациенты без записи на консилиум.</span><span class="field__error" id="bkPatientErr" hidden>Выберите пациента.</span></div>
-                <div class="form__row">
-                    <div class="field"><label class="field__label" for="bkTime">Время <span class="req">*</span></label><select class="select" id="bkTime">${free.map(t => html`<option ${raw(t === (existing ? existing.time : opts.time) ? 'selected' : '')}>${t}</option>`)}</select>${free.length ? '' : html`<span class="field__hint">На этот день свободных слотов нет — выберите другой день в сетке.</span>`}</div>
-                    <div class="field"><label class="field__label" for="bkPolicy">Полис ОМС</label><input class="input mono" id="bkPolicy" readonly value="${existing ? existing.policy : ''}" placeholder="Подставляется из карточки"></div>
-                </div>
-                <div class="form__section">Сведения для консилиума</div>
-                <div class="field"><label class="field__label" for="bkComment">Комментарий</label><textarea class="textarea" id="bkComment" placeholder="Что обсудить на консилиуме">${existing ? existing.comment : ''}</textarea></div>
-                <div style="display:flex;gap:var(--s5);flex-wrap:wrap"><label class="check"><input type="checkbox" id="bkSurgeon" ${raw(!existing || existing.needsSurgeon ? 'checked' : '')}> Нужен хирург</label><label class="check"><input type="checkbox" id="bkRadio" ${raw(existing && existing.needsRadiotherapist ? 'checked' : '')}> Нужен радиотерапевт</label></div>
-            </form>`,
-            html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-action="save-booking" data-id="${existing ? existing.id : ''}" data-date="${date}" data-group="${group}" ${raw(free.length ? '' : 'disabled')}>${existing ? 'Сохранить и отправить' : 'Записать'}</button>`), (m) => {
-            m.querySelector('#bkPatient').addEventListener('change', (e) => { const p = patient(e.target.value); m.querySelector('#bkPolicy').value = p ? p.policy : ''; m.querySelector('#bkPatientErr').hidden = true; e.target.removeAttribute('aria-invalid'); });
-        });
-    }
-
     function patientModal() {
         openModal(modalShell('Новый пациент', 'Карточка появится в списке после сохранения', html`
             <form class="form" id="newForm" novalidate>
@@ -634,40 +890,6 @@
         period: (el) => { S.period = el.dataset.v; render(); },
         decide: (el) => decisionModal(el.dataset.id),
         book: (el) => bookModal({ id: el.dataset.id, time: el.dataset.time, date: el.dataset.date, group: el.dataset.group }),
-        start: (el) => { const c = S.consilium.find(x => x.id === el.dataset.id); c.status = 'in_review'; render(); decisionModal(c.id); toast('Рассмотрение начато.'); },
-        return: (el) => returnModal(el.dataset.id),
-        'confirm-return': (el) => {
-            const ta = $('#retComment');
-            if (invalid(ta, 'retErr', !ta.value.trim())) { ta.focus(); return; }
-            const c = S.consilium.find(x => x.id === el.dataset.id);
-            c.revisions.push({ round: c.revisions.length + 1, author: R().user.short, at: D.today, text: ta.value.trim() });
-            c.status = 'needs_revision'; closeModal(); render(); toast('Запись возвращена врачу на доработку.');
-        },
-        sign: (el) => {
-            const m = $('#modal'), t = m.querySelector('input[name="treatment"]:checked');
-            $('#treatErr').hidden = !!t;
-            if (!t) return;
-            const scheme = $('#scheme');
-            if (t.value === 'chemotherapy' && invalid(scheme, 'schemeErr', !scheme.value)) { scheme.focus(); return; }
-            const c = S.consilium.find(x => x.id === el.dataset.id);
-            Object.assign(c, { status: 'signed', treatment: t.value, scheme: D.SCHEMES.find(s => s.code === scheme.value) || null, goc: $('#goc').checked, goc65: $('#goc65').checked, routeStage: patient(c.patientId).stage });
-            closeModal(); render(); toast('Решение консилиума подписано.');
-        },
-        'save-booking': (el) => {
-            const sel = $('#bkPatient');
-            if (!el.dataset.id && invalid(sel, 'bkPatientErr', !sel.value)) { sel.focus(); return; }
-            const time = $('#bkTime').value;
-            if (el.dataset.id) {
-                const c = S.consilium.find(x => x.id === el.dataset.id);
-                Object.assign(c, { time, comment: $('#bkComment').value || c.comment, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, status: c.status === 'needs_revision' ? 'revised' : c.status });
-                toast('Запись обновлена.');
-            } else {
-                const p = patient(sel.value);
-                S.consilium.push({ id: `c-${Date.now()}`, patientId: p.id, patientName: p.name, policy: p.policy, icd: p.icd, localization: p.localization, group: el.dataset.group, date: el.dataset.date, time, doctor: p.doctor, status: 'recorded', createdBy: R().user.id, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, comment: $('#bkComment').value || 'Обсудить тактику лечения.', revisions: [] });
-                toast('Пациент записан на консилиум.');
-            }
-            closeModal(); render();
-        },
         'save-patient': () => {
             const name = $('#npName'), pol = $('#npPolicy'), nos = $('#npNos');
             const bad = [invalid(name, 'npNameErr', name.value.trim().split(/\s+/).length < 2), invalid(pol, 'npPolicyErr', !!pol.value && !/^\d{16}$/.test(pol.value)), invalid(nos, 'npNosErr', !nos.value)];
@@ -2185,7 +2407,7 @@
         const needs = mine.filter(p => p.overdue || openIssues(p).length).sort((a, b) => b.overdue - a.overdue || openIssues(b).length - openIssues(a).length);
         const todayEvents = mine.flatMap(pendingEvents).filter(e => e.date === D.today).sort((a, b) => (a.time || '').localeCompare(b.time || ''));
         const soon = mine.flatMap(pendingEvents).filter(e => { const d = daysUntil(e.date); return d >= 1 && d <= 3; }).sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
-        const myCons = S.consilium.filter(c => c.createdBy === R().user.id);
+        const myCons = S.consilium.filter(c => c.createdBy === R().user.id && !c.archived);
         const d = parse(D.today);
         const evRow = (e) => html`<li class="is-link" data-href="#/patient/${e.p.id}?tab=events" tabindex="0"><span class="queue__time">${e.date === D.today ? (e.time || '—') : fmtDate(e.date)}</span><div><div class="queue__title">${e.p.name}</div><div class="queue__sub">${stageLabelOf(e.occ)}</div></div>${dateChip(daysUntil(e.date), '')}</li>`;
         return html`
