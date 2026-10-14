@@ -417,6 +417,52 @@ fieldset[disabled] .choice, fieldset[disabled] .check { cursor: not-allowed; }
 }
 @starting-style { .toast { transform: translateY(8px); opacity: 0; } }
 
+/* ---------- Сообщения пациентам ---------- */
+.nav__badge { margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent-soft); color: var(--accent-text); font-variant-numeric: tabular-nums; }
+.msg-badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; display: inline-grid; place-items: center; font-size: 11px; font-weight: 600; background: var(--accent); color: var(--on-accent); font-variant-numeric: tabular-nums; flex: none; }
+.btn .msg-badge { margin-left: 2px; }
+.msg-layout { display: grid; grid-template-columns: 340px minmax(0, 1fr); height: clamp(480px, calc(100vh - 230px), 820px); overflow: hidden; }
+.msg-list { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+.msg-list__search { padding: var(--s3); border-bottom: 1px solid var(--border); }
+.msg-list__search .input { height: 32px; }
+.msg-list__items { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 0; }
+.msg-item { display: flex; gap: var(--s3); padding: var(--s3); border-bottom: 1px solid var(--border); color: inherit; text-decoration: none; }
+.msg-item:hover { text-decoration: none; }
+@media (hover: hover) and (pointer: fine) { .msg-item:hover { background: var(--hover); } }
+.msg-item.is-active { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.msg-item__main { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.msg-item__top, .msg-item__bottom { display: flex; align-items: center; gap: var(--s2); min-width: 0; }
+.msg-item__name { flex: 1; min-width: 0; font-size: var(--t-md); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-item.is-unread .msg-item__name { font-weight: 600; }
+.msg-item__time { font-family: var(--font-mono); font-size: var(--t-xs); color: var(--text-3); flex: none; }
+.msg-item.is-unread .msg-item__time { color: var(--accent-text); }
+.msg-item__preview { flex: 1; min-width: 0; font-size: var(--t-sm); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-item.is-unread .msg-item__preview { color: var(--text); }
+.msg-item__ctx { font-size: var(--t-xs); color: var(--text-3); }
+.msg-thread { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.msg-thread__placeholder { flex: 1; display: grid; place-items: center; }
+.msg-thread__head { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--border); }
+.msg-thread__back { display: none; }
+.msg-thread__who { flex: 1; min-width: 0; }
+.msg-thread__name { display: block; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-thread__sub { font-size: var(--t-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msg-thread__notice { font-size: var(--t-xs); color: var(--text-3); padding: var(--s2) var(--s4); background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.msg-thread__log { list-style: none; margin: 0; padding: var(--s4); flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: var(--s2); }
+.msg-thread__empty { margin: auto; text-align: center; color: var(--text-2); display: grid; gap: var(--s1); max-width: 340px; font-size: var(--t-sm); }
+.msg-day { align-self: center; font-size: var(--t-xs); color: var(--text-3); padding: var(--s2) 0 2px; }
+.msg { display: grid; gap: 3px; max-width: min(560px, 82%); }
+.msg--in { align-self: flex-start; }
+.msg--out { align-self: flex-end; justify-items: end; }
+.msg__bubble { padding: var(--s2) var(--s3); border-radius: var(--r-lg); font-size: var(--t-md); line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; }
+.msg--in .msg__bubble { background: var(--surface-2); border: 1px solid var(--border); border-bottom-left-radius: var(--r-sm); }
+.msg--out .msg__bubble { background: var(--accent-soft); border-bottom-right-radius: var(--r-sm); }
+.msg__meta { font-size: 11px; color: var(--text-3); }
+.msg__demo { color: var(--warn); }
+.msg--system { align-self: center; font-size: var(--t-xs); color: var(--text-3); padding: 4px 10px; border: 1px dashed var(--border-strong); border-radius: 999px; max-width: 100%; text-align: center; }
+.msg-composer { display: flex; gap: var(--s2); align-items: flex-end; padding: var(--s3) var(--s4); border-top: 1px solid var(--border); }
+.msg-composer .textarea { min-height: 40px; max-height: 140px; }
+.msg-thread__readonly { padding: var(--s3) var(--s4); border-top: 1px solid var(--border); font-size: var(--t-sm); color: var(--text-2); background: var(--surface-2); }
+
 /* ---------- ИИ-помощник: боковая панель ---------- */
 .ai-trigger { height: 34px; padding: 0 var(--s3); color: var(--text-2); border-color: var(--border); }
 .ai-trigger svg { width: 16px; height: 16px; color: var(--accent-text); }
@@ -481,6 +527,14 @@ fieldset[disabled] .choice, fieldset[disabled] .check { cursor: not-allowed; }
     .grid--3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 900px) {
+    /* Сообщения: один экран за раз — список или переписка */
+    .msg-layout { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - 360px); min-height: 320px; }
+    .msg-page.has-thread .pagehead { display: none; }
+    .msg-page.has-thread .msg-layout { height: calc(100dvh - 272px); }
+    .msg-layout.has-thread .msg-list { display: none; }
+    .msg-layout:not(.has-thread) .msg-thread { display: none; }
+    .msg-list { border-right: 0; }
+    .msg-thread__back { display: inline-flex; }
     .app { grid-template-columns: 1fr; }
     .sidebar {
         position: fixed; z-index: 55; inset: 0 auto 0 0; width: min(280px, 86vw);
@@ -505,6 +559,10 @@ fieldset[disabled] .choice, fieldset[disabled] .check { cursor: not-allowed; }
     .topbar { height: auto; flex-wrap: wrap; row-gap: var(--s2); padding-block: var(--s2); }
     .demo-switch { order: 10; width: 100%; }
     .demo-switch select { flex: 1; min-width: 0; }
+    .msg-thread__head > a.btn:last-child { display: none; }   /* на телефоне карточка — через «назад» или имя */
+    .msg-thread__head { padding: var(--s2) var(--s3); }
+    .msg { max-width: 90%; }
+    .msg-composer { padding: var(--s2) var(--s3); }
     .ai-trigger { width: 34px; padding: 0; }
     .ai-trigger__label { display: none; }
     .ai-panel { border-left: 0; }

@@ -187,9 +187,48 @@
         weeks.push({ label: `${String(start.getDate()).padStart(2, '0')}.${String(start.getMonth() + 1).padStart(2, '0')}`, added: 3 + Math.floor(rnd() * 9), completed: 1 + Math.floor(rnd() * 6) });
     }
 
+    // Переписка врача с пациентом (по модели Patient Portal v0.5.1): диалог
+    // существует только в рамках отношения врач–пациент. Со стороны клиники
+    // участник — лечащий врач (аналог ASSIGNED_CARE_TEAM). Тексты синтетические.
+    const at = (daysAgo, hhmm) => `${iso(addDays(today, -daysAgo))}T${hhmm}`;
+    const THREADS = [
+        { context: 'assigned_doctor', unread: 2, messages: [
+            ['patient', at(2, '18:40'), 'Добрый день! Подскажите, нужно ли брать на приём диск с КТ или достаточно заключения?'],
+            ['doctor', at(1, '09:12'), 'Добрый день. Возьмите, пожалуйста, и диск, и заключение.'],
+            ['patient', at(0, '08:05'), 'Спасибо. И ещё: анализы крови сдавать натощак?'],
+            ['patient', at(0, '08:06'), 'Запись на 16 октября остаётся в силе?'],
+        ] },
+        { context: 'care_route', unread: 1, messages: [
+            ['doctor', at(3, '14:20'), 'Здравствуйте. Направление на бронхоскопию оформлено, координатор свяжется с вами для записи.'],
+            ['patient', at(0, '10:31'), 'Мне ещё не позвонили. Куда можно обратиться?'],
+        ] },
+        { context: 'appointment', unread: 0, messages: [
+            ['patient', at(5, '11:02'), 'Можно перенести приём на следующую неделю?'],
+            ['doctor', at(5, '12:40'), 'Да, выберите удобное время через регистратуру, я предупрежу коллег.'],
+            ['patient', at(4, '09:15'), 'Перенесли на четверг, спасибо.'],
+        ] },
+        { context: 'assigned_doctor', unread: 1, messages: [
+            ['doctor', at(7, '16:00'), 'Результаты гистологии получены, обсудим их на приёме.'],
+            ['patient', at(1, '19:47'), 'Хорошо. Нужно ли что-то подготовить к приёму?'],
+        ] },
+        { context: 'care_route', unread: 0, messages: [] },   // диалог открыт, сообщений ещё нет
+        { context: 'assigned_doctor', unread: 0, messages: [
+            ['patient', at(12, '10:10'), 'Спасибо за помощь на всём этапе лечения.'],
+            ['doctor', at(12, '11:30'), 'Всего доброго, приходите на контрольный осмотр по плану.'],
+        ] },
+    ];
+    // Диалоги — у части пациентов первого врача; завершённым маршрутам — только чтение.
+    const conversations = patients.filter(p => p.doctorId === DOCTORS[0].id).slice(0, THREADS.length).map((p, k) => {
+        const t = THREADS[k];
+        const closed = ['completed', 'dispensary-observation'].includes(p.stage) || k === THREADS.length - 1;
+        const messages = t.messages.map(([from, sentAt, text], j) => ({ id: `m-${k}-${j}`, from, at: sentAt, text, status: from === 'doctor' ? 'read' : null }));
+        if (closed) messages.push({ id: `m-${k}-sys`, from: 'system', at: at(10, '09:00'), text: 'Диалог завершен и доступен только для чтения.' });
+        return { id: `conv-${p.id}`, patientId: p.id, doctorId: p.doctorId, context: t.context, status: closed ? 'read_only' : 'active', unread: t.unread, messages };
+    });
+
     window.DEMO = {
         today: iso(today), STAGES, STAGE_ORDER, ATTENTION_REASONS, GROUPS, TREATMENTS, SCHEMES, NOSOLOGY,
-        DEPARTMENTS, USERS, DOCTORS, patients, consilium, slots, byStage, weeks,
+        DEPARTMENTS, USERS, DOCTORS, patients, consilium, slots, byStage, weeks, conversations,
         helpers: { iso, addDays },
     };
 })();

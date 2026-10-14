@@ -21,7 +21,7 @@
         doctor: {
             user: D.USERS.doctor, home: '#/today', scope: p => p.doctorId === D.USERS.doctor.id,
             can: { write: true, book: true, decide: false, consilium: true, data: true, admin: false },
-            nav: ['today', 'patients', 'calendar', 'consilium', 'notifications', 'analytics', 'checklists', 'quality', 'data', 'settings'],
+            nav: ['today', 'patients', 'messages', 'calendar', 'consilium', 'notifications', 'analytics', 'checklists', 'quality', 'data', 'settings'],
         },
         head: {
             user: D.USERS.head, home: '#/department', scope: p => p.dept === D.USERS.head.dept,
@@ -48,6 +48,7 @@
         calendar: '<rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
         consilium: '<path d="M12 3v4M5 9h14l-1.5 11h-11z"/><path d="M9 14h6"/>',
         notifications: '<path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/>',
+        messages: '<path d="M4 5h16v11H9l-5 4z"/><path d="M8 9.5h8M8 12.5h5"/>',
         analytics: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
         checklists: '<path d="M9 6h11M9 12h11M9 18h11"/><path d="m3 6 1.5 1.5L7 5M3 12l1.5 1.5L7 11M3 18l1.5 1.5L7 17"/>',
         quality: '<path d="M12 3 4 6v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6z"/><path d="m9 12 2 2 4-4"/>',
@@ -62,7 +63,7 @@
     const NAV = [
         { group: 'Работа', items: [
             { id: 'today', label: 'Рабочий день' }, { id: 'department', label: 'Отделение' },
-            { id: 'patients', label: 'Пациенты' }, { id: 'calendar', label: 'Расписание' },
+            { id: 'patients', label: 'Пациенты' }, { id: 'messages', label: 'Сообщения' }, { id: 'calendar', label: 'Расписание' },
             { id: 'consilium', label: 'Онкологический консилиум' }, { id: 'notifications', label: 'Уведомления', legacy: true },
         ] },
         { group: 'Контроль', items: [
@@ -274,7 +275,7 @@
                     <div class="ptitle">
                         <div><h1 style="font-size:var(--t-2xl);font-weight:600;line-height:1.2">${p.name}</h1>
                         <div class="facts"><span><b>${p.age}</b> лет</span><span>Полис ОМС <b class="mono">${p.policy}</b></span><span>Диагноз <b class="mono">${p.icd}</b> · ${p.nosologyLabel}</span><span>Лечащий врач <b>${p.doctor}</b></span></div></div>
-                        <div class="pagehead__actions"><button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-помощника по пациенту: ${p.name}">Спросить помощника</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
+                        <div class="pagehead__actions">${convFor(p.id) ? html`<a class="btn" href="#/messages/${convFor(p.id).id}?back=patient/${p.id}">${icon('messages')}<span>Переписка с пациентом</span>${convFor(p.id).unread ? html`<span class="msg-badge" aria-label="Непрочитанных: ${convFor(p.id).unread}">${convFor(p.id).unread}</span>` : ''}</a>` : ''}<button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-помощника по пациенту: ${p.name}">Спросить помощника</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
                     </div>
                 </div>
                 <div class="route" aria-label="Маршрут лечения">${D.STAGE_ORDER.map((s, k) => {
@@ -629,6 +630,117 @@
         comment: () => toast('Комментарий в прототипе не сохраняется.'),
     };
 
+    /* ---------- Сообщения пациентам (демонстрация) ----------
+       Сценарий взят из Patient Portal v0.5.1: переписка существует только в
+       рамках отношения врач–пациент. В клинике это лечащий врач; в приложении
+       лечащим врачом может быть только роль «Врач», поэтому раздел и диалоги
+       есть только у неё и только по своим пациентам. API переписки нет:
+       состояние локальное, доставка, сервер и синхронизация не подключены. */
+    S.msg = { list: D.conversations, q: '', drafts: {} };
+    const CONTEXT_LABEL = { assigned_doctor: 'Лечащий врач', care_route: 'По маршруту лечения', appointment: 'По записи на прием' };
+    const STATUS_LABEL = { sending: 'Отправляется…', demo: 'Только в демо · не доставлено', read: 'Прочитано' };
+    const canMessage = () => R().nav.includes('messages');
+    const convs = () => (canMessage() ? S.msg.list.filter(c => c.doctorId === R().user.id && R().scope(patient(c.patientId))) : []);
+    const convFor = (patientId) => convs().find(c => c.patientId === patientId);
+    const unreadTotal = () => convs().reduce((n, c) => n + c.unread, 0);
+    const lastMsg = (c) => c.messages[c.messages.length - 1];
+    const msgTime = (stamp) => {
+        const [d, t] = stamp.split('T');
+        const diff = Math.round((parse(D.today) - parse(d)) / 86400000);
+        return diff === 0 ? t : diff === 1 ? 'вчера' : fmtNum(d).slice(0, 5);
+    };
+    const dayLabel = (d) => { const diff = Math.round((parse(D.today) - parse(d)) / 86400000); return diff === 0 ? 'Сегодня' : diff === 1 ? 'Вчера' : `${parse(d).getDate()} ${MONTHS[parse(d).getMonth()]}`; };
+
+    function messagesList(activeId) {
+        const q = S.msg.q.toLowerCase();
+        const all = convs().slice().sort((a, b) => ((lastMsg(b) || {}).at || '').localeCompare((lastMsg(a) || {}).at || ''));
+        const list = q ? all.filter(c => { const p = patient(c.patientId); return p.name.toLowerCase().includes(q) || c.messages.some(m => m.text.toLowerCase().includes(q)); }) : all;
+        return html`
+            <div class="msg-list__search"><input class="input" type="search" id="msgSearch" placeholder="Поиск по пациенту или тексту" value="${S.msg.q}" aria-label="Поиск по диалогам"></div>
+            ${stateful(list.length ? html`<ul class="msg-list__items" role="list">${list.map(c => {
+                const p = patient(c.patientId), m = lastMsg(c);
+                return html`<li><a class="msg-item ${c.id === activeId ? 'is-active' : ''} ${c.unread ? 'is-unread' : ''}" href="#/messages/${c.id}" ${raw(c.id === activeId ? 'aria-current="true"' : '')}>
+                    <span class="avatar" aria-hidden="true">${initials(p.name)}</span>
+                    <span class="msg-item__main"><span class="msg-item__top"><span class="msg-item__name">${p.name}</span><span class="msg-item__time">${m ? msgTime(m.at) : ''}</span></span>
+                        <span class="msg-item__bottom"><span class="msg-item__preview">${m ? (m.from === 'doctor' ? 'Вы: ' : '') + m.text : 'Сообщений пока нет'}</span>${c.unread ? html`<span class="msg-badge" aria-label="Непрочитанных: ${c.unread}">${c.unread}</span>` : ''}</span>
+                        <span class="msg-item__ctx">${CONTEXT_LABEL[c.context]}${c.status === 'read_only' ? ' · только чтение' : ''}</span></span></a></li>`;
+            })}</ul>` : html`<div class="empty"><div class="empty__title">${q ? 'Ничего не найдено' : 'Диалогов пока нет'}</div><div>${q ? 'Измените запрос.' : 'Диалог появляется, когда у пациента есть отношение с вами как с лечащим врачом.'}</div></div>`,
+            { rows: 6, emptyTitle: 'Диалогов пока нет', emptyText: 'Диалог появляется, когда у пациента есть отношение с вами как с лечащим врачом.' })}`;
+    }
+
+    function messagesThread(c, back) {
+        if (!c) return html`<div class="msg-thread__placeholder"><div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">${raw(ICONS.messages)}</svg><div class="empty__title">Выберите диалог</div><div>Переписка откроется здесь.</div></div></div>`;
+        const p = patient(c.patientId);
+        let lastDay = '';
+        const items = c.messages.map(m => {
+            const day = m.at.split('T')[0];
+            const sep = day !== lastDay ? html`<li class="msg-day"><span>${dayLabel(day)}</span></li>` : '';
+            lastDay = day;
+            if (m.from === 'system') return html`${sep}<li class="msg msg--system">${m.text}</li>`;
+            return html`${sep}<li class="msg msg--${m.from === 'doctor' ? 'out' : 'in'}"><div class="msg__bubble">${m.text}</div>
+                <div class="msg__meta"><span class="mono">${m.at.split('T')[1]}</span>${m.from === 'doctor' && m.status ? html` · <span class="${m.status === 'demo' ? 'msg__demo' : ''}">${STATUS_LABEL[m.status]}</span>` : ''}</div></li>`;
+        });
+        const backHref = back || '#/messages';
+        return html`
+            <div class="msg-thread__head">
+                <a class="btn btn--sm btn--ghost msg-thread__back" href="${backHref}">← ${back ? 'Карточка пациента' : 'Диалоги'}</a>
+                <div class="msg-thread__who"><a class="msg-thread__name" href="#/patient/${p.id}" title="Открыть карточку пациента">${p.name}</a><div class="msg-thread__sub">${CONTEXT_LABEL[c.context]} · ${D.STAGES[p.stage]} · <span class="mono">${p.icd}</span></div></div>
+                <a class="btn btn--sm" href="#/patient/${p.id}">Карточка пациента</a>
+            </div>
+            <div class="msg-thread__notice">Пациент видит в приложении: «Ответ врача может занять время. При экстренной ситуации обратитесь в экстренные службы.»</div>
+            <ol class="msg-thread__log" id="msgLog" aria-label="История переписки" aria-live="polite">${items.length ? items : html`<li class="msg-thread__empty"><div class="empty__title">Сообщений пока нет</div><div>Начните переписку — пациент увидит сообщение в Patient Portal (в демо доставка не подключена).</div></li>`}</ol>
+            ${c.status === 'read_only'
+                ? html`<div class="msg-thread__readonly">Этот диалог завершен. История доступна только для чтения.</div>`
+                : html`<form class="msg-composer" id="msgForm" data-conv="${c.id}"><label class="sr-only" for="msgInput">Сообщение пациенту</label>
+                    <textarea class="textarea" id="msgInput" rows="2" maxlength="2000" placeholder="Сообщение пациенту">${S.msg.drafts[c.id] || ''}</textarea>
+                    <button class="btn btn--primary" type="submit" aria-label="Отправить сообщение">Отправить</button></form>`}`;
+    }
+
+    function viewMessages(id, params) {
+        if (!canMessage()) return denied('messages');
+        const c = id ? convs().find(x => x.id === id) : null;
+        if (id && !c) return html`${pagehead('Сообщения', '')}<section class="panel"><div class="error"><div class="error__title">Диалог недоступен</div><div>Переписка видна только её участнику — лечащему врачу пациента.</div><a class="btn btn--sm" href="#/messages">К диалогам</a></div></section>`;
+        if (c && c.unread && S.demo === 'ok') c.unread = 0;   // открыли — прочитано
+        const back = params.get('back') ? `#/${params.get('back')}` : '';
+        return html`<div class="msg-page ${c ? 'has-thread' : ''}">
+            ${pagehead('Сообщения', 'Переписка с вашими пациентами из Patient Portal')}
+            <div class="demo-note">Демонстрация: сообщения хранятся только в этой вкладке — они не доставляются пациенту, не сохраняются на сервере и не синхронизируются с мобильным приложением Patient Portal. Диалоги синтетические.</div>
+            <section class="panel msg-layout ${c ? 'has-thread' : ''}">
+                <div class="msg-list">${messagesList(c && c.id)}</div>
+                <div class="msg-thread">${S.demo === 'ok' ? messagesThread(c, back) : S.demo === 'loading' ? stateful('', { rows: 6 }) : S.demo === 'empty' ? messagesThread(null) : ''}</div>
+            </section></div>`;
+    }
+
+    function sendMessage(convId, text) {
+        const c = convs().find(x => x.id === convId);
+        const body = text.trim();
+        if (!c || c.status !== 'active' || !body) return;
+        const now = new Date();
+        const msg = { id: `m-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`, from: 'doctor', at: `${D.today}T${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`, text: body, status: 'sending' };
+        c.messages.push(msg);
+        delete S.msg.drafts[convId];
+        render();
+        setTimeout(() => { msg.status = 'demo'; if (location.hash.startsWith(`#/messages/${convId}`)) { const keep = $('#msgInput') ? $('#msgInput').value : ''; render(); if ($('#msgInput')) { $('#msgInput').value = keep; } } }, 500);
+    }
+
+    document.addEventListener('submit', (e) => {
+        if (e.target.id !== 'msgForm') return;
+        e.preventDefault();
+        sendMessage(e.target.dataset.conv, $('#msgInput').value);
+        const i = $('#msgInput'); if (i) i.focus({ preventScroll: true });
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.target.id === 'msgInput' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.target.form.requestSubmit(); }
+    });
+    document.addEventListener('input', (e) => {
+        if (e.target.id === 'msgInput') S.msg.drafts[e.target.form.dataset.conv] = e.target.value;   // черновик живёт при переходах
+        if (e.target.id === 'msgSearch') {
+            S.msg.q = e.target.value;
+            const pos = e.target.selectionStart; render();
+            const n = $('#msgSearch'); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
+        }
+    });
+
     /* ---------- ИИ-помощник (демонстрационный сценарий) ----------
        В приложении: POST /api/ai/chat, только чтение, данные — через
        инструменты с проверкой области доступа на сервере. Здесь модели нет:
@@ -805,7 +917,7 @@
         $('#nav').innerHTML = String(html`${NAV.map(g => {
             const items = g.items.filter(i => allowed.has(i.id));
             if (!items.length) return '';
-            return html`<div class="nav__group"><div class="nav__label">${g.group}</div>${items.map(i => html`<button class="nav__item ${i.legacy ? 'nav__item--legacy' : ''}" data-href="#/${i.id}" ${raw(active === i.id ? 'aria-current="page"' : '')}>${icon(i.id)}<span>${i.label}</span>${i.id === 'today' || i.id === 'department' ? html`<span class="nav__count">${scoped().filter(p => p.overdue || p.attention.length).length}</span>` : ''}</button>`)}</div>`;
+            return html`<div class="nav__group"><div class="nav__label">${g.group}</div>${items.map(i => html`<button class="nav__item ${i.legacy ? 'nav__item--legacy' : ''}" data-href="#/${i.id}" ${raw(active === i.id ? 'aria-current="page"' : '')}>${icon(i.id)}<span>${i.label}</span>${i.id === 'today' || i.id === 'department' ? html`<span class="nav__count">${scoped().filter(p => p.overdue || p.attention.length).length}</span>` : ''}${i.id === 'messages' && unreadTotal() ? html`<span class="nav__badge" aria-label="Непрочитанных сообщений: ${unreadTotal()}">${unreadTotal()}</span>` : ''}</button>`)}</div>`;
         })}`);
         const u = R().user;
         $('#userAvatar').textContent = initials(u.name);
@@ -828,11 +940,13 @@
         else if (section === 'calendar') out = viewCalendar();
         else if (section === 'consilium') out = viewConsilium();
         else if (section === 'analytics') out = viewAnalytics();
+        else if (section === 'messages') out = viewMessages(id, params);
         else out = viewLegacy(section);
         renderNav(section === 'patient' ? 'patients' : section);
         $('#view').innerHTML = String(out);
         document.title = `${NAV_LABEL[section] || 'Карточка пациента'} — Система планирования`;
         bindView(params);
+        const log = $('#msgLog'); if (log) log.scrollTop = log.scrollHeight;
     }
 
     function bindView() {
