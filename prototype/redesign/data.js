@@ -77,7 +77,9 @@
         doctor: { id: 'u-smirnova', name: 'Смирнова Елена Викторовна', short: 'Смирнова Е. В.', role: 'doctor', roleLabel: 'Врач-онколог', dept: 'd-thor' },
         head: { id: 'u-orlov', name: 'Орлов Дмитрий Николаевич', short: 'Орлов Д. Н.', role: 'department_head', roleLabel: 'Заведующий отделением', dept: 'd-thor' },
         chair: { id: 'u-volkova', name: 'Волкова Ирина Сергеевна', short: 'Волкова И. С.', role: 'consilium_chair', roleLabel: 'Председатель онкологического консилиума' },
-        management: { id: 'u-gromov', name: 'Громов Павел Андреевич', short: 'Громов П. А.', role: 'deputy_chief_oncology', roleLabel: 'Заместитель главного врача по онкологии' },
+        deputy: { id: 'u-gromov', name: 'Громов Павел Андреевич', short: 'Громов П. А.', role: 'deputy_chief_oncology', roleLabel: 'Заместитель главного врача по онкологии' },
+        caop: { id: 'u-mironova', name: 'Миронова Анна Петровна', short: 'Миронова А. П.', role: 'caop_head', roleLabel: 'Заведующий ЦАОП' },
+        developer: { id: 'u-sergeev', name: 'Сергеев Антон Викторович', short: 'Сергеев А. В.', role: 'developer', roleLabel: 'Разработчик' },
     };
 
     const DOCTORS = [
@@ -169,7 +171,7 @@
         return {
             id: `c-${k + 1}`, patientId: p.id, patientName: p.name, policy: p.policy, icd: p.icd, localization: p.localization,
             group: NOSOLOGY[p.nosology].group, date: iso(today), time: slots[k * 2],
-            doctor: p.doctor, status,
+            doctor: p.doctor, createdBy: p.doctorId, status,
             needsSurgeon: k % 2 === 0, needsRadiotherapist: k % 3 === 0,
             comment: k === 5 ? 'Обсудить тактику после ИГХ.' : 'Обсудить тактику лечения.',
             treatment: status === 'signed' ? (k === 0 ? 'chemotherapy' : 'surgery') : null,

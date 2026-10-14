@@ -16,30 +16,47 @@
     }));
     const $ = (sel, root = document) => root.querySelector(sel);
 
-    /* ---------- Роли (как в приложении) ---------- */
-    const ROLES = {
-        doctor: {
-            user: D.USERS.doctor, home: '#/today', scope: p => p.doctorId === D.USERS.doctor.id,
-            can: { write: true, book: true, decide: false, consilium: true, data: true, admin: false },
-            nav: ['today', 'patients', 'messages', 'calendar', 'consilium', 'notifications', 'analytics', 'checklists', 'quality', 'data', 'settings'],
-        },
-        head: {
-            user: D.USERS.head, home: '#/department', scope: p => p.dept === D.USERS.head.dept,
-            can: { write: true, book: true, decide: false, consilium: true, data: true, admin: false },
-            nav: ['department', 'patients', 'calendar', 'consilium', 'notifications', 'analytics', 'checklists', 'quality', 'data', 'settings'],
-        },
-        chair: {
-            // Как в приложении: область пациентов by_treating_doctor, консилиум — все записи.
-            user: D.USERS.chair, home: '#/consilium', scope: p => p.doctorId === D.USERS.chair.id,
-            can: { write: false, book: false, decide: true, consilium: true, data: false, admin: false },
-            nav: ['patients', 'consilium', 'analytics'],
-        },
-        management: {
-            user: D.USERS.management, home: '#/analytics', scope: () => true,
-            can: { write: false, book: false, decide: false, consilium: false, data: false, admin: false },
-            nav: ['analytics', 'patients', 'calendar', 'notifications', 'checklists', 'quality', 'settings'],
-        },
+    /* ---------- Роли (как в приложении) ----------
+       PERMS — точная копия policy.permissions_payload для шести ролей
+       (вычислено из backend/app/policy.py, ветка a9a3a20). Видимость разделов
+       выводится из неё так же, как navVisibility в static/app.js:1731.
+       Прототип добавляет только свои экраны: «Рабочий день» (врач),
+       «Отделение» (заведующий), «Сообщения» (врач). */
+    const F = (s) => Object.fromEntries(s.split(' ').filter(Boolean).map(k => [k, true]));
+    const PERMS = {
+        developer: F('createPatients editPatients deletePatients changeTreatingDoctor manageUsers manageDepartments viewAudit importData exportData manageNotifications runNotificationWorker manageNotificationTemplates accessConsilium bookConsilium manageConsilium importUpdate importReplace viewUnresolved'),
+        deputy: F('readOnly viewUnresolved'),
+        caop: F('readOnly viewUnresolved'),
+        head: F('createPatients editPatients deletePatients importData exportData manageNotifications accessConsilium bookConsilium'),
+        doctor: F('createPatients editPatients deletePatients importData exportData manageNotifications accessConsilium bookConsilium'),
+        chair: F('createPatients editPatients deletePatients manageNotifications accessConsilium manageConsilium decideConsilium markReferralCompletion useConsiliumFavorites consiliumChair'),
     };
+    const navFor = (role, p) => {
+        const chair = !!p.consiliumChair;
+        const visible = {
+            patients: true, consilium: !!p.accessConsilium, calendar: !chair, notifications: !chair, analytics: true,
+            checklists: !chair, quality: !chair, data: !chair && !!(p.importData || p.exportData),
+            staff: !!p.manageUsers, structure: !!p.manageDepartments, audit: !!p.viewAudit, settings: !chair,
+        };
+        const extra = { doctor: ['today', 'messages'], head: ['department'] }[role] || [];
+        return [...extra, ...Object.keys(visible).filter(k => visible[k])];
+    };
+    const ROLE_DEFS = {
+        developer: { user: D.USERS.developer, home: '#/patients', scopeStrategy: 'global', scope: () => true },
+        deputy: { user: D.USERS.deputy, home: '#/analytics', scopeStrategy: 'global_readonly', scope: () => true },
+        caop: { user: D.USERS.caop, home: '#/analytics', scopeStrategy: 'global_readonly', scope: () => true },
+        head: { user: D.USERS.head, home: '#/department', scopeStrategy: 'by_department', scope: p => p.dept === D.USERS.head.dept },
+        doctor: { user: D.USERS.doctor, home: '#/today', scopeStrategy: 'by_treating_doctor', scope: p => p.doctorId === D.USERS.doctor.id },
+        // by_treating_doctor, как у врача: пациенты — только свои (в демо их нет), консилиум — все записи.
+        chair: { user: D.USERS.chair, home: '#/consilium', scopeStrategy: 'by_treating_doctor', scope: p => p.doctorId === D.USERS.chair.id },
+    };
+    const ROLES = Object.fromEntries(Object.entries(ROLE_DEFS).map(([k, r]) => {
+        const p = PERMS[k];
+        return [k, { ...r, perms: p, nav: navFor(k, p),
+            can: { write: !!p.editPatients, create: !!p.createPatients, book: !!p.bookConsilium, decide: !!p.decideConsilium,
+                consilium: !!p.accessConsilium, manage: !!p.manageConsilium, export: !!p.exportData, readOnly: !!p.readOnly } }];
+    }));
+    const isReadOnly = () => R().can.readOnly;
 
     const ICONS = {
         today: '<path d="M4 6h16M4 12h10M4 18h7"/><circle cx="18" cy="16" r="3"/>',
@@ -80,7 +97,7 @@
 
     /* ---------- Состояние ---------- */
     const S = { role: 'doctor', demo: 'ok', patients: D.patients, consilium: D.consilium };
-    try { const r = localStorage.getItem('proto-role'); if (r && ROLES[r]) S.role = r; } catch (e) { /* без хранилища */ }
+    try { const r = localStorage.getItem('proto-role'); if (r && ROLES[r]) S.role = r; else if (r === 'management') S.role = 'deputy'; } catch (e) { /* без хранилища */ }
     const R = () => ROLES[S.role];
     const scoped = () => S.patients.filter(R().scope);
     const patient = (id) => S.patients.find(p => p.id === id);
@@ -246,10 +263,10 @@
         if (q) list = list.filter(p => [p.name, p.policy, p.icd, p.doctor].some(v => v.toLowerCase().includes(q)));
         if (S.stageFilter) list = list.filter(p => p.stage === S.stageFilter);
         if (S.onlyAttention) list = list.filter(p => p.overdue || p.attention.length);
-        const readOnly = !R().can.write;
+        const readOnly = isReadOnly();
         return html`
             ${pagehead('Пациенты', ['doctor', 'chair'].includes(S.role) ? 'Пациенты, у которых вы лечащий врач' : S.role === 'head' ? 'Пациенты вашего отделения' : 'Все пациенты клиники',
-                readOnly ? html`<span class="tag">Только просмотр</span>` : html`<button class="btn" data-action="export">Экспорт</button><button class="btn btn--primary" data-action="new-patient">Новый пациент</button>`)}
+                readOnly ? html`<span class="tag">Режим просмотра</span>` : html`${R().can.export ? html`<button class="btn" data-action="export">Экспорт</button>` : ''}${R().can.create ? html`<button class="btn btn--primary" data-action="new-patient">Новый пациент</button>` : ''}`)}
             <section class="panel">
                 <div class="panel__head" style="padding-bottom:var(--s3)"><div class="panel__meta">${S.demo === 'ok' ? `${list.length} ${plural(list.length, 'пациент', 'пациента', 'пациентов')}` : ''}</div></div>
                 <div class="toolbar">
@@ -275,7 +292,7 @@
                     <div class="ptitle">
                         <div><h1 style="font-size:var(--t-2xl);font-weight:600;line-height:1.2">${p.name}</h1>
                         <div class="facts"><span><b>${p.age}</b> лет</span><span>Полис ОМС <b class="mono">${p.policy}</b></span><span>Диагноз <b class="mono">${p.icd}</b> · ${p.nosologyLabel}</span><span>Лечащий врач <b>${p.doctor}</b></span></div></div>
-                        <div class="pagehead__actions">${convFor(p.id) ? html`<a class="btn" href="#/messages/${convFor(p.id).id}?back=patient/${p.id}">${icon('messages')}<span>Переписка с пациентом</span>${convFor(p.id).unread ? html`<span class="msg-badge" aria-label="Непрочитанных: ${convFor(p.id).unread}">${convFor(p.id).unread}</span>` : ''}</a>` : ''}<button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-помощника по пациенту: ${p.name}">Спросить помощника</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
+                        <div class="pagehead__actions">${convFor(p.id) ? html`<a class="btn" href="#/messages/${convFor(p.id).id}?back=patient/${p.id}">${icon('messages')}<span>Переписка с пациентом</span>${convFor(p.id).unread ? html`<span class="msg-badge" aria-label="Непрочитанных: ${convFor(p.id).unread}">${convFor(p.id).unread}</span>` : ''}</a>` : ''}<button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-помощника по пациенту: ${p.name}">Спросить помощника</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Режим просмотра</span>`}</div>
                     </div>
                 </div>
                 <div class="route" aria-label="Маршрут лечения">${D.STAGE_ORDER.map((s, k) => {
@@ -351,21 +368,22 @@
             total: all.length, review: all.filter(c => c.status === 'in_review').length,
             revision: all.filter(c => c.status === 'needs_revision').length, signed: all.filter(c => c.status === 'signed').length,
         };
-        const mineIds = new Set(scoped().map(p => p.id));
+        const isMine = (c) => c.createdBy === R().user.id;
         const action = (c) => {
             if (can.decide) {
                 if (c.status === 'signed') return html`<button class="btn btn--sm btn--ghost" data-action="decide" data-id="${c.id}">Открыть</button>`;
                 if (c.status === 'needs_revision') return html`<span class="muted" style="font-size:var(--t-sm)">Ожидает врача</span>`;
                 return html`<button class="btn btn--sm ${c.status === 'in_review' ? 'btn--primary' : ''}" data-action="decide" data-id="${c.id}">${c.status === 'in_review' ? 'Продолжить' : 'Рассмотреть'}</button>`;
             }
-            if (mineIds.has(c.patientId) && ['recorded', 'needs_revision'].includes(c.status)) return html`<button class="btn btn--sm" data-action="book" data-id="${c.id}">Изменить</button>`;
-            return mineIds.has(c.patientId) ? html`<span class="muted" style="font-size:var(--t-sm)">Моя запись</span>` : '';
+            if (isMine(c) && ['recorded', 'needs_revision', 'resubmitted'].includes(c.status)) return html`<button class="btn btn--sm" data-action="book" data-id="${c.id}">Изменить</button>`;
+            return isMine(c) ? html`<span class="muted" style="font-size:var(--t-sm)">Моя запись</span>` : '';
         };
         const d = parse(D.today);
         return html`
             ${pagehead('Онкологический консилиум', can.decide ? 'Записи всех врачей на выбранный день — рассмотрение и подписание решений' : 'Свободные и занятые слоты; записать можно своих пациентов',
                 can.decide ? html`<button class="btn" data-action="registry">Реестры (XLSX)</button>` : html`<button class="btn btn--primary" data-action="book">Записать пациента</button>`,
                 `${WEEKDAYS[d.getDay()]}, ${d.getDate()} ${MONTHS[d.getMonth()]}`)}
+            ${S.role === 'developer' ? html`<div class="demo-note">Расхождение, не согласовано: сервер разрешает разработчику управлять сеткой, реестрами и аналитикой консилиума (manageConsilium), а действующий интерфейс показывает эти функции только председателю. Прототип повторяет действующий интерфейс; это не продуктовое решение.</div>` : ''}
             <div class="stack">
                 ${metrics([
                     { label: 'Записано на день', value: counts.total },
@@ -427,9 +445,9 @@
                 <text x="${pad + i * bw + bw / 2}" y="${H - 8}" text-anchor="middle">${w.label}</text>`)}</svg>`;
         const doctors = D.DOCTORS.map(d => { const ps = list.filter(p => p.doctorId === d.id); return { ...d, n: ps.length, att: ps.filter(p => p.attention.length || p.overdue).length, over: ps.reduce((n, p) => n + p.overdue, 0) }; }).filter(d => d.n);
         return html`
-            ${pagehead('Аналитика', S.role === 'management' ? 'Состояние маршрутов пациентов по клинике' : 'Показатели в пределах вашей области доступа',
-                html`<div class="segmented" role="group" aria-label="Период"><button aria-pressed="${period === '4w'}" data-action="period" data-v="4w">4 недели</button><button aria-pressed="${period === '12w'}" data-action="period" data-v="12w">12 недель</button></div>${R().can.data || S.role === 'management' ? html`<button class="btn" data-action="export">Выгрузить CSV</button>` : ''}`,
-                S.role === 'management' ? 'Управленческая аналитика' : '')}
+            ${pagehead('Аналитика', isReadOnly() || S.role === 'developer' ? 'Состояние маршрутов пациентов по клинике' : 'Показатели в пределах вашей области доступа',
+                html`<div class="segmented" role="group" aria-label="Период"><button aria-pressed="${period === '4w'}" data-action="period" data-v="4w">4 недели</button><button aria-pressed="${period === '12w'}" data-action="period" data-v="12w">12 недель</button></div>${S.role !== 'chair' ? html`<button class="btn" data-action="export">Выгрузить CSV</button>` : ''}`,
+                isReadOnly() ? 'Управленческая аналитика' : '')}
             <div class="stack">
                 ${metrics([
                     { label: 'Всего пациентов', value: list.length },
@@ -481,6 +499,8 @@
     function closeModal() {
         const modal = $('#modal'), scrim = $('#scrim');
         if (modal.hidden) return;
+        if (S.confirmResolve) settleConfirm(false);
+        modal.classList.remove('modal--confirm');
         modal.classList.add('is-closing');
         modal.classList.remove('is-open'); scrim.classList.remove('is-open');
         clearTimeout(closeTimer);
@@ -563,7 +583,7 @@
                     <div class="field"><label class="field__label" for="npAge">Возраст</label><input class="input" id="npAge" inputmode="numeric"></div></div>
                 <div class="form__row"><div class="field"><label class="field__label" for="npNos">Нозология <span class="req">*</span></label><select class="select" id="npNos"><option value="">Выберите</option>${Object.entries(D.NOSOLOGY).map(([k, v]) => html`<option value="${k}">${v.label}</option>`)}</select><span class="field__error" id="npNosErr" hidden>Выберите нозологию.</span></div>
                     <div class="field"><label class="field__label" for="npStage">Этап</label><select class="select" id="npStage">${['primary-appointment', 'exam'].map(s => html`<option value="${s}">${D.STAGES[s]}</option>`)}</select></div></div>
-                <div class="field"><label class="field__label" for="npDoc">Лечащий врач</label><input class="input" id="npDoc" readonly value="${S.role === 'doctor' ? R().user.name : 'Выбирается заведующим'}"></div>
+                <div class="field"><label class="field__label" for="npDoc">Лечащий врач</label><input class="input" id="npDoc" readonly value="${R().scopeStrategy === 'by_treating_doctor' ? R().user.name : R().scopeStrategy === 'by_department' ? 'Выбирается из врачей отделения' : 'Выбирается из активных врачей или не указывается'}"></div>
             </form>`, html`<span class="spacer"></span><button class="btn" data-close>Отмена</button><button class="btn btn--primary" data-action="save-patient">Сохранить</button>`));
     }
 
@@ -613,7 +633,7 @@
                 toast('Запись обновлена.');
             } else {
                 const p = patient(sel.value);
-                S.consilium.push({ id: `c-${Date.now()}`, patientId: p.id, patientName: p.name, policy: p.policy, icd: p.icd, localization: p.localization, group: S.consGroup || 'thoracic', date: D.today, time, doctor: p.doctor, status: 'recorded', needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, comment: $('#bkComment').value || 'Обсудить тактику лечения.', revisions: [] });
+                S.consilium.push({ id: `c-${Date.now()}`, patientId: p.id, patientName: p.name, policy: p.policy, icd: p.icd, localization: p.localization, group: S.consGroup || 'thoracic', date: D.today, time, doctor: p.doctor, status: 'recorded', createdBy: R().user.id, needsSurgeon: $('#bkSurgeon').checked, needsRadiotherapist: $('#bkRadio').checked, comment: $('#bkComment').value || 'Обсудить тактику лечения.', revisions: [] });
                 toast('Пациент записан на консилиум.');
             }
             closeModal(); render();
@@ -632,9 +652,10 @@
 
     /* ---------- Сообщения пациентам (демонстрация) ----------
        Сценарий взят из Patient Portal v0.5.1: переписка существует только в
-       рамках отношения врач–пациент. В клинике это лечащий врач; в приложении
-       лечащим врачом может быть только роль «Врач», поэтому раздел и диалоги
-       есть только у неё и только по своим пациентам. API переписки нет:
+       рамках отношения врач–пациент. Раздел и диалоги есть только у роли
+       «Врач» и только по своим пациентам. Председатель тоже может быть
+       лечащим врачом (созданные им пациенты), но переписка ему не
+       открыта — это открытый вопрос, см. README. API переписки нет:
        состояние локальное, доставка, сервер и синхронизация не подключены. */
     S.msg = { list: D.conversations, q: '', drafts: {} };
     const CONTEXT_LABEL = { assigned_doctor: 'Лечащий врач', care_route: 'По маршруту лечения', appointment: 'По записи на прием' };
@@ -784,7 +805,7 @@
             return { text: lines.join('\n'), refs: [aiRef(ctx)] };
         }
         if (/нагрузк|распредел/.test(q)) {
-            if (S.role === 'doctor' || S.role === 'chair') return { text: 'Сводка по отделению недоступна вашей роли. Могу показать ваших пациентов, требующих внимания, и события на сегодня.' };
+            if (R().scopeStrategy === 'by_treating_doctor') return { text: 'Сводка по отделению недоступна вашей роли. Могу показать ваших пациентов, требующих внимания, и события на сегодня.' };
             const rows = D.DOCTORS.map(d => ({ d, n: list.filter(p => p.doctorId === d.id).length })).filter(x => x.n).sort((a, b) => b.n - a.n);
             return { text: `Пациенты по лечащим врачам в вашей области доступа:\n${rows.map(x => `• ${x.d.short} — ${x.n}`).join('\n')}` };
         }
@@ -854,6 +875,7 @@
     }
 
     function openAI(patientId) {
+        if (S.notif && S.notif.open) closeNotif(false);   // панели взаимоисключающие, подложка общая
         if (patientId) S.ai.ctx = patientId;
         S.ai.lastFocus = document.activeElement;
         S.ai.open = true;
@@ -870,10 +892,10 @@
         if (!S.ai.open) return;
         S.ai.open = false;
         const panel = $('#aiPanel'), scrim = $('#aiScrim');
-        panel.classList.remove('is-open'); scrim.classList.remove('is-open');
+        panel.classList.remove('is-open'); if (!(S.notif && S.notif.open)) scrim.classList.remove('is-open');
         panel.setAttribute('aria-hidden', 'true');
         $('#aiBtn').setAttribute('aria-expanded', 'false');
-        setTimeout(() => { if (!S.ai.open) { panel.hidden = true; scrim.hidden = true; } }, 260);
+        setTimeout(() => { if (!S.ai.open) { panel.hidden = true; if (!(S.notif && S.notif.open)) scrim.hidden = true; } }, 260);
         const lf = S.ai.lastFocus;
         const back = lf && lf !== document.body && document.contains(lf) ? lf : $('#aiBtn');
         back.focus({ preventScroll: true });
@@ -911,7 +933,435 @@
         if (e.target.id === 'aiInput' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAI(e.target.value); }
     });
 
+    /* ===================== Общие компоненты (этап 0) =====================
+       Без встроенных обработчиков и атрибутов style — только классы и
+       делегирование событий, чтобы перенос был совместим с CSP приложения. */
+
+    // --- Вкладки: role="tablist", стрелки/Home/End, автоматическая активация ---
+    const TAB_HANDLERS = {};
+    const tabsView = (id, items, active, label) => html`
+        <div class="tabs" role="tablist" aria-label="${label}" data-tabs="${id}">${items.map(t => html`
+            <button type="button" role="tab" class="tabs__tab" id="tab-${id}-${t.value}" data-tab="${t.value}"
+                aria-selected="${t.value === active}" tabindex="${t.value === active ? 0 : -1}">${t.label}${t.count ? html`<span class="tabs__count">${t.count}</span>` : ''}</button>`)}
+        </div>`;
+    function selectTab(group, value) {
+        if (!TAB_HANDLERS[group]) return;
+        TAB_HANDLERS[group](value);
+        const next = document.getElementById(`tab-${group}-${value}`);
+        if (next) next.focus({ preventScroll: true });
+    }
+    document.addEventListener('click', (e) => {
+        const t = e.target.closest('[data-tab]');
+        if (t) selectTab(t.closest('[data-tabs]').dataset.tabs, t.dataset.tab);
+    });
+    document.addEventListener('keydown', (e) => {
+        const t = e.target.closest && e.target.closest('[role="tab"][data-tab]');
+        if (!t || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+        const list = [...t.closest('[role="tablist"]').querySelectorAll('[role="tab"]')];
+        const i = list.indexOf(t);
+        const j = e.key === 'Home' ? 0 : e.key === 'End' ? list.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + list.length) % list.length;
+        e.preventDefault();
+        selectTab(t.closest('[data-tabs]').dataset.tabs, list[j].dataset.tab);
+    });
+
+    // --- Подтверждение опасного действия: Promise<boolean>, фокус на «Отмена» ---
+    S.confirmResolve = null;
+    function confirmDialog({ title, text, confirmLabel = 'Подтвердить', danger = false }) {
+        return new Promise((resolve) => {
+            S.confirmResolve = resolve;
+            openModal(modalShell(title, '', html`<p class="confirm__text">${text}</p>`,
+                html`<span class="spacer"></span><button class="btn" data-confirm="no">Отмена</button><button class="btn ${danger ? 'btn--danger-solid' : 'btn--primary'}" data-confirm="yes">${confirmLabel}</button>`));
+            $('#modal').classList.add('modal--confirm');
+        });
+    }
+    function settleConfirm(value) {
+        const r = S.confirmResolve; S.confirmResolve = null;
+        if (r) r(value);
+    }
+    document.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-confirm]');
+        if (!b) return;
+        settleConfirm(b.dataset.confirm === 'yes');
+        closeModal();
+    });
+
+    // --- Лист фильтров (снизу на телефоне, справа-снизу на широком экране) ---
+    S.sheet = null;
+    function openSheet({ title, body, onApply, onReset }) {
+        const sheet = $('#sheet'), scrim = $('#sheetScrim');
+        S.sheet = { onApply, onReset, lastFocus: document.activeElement };
+        sheet.innerHTML = String(html`
+            <div class="sheet__head"><h2 class="sheet__title" id="sheetTitle">${title}</h2>
+                <button class="iconbtn" data-sheet="close" aria-label="Закрыть"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></div>
+            <div class="sheet__body">${body}</div>
+            <div class="sheet__foot"><button class="btn" data-sheet="reset">Сбросить</button><button class="btn btn--primary" data-sheet="apply">Показать</button></div>`);
+        sheet.hidden = false; scrim.hidden = false;
+        void sheet.offsetWidth;
+        sheet.classList.add('is-open'); scrim.classList.add('is-open');
+        const first = sheet.querySelector('select, input, button:not([data-sheet="close"])');
+        (first || sheet).focus({ preventScroll: true });
+    }
+    function closeSheet() {
+        const sheet = $('#sheet'), scrim = $('#sheetScrim');
+        if (sheet.hidden) return;
+        sheet.classList.remove('is-open'); scrim.classList.remove('is-open');
+        const back = S.sheet && S.sheet.lastFocus;
+        S.sheet = null;
+        setTimeout(() => { if (!sheet.classList.contains('is-open')) { sheet.hidden = true; scrim.hidden = true; sheet.innerHTML = ''; } }, 240);
+        if (back && document.contains(back)) back.focus({ preventScroll: true });
+    }
+    document.addEventListener('click', (e) => {
+        if (e.target.id === 'sheetScrim') { closeSheet(); return; }
+        const b = e.target.closest('[data-sheet]');
+        if (!b || !S.sheet) return;
+        const act = b.dataset.sheet;
+        if (act === 'apply' && S.sheet.onApply) S.sheet.onApply($('#sheet'));
+        if (act === 'reset' && S.sheet.onReset) { S.sheet.onReset($('#sheet')); return; }
+        closeSheet();
+    });
+
+    // --- Дата и время: нативная дата + время с шагом 15 минут + проверки ---
+    const TIMES = []; for (let h = 7; h <= 20; h++) for (const m of ['00', '15', '30', '45']) TIMES.push(`${String(h).padStart(2, '0')}:${m}`);
+    const dateTimeField = ({ id, label, required, min, max, value = {}, hint }) => html`
+        <fieldset class="dt" id="${id}" data-min="${min || ''}" data-max="${max || ''}" data-required="${required ? '1' : ''}">
+            <legend class="field__label">${label}${required ? html` <span class="req">*</span>` : ''}</legend>
+            <div class="dt__row">
+                <input class="input dt__date" type="date" id="${id}-date" value="${value.date || ''}" min="${min || ''}" max="${max || ''}" aria-label="${label}: дата" aria-describedby="${id}-err">
+                <select class="select dt__time" id="${id}-time" aria-label="${label}: время" aria-describedby="${id}-err"><option value="">Время</option>${TIMES.map(t => html`<option ${raw(t === value.time ? 'selected' : '')}>${t}</option>`)}</select>
+            </div>
+            <div class="dt__quick"><button type="button" class="ai-chip" data-dt-set="${id}" data-days="0">Сегодня</button><button type="button" class="ai-chip" data-dt-set="${id}" data-days="1">Завтра</button></div>
+            ${hint ? html`<span class="field__hint">${hint}</span>` : ''}
+            <span class="field__error" id="${id}-err" hidden></span>
+        </fieldset>`;
+    // aria-invalid="" читается как false — ставим явное "true".
+    const setInvalid = (el, bad) => { if (bad) el.setAttribute('aria-invalid', 'true'); else el.removeAttribute('aria-invalid'); };
+    function readDateTime(id) {
+        const box = document.getElementById(id);
+        const d = $(`#${id}-date`), t = $(`#${id}-time`), err = $(`#${id}-err`);
+        const required = box.dataset.required === '1';
+        let error = '';
+        if (required && !d.value) error = 'Укажите дату.';
+        else if (d.value && box.dataset.min && d.value < box.dataset.min) error = `Дата не может быть раньше ${fmtNum(box.dataset.min)}.`;
+        else if (d.value && box.dataset.max && d.value > box.dataset.max) error = `Дата не может быть позже ${fmtNum(box.dataset.max)}.`;
+        else if (required && !t.value) error = 'Укажите время.';
+        else if (!d.value && t.value) error = 'Укажите дату к выбранному времени.';
+        err.textContent = error; err.hidden = !error;
+        setInvalid(d, !!error && (!d.value || error.startsWith('Дата')));
+        setInvalid(t, !!error && error.startsWith('Укажите время'));
+        return { ok: !error, date: d.value, time: t.value, error };
+    }
+    document.addEventListener('click', (e) => {
+        const b = e.target.closest('[data-dt-set]');
+        if (!b) return;
+        const id = b.dataset.dtSet;
+        $(`#${id}-date`).value = D.helpers.iso(D.helpers.addDays(parse(D.today), Number(b.dataset.days)));
+        if (!$(`#${id}-time`).value) $(`#${id}-time`).value = '09:00';
+        readDateTime(id);
+    });
+
+    // --- Поиск по МКБ-10: combobox + listbox, клавиатура, «С» кириллицей ---
+    const ICD = Object.entries(window.ICD10 || {}).flatMap(([loc, v]) => v.diagnoses.map(d => ({ ...d, loc, locLabel: v.label })));
+    const normIcd = (s) => s.trim().toLowerCase().replace(/^с/, 'c').replace(/,/g, '.');
+    function icdSearch(query, loc) {
+        const q = normIcd(query);
+        const pool = loc ? ICD.filter(d => d.loc === loc) : ICD;
+        if (!q) return loc ? pool.slice(0, 40) : [];
+        const words = q.split(/\s+/).filter(Boolean);
+        return pool.filter(d => d.code.toLowerCase().startsWith(q) || words.every(w => d.label.toLowerCase().includes(w))).slice(0, 40);
+    }
+    const icdField = ({ id, label, required, locSelectId }) => html`
+        <div class="field combo" data-icd="${id}" data-loc-from="${locSelectId || ''}">
+            <label class="field__label" for="${id}">${label}${required ? html` <span class="req">*</span>` : ''}</label>
+            <input class="input" id="${id}" role="combobox" aria-expanded="false" aria-controls="${id}-list" aria-autocomplete="list" autocomplete="off" placeholder="Код или слова: C34.1, бронх" aria-describedby="${id}-hint">
+            <ul class="combo__list" id="${id}-list" role="listbox" aria-label="Диагнозы МКБ-10" hidden></ul>
+            <span class="field__hint" id="${id}-hint">Начните вводить код или часть названия.</span>
+        </div>`;
+    const ICD_STATE = {};
+    function renderIcdList(id) {
+        const input = document.getElementById(id), list = document.getElementById(`${id}-list`), box = input.closest('[data-icd]');
+        const locSel = box.dataset.locFrom ? document.getElementById(box.dataset.locFrom) : null;
+        const st = ICD_STATE[id] || (ICD_STATE[id] = { active: -1, items: [], selected: null });
+        st.items = icdSearch(input.value, locSel ? locSel.value : '');
+        st.active = st.items.length ? 0 : -1;
+        list.innerHTML = String(html`${st.items.map((d, i) => html`<li role="option" id="${id}-opt-${i}" class="combo__opt" data-icd-opt="${i}" aria-selected="${i === st.active}"><span class="mono">${d.code}</span><span class="combo__label">${d.label}</span>${locSel && locSel.value ? '' : html`<span class="combo__loc">${d.locLabel}</span>`}</li>`)}${input.value.trim() && !st.items.length ? html`<li class="combo__empty" role="presentation">Ничего не найдено${locSel && locSel.value ? ' в выбранной локализации' : ''}</li>` : ''}`);
+        const open = !!(st.items.length || input.value.trim());
+        list.hidden = !open; input.setAttribute('aria-expanded', String(open));
+        input.setAttribute('aria-activedescendant', st.active >= 0 ? `${id}-opt-${st.active}` : '');
+    }
+    function chooseIcd(id, i) {
+        const st = ICD_STATE[id], d = st && st.items[i];
+        if (!d) return;
+        st.selected = d;
+        const input = document.getElementById(id);
+        input.value = `${d.code} — ${d.label}`;
+        document.getElementById(`${id}-list`).hidden = true;
+        input.setAttribute('aria-expanded', 'false');
+        const hint = document.getElementById(`${id}-hint`);
+        hint.textContent = `Выбрано: ${d.code} · ${d.locLabel}`;
+        input.removeAttribute('aria-invalid');
+    }
+    document.addEventListener('input', (e) => {
+        const box = e.target.closest && e.target.closest('[data-icd]');
+        if (box && e.target.matches('[role="combobox"]')) {
+            const st = ICD_STATE[e.target.id]; if (st) st.selected = null;
+            renderIcdList(e.target.id);
+        }
+    });
+    document.addEventListener('change', (e) => {
+        const box = document.querySelector(`[data-icd][data-loc-from="${e.target.id}"]`);
+        if (box && e.target.id) { const input = box.querySelector('[role="combobox"]'); input.value = ''; if (ICD_STATE[input.id]) ICD_STATE[input.id].selected = null; renderIcdList(input.id); $(`#${input.id}-hint`).textContent = 'Начните вводить код или часть названия.'; }
+    });
+    document.addEventListener('keydown', (e) => {
+        if (!(e.target.matches && e.target.matches('[data-icd] [role="combobox"]'))) return;
+        const id = e.target.id, st = ICD_STATE[id], list = $(`#${id}-list`);
+        if (e.key === 'ArrowDown' && list.hidden) { renderIcdList(id); e.preventDefault(); return; }
+        if (!st || list.hidden) return;
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            st.active = (st.active + (e.key === 'ArrowDown' ? 1 : -1) + st.items.length) % st.items.length;
+            list.querySelectorAll('[role="option"]').forEach((o, i) => o.setAttribute('aria-selected', String(i === st.active)));
+            e.target.setAttribute('aria-activedescendant', `${id}-opt-${st.active}`);
+            const o = $(`#${id}-opt-${st.active}`); if (o) o.scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter') { e.preventDefault(); chooseIcd(id, st.active); }
+        else if (e.key === 'Escape') { e.stopPropagation(); list.hidden = true; e.target.setAttribute('aria-expanded', 'false'); }
+    }, true);
+    document.addEventListener('mousedown', (e) => {   // mousedown: до blur поля ввода
+        const o = e.target.closest('[data-icd-opt]');
+        if (o) { e.preventDefault(); chooseIcd(o.closest('[data-icd]').querySelector('[role="combobox"]').id, Number(o.dataset.icdOpt)); }
+    });
+    document.addEventListener('focusout', (e) => {
+        if (!(e.target.matches && e.target.matches('[data-icd] [role="combobox"]'))) return;
+        setTimeout(() => { const l = $(`#${e.target.id}-list`); if (l && !e.target.matches(':focus')) { l.hidden = true; e.target.setAttribute('aria-expanded', 'false'); } }, 0);
+    });
+    const icdValue = (id) => (ICD_STATE[id] && ICD_STATE[id].selected) || null;
+
+    /* ===================== Вход и смена пароля (демонстрация) =====================
+       Ничего не проверяется и не хранится: исход задаёт переключатель «Ответ
+       сервера», тексты ошибок — как в приложении (static/app.js:8284–8322). */
+    const ROLE_LABELS = { developer: 'Разработчик', deputy: 'Зам. главного врача по онкологии', caop: 'Заведующий ЦАОП', head: 'Заведующий отделением', doctor: 'Врач', chair: 'Председатель консилиума' };
+    S.auth = 'in';
+    function showAuth(mode) {
+        S.auth = mode;
+        closeAI(); closeNotif(); closeSheet(); closeModal();
+        const auth = $('#auth');
+        auth.hidden = mode === 'in';
+        $('#app').inert = mode !== 'in';
+        $('#loginForm').hidden = mode !== 'login';
+        $('#changeForm').hidden = mode !== 'change';
+        ['loginError', 'changeError'].forEach(i => { $(`#${i}`).hidden = true; });
+        if (mode === 'login') { $('#loginRole').innerHTML = String(html`${Object.keys(ROLES).map(k => html`<option value="${k}" ${raw(k === S.role ? 'selected' : '')}>${ROLE_LABELS[k]}</option>`)}`); $('#loginUser').focus(); }
+        if (mode === 'change') $('#changeCurrent').focus();
+    }
+    const authError = (id, text) => { const el = $(`#${id}`); el.textContent = text; el.hidden = false; };
+    $('#loginForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const user = $('#loginUser'), pass = $('#loginPass');
+        const empty = !user.value.trim() || !pass.value;
+        pass.value = '';                                   // пароль не держим ни секунды дольше
+        if (empty) { authError('loginError', 'Введите логин и пароль.'); (user.value.trim() ? pass : user).focus(); return; }
+        const scenario = $('#loginScenario').value;
+        if (scenario === '401') { authError('loginError', 'Неверный логин или пароль.'); pass.focus(); return; }
+        if (scenario === '429') { authError('loginError', 'Слишком много попыток входа. Подождите немного и попробуйте снова.'); return; }
+        S.pendingRole = $('#loginRole').value;
+        user.value = '';
+        if (scenario === 'temp') { showAuth('change'); return; }
+        enterAs(S.pendingRole);
+    });
+    $('#changeForm').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const cur = $('#changeCurrent'), n1 = $('#changeNew'), n2 = $('#changeNew2');
+        const v = { cur: cur.value, n1: n1.value, n2: n2.value };
+        [cur, n1, n2].forEach(i => { i.value = ''; });
+        if (!v.cur || !v.n1 || !v.n2) { authError('changeError', 'Заполните все поля.'); cur.focus(); return; }
+        if (v.n1 !== v.n2) { authError('changeError', 'Новые пароли не совпадают.'); n1.focus(); return; }
+        if (v.n1.length < 8) { authError('changeError', 'Пароль должен быть не короче 8 символов.'); n1.focus(); return; }
+        if ($('#changeScenario').value === '401') { authError('changeError', 'Временный пароль указан неверно.'); cur.focus(); return; }
+        enterAs(S.pendingRole || S.role);
+    });
+    function enterAs(role) {
+        S.role = role;
+        try { localStorage.setItem('proto-role', role); } catch (err) { /* ok */ }
+        $('#roleSelect').value = role;
+        showAuth('in');
+        location.hash = R().home; render(); renderAI();
+        toast(`Вход выполнен (демо): ${ROLE_LABELS[role]}.`);
+    }
+    $('#logoutBtn').addEventListener('click', () => {
+        // Как в приложении при выходе: история ИИ-помощника и контекст сбрасываются.
+        S.ai.messages = []; S.ai.ctx = null; S.ai.loading = false;
+        showAuth('login');
+    });
+
+    /* ===================== Уведомления (демонстрация) =====================
+       Те же типы, заголовки и окно «Скоро» (1–3 дня), что в
+       services/internal_notifications.py, но сформированы прототипом по
+       синтетическим данным в области доступа роли. Это внутренние напоминания
+       сотруднику, а не доставленные сообщения; сервер не опрашивается. */
+    S.notif = { open: false, tab: 'all', read: {} };
+    const NOTIF_LABEL = { overdue: 'Просрочено', today: 'Сегодня', upcoming: 'Скоро', checklist: 'Чек-листы', data_quality: 'Качество данных', attention: 'Требует внимания', consilium_revision: 'Доработка консилиума' };
+    const NOTIF_TONE = { overdue: 'tag--danger', consilium_revision: 'tag--warn', attention: 'tag--warn', today: 'tag--accent', upcoming: '', checklist: '', data_quality: '' };
+    function notifItems() {
+        const out = [];
+        for (const p of scoped()) {
+            for (const ev of p.events.filter(x => !x.done)) {
+                const delta = Math.round((parse(ev.date) - parse(D.today)) / 86400000);
+                if (delta < 0) out.push({ key: `overdue:${ev.id}`, type: 'overdue', title: `Просрочено на ${-delta} дн.`, text: 'Контрольное действие не выполнено.', p, at: ev.date });
+                else if (delta === 0) out.push({ key: `today:${ev.id}`, type: 'today', title: 'На сегодня', text: 'Сегодня запланировано контрольное действие.', p, at: ev.date });
+                else if (delta <= 3) out.push({ key: `upcoming:${ev.id}`, type: 'upcoming', title: `Скоро срок: ${delta} дн.`, text: 'Запланированное действие скоро наступит.', p, at: ev.date });
+            }
+            if (p.stage === 'exam' && p.checklist.some(c => !c.done)) out.push({ key: `checklist:${p.id}`, type: 'checklist', title: 'Незавершённый чек-лист', text: 'Обязательные пункты чек-листа не отмечены выполненными.', p, at: D.today });
+            p.attention.forEach((a, i) => out.push({ key: `attention:${p.id}:${i}`, type: 'attention', title: 'Требует внимания', text: `Причина: ${D.ATTENTION_REASONS[a.code]}`, p, at: a.since }));
+        }
+        // Доработка консилиума — только автору записи (как в приложении).
+        S.consilium.filter(c => c.createdBy === R().user.id && c.status === 'needs_revision').forEach(c => {
+            out.push({ key: `consilium_revision:${c.id}:${c.revisions.length}`, type: 'consilium_revision', title: 'Консилиум возвращён на доработку', text: 'Председатель оставил комментарий. Откройте запись, внесите изменения и отправьте её повторно.', p: patient(c.patientId), at: (c.revisions[c.revisions.length - 1] || {}).at || D.today, consiliumId: c.id });
+        });
+        const read = S.notif.read[S.role] || (S.notif.read[S.role] = new Set());
+        out.forEach(n => { n.unread = !read.has(n.key); });
+        // Как в приложении (services/internal_notifications.py:348): непрочитанные, дата события, ФИО.
+        return out.sort((a, b) => (a.unread === b.unread ? 0 : a.unread ? -1 : 1) || a.at.localeCompare(b.at) || (a.p ? a.p.name : '').localeCompare(b.p ? b.p.name : ''));
+    }
+    const notifUnread = () => notifItems().filter(n => n.unread).length;
+    function renderNotif() {
+        const body = $('#notifBody');
+        const all = notifItems(), unread = all.filter(n => n.unread).length;
+        $('#notifSub').textContent = unread ? `Новых: ${unread}` : 'Новых уведомлений нет';
+        const tabs = [{ value: 'all', label: 'Все' }, { value: 'unread', label: 'Новые', count: unread }, { value: 'overdue', label: 'Просрочено' }, { value: 'today', label: 'Сегодня' }];
+        const list = all.filter(n => S.notif.tab === 'all' || (S.notif.tab === 'unread' ? n.unread : n.type === S.notif.tab));
+        const items = list.slice(0, 5);
+        body.innerHTML = String(html`
+            <div class="ai-scroll">
+                <div class="ai-note">Демонстрация: уведомления сформированы прототипом по синтетическим данным в вашей области доступа. Сервер не опрашивается; это напоминания сотруднику, а не сообщения пациентам.</div>
+                <div class="notif-tabs">${tabsView('notif', tabs, S.notif.tab, 'Фильтр уведомлений')}</div>
+                ${S.demo === 'loading' ? html`<div class="skeleton" aria-busy="true">${[1, 2, 3, 4].map(() => html`<span></span>`)}</div>`
+                : S.demo === 'error' ? html`<div class="error" role="alert"><div class="error__title">Не удалось загрузить уведомления</div><div>Попробуйте ещё раз.</div></div>`
+                : S.demo === 'empty' || !items.length ? html`<div class="empty"><div class="empty__title">${S.demo === 'empty' || !all.length ? 'Новых уведомлений нет' : 'По выбранному фильтру уведомлений нет.'}</div></div>`
+                : html`<ul class="notif-list">${items.map(n => html`
+                    <li class="notif ${n.unread ? 'is-unread' : ''}">
+                        <div class="notif__head"><span class="tag ${NOTIF_TONE[n.type]}">${NOTIF_LABEL[n.type]}</span>${n.unread ? html`<span class="notif__new">Новое</span>` : ''}</div>
+                        <div class="notif__title">${n.title}</div>
+                        <div class="notif__text">${n.text}</div>
+                        <div class="notif__meta">${n.p ? n.p.name : 'Пациент'} · ${fmtNum(n.at)}</div>
+                        <div class="notif__actions"><button class="btn btn--sm" data-notif-open="${n.key}">Открыть</button>${n.unread ? html`<button class="btn btn--sm btn--ghost" data-notif-read="${n.key}">Прочитано</button>` : ''}</div>
+                    </li>`)}</ul>${list.length > items.length ? html`<p class="notif-more">Показано ${items.length} из ${list.length}.</p>` : ''}`}
+            </div>
+            <div class="ai-composer notif-foot">
+                <button class="btn btn--sm btn--ghost" data-notif-readall ${raw(unread && S.demo === 'ok' ? '' : 'disabled')}>Отметить все прочитанными</button>
+                ${R().nav.includes('notifications') ? html`<a class="btn btn--sm" href="#/notifications" data-notif-full>Все уведомления</a>` : ''}
+            </div>`);
+        updateBell();
+    }
+    function updateBell() {
+        const n = S.auth === 'in' && S.demo === 'ok' ? notifUnread() : 0;
+        const b = $('#notifBadge');
+        b.hidden = !n; b.textContent = n > 99 ? '99+' : String(n);
+        $('#notifBtn').setAttribute('aria-label', n ? `Уведомления, новых: ${n}` : 'Уведомления');
+    }
+    TAB_HANDLERS.notif = (v) => { S.notif.tab = v; renderNotif(); };
+    function openNotif() {
+        closeAI();
+        S.notif.open = true; S.notif.lastFocus = document.activeElement;
+        const panel = $('#notifPanel'), scrim = $('#aiScrim');
+        renderNotif();
+        panel.hidden = false; scrim.hidden = false;
+        void panel.offsetWidth;
+        panel.classList.add('is-open'); scrim.classList.add('is-open');
+        panel.setAttribute('aria-hidden', 'false');
+        $('#notifBtn').setAttribute('aria-expanded', 'true');
+        $('#notifClose').focus({ preventScroll: true });
+    }
+    function closeNotif(returnFocus = true) {
+        if (!S.notif.open) return;
+        S.notif.open = false;
+        const panel = $('#notifPanel'), scrim = $('#aiScrim');
+        panel.classList.remove('is-open'); if (!S.ai.open) scrim.classList.remove('is-open');
+        panel.setAttribute('aria-hidden', 'true');
+        $('#notifBtn').setAttribute('aria-expanded', 'false');
+        setTimeout(() => { if (!S.notif.open) { panel.hidden = true; if (!S.ai.open) scrim.hidden = true; } }, 260);
+        const lf = S.notif.lastFocus;
+        if (returnFocus) (lf && lf !== document.body && document.contains(lf) ? lf : $('#notifBtn')).focus({ preventScroll: true });
+    }
+    const markRead = (key) => (S.notif.read[S.role] || (S.notif.read[S.role] = new Set())).add(key);
+    document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t.closest('#notifBtn')) { S.notif.open ? closeNotif() : openNotif(); return; }
+        if (t.closest('#notifClose') || (t.id === 'aiScrim' && S.notif.open)) { closeNotif(); return; }
+        const r = t.closest('[data-notif-read]');
+        if (r) { markRead(r.dataset.notifRead); renderNotif(); renderNav(currentSection()); return; }
+        if (t.closest('[data-notif-readall]')) { notifItems().forEach(n => markRead(n.key)); renderNotif(); renderNav(currentSection()); return; }
+        if (t.closest('[data-notif-full]')) { closeNotif(false); return; }
+        const o = t.closest('[data-notif-open]');
+        if (o) {
+            const n = notifItems().find(x => x.key === o.dataset.notifOpen);
+            if (!n) return;
+            markRead(n.key); closeNotif(false);
+            if (n.consiliumId) {   // как в приложении: переход к записи консилиума
+                location.hash = '#/consilium';
+                setTimeout(() => bookModal({ id: n.consiliumId }), 50);
+            } else location.hash = `#/patient/${n.p.id}`;
+        }
+    });
+
+    /* ===================== Набор компонентов прототипа ===================== */
+    S.kit = { tab: 'route', filters: { stage: '', attention: false, doctor: '' } };
+    TAB_HANDLERS.kit = (v) => { S.kit.tab = v; render(); };
+    const kitFilterCount = () => Object.values(S.kit.filters).filter(Boolean).length;
+    const kitFilterBody = () => html`<div class="form">
+        <div class="field"><label class="field__label" for="kfStage">Этап маршрута</label><select class="select" id="kfStage"><option value="">Все этапы</option>${Object.entries(D.STAGES).map(([k, v]) => html`<option value="${k}" ${raw(S.kit.filters.stage === k ? 'selected' : '')}>${v}</option>`)}</select></div>
+        <div class="field"><label class="field__label" for="kfDoctor">Лечащий врач</label><select class="select" id="kfDoctor"><option value="">Все врачи</option>${D.DOCTORS.map(d => html`<option value="${d.id}" ${raw(S.kit.filters.doctor === d.id ? 'selected' : '')}>${d.short}</option>`)}</select></div>
+        <label class="check"><input type="checkbox" id="kfAttention" ${raw(S.kit.filters.attention ? 'checked' : '')}> Только требующие внимания</label></div>`;
+    function viewKit() {
+        const f = S.kit.filters;
+        const shown = S.patients.filter(p => (!f.stage || p.stage === f.stage) && (!f.doctor || p.doctorId === f.doctor) && (!f.attention || p.attention.length || p.overdue)).length;
+        const panes = {
+            route: html`<p>Содержимое вкладки «Маршрут». Вкладки переключаются стрелками, Home и End; фокус следует за выбором.</p>`,
+            events: html`<p>Содержимое вкладки «События и даты».</p>`,
+            data: html`<p>Содержимое вкладки «Данные».</p>`,
+        };
+        const tabs = [{ value: 'route', label: 'Маршрут' }, { value: 'events', label: 'События и даты', count: 3 }, { value: 'data', label: 'Данные' }];
+        return html`
+            ${pagehead('Компоненты прототипа', 'Общие элементы для следующих этапов. Не раздел приложения — служебная страница прототипа.')}
+            <div class="grid grid--2">
+                <section class="panel"><div class="panel__head"><h2 class="panel__title">Вкладки</h2></div>
+                    <div class="panel__body">${tabsView('kit', tabs, S.kit.tab, 'Пример вкладок карточки')}
+                        <div class="tabs__panel" role="tabpanel" aria-labelledby="tab-kit-${S.kit.tab}">${panes[S.kit.tab]}</div></div></section>
+                <section class="panel"><div class="panel__head"><h2 class="panel__title">Подтверждение опасного действия</h2></div>
+                    <div class="panel__body kit-stack"><p class="muted">Фокус по умолчанию — на «Отмена»; Esc и клик по подложке — отказ.</p>
+                        <div><button class="btn btn--danger" data-kit="confirm">Удалить пациента (пример)</button></div></div></section>
+                <section class="panel"><div class="panel__head"><h2 class="panel__title">Лист фильтров</h2></div>
+                    <div class="panel__body kit-stack"><p class="muted">На телефоне фильтры открываются листом снизу; число на кнопке — активные фильтры.</p>
+                        <div class="kit-row"><button class="btn" data-kit="filters">Фильтры${kitFilterCount() ? html` <span class="msg-badge">${kitFilterCount()}</span>` : ''}</button><span class="muted">Подходит пациентов: ${shown}</span></div></div></section>
+                <section class="panel"><div class="panel__head"><h2 class="panel__title">Дата и время</h2></div>
+                    <div class="panel__body kit-stack">${dateTimeField({ id: 'kitFact', label: 'Фактическая дата и время', required: true, max: D.today, hint: 'Факт не может быть в будущем.' })}
+                        <div><button class="btn btn--sm" data-kit="check-dt">Проверить</button> <span class="muted" id="kitDtOut"></span></div></div></section>
+                <section class="panel kit-wide"><div class="panel__head"><h2 class="panel__title">Поиск по МКБ-10</h2><span class="panel__meta">${ICD.length} диагнозов из справочника приложения</span></div>
+                    <div class="panel__body"><div class="form__row">
+                        <div class="field"><label class="field__label" for="kitLoc">Локализация</label><select class="select" id="kitLoc"><option value="">Любая</option>${Object.entries(window.ICD10 || {}).map(([k, v]) => html`<option value="${k}">${v.label}</option>`)}</select></div>
+                        ${icdField({ id: 'kitIcd', label: 'Диагноз (МКБ-10)', required: true, locSelectId: 'kitLoc' })}
+                    </div><div><button class="btn btn--sm" data-kit="check-icd">Проверить выбор</button> <span class="muted" id="kitIcdOut"></span></div></div></section>
+            </div>`;
+    }
+    document.addEventListener('click', async (e) => {
+        const k = e.target.closest('[data-kit]');
+        if (!k) return;
+        const act = k.dataset.kit;
+        if (act === 'confirm') {
+            const ok = await confirmDialog({ title: 'Удалить пациента?', text: 'Карточка, маршрут и события будут удалены без возможности восстановления. В прототипе ничего не удаляется.', confirmLabel: 'Удалить', danger: true });
+            toast(ok ? 'Подтверждено (демо): ничего не удалено.' : 'Отменено.');
+        }
+        if (act === 'filters') openSheet({ title: 'Фильтры', body: kitFilterBody(),
+            onApply: (s) => { S.kit.filters = { stage: s.querySelector('#kfStage').value, doctor: s.querySelector('#kfDoctor').value, attention: s.querySelector('#kfAttention').checked }; render(); },
+            onReset: (s) => { s.querySelector('#kfStage').value = ''; s.querySelector('#kfDoctor').value = ''; s.querySelector('#kfAttention').checked = false; } });
+        if (act === 'check-dt') { const r = readDateTime('kitFact'); $('#kitDtOut').textContent = r.ok ? `Выбрано: ${fmtNum(r.date)} ${r.time}` : ''; }
+        if (act === 'check-icd') {
+            const v = icdValue('kitIcd'), input = $('#kitIcd');
+            setInvalid(input, !v);
+            $('#kitIcdOut').textContent = v ? `Выбран ${v.code}` : 'Выберите диагноз из списка.';
+        }
+    });
+
     /* ---------- Навигация и отрисовка ---------- */
+    const currentSection = () => (location.hash || R().home).slice(2).split('?')[0].split('/')[0];
     function renderNav(active) {
         const allowed = new Set(R().nav);
         $('#nav').innerHTML = String(html`${NAV.map(g => {
@@ -923,6 +1373,8 @@
         $('#userAvatar').textContent = initials(u.name);
         $('#userName').textContent = u.short;
         $('#userRole').textContent = u.roleLabel;
+        $('#readOnlyChip').hidden = !isReadOnly();   // как readOnlyChip в приложении
+        updateBell();
     }
 
     function render() {
@@ -930,7 +1382,7 @@
         const [path, qs] = hash.slice(2).split('?');
         const [section, id] = path.split('/');
         const params = new URLSearchParams(qs || '');
-        const allowed = R().nav.includes(section) || section === 'patient';
+        const allowed = R().nav.includes(section) || section === 'patient' || section === 'kit';
         let out;
         if (!allowed) out = denied(section);
         else if (section === 'today') out = viewToday();
@@ -941,10 +1393,12 @@
         else if (section === 'consilium') out = viewConsilium();
         else if (section === 'analytics') out = viewAnalytics();
         else if (section === 'messages') out = viewMessages(id, params);
+        else if (section === 'kit') out = viewKit();
         else out = viewLegacy(section);
         renderNav(section === 'patient' ? 'patients' : section);
         $('#view').innerHTML = String(out);
-        document.title = `${NAV_LABEL[section] || 'Карточка пациента'} — Система планирования`;
+        document.title = `${NAV_LABEL[section] || (section === 'kit' ? 'Компоненты прототипа' : 'Карточка пациента')} — Система планирования`;
+        if (S.notif && S.notif.open) renderNotif();
         bindView(params);
         const log = $('#msgLog'); if (log) log.scrollTop = log.scrollHeight;
     }
@@ -971,7 +1425,9 @@
     document.addEventListener('change', (e) => { const act = e.target.closest('[data-action="check"]'); if (act) ACTIONS.check(act); });
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
-            if (!$('#modal').hidden) closeModal();
+            if (!$('#modal').hidden) { settleConfirm(false); closeModal(); }
+            else if (!$('#sheet').hidden) closeSheet();
+            else if (S.notif.open) closeNotif();
             else if (S.ai.open) closeAI();
             $('#app').classList.remove('is-nav-open');
         }
@@ -985,6 +1441,7 @@
         try { localStorage.setItem('proto-role', S.role); } catch (err) { /* ok */ }
         // Как при выходе в приложении: история и контекст другого пользователя не переносятся.
         S.ai.messages = []; S.ai.ctx = null; S.ai.loading = false;
+        closeNotif(false); closeSheet();
         location.hash = R().home; render(); renderAI();
     });
     $('#stateSelect').addEventListener('change', (e) => { S.demo = e.target.value; render(); renderAI(); });
@@ -993,7 +1450,6 @@
         document.documentElement.dataset.theme = next;
         try { localStorage.setItem('proto-theme', next); } catch (err) { /* ok */ }
     });
-    $('#notifBtn').addEventListener('click', () => toast('Центр уведомлений в прототипе не перерисован.'));
     $('#menuBtn').addEventListener('click', () => { const open = $('#app').classList.toggle('is-nav-open'); $('#menuBtn').setAttribute('aria-expanded', String(open)); });
     window.addEventListener('hashchange', () => { render(); $('#view').focus({ preventScroll: true }); window.scrollTo(0, 0); });
 

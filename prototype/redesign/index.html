@@ -4,15 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Система планирования — прототип редизайна</title>
-    <script>
-        // Тема до первой отрисовки: сохранённый выбор, иначе системная.
-        (function () {
-            var t = null;
-            try { t = localStorage.getItem('proto-theme'); } catch (e) {}
-            if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-            document.documentElement.setAttribute('data-theme', t);
-        })();
-    </script>
+    <script src="theme-init.js"></script>
     <!-- Шрифты IBM Plex из основного приложения (встроены, сеть не нужна) -->
     <link rel="stylesheet" href="../../static/fonts.css">
     <link rel="stylesheet" href="styles.css">
@@ -31,11 +23,13 @@
         <div class="sidebar__foot">
             <div class="user">
                 <div class="avatar" id="userAvatar"></div>
-                <div style="min-width:0">
+                <div class="user__text">
                     <div class="user__name" id="userName"></div>
                     <div class="user__role" id="userRole"></div>
                 </div>
+                <button class="btn btn--sm btn--ghost user__logout" id="logoutBtn">Выйти</button>
             </div>
+            <a class="sidebar__kit" href="#/kit">Компоненты прототипа</a>
         </div>
     </aside>
 
@@ -50,13 +44,16 @@
                 <span class="kbd">/</span>
             </label>
             <div class="topbar__spacer"></div>
+            <span class="tag readonly-chip" id="readOnlyChip" title="Ваша роль позволяет просматривать данные без изменения" hidden>Режим просмотра</span>
             <div class="demo-switch" title="Только для демонстрации">
                 <span class="demo-switch__label">Роль</span>
                 <select class="select" id="roleSelect" aria-label="Демонстрационная роль">
+                    <option value="developer">Разработчик</option>
+                    <option value="deputy">Зам. главного врача по онкологии</option>
+                    <option value="caop">Заведующий ЦАОП</option>
+                    <option value="head">Заведующий отделением</option>
                     <option value="doctor">Врач</option>
-                    <option value="head">Заведующий</option>
-                    <option value="chair">Председатель ОК</option>
-                    <option value="management">Руководство</option>
+                    <option value="chair">Председатель консилиума</option>
                 </select>
                 <span class="demo-switch__label">Состояние</span>
                 <select class="select" id="stateSelect" aria-label="Демонстрационное состояние данных">
@@ -73,9 +70,9 @@
             <button class="iconbtn" id="themeBtn" aria-label="Переключить тему">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/></svg>
             </button>
-            <button class="iconbtn" id="notifBtn" aria-label="Уведомления">
+            <button class="iconbtn" id="notifBtn" aria-label="Уведомления" aria-controls="notifPanel" aria-expanded="false">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 8a6 6 0 1 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/></svg>
-                <span class="dot-badge" aria-hidden="true"></span>
+                <span class="count-badge" id="notifBadge" hidden></span>
             </button>
         </header>
         <main class="content" id="view" tabindex="-1"></main>
@@ -93,11 +90,70 @@
     </div>
     <div class="ai-panel__body" id="aiBody"></div>
 </aside>
+<aside class="ai-panel notif-panel" id="notifPanel" aria-labelledby="notifTitle" aria-hidden="true" hidden>
+    <div class="ai-panel__head">
+        <div>
+            <h2 class="ai-panel__title" id="notifTitle">Уведомления</h2>
+            <p class="ai-panel__sub" id="notifSub"></p>
+        </div>
+        <button class="iconbtn" id="notifClose" aria-label="Закрыть уведомления"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>
+    <div class="ai-panel__body" id="notifBody"></div>
+</aside>
+<div class="sheet-scrim" id="sheetScrim" hidden></div>
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle" hidden></div>
+
+<!-- Демонстрация входа: учётные данные не проверяются и не сохраняются. -->
+<div class="auth" id="auth" hidden>
+    <form class="auth__box" id="loginForm" novalidate>
+        <div class="brand__mark auth__mark" aria-hidden="true">СП</div>
+        <h1 class="auth__title">Система планирования</h1>
+        <p class="auth__subtitle">Планирование маршрута лечения и контроль этапов</p>
+        <p class="auth__error" id="loginError" role="alert" hidden></p>
+        <div class="field"><label class="field__label" for="loginUser">Логин</label><input class="input" type="text" id="loginUser" autocomplete="off" required></div>
+        <div class="field"><label class="field__label" for="loginPass">Пароль</label><input class="input" type="password" id="loginPass" autocomplete="off" required></div>
+        <button type="submit" class="btn btn--primary auth__submit">Войти</button>
+        <p class="auth__hint">Для получения доступа обратитесь к администратору системы.</p>
+        <fieldset class="auth__demo">
+            <legend>Демонстрация — вход не проверяется</legend>
+            <div class="form__row">
+                <div class="field"><label class="field__label" for="loginRole">Войти как</label><select class="select" id="loginRole"></select></div>
+                <div class="field"><label class="field__label" for="loginScenario">Ответ сервера</label>
+                    <select class="select" id="loginScenario">
+                        <option value="ok">Успешный вход</option>
+                        <option value="temp">Временный пароль — нужна смена</option>
+                        <option value="401">Неверный логин или пароль (401)</option>
+                        <option value="429">Слишком много попыток (429)</option>
+                    </select></div>
+            </div>
+            <p class="field__hint">Учётные данные никуда не отправляются и не сохраняются; поля очищаются после отправки.</p>
+        </fieldset>
+    </form>
+    <form class="auth__box" id="changeForm" novalidate hidden>
+        <div class="brand__mark auth__mark" aria-hidden="true">СП</div>
+        <h1 class="auth__title">Смена временного пароля</h1>
+        <p class="auth__subtitle">Задайте собственный пароль, чтобы продолжить работу</p>
+        <p class="auth__error" id="changeError" role="alert" hidden></p>
+        <div class="field"><label class="field__label" for="changeCurrent">Временный пароль</label><input class="input" type="password" id="changeCurrent" autocomplete="off" required></div>
+        <div class="field"><label class="field__label" for="changeNew">Новый пароль</label><input class="input" type="password" id="changeNew" autocomplete="off" required minlength="8"></div>
+        <div class="field"><label class="field__label" for="changeNew2">Новый пароль ещё раз</label><input class="input" type="password" id="changeNew2" autocomplete="off" required minlength="8"></div>
+        <button type="submit" class="btn btn--primary auth__submit">Сменить пароль</button>
+        <fieldset class="auth__demo">
+            <legend>Демонстрация — пароль не проверяется</legend>
+            <div class="field"><label class="field__label" for="changeScenario">Ответ сервера</label>
+                <select class="select" id="changeScenario">
+                    <option value="ok">Пароль изменён</option>
+                    <option value="401">Временный пароль неверный (401)</option>
+                </select></div>
+        </fieldset>
+    </form>
+</div>
 <div class="scrim" id="scrim" hidden></div>
 <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" hidden></div>
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <script src="data.js"></script>
+<script src="icd10.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
