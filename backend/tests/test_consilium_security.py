@@ -362,7 +362,8 @@ from xml.etree import ElementTree  # noqa: E402
 from zipfile import ZipFile  # noqa: E402
 
 NS = {"m": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
-DANGEROUS = ("=HYPERLINK(\"http://evil.example/\",\"x\")", "+7 999", "-2+3", "@SUM(A1)", "=cmd|' /C calc'!A0")
+DANGEROUS = ("=HYPERLINK(\"http://evil.example/\",\"x\")", "=SUM(1+1)", "+7 999", "-2+3", "@SUM(A1)",
+             "=cmd|' /C calc'!A0")
 
 
 def _sheet(content: bytes):
@@ -406,6 +407,61 @@ def test_registry_export_keeps_formula_like_scheme_as_text(client):
     assert sheet.findall(".//m:f", NS) == []
     texts = [t.text for t in sheet.findall(".//m:t", NS)]
     assert scheme in texts
+
+
+# Formula probes belong to these tests only. Demo data uses plain synthetic
+# names and schemes; this test keeps both kinds in one export so a probe can
+# neither run as a formula nor change a neighbouring plain row.
+PLAIN_ROW = {"name": "Ивлев Сергей Андреевич", "scheme": "Пеметрексед + цисплатин"}
+FORMULA_PROBES = (
+    {"name": "=HYPERLINK(\"http://evil.example/\",\"Открыть\") Проба", "scheme": "=SUM(1+1)"},
+    {"name": "+7 999 Проба Плюсова", "scheme": "+FOLFOX"},
+    {"name": "-2+3 Проба Минусова", "scheme": "-CAPOX"},
+    {"name": "@SUM(A1) Проба Собакина", "scheme": "@XELOX"},
+)
+
+
+def test_registry_exports_keep_formula_probes_as_text_next_to_plain_rows(client):
+    from .test_consilium_appointments import appointment_payload, create_patient
+
+    create_account(DEV_USERNAME)
+    create_account("chair.formula", "consilium_chair")
+    rows = (PLAIN_ROW, *FORMULA_PROBES)
+    ids = []
+    login(client, DEV_USERNAME)
+    for index, row in enumerate(rows):
+        patient = create_patient(client, name=row["name"])
+        created = client.post(
+            "/api/consilium/appointments",
+            json=appointment_payload(patient["id"], scheduledTime=f"1{index}:00"),
+            headers=client.csrf,
+        )
+        assert created.status_code == 201, created.text
+        ids.append(created.json()["id"])
+    login(client, "chair.formula")
+    for aid, row in zip(ids, rows):
+        assert _post(client, aid, "review").status_code == 200
+        signed = _post(client, aid, "sign", {
+            "treatmentType": "chemotherapy", "treatmentScheme": row["scheme"], "goc": True, "goc65Plus": True,
+        })
+        assert signed.status_code == 200, signed.text
+
+    for path in EXPORTS:
+        exported = client.get(path, headers=client.csrf)
+        assert exported.status_code == 200, path
+        sheet, styles = _sheet(exported.content)
+        assert sheet.findall(".//m:f", NS) == [], path
+        quote_styles = {
+            str(index) for index, xf in enumerate(styles.find("m:cellXfs", NS)) if xf.get("quotePrefix") == "1"
+        }
+        cells = sheet.findall(".//m:c", NS)
+        assert {c.get("t") for c in cells} == {"inlineStr"}, path
+        assert {c.get("s") for c in cells} <= quote_styles, path
+        texts = [c.find("m:is/m:t", NS).text for c in cells]
+        for row in rows:
+            assert row["name"] in texts, (path, row["name"])
+            assert row["scheme"] in texts, (path, row["scheme"])
+        assert not any(t.startswith("'") for t in texts if t), path
 
 
 # --- Б4: аудит выгрузок и ограничения частоты -----------------------------
