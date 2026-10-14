@@ -274,7 +274,7 @@
                     <div class="ptitle">
                         <div><h1 style="font-size:var(--t-2xl);font-weight:600;line-height:1.2">${p.name}</h1>
                         <div class="facts"><span><b>${p.age}</b> лет</span><span>Полис ОМС <b class="mono">${p.policy}</b></span><span>Диагноз <b class="mono">${p.icd}</b> · ${p.nosologyLabel}</span><span>Лечащий врач <b>${p.doctor}</b></span></div></div>
-                        <div class="pagehead__actions">${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
+                        <div class="pagehead__actions"><button class="btn btn--ghost" data-ai-ask="${p.id}" aria-label="Спросить ИИ-ассистента по пациенту: ${p.name}">Спросить ассистента</button>${can.write ? html`<button class="btn" data-action="attention" data-id="${p.id}">Отметить внимание</button><button class="btn btn--primary" data-action="advance" data-id="${p.id}">Перевести на этап</button>` : html`<span class="tag">Только просмотр</span>`}</div>
                     </div>
                 </div>
                 <div class="route" aria-label="Маршрут лечения">${D.STAGE_ORDER.map((s, k) => {
@@ -629,6 +629,176 @@
         comment: () => toast('Комментарий в прототипе не сохраняется.'),
     };
 
+    /* ---------- ИИ-ассистент (демонстрационный сценарий) ----------
+       В приложении: POST /api/ai/chat, только чтение, данные — через
+       инструменты с проверкой области доступа на сервере. Здесь модели нет:
+       ответы заготовлены и считаются по синтетическим данным в той же
+       области доступа роли. Сетевых запросов прототип не делает. */
+    S.ai = { open: false, messages: [], ctx: null, loading: false, lastFocus: null };
+
+    // Подсказки — дословно как в приложении (roleAISuggestions).
+    const AI_SUGGESTIONS = {
+        doctor: ['Какие мои пациенты требуют внимания?', 'Что у меня на сегодня?', 'Есть ли у моих пациентов просрочки?'],
+        head: ['Кому в отделении требуется решение заведующего?', 'Где больше всего просрочек?', 'Как распределена нагрузка по врачам?'],
+        other: ['Сколько пациентов требуют внимания?', 'Какая самая частая причина внимания?', 'Что у меня на сегодня?'],
+    };
+    const aiAvailable = () => S.demo !== 'error';
+    const aiRef = (p, sub) => ({ id: p.id, title: p.name, sub: sub || `${D.STAGES[p.stage]} · ${p.doctor}` });
+
+    function aiAnswer(text) {
+        const q = text.toLowerCase();
+        const list = scoped();
+        const needs = list.filter(p => p.overdue || p.attention.length);
+        const ctx = S.ai.ctx && patient(S.ai.ctx);
+        if (/(измени|переведи|перевед|отметь|удали|создай|запиши|назначь|закрой|отправь|исправь)/.test(q)) {
+            return { text: 'Режим ассистента — только просмотр: он не создаёт, не изменяет и не удаляет данные, не отмечает уведомления и не отправляет сообщения. Это действие выполняется в соответствующем разделе системы.' };
+        }
+        if (/(диагноз постав|какое лечение|назначить лечение|тяжест|прогноз|дозиров)/.test(q)) {
+            return { text: 'Ассистент не ставит диагнозы, не назначает лечение и не оценивает медицинскую тяжесть — это решение врача и консилиума. Могу показать сведения о маршруте и событиях в пределах вашей области доступа.' };
+        }
+        if (/(телефон|полис|снилс|паспорт)/.test(q)) {
+            return { text: 'Телефоны, полисы ОМС и другие персональные идентификаторы ассистент не запрашивает и не раскрывает. Их можно посмотреть в карточке пациента, если она вам доступна.' };
+        }
+        if (ctx && !/(мои|отделени|нагрузк|сколько пациентов|причин)/.test(q)) {
+            const next = ctx.events.find(e => !e.done && e.date >= D.today);
+            const done = ctx.checklist.filter(c => c.done).length;
+            const lines = [
+                `${ctx.name}: этап «${D.STAGES[ctx.stage]}», лечащий врач — ${ctx.doctor}`,
+                ctx.overdue ? `Просрочено событий: ${ctx.overdue}.` : 'Просроченных событий нет.',
+                ctx.attention.length ? `Отметка внимания: «${D.ATTENTION_REASONS[ctx.attention[0].code]}» (${relDay(ctx.attention[0].since)}).` : 'Открытых отметок внимания нет.',
+                next ? `Ближайшее событие: ${next.title}, ${fmtNum(next.date)} в ${next.time}.` : 'Запланированных событий нет.',
+                `Чек-лист этапа: выполнено ${done} из ${ctx.checklist.length}.`,
+            ];
+            return { text: lines.join('\n'), refs: [aiRef(ctx)] };
+        }
+        if (/нагрузк|распредел/.test(q)) {
+            if (S.role === 'doctor' || S.role === 'chair') return { text: 'Сводка по отделению недоступна вашей роли. Могу показать ваших пациентов, требующих внимания, и события на сегодня.' };
+            const rows = D.DOCTORS.map(d => ({ d, n: list.filter(p => p.doctorId === d.id).length })).filter(x => x.n).sort((a, b) => b.n - a.n);
+            return { text: `Пациенты по лечащим врачам в вашей области доступа:\n${rows.map(x => `• ${x.d.short} — ${x.n}`).join('\n')}` };
+        }
+        if (/решени. заведующ/.test(q)) {
+            const ps = list.filter(p => p.attention.some(a => a.code === 'department_head_decision_required'));
+            return ps.length ? { text: `Решение заведующего требуется для ${ps.length} ${plural(ps.length, 'пациента', 'пациентов', 'пациентов')}:`, refs: ps.slice(0, 5).map(p => aiRef(p)) }
+                : { text: 'Сейчас нет пациентов с отметкой «Требуется решение заведующего».' };
+        }
+        if (/просроч/.test(q)) {
+            const ps = list.filter(p => p.overdue).sort((a, b) => b.overdue - a.overdue);
+            if (!ps.length) return { text: 'Просроченных событий в вашей области доступа нет.' };
+            const total = ps.reduce((n, p) => n + p.overdue, 0);
+            return { text: `Просрочено ${total} ${plural(total, 'событие', 'события', 'событий')} у ${ps.length} ${plural(ps.length, 'пациента', 'пациентов', 'пациентов')}. Больше всего:`, refs: ps.slice(0, 5).map(p => aiRef(p, `Просрочено: ${p.overdue} · ${p.doctor}`)) };
+        }
+        if (/сегодня/.test(q)) {
+            const evs = list.flatMap(p => p.events.filter(e => e.date === D.today).map(e => ({ e, p }))).sort((a, b) => a.e.time.localeCompare(b.e.time));
+            if (!evs.length) return { text: 'На сегодня запланированных событий в вашей области доступа нет.' };
+            return { text: `На сегодня ${evs.length} ${plural(evs.length, 'событие', 'события', 'событий')}:\n${evs.map(x => `• ${x.e.time} — ${x.e.title}`).join('\n')}`, refs: evs.slice(0, 5).map(x => aiRef(x.p, `${x.e.time} · ${x.e.title}`)) };
+        }
+        if (/причин/.test(q)) {
+            const counts = Object.entries(D.ATTENTION_REASONS).map(([k, v]) => ({ v, n: list.filter(p => p.attention.some(a => a.code === k)).length })).filter(x => x.n).sort((a, b) => b.n - a.n);
+            return counts.length ? { text: `Самая частая причина внимания — «${counts[0].v}» (${counts[0].n}).\n${counts.slice(1).map(x => `• ${x.v} — ${x.n}`).join('\n')}`.trim() } : { text: 'Открытых отметок внимания в вашей области доступа нет.' };
+        }
+        if (/внимани/.test(q)) {
+            if (!needs.length) return { text: 'Пациентов, требующих внимания, в вашей области доступа нет.' };
+            return { text: `Требуют внимания ${needs.length} ${plural(needs.length, 'пациент', 'пациента', 'пациентов')}${needs.length > 5 ? ', первые пять:' : ':'}`, refs: needs.slice(0, 5).map(p => aiRef(p, p.overdue ? `Просрочено: ${p.overdue} · ${p.doctor}` : `${D.ATTENTION_REASONS[p.attention[0].code]} · ${p.doctor}`)) };
+        }
+        return { text: 'В демоверсии ответы заготовлены только для вопросов о внимании, просрочках, событиях на сегодня, нагрузке врачей, причинах внимания и о выбранном пациенте. В приложении на любой вопрос по доступным данным отвечает модель.' };
+    }
+
+    function renderAI() {
+        const body = $('#aiBody');
+        if (!body) return;
+        const avail = aiAvailable();
+        $('#aiSub').textContent = avail ? 'Ответы по доступным данным системы' : 'Основная система продолжает работать';
+        const ctx = S.ai.ctx && patient(S.ai.ctx);
+        const sugg = AI_SUGGESTIONS[S.role === 'doctor' ? 'doctor' : S.role === 'head' ? 'head' : 'other'];
+        const msgs = S.ai.messages.map(m => html`
+            <article class="ai-msg ai-msg--${m.role}">
+                <div class="ai-msg__role">${m.role === 'user' ? 'Вы' : 'Ассистент'}</div>
+                <div class="ai-msg__text">${m.text}</div>
+                ${m.role === 'assistant' ? html`<span class="ai-demo-tag">Демо-ответ прототипа · не модель</span>` : ''}
+                ${m.refs && m.refs.length ? html`<div class="ai-refs">${m.refs.map(r => html`<div class="ai-ref"><div class="ai-ref__body"><div class="ai-ref__title">${r.title}</div><div class="ai-ref__sub">${r.sub}</div></div><button class="btn btn--sm btn--ghost" data-ai-open="${r.id}" aria-label="Открыть пациента: ${r.title}">Открыть</button></div>`)}</div>` : ''}
+            </article>`);
+        body.innerHTML = String(html`
+            <div class="ai-scroll" id="aiScroll">
+            <div class="ai-note"><b>Только просмотр.</b> Ассистент не изменяет данные и не заменяет медицинское решение. Видит только пациентов в вашей области доступа. История хранится в этой вкладке.
+                <br><b>Прототип:</b> модель не подключена — ответы заготовлены по синтетическим данным.</div>
+            ${ctx ? html`<div class="ai-context"><span>Пациент: ${ctx.name}</span><button class="btn btn--sm btn--ghost" data-ai-clearctx aria-label="Убрать контекст пациента">Убрать</button></div>` : ''}
+            ${avail ? html`
+                <div class="ai-suggest">${sugg.map(s => html`<button class="ai-chip" data-ai-suggest="${s}">${s}</button>`)}</div>
+                <div class="ai-log" id="aiLog" role="log" aria-live="polite">
+                    ${msgs.length ? msgs : html`<div class="ai-empty"><b>Спросите о доступных пациентах, внимании или просрочках</b><span>${ctx ? 'Вопросы о пациенте из контекста — например, «Какой этап и что дальше?».' : 'Подсказки выше подставляются в поле ввода.'}</span></div>`}
+                    ${S.ai.loading ? html`<div class="ai-thinking">Ассистент готовит ответ…</div>` : ''}
+                </div>
+                </div>
+                <form class="ai-composer" id="aiForm">
+                    <label class="sr-only" for="aiInput">Сообщение ИИ-ассистенту</label>
+                    <textarea class="textarea" id="aiInput" rows="2" maxlength="4000" placeholder="Задайте вопрос по доступным данным" ${raw(S.ai.loading ? 'disabled' : '')}></textarea>
+                    <div class="ai-composer__row"><span class="ai-composer__hint">Enter — отправить, Shift+Enter — новая строка</span>
+                        <button type="button" class="btn btn--sm btn--ghost" data-ai-clear ${raw(S.ai.messages.length && !S.ai.loading ? '' : 'disabled')}>Очистить</button>
+                        <button type="submit" class="btn btn--sm btn--primary" ${raw(S.ai.loading ? 'disabled' : '')}>Отправить</button></div>
+                </form>`
+            : html`<div class="ai-unavailable" role="status"><b>ИИ-ассистент временно недоступен</b><span>Основная система продолжает работать. Локальный AI-сервис недоступен.</span><button class="btn btn--sm" data-ai-retry>Проверить снова</button></div></div>`}`);
+        const sc = $('#aiScroll'); if (sc && S.ai.messages.length) sc.scrollTop = sc.scrollHeight;
+        $('#aiBtn').classList.toggle('is-muted', !avail);
+    }
+
+    function openAI(patientId) {
+        if (patientId) S.ai.ctx = patientId;
+        S.ai.lastFocus = document.activeElement;
+        S.ai.open = true;
+        const panel = $('#aiPanel'), scrim = $('#aiScrim');
+        renderAI();
+        panel.hidden = false; scrim.hidden = false;
+        void panel.offsetWidth;
+        panel.classList.add('is-open'); scrim.classList.add('is-open');
+        panel.setAttribute('aria-hidden', 'false');
+        $('#aiBtn').setAttribute('aria-expanded', 'true');
+        ($('#aiInput') || $('#aiClose')).focus({ preventScroll: true });
+    }
+    function closeAI() {
+        if (!S.ai.open) return;
+        S.ai.open = false;
+        const panel = $('#aiPanel'), scrim = $('#aiScrim');
+        panel.classList.remove('is-open'); scrim.classList.remove('is-open');
+        panel.setAttribute('aria-hidden', 'true');
+        $('#aiBtn').setAttribute('aria-expanded', 'false');
+        setTimeout(() => { if (!S.ai.open) { panel.hidden = true; scrim.hidden = true; } }, 260);
+        const lf = S.ai.lastFocus;
+        const back = lf && lf !== document.body && document.contains(lf) ? lf : $('#aiBtn');
+        back.focus({ preventScroll: true });
+    }
+    function sendAI(text) {
+        const msg = text.trim();
+        if (!msg || S.ai.loading || !aiAvailable()) return;
+        S.ai.messages.push({ role: 'user', text: msg });
+        S.ai.loading = true; renderAI();
+        setTimeout(() => {
+            const a = aiAnswer(msg);
+            S.ai.messages.push({ role: 'assistant', text: a.text, refs: a.refs || [] });
+            S.ai.loading = false; renderAI();
+            const input = $('#aiInput'); if (input && S.ai.open) input.focus({ preventScroll: true });
+        }, 650);
+    }
+
+    document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t.closest('#aiBtn')) { S.ai.open ? closeAI() : openAI(); return; }
+        if (t.closest('#aiClose') || t.id === 'aiScrim') { closeAI(); return; }
+        const sug = t.closest('[data-ai-suggest]');
+        if (sug) { const i = $('#aiInput'); i.value = sug.dataset.aiSuggest; i.focus(); return; }
+        if (t.closest('[data-ai-clearctx]')) { S.ai.ctx = null; renderAI(); return; }
+        if (t.closest('[data-ai-clear]')) { S.ai.messages = []; renderAI(); $('#aiInput').focus(); return; }
+        if (t.closest('[data-ai-retry]')) { toast('В прототипе доступность задаёт переключатель «Состояние».'); return; }
+        const open = t.closest('[data-ai-open]');
+        // Панель закрывается, чтобы карточка была видна; история и контекст сохраняются.
+        if (open) { closeAI(); location.hash = `#/patient/${open.dataset.aiOpen}`; return; }
+        const ask = t.closest('[data-ai-ask]');
+        if (ask) { openAI(ask.dataset.aiAsk); }
+    });
+    document.addEventListener('submit', (e) => { if (e.target.id === 'aiForm') { e.preventDefault(); sendAI($('#aiInput').value); } });
+    document.addEventListener('keydown', (e) => {
+        if (e.target.id === 'aiInput' && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendAI(e.target.value); }
+    });
+
     /* ---------- Навигация и отрисовка ---------- */
     function renderNav(active) {
         const allowed = new Set(R().nav);
@@ -686,14 +856,24 @@
     });
     document.addEventListener('change', (e) => { const act = e.target.closest('[data-action="check"]'); if (act) ACTIONS.check(act); });
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape') { closeModal(); $('#app').classList.remove('is-nav-open'); }
+        if (e.key === 'Escape') {
+            if (!$('#modal').hidden) closeModal();
+            else if (S.ai.open) closeAI();
+            $('#app').classList.remove('is-nav-open');
+        }
         if (e.key === 'Enter' && e.target.matches('tr[data-href]')) location.hash = e.target.dataset.href;
         if (e.key === '/' && !e.target.closest('input, textarea, select')) { e.preventDefault(); $('#globalSearch').focus(); }
     });
     $('#globalSearch').addEventListener('keydown', (e) => { if (e.key === 'Enter') { location.hash = `#/patients?q=${encodeURIComponent(e.target.value)}`; e.target.blur(); } });
     $('#roleSelect').value = S.role;
-    $('#roleSelect').addEventListener('change', (e) => { S.role = e.target.value; try { localStorage.setItem('proto-role', S.role); } catch (err) { /* ok */ } location.hash = R().home; render(); });
-    $('#stateSelect').addEventListener('change', (e) => { S.demo = e.target.value; render(); });
+    $('#roleSelect').addEventListener('change', (e) => {
+        S.role = e.target.value;
+        try { localStorage.setItem('proto-role', S.role); } catch (err) { /* ok */ }
+        // Как при выходе в приложении: история и контекст другого пользователя не переносятся.
+        S.ai.messages = []; S.ai.ctx = null; S.ai.loading = false;
+        location.hash = R().home; render(); renderAI();
+    });
+    $('#stateSelect').addEventListener('change', (e) => { S.demo = e.target.value; render(); renderAI(); });
     $('#themeBtn').addEventListener('click', () => {
         const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
         document.documentElement.dataset.theme = next;

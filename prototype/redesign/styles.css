@@ -417,6 +417,58 @@ fieldset[disabled] .choice, fieldset[disabled] .check { cursor: not-allowed; }
 }
 @starting-style { .toast { transform: translateY(8px); opacity: 0; } }
 
+/* ---------- ИИ-ассистент: боковая панель ---------- */
+.ai-trigger { height: 34px; padding: 0 var(--s3); color: var(--text-2); border-color: var(--border); }
+.ai-trigger svg { width: 16px; height: 16px; color: var(--accent-text); }
+.ai-trigger.is-muted svg { color: var(--text-3); }
+.ai-trigger[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+.ai-scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); opacity: 0; transition: opacity var(--d-modal) var(--ease-out); }
+.ai-scrim.is-open { opacity: 1; }
+.ai-panel {
+    position: fixed; z-index: 41; top: 0; right: 0; bottom: 0; width: min(420px, 100vw);
+    display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--border); box-shadow: var(--shadow-pop);
+    transform: translateX(100%); transition: transform 260ms var(--ease-drawer);
+}
+.ai-panel.is-open { transform: none; }
+.ai-panel__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s3); padding: var(--s4) var(--s5) var(--s3); border-bottom: 1px solid var(--border); }
+.ai-panel__title { font-size: var(--t-lg); font-weight: 600; }
+.ai-panel__sub { font-size: var(--t-sm); color: var(--text-3); margin-top: 2px; }
+.ai-panel__body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ai-note { margin: var(--s3) var(--s5) 0; padding: var(--s2) var(--s3); border-radius: var(--r-md); background: var(--surface-2); border: 1px solid var(--border); font-size: var(--t-xs); color: var(--text-2); line-height: 1.45; }
+.ai-note b { color: var(--text); font-weight: 600; }
+.ai-context { display: flex; align-items: center; gap: var(--s2); margin: var(--s3) var(--s5) 0; padding: 6px 6px 6px var(--s3); border-radius: var(--r-md); background: var(--accent-soft); color: var(--accent-text); font-size: var(--t-sm); }
+.ai-context span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-suggest { display: flex; flex-wrap: wrap; gap: 6px; padding: var(--s3) var(--s5) 0; }
+.ai-chip { border: 1px solid var(--border-strong); background: var(--surface); color: var(--text-2); border-radius: 999px; padding: 4px 10px; font-size: var(--t-xs); cursor: pointer; text-align: left; transition: transform var(--d-fast) var(--ease-out); }
+.ai-chip:active { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { .ai-chip:hover { background: var(--hover); color: var(--text); } }
+.ai-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.ai-log { padding: var(--s4) var(--s5); display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s3); align-content: start; }
+.ai-empty { color: var(--text-3); font-size: var(--t-sm); display: grid; gap: var(--s1); padding-top: var(--s2); }
+.ai-empty b { color: var(--text); font-weight: 600; font-size: var(--t-md); }
+.ai-msg { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; }
+.ai-msg__role { font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--text-3); }
+.ai-msg__text { font-size: var(--t-md); line-height: 1.55; white-space: pre-line; overflow-wrap: anywhere; }
+.ai-msg--user { justify-items: end; }
+.ai-msg--user .ai-msg__role { justify-self: end; }
+.ai-msg--user .ai-msg__text { background: var(--accent-soft); color: var(--text); padding: var(--s2) var(--s3); border-radius: var(--r-lg) var(--r-lg) var(--r-sm) var(--r-lg); max-width: 88%; }
+.ai-msg--assistant .ai-msg__text { padding-left: var(--s3); border-left: 2px solid var(--border-strong); }
+.ai-demo-tag { justify-self: start; font-size: 11px; color: var(--warn); background: var(--warn-soft); border-radius: var(--r-sm); padding: 1px 6px; }
+.ai-refs { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; margin-top: 4px; }
+.ai-ref { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s3); border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface-2); }
+.ai-ref__body { flex: 1; min-width: 0; }
+.ai-ref__title { font-weight: 500; font-size: var(--t-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-ref__sub { font-size: var(--t-xs); color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-thinking { font-size: var(--t-sm); color: var(--text-3); display: flex; align-items: center; gap: var(--s2); }
+.ai-thinking::before { content: ''; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--border-strong); border-top-color: var(--accent); animation: ai-spin 700ms linear infinite; }
+@keyframes ai-spin { to { transform: rotate(360deg); } }
+.ai-composer { border-top: 1px solid var(--border); padding: var(--s3) var(--s5) var(--s4); display: grid; gap: var(--s2); background: var(--surface); }
+.ai-composer .textarea { min-height: 64px; max-height: 160px; }
+.ai-composer__row { display: flex; align-items: center; gap: var(--s2); }
+.ai-composer__hint { flex: 1; font-size: var(--t-xs); color: var(--text-3); }
+.ai-unavailable { display: grid; gap: var(--s2); justify-items: start; padding: var(--s6) var(--s5); color: var(--text-2); }
+.ai-unavailable b { color: var(--text); font-size: var(--t-md); }
+
 /* Пометка: экран — визуальная имитация */
 .demo-note { display: flex; gap: var(--s2); align-items: center; font-size: var(--t-xs); color: var(--text-3); padding: var(--s2) var(--s3); border: 1px dashed var(--border-strong); border-radius: var(--r-md); margin-bottom: var(--s4); }
 
@@ -453,6 +505,11 @@ fieldset[disabled] .choice, fieldset[disabled] .check { cursor: not-allowed; }
     .topbar { height: auto; flex-wrap: wrap; row-gap: var(--s2); padding-block: var(--s2); }
     .demo-switch { order: 10; width: 100%; }
     .demo-switch select { flex: 1; min-width: 0; }
+    .ai-trigger { width: 34px; padding: 0; }
+    .ai-trigger__label { display: none; }
+    .ai-panel { border-left: 0; }
+    .ai-composer__hint { display: none; }
+    .ai-composer__row { justify-content: flex-end; }
     .pagehead h1 { font-size: var(--t-xl); }
     .pagehead__actions { width: 100%; }
     .pagehead__actions .btn { flex: 1; }
