@@ -515,6 +515,38 @@ class EventConflict(Exception):
     """Событие нельзя изменить в его текущем состоянии (409)."""
 
 
+class FactConflict(EventConflict):
+    """Перевод этапа просит записать факт, отличный от уже сохраненного (409 FACT_CONFLICT).
+
+    Существующие фактические дата и время меняются только отдельной правкой
+    события; перевод этапа их не перезаписывает и не стирает."""
+    code = "FACT_CONFLICT"
+
+
+FACT_DATE_CONFLICT_MESSAGE = (
+    "У события уже записана другая фактическая дата. Перевод не выполнен, данные не изменены. "
+    "Проверьте факт события на вкладке событий и повторите перевод"
+)
+FACT_TIME_CONFLICT_MESSAGE = (
+    "У события уже записано другое фактическое время (или время не было записано). Перевод не выполнен, "
+    "данные не изменены. Исправьте факт события отдельно и повторите перевод"
+)
+FACT_TIME_WITHOUT_DATE_MESSAGE = "Фактическое время передано без фактической даты"
+
+
+def event_matched_plan(no_plan, plan_date, plan_time, actual_date, actual_time) -> Optional[int]:
+    """Соответствие факта плану — единое вычисление для перевода этапа и правки события.
+
+    1 — факт совпал с планом по дате и времени, 0 — не совпал, NULL — сравнивать
+    не с чем: нет факта, нет плановой даты или событие без плана. Это те же
+    значения, что присылал клиент приложения при переводе этапа и что создается
+    для первичного приема без плана; правило сравнения (дата и время) — прежнее.
+    Сохраненные строки не пересчитываются: функция применяется только при записи."""
+    if no_plan or not actual_date or not plan_date:
+        return None
+    return int(actual_date == plan_date and (actual_time or "") == (plan_time or ""))
+
+
 def _active_event_count(conn: sqlite3.Connection, history_entry_id: str) -> int:
     return conn.execute(
         "SELECT COUNT(*) FROM events WHERE history_entry_id = ? AND deleted_at IS NULL", (history_entry_id,)
@@ -543,13 +575,23 @@ def change_stage(
     expected_event_version: Optional[int] = None,
     expected_stage: Optional[str] = None,
     expected_history_entry_id: Optional[str] = None,
+    audit_hook: Optional[Callable[[dict], None]] = None,
 ) -> bool:
     """Перевод пациента на новый этап с записью факта текущего события.
 
     Всё выполняется под одной блокировкой записи (BEGIN IMMEDIATE): этап,
     события и история читаются и меняются как одно целое. Если запрос
     меняет существующее событие, клиент обязан назвать его id и версию —
-    без них сервер не угадывает, какое событие менять."""
+    без них сервер не угадывает, какое событие менять.
+
+    Существующий факт (actual_date, actual_time, matched_plan) перевод не
+    стирает и не подменяет: другая дата или другое непустое время — FactConflict
+    (409 FACT_CONFLICT) без каких-либо изменений; совпадающий факт и пустое время
+    оставляют записанное как есть. Если факта еще нет, он записывается из запроса;
+    сервер дату не придумывает. matched_plan вычисляет сервер.
+
+    audit_hook пишет обязательную запись аудита в той же транзакции: ошибка
+    аудита откатывает перевод целиком (этап, история, событие)."""
     from . import config
     with transaction(conn):
         p = conn.execute("SELECT stage FROM patients WHERE id = ?", (patient_id,)).fetchone()
@@ -580,9 +622,16 @@ def change_stage(
         # снова даёт «exam». Клиент обязан назвать текущую запись маршрута.
         if current_entry_id != expected_history_entry_id:
             raise EventConflict(STALE_STAGE_MESSAGE)
+        outcome = {"event_id": None, "fact": "none", "decision": False, "from_stage": old_stage,
+                   "history_seq": history_count - 1 if history_count > 0 else None}
         if current_entry_id and last_event_update is not None:
+            # Поля, которых нет в запросе, не трогают сохраненные значения.
+            sent = last_event_update.model_fields_set
+            req_date = last_event_update.actualDate if "actualDate" in sent else None
+            req_time = (last_event_update.actualTime or "") if "actualTime" in sent else ""
+            decision = last_event_update.consiliumDecision or None
             events = conn.execute(
-                "SELECT id, version FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC",
+                "SELECT * FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC",
                 (current_entry_id,),
             ).fetchall()
             if events:
@@ -593,30 +642,69 @@ def change_stage(
                 # (удалено, восстановлено или добавлено) либо изменено.
                 if last["id"] != expected_event_id or last["version"] != expected_event_version:
                     raise EventConflict(STALE_EVENTS_MESSAGE)
-                cur = conn.execute(
-                    """UPDATE events SET actual_date = ?, actual_time = ?, matched_plan = ?,
-                                           consilium_decision = COALESCE(?, consilium_decision), set_at = ?,
-                                           version = version + 1
-                       WHERE id = ? AND deleted_at IS NULL AND version = ?""",
-                    (
-                        last_event_update.actualDate or None,
-                        last_event_update.actualTime or "",
-                        None if last_event_update.matchedPlan is None else int(last_event_update.matchedPlan),
-                        last_event_update.consiliumDecision or None,
-                        now_iso(),
-                        expected_event_id,
-                        expected_event_version,
-                    ),
-                )
-                if cur.rowcount != 1:
-                    raise EventConflict(STALE_EVENTS_MESSAGE)
+                if last["actual_date"]:
+                    # Факт уже записан: перевод его только подтверждает.
+                    if req_date and req_date != last["actual_date"]:
+                        raise FactConflict(FACT_DATE_CONFLICT_MESSAGE)
+                    if req_time and req_time != (last["actual_time"] or ""):
+                        raise FactConflict(FACT_TIME_CONFLICT_MESSAGE)
+                    fact_date, fact_time, matched = last["actual_date"], last["actual_time"], last["matched_plan"]
+                    outcome["fact"] = "kept"
+                elif req_date:
+                    # Даты еще нет, но время могло быть записано раньше правкой события:
+                    # оно тоже факт и защищается так же — другое время дает FactConflict,
+                    # пустое или отсутствующее в запросе время не стирает сохраненное.
+                    stored_time = last["actual_time"] or ""
+                    if req_time and stored_time and req_time != stored_time:
+                        raise FactConflict(FACT_TIME_CONFLICT_MESSAGE)
+                    fact_date, fact_time = req_date, stored_time or req_time
+                    matched = event_matched_plan(last["no_plan"], last["date"], last["time"], req_date, fact_time)
+                    outcome["fact"] = "set"
+                else:
+                    if req_time:
+                        raise ValueError(FACT_TIME_WITHOUT_DATE_MESSAGE)
+                    fact_date, fact_time, matched = None, last["actual_time"], last["matched_plan"]
+                outcome["event_id"] = last["id"]
+                outcome["decision"] = bool(decision)
+                # Строка меняется, только если записывается новый факт или решение
+                # прежнего контракта; иначе событие (и его версия) остаются как были.
+                if outcome["fact"] == "set" or decision:
+                    cur = conn.execute(
+                        """UPDATE events SET actual_date = ?, actual_time = ?, matched_plan = ?,
+                                               consilium_decision = COALESCE(?, consilium_decision),
+                                               set_at = CASE WHEN ? THEN ? ELSE set_at END,
+                                               version = version + 1
+                           WHERE id = ? AND deleted_at IS NULL AND version = ?""",
+                        (
+                            fact_date,
+                            fact_time,
+                            matched,
+                            decision,
+                            int(outcome["fact"] == "set"),
+                            now_iso(),
+                            expected_event_id,
+                            expected_event_version,
+                        ),
+                    )
+                    if cur.rowcount != 1:
+                        raise EventConflict(STALE_EVENTS_MESSAGE)
             else:
                 if expected_event_id is not None:
                     # Клиент видел событие, которого среди активных уже нет.
                     raise EventConflict(STALE_EVENTS_MESSAGE)
+                if req_time and not req_date:
+                    raise ValueError(FACT_TIME_WITHOUT_DATE_MESSAGE)
                 # Удалённые события сохраняют свои seq — новое встаёт после них.
+                ev = last_event_update.model_copy(update={
+                    "actualDate": req_date,
+                    "actualTime": req_time,
+                    "matchedPlan": event_matched_plan(
+                        last_event_update.noPlan, last_event_update.date, last_event_update.time, req_date, req_time),
+                })
                 next_seq = _next_event_seq(conn, current_entry_id)
-                insert_event(conn, current_entry_id, next_seq, last_event_update)
+                outcome["event_id"] = insert_event(conn, current_entry_id, next_seq, ev)
+                outcome["fact"] = "set" if req_date else "none"
+                outcome["decision"] = bool(decision)
 
         now = now_iso()
         # Условие по прежнему этапу: два одновременных перевода не создадут
@@ -637,6 +725,8 @@ def change_stage(
         elif last_event_update is not None and current_entry_id:
             _cancel_event_reminders(
                 conn, "source_id IN (SELECT id FROM events WHERE history_entry_id = ?)", (current_entry_id,), "event_inactive")
+        if audit_hook is not None:
+            audit_hook(outcome)
     return True
 
 
@@ -666,6 +756,7 @@ ADD_CONTEXT_REQUIRED_MESSAGE = (
 def add_event(
     conn: sqlite3.Connection, patient_id: str, occ_index: int,
     expected_event_ids: Optional[list[str]] = None, *, placeholder: bool = False,
+    audit_hook: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
     """Добавить пустое событие в запись маршрута; возвращает id нового события.
 
@@ -694,6 +785,8 @@ def add_event(
             raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
         event_id = insert_event(conn, entry_id, _next_event_seq(conn, entry_id), EventIn())
         touch_patient(conn, patient_id)
+        if audit_hook is not None:
+            audit_hook(event_id)   # обязательный аудит в той же транзакции
     return event_id
 
 
@@ -799,7 +892,8 @@ def restore_event(
     return row
 
 
-def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field: str, value: str, version: int) -> Optional[sqlite3.Row]:
+def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field: str, value: str, version: int,
+                 *, audit_hook: Optional[Callable[[sqlite3.Row], None]] = None) -> Optional[sqlite3.Row]:
     if field not in EVENT_FIELD_COLUMN:
         raise ValueError("unknown event field")
     value = "" if value is None else str(value)
@@ -831,10 +925,15 @@ def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field
             _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_inactive")
         if field in ("actualDate", "actualTime"):
             current = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+            # Событие без плана не трогаем, как и раньше. Нет факта или нет плановой
+            # даты — NULL («не определено»), а не «по плану» / «с отклонением».
             if not current["no_plan"]:
-                matched = (current["actual_date"] == current["date"]) and ((current["actual_time"] or "") == (current["time"] or ""))
-                conn.execute("UPDATE events SET matched_plan = ? WHERE id = ?", (int(matched), event_id))
+                matched = event_matched_plan(current["no_plan"], current["date"], current["time"],
+                                             current["actual_date"], current["actual_time"])
+                conn.execute("UPDATE events SET matched_plan = ? WHERE id = ?", (matched, event_id))
         touch_patient(conn, patient_id)
+        if audit_hook is not None:
+            audit_hook(row)   # обязательный аудит в той же транзакции: ошибка откатывает правку
     return row
 
 
@@ -861,17 +960,21 @@ def deleted_events(conn: sqlite3.Connection, patient_id: str) -> list[dict]:
     ]
 
 
-def update_note(conn: sqlite3.Connection, patient_id: str, occ_index: int, note: str) -> bool:
+def update_note(conn: sqlite3.Connection, patient_id: str, occ_index: int, note: str,
+                *, audit_hook: Optional[Callable[[], None]] = None) -> bool:
     entry_id = _history_entry_id(conn, patient_id, occ_index)
     if entry_id is None:
         return False
     with conn:
         conn.execute("UPDATE history_entries SET note = ? WHERE id = ?", (note, entry_id))
         touch_patient(conn, patient_id)
+        if audit_hook is not None:
+            audit_hook()
     return True
 
 
-def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: int, item: str, checked: bool) -> bool:
+def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: int, item: str, checked: bool,
+                          *, audit_hook: Optional[Callable[[], None]] = None) -> bool:
     entry_id = _history_entry_id(conn, patient_id, occ_index)
     if entry_id is None:
         return False
@@ -885,4 +988,6 @@ def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: 
     with conn:
         conn.execute("UPDATE history_entries SET checklist_json = ? WHERE id = ?", (json.dumps(checklist), entry_id))
         touch_patient(conn, patient_id)
+        if audit_hook is not None:
+            audit_hook()
     return True

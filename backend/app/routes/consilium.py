@@ -93,6 +93,29 @@ def _require_writable_patient(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
 
 
+def _required_audit(conn: sqlite3.Connection, user: policy.CurrentUser, event_type: str, *, with_round: bool = False):
+    """Обязательный аудит решения председателя в транзакции самого перехода.
+
+    Пациент и номер раунда читаются той же транзакцией, что и изменение.
+    Ошибка записи аудита откатывает переход (AuditWriteFailed → 503)."""
+    def hook(appointment_id: str) -> None:
+        row = conn.execute(
+            "SELECT patient_id, revision_count FROM oncology_consilium_appointments WHERE id = ?", (appointment_id,)
+        ).fetchone()
+        audit.record_required_or_fail(
+            conn, event_type, patient_id=row["patient_id"],
+            detail=f"revision_round={row['revision_count']}" if with_round else None,
+            **audit.actor_ctx(user))
+    return hook
+
+
+def _audit_unavailable():
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Не удалось сохранить изменение вместе с записью журнала аудита. Запись консилиума не изменена, повторите попытку позже",
+    )
+
+
 @router.get("/meta")
 def get_consilium_meta(
     conn: sqlite3.Connection = Depends(get_db),
@@ -289,15 +312,14 @@ def start_consilium_review(
 ):
     _require_decision(conn, user)
     try:
-        appointment = consilium.start_review(conn, appointment_id)
+        appointment = consilium.start_review(
+            conn, appointment_id, audit_hook=_required_audit(conn, user, audit.CONSILIUM_REVIEW_STARTED))
     except consilium.ConsiliumStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
     if appointment is None:
         _not_found()
-    audit.record(
-        conn, audit.CONSILIUM_REVIEW_STARTED, patient_id=appointment["patientId"],
-        **audit.actor_ctx(user),
-    )
     return appointment
 
 
@@ -313,15 +335,14 @@ def sign_consilium(
         appointment = consilium.sign(
             conn, user, appointment_id, body.treatmentType, body.treatmentScheme,
             body.treatmentSchemeCode, body.goc, body.goc65Plus,
+            audit_hook=_required_audit(conn, user, audit.CONSILIUM_SIGNED),
         )
     except consilium.ConsiliumStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
     if appointment is None:
         _not_found()
-    audit.record(
-        conn, audit.CONSILIUM_SIGNED, patient_id=appointment["patientId"],
-        **audit.actor_ctx(user),
-    )
     return appointment
 
 
@@ -334,19 +355,18 @@ def return_consilium_for_revision(
 ):
     _require_decision(conn, user)
     try:
-        appointment = consilium.return_for_revision(conn, user, appointment_id, body.comment)
+        # Текст комментария в аудит не пишется: он может содержать сведения о пациенте.
+        appointment = consilium.return_for_revision(
+            conn, user, appointment_id, body.comment,
+            audit_hook=_required_audit(conn, user, audit.CONSILIUM_RETURNED, with_round=True))
     except consilium.ConsiliumCommentError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except consilium.ConsiliumStateError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
     if appointment is None:
         _not_found()
-    # Текст комментария в аудит не пишется: он может содержать сведения о пациенте.
-    audit.record(
-        conn, audit.CONSILIUM_RETURNED, patient_id=appointment["patientId"],
-        detail=f"revision_round={appointment['revisionCount']}",
-        **audit.actor_ctx(user),
-    )
     return appointment
 
 

@@ -329,22 +329,27 @@ def create(
     return get_owned(conn, user, appointment_id)
 
 
-def _transition(conn: sqlite3.Connection, appointment_id: str, sql: str, params: tuple, refusal: str) -> dict | None:
+def _transition(conn: sqlite3.Connection, appointment_id: str, sql: str, params: tuple, refusal: str,
+                audit_hook=None) -> dict | None:
     """Apply a guarded UPDATE; the WHERE clause is the transition rule.
 
     The status check and the write happen in one statement, so a concurrent
     request cannot slip between them. Nothing is written when it is refused.
+    audit_hook writes the required audit row in the same transaction: if it
+    fails, the transition is rolled back and the record keeps its state.
     """
     if get_for_management(conn, appointment_id) is None:
         return None
     with conn:
         cursor = conn.execute(sql, params)
+        if cursor.rowcount == 1 and audit_hook is not None:
+            audit_hook(appointment_id)
     if cursor.rowcount == 0:
         raise ConsiliumStateError(refusal)
     return get_for_management(conn, appointment_id)
 
 
-def start_review(conn: sqlite3.Connection, appointment_id: str) -> dict | None:
+def start_review(conn: sqlite3.Connection, appointment_id: str, *, audit_hook=None) -> dict | None:
     now = now_iso()
     return _transition(
         conn, appointment_id,
@@ -353,6 +358,7 @@ def start_review(conn: sqlite3.Connection, appointment_id: str) -> dict | None:
             WHERE id = ? AND {_AWAITING_CHAIR}""",
         (now, now, appointment_id),
         "Рассмотрение можно начать только для записи, ожидающей председателя",
+        audit_hook,
     )
 
 
@@ -365,6 +371,8 @@ def sign(
     treatment_scheme_code: str,
     goc: bool,
     goc_65_plus: bool,
+    *,
+    audit_hook=None,
 ) -> dict | None:
     now = now_iso()
     return _transition(
@@ -401,6 +409,7 @@ def sign(
         (treatment_type, treatment_scheme or None, treatment_scheme_code or None,
          int(goc), int(goc_65_plus), now, user.id, now, appointment_id),
         "Подписать можно только запись, рассмотрение которой начато",
+        audit_hook,
     )
 
 
@@ -409,7 +418,7 @@ class ConsiliumCommentError(ValueError):
 
 
 def return_for_revision(
-    conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str, comment: str
+    conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str, comment: str, *, audit_hook=None
 ) -> dict | None:
     """Return a record under review to its author with a new comment.
 
@@ -443,6 +452,9 @@ def return_for_revision(
                    SELECT ?, id, revision_count, ?, ?, ? FROM oncology_consilium_appointments WHERE id = ?""",
                 (uuid.uuid4().hex, comment, user.id, now, appointment_id),
             )
+            # Обязательный аудит возврата — в той же транзакции, что и раунд доработки.
+            if audit_hook is not None:
+                audit_hook(appointment_id)
     if cursor.rowcount == 0:
         raise ConsiliumStateError("Вернуть на доработку можно только запись, рассмотрение которой начато")
     return get_for_management(conn, appointment_id)

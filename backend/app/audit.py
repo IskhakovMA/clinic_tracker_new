@@ -19,9 +19,12 @@ is far less harmful than refusing to save a patient's treatment date. If
 this ever becomes multi-user or externally accessible, revisit and make
 security-relevant events fail-closed.
 
-Exception: deleting and restoring a patient event is audited fail-closed by
+Exception: changes to the medical route are audited fail-closed by
 record_required() in the same transaction as the change — the change is
-not kept without its audit row.
+not kept without its audit row. This covers deleting and restoring a patient
+event (WP2.1) and, since WP2.2-A, stage transitions (with the OK decision of
+the legacy contract), event field edits, adding an event, stage notes and
+checklists, and the consilium review start, signature and return for revision.
 """
 from __future__ import annotations
 
@@ -197,6 +200,20 @@ def record_required(
         (now_iso(), event_type, patient_id, RESULT_OK, detail,
          actor_user_id, actor_role, actor_department_id),
     )
+
+
+class AuditWriteFailed(Exception):
+    """The required audit row was not written; the caller's transaction is rolled back."""
+
+
+def record_required_or_fail(conn: sqlite3.Connection, event_type: str, **kwargs) -> None:
+    """record_required() for audit hooks: a database error while writing the
+    audit row becomes AuditWriteFailed, which the route turns into 503 after
+    the transaction has been rolled back."""
+    try:
+        record_required(conn, event_type, **kwargs)
+    except sqlite3.Error as exc:
+        raise AuditWriteFailed() from exc
 
 
 def actor_ctx(user) -> dict:
