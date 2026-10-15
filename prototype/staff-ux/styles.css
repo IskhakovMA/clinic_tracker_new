@@ -33,7 +33,7 @@
     --on-accent: #ffffff;
     --good: #4ade80; --good-soft: rgba(74, 222, 128, 0.12);
     --warn: #fbbf24; --warn-soft: rgba(251, 191, 36, 0.12);
-    --danger: #f87171; --danger-soft: rgba(248, 113, 113, 0.12); --danger-solid: #dc2626;
+    --danger: #f87171; --danger-soft: rgba(248, 113, 113, 0.12); --danger-solid: #dc2626; --danger-solid-hover: #b91c1c;
     --info: #7cb4fb; --info-soft: rgba(96, 165, 250, 0.12);
     --focus: #79b4dd;
     --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
@@ -58,7 +58,7 @@
     --on-accent: #ffffff;
     --good: #15803d; --good-soft: rgba(21, 128, 61, 0.1);
     --warn: #a16207; --warn-soft: rgba(202, 138, 4, 0.12);
-    --danger: #c62828; --danger-soft: rgba(198, 40, 40, 0.08); --danger-solid: #c62828;
+    --danger: #c62828; --danger-soft: rgba(198, 40, 40, 0.08); --danger-solid: #c62828; --danger-solid-hover: #a31d1d;
     --info: #1d4ed8; --info-soft: rgba(29, 78, 216, 0.08);
     --focus: #1f5f8b;
     --shadow: 0 12px 32px rgba(20, 28, 39, 0.16);
@@ -81,7 +81,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .mono { font-family: var(--mono); font-size: 0.93em; }
 .muted { color: var(--text-3); }
 .nowrap { white-space: nowrap; }
-:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
 .skip { position: absolute; left: 12px; top: -48px; z-index: 100; background: var(--accent); color: var(--on-accent); padding: 8px 14px; border-radius: var(--r-md); }
 .skip:focus { top: 12px; }
@@ -153,28 +153,40 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 main { padding: var(--sp-6) var(--sp-6) 64px; outline: none; }
 .page { max-width: 1320px; margin: 0 auto; }
 
-/* ---------- Кнопки: одна главная, вторичные, текстовые, опасные ---------- */
+/* ---------- Кнопки: единая система ----------
+   Виды: .btn--primary — одно главное действие экрана или формы; .btn — второстепенное (обводка);
+   .btn--danger — опасное действие (красный текст и тонкая красная обводка; открывает подтверждение);
+   .btn--danger-solid — только окончательное подтверждение опасного действия в диалоге;
+   .btn--text — вспомогательное текстовое действие; .btn--icon — действие-иконка с подписью для экранного диктора.
+   Размеры: обычный (40 px) — шапка страницы, формы, панели подробностей, диалоги;
+   .btn--sm (32 px) — действия внутри разделов, строк и списков. Скругление у всех — var(--r-md). */
 .btn {
     display: inline-flex; align-items: center; justify-content: center; gap: var(--sp-2);
     min-height: 40px; padding: 0 var(--sp-4); border-radius: var(--r-md);
     border: 1px solid var(--line-strong); background: var(--surface); color: var(--text);
     font: 500 var(--fs-md)/1 var(--font); cursor: pointer; text-decoration: none; white-space: nowrap;
-    transition: background-color 150ms ease, border-color 150ms ease, transform 120ms var(--ease);
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 120ms var(--ease);
 }
-.btn:hover { background: var(--surface-3); }
+.btn:hover { background: var(--surface-3); border-color: var(--text-3); }
 .btn:active { transform: scale(0.97); }
+.btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .btn[disabled], .btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn[disabled]:hover, .btn[aria-disabled="true"]:hover { background: var(--surface); border-color: var(--line-strong); }
 .btn--primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .btn--primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn--primary[disabled]:hover { background: var(--accent); border-color: var(--accent); }
+.btn--danger { background: var(--surface); border-color: var(--danger); color: var(--danger); }
+.btn--danger:hover { background: var(--danger-soft); border-color: var(--danger); color: var(--danger); }
+.btn--danger[disabled]:hover { background: var(--surface); border-color: var(--danger); }
+.btn--danger-solid { background: var(--danger-solid); border-color: var(--danger-solid); color: #fff; }
+.btn--danger-solid:hover { background: var(--danger-solid-hover); border-color: var(--danger-solid-hover); }
 .btn--text { border-color: transparent; background: transparent; color: var(--accent-text); padding: 0 var(--sp-2); }
-.btn--text:hover { background: var(--accent-soft); }
-.btn--danger { background: var(--danger-solid); border-color: var(--danger-solid); color: #fff; }
-.btn--danger:hover { filter: brightness(1.08); background: var(--danger-solid); }
-.btn--danger-text { color: var(--danger); }
-.btn--danger-text:hover { background: var(--danger-soft); }
+.btn--text:hover { background: var(--accent-soft); border-color: transparent; }
+.btn--text[disabled]:hover { background: transparent; border-color: transparent; }
 .btn--icon { width: 40px; padding: 0; border-color: transparent; background: transparent; color: var(--text-2); }
-.btn--icon:hover { background: var(--surface-3); color: var(--text); }
+.btn--icon:hover { background: var(--surface-3); border-color: transparent; color: var(--text); }
 .btn--sm { min-height: 32px; padding: 0 var(--sp-3); font-size: var(--fs-sm); }
+.btn--sm.btn--text { padding: 0 var(--sp-2); }
 .btn .chev { width: 14px; height: 14px; }
 
 /* ---------- Поля ---------- */
@@ -285,7 +297,8 @@ main { padding: var(--sp-6) var(--sp-6) 64px; outline: none; }
     display: flex; width: 100%; align-items: center; gap: var(--sp-3); min-height: 38px; padding: 0 var(--sp-3);
     border: 0; border-radius: 6px; background: none; color: var(--text); font: inherit; font-size: var(--fs-md); text-align: left; cursor: pointer;
 }
-.menu__item:hover, .menu__item:focus-visible { background: var(--surface-3); outline: none; }
+.menu__item:hover { background: var(--surface-3); }
+.menu__item:focus-visible { background: var(--surface-3); outline: 2px solid var(--focus); outline-offset: -2px; }
 .menu__item small { display: block; color: var(--text-3); font-size: var(--fs-xs); }
 .menu__item--danger { color: var(--danger); }
 .menu__sep { height: 1px; margin: 6px 0; background: var(--line); }
@@ -772,7 +785,7 @@ button.kpi:focus-visible { outline-offset: -2px; }
 .an-rule b { color: var(--text-2); }
 .an-big { font-size: 28px; font-weight: 600; line-height: 1.2; font-variant-numeric: tabular-nums; }
 .an-big .muted { font-size: var(--fs-md); font-weight: 400; }
-.an-link { min-height: 0; padding: 0; height: auto; font-weight: 600; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.an-link { min-height: 24px; padding: 0; height: auto; font-weight: 600; color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
 .an-link--big { font-size: 28px; }
 .an-quality { margin-bottom: var(--sp-3); }
 .an-detail { margin: 0 0 var(--sp-5); padding: var(--sp-4); border: 1px solid var(--accent); border-radius: var(--r-lg); background: var(--surface); }
@@ -832,3 +845,136 @@ button.kpi:focus-visible { outline-offset: -2px; }
 .arow__clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .radio--disabled { color: var(--text-3); cursor: not-allowed; }
 .plain-list { margin: 0 0 var(--sp-2); padding-left: 18px; }
+
+/* ================= Staff UX v2: онкологический консилиум ================= */
+.cs-tabs { margin-bottom: var(--sp-4); }
+.cs-tabs .view { text-decoration: none; }
+.cs-proto { margin-top: var(--sp-6); }
+.cs-toolbar { flex-wrap: wrap; align-items: center; }
+.cs-day { display: inline-flex; align-items: center; gap: var(--sp-1); }
+.cs-day .input { width: 160px; }
+.cs-session-title { font-size: var(--fs-lg); margin: var(--sp-2) 0 var(--sp-3); display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); }
+.cs-filters { margin-bottom: var(--sp-4); }
+
+/* Список + подробности. Колонки строки — те же, что в списке консилиума v1 (.crow). */
+.cs-split { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: var(--sp-5); align-items: start; }
+.cs-split > * { min-width: 0; }
+.cs-list .crow { grid-template-columns: 7.5rem minmax(0, 1.5fr) minmax(0, 1fr) 10.5rem; column-gap: var(--sp-4); }
+button.crow { width: 100%; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color 120ms ease; }
+button.crow:hover { background: var(--surface-2); }
+.crow.is-selected { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.cs-detail-wrap { position: sticky; top: 76px; }
+.cs-detail { padding: var(--sp-4) var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface); display: grid; gap: var(--sp-3); }
+.cs-detail:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.cs-detail h2 { font-size: var(--fs-lg); overflow-wrap: anywhere; }
+.cs-detail h3 { font-size: var(--fs-md); margin-bottom: var(--sp-2); }
+.cs-detail__top { display: flex; align-items: center; gap: var(--sp-2); }
+.cs-detail__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.cs-pager { margin-left: auto; display: inline-flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-sm); }
+.cs-back { display: none; }
+.cs-next { padding: var(--sp-2) var(--sp-3); border-radius: var(--r-md); background: var(--surface-2); font-size: var(--fs-md); }
+.cs-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.cs-signed { padding-top: var(--sp-2); border-top: 1px solid var(--line); }
+.cs-decision { display: grid; gap: var(--sp-3); padding: var(--sp-4); border: 1px solid var(--accent); border-radius: var(--r-md); }
+.cs-checks { border: 0; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 0 var(--sp-4); }
+.cs-checks legend { width: 100%; }
+.cs-placeholder { padding: var(--sp-6) var(--sp-5); border: 1px dashed var(--line-strong); border-radius: var(--r-lg); color: var(--text-3); }
+.cs-card-link { margin-top: var(--sp-3); display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+
+/* Расписание: полоса недели и слоты выбранного дня */
+.cs-weeknav { display: inline-flex; align-items: center; gap: var(--sp-1); flex-wrap: wrap; }
+.cs-weeknav__label { min-width: 9.5rem; text-align: center; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cs-weeknav__note { font-size: var(--fs-sm); }
+.cs-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px; margin: var(--sp-3) 0 var(--sp-4); }
+.cs-day-btn { display: grid; justify-items: center; gap: 2px; min-height: 64px; padding: 6px 2px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); color: var(--text-2); font: inherit; cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; }
+.cs-day-btn:hover { border-color: var(--accent-text); }
+.cs-day-btn__wd { font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--text-3); }
+.cs-day-btn__d { font-size: var(--fs-lg); font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cs-day-btn__s { font-size: 11px; line-height: 1.2; text-align: center; overflow-wrap: anywhere; }
+.cs-day-btn--free .cs-day-btn__s { color: var(--good); font-weight: 600; }
+.cs-day-btn--full .cs-day-btn__s { color: var(--warn); }
+.cs-day-btn--off { background: var(--surface-2); }
+.cs-day-btn.is-today .cs-day-btn__wd { color: var(--accent-text); font-weight: 700; }
+.cs-day-btn[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
+.cs-dayview .section__head h2 { font-size: var(--fs-lg); }
+.cs-subhead { font-size: var(--fs-md); margin: var(--sp-2) 0; }
+.cs-legend { list-style: none; margin: 0 0 var(--sp-3); padding: 0; display: flex; flex-wrap: wrap; gap: var(--sp-1) var(--sp-4); font-size: var(--fs-sm); color: var(--text-2); }
+.cs-legend li { display: inline-flex; align-items: center; gap: 6px; }
+.slot-dot { width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line-strong); }
+.slot-dot--free { background: var(--good-soft); border-color: var(--good); }
+.slot-dot--busy { background: var(--surface-3); }
+.slot-dot--off { background: repeating-linear-gradient(45deg, var(--surface-2) 0 3px, var(--line) 3px 5px); }
+.slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+.slot-wrap { min-width: 0; display: flex; }
+.slot { position: relative; flex: 1; min-width: 0; min-height: 48px; display: grid; align-content: center; gap: 1px; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--surface); color: var(--text); font: inherit; text-align: left; text-decoration: none; }
+.slot__time { font-weight: 600; font-variant-numeric: tabular-nums; }
+.slot__txt { font-size: var(--fs-sm); color: var(--text-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot__tag { font-size: 11px; color: var(--accent-text); font-weight: 600; }
+.slot--free { border-color: var(--good); background: var(--good-soft); cursor: pointer; transition: background-color 120ms ease, transform 120ms var(--ease); }
+.slot--free .slot__txt { color: var(--good); font-weight: 600; }
+a.slot--free:hover, button.slot--free:hover { background: var(--surface-2); }
+.slot--free:active { transform: scale(0.98); }
+.slot--free.is-selected { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.slot--free.is-selected .slot__txt { color: var(--on-accent); }
+.slot--busy { background: var(--surface-3); }
+button.slot--busy { cursor: pointer; }
+button.slot--busy:hover { border-color: var(--accent-text); }
+.slot--off { background: repeating-linear-gradient(45deg, var(--surface-2) 0 6px, var(--surface) 6px 12px); color: var(--text-3); }
+.slot--off .slot__time { color: var(--text-3); font-weight: 500; }
+/* Удаление сохранённого слота — малое опасное действие-иконка (система кнопок: 32 px, на телефоне 40 px).
+   Красная только иконка, рамка нейтральная — расписание не перегружается красным; под кнопку зарезервировано место. */
+.slot--with-del { padding-right: 46px; }
+.slot__del { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 32px; height: 32px; display: grid; place-items: center; padding: 0;
+    border: 1px solid var(--line-strong); border-radius: var(--r-md); background: var(--surface); color: var(--danger); cursor: pointer;
+    transition: background-color 150ms ease, border-color 150ms ease; }
+.slot__del:hover { background: var(--danger-soft); border-color: var(--danger); }
+.slot__del:active { transform: translateY(-50%) scale(0.95); }
+.slot__del:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.slot__del[disabled] { opacity: 0.5; cursor: not-allowed; }
+.slot__del[disabled]:hover { background: var(--surface); border-color: var(--line-strong); }
+.slot__del svg { width: 16px; height: 16px; stroke-width: 2; }
+.cs-empty { padding: var(--sp-4); border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--text-2); margin-bottom: var(--sp-3); }
+.cs-empty b { color: var(--text); }
+.cs-gen { margin-top: var(--sp-5); }
+.cs-gen__form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: var(--sp-3); align-items: end; padding-top: var(--sp-3); }
+.cs-gen__form .field__error, .cs-gen__form .field__hint { grid-column: 1 / -1; }
+.cs-rules { margin-top: var(--sp-4); }
+.cs-rules li + li { margin-top: var(--sp-2); }
+
+/* Запись пациента */
+.cs-book { display: grid; gap: var(--sp-2); max-width: 980px; margin-top: var(--sp-4); }
+.cs-book h1 { margin-bottom: var(--sp-3); }
+.cs-review { border: 1px solid var(--line); border-radius: var(--r-lg); padding: var(--sp-4); background: var(--surface); }
+.cs-demo { margin: var(--sp-2) 0 var(--sp-3); font-size: var(--fs-sm); color: var(--warn); }
+
+@media (max-width: 1180px) {
+    .cs-list .crow { grid-template-columns: 6.5rem minmax(0, 1.4fr) minmax(0, 1fr) 9rem; }
+}
+@media (max-width: 1023px) {
+    .cs-split { grid-template-columns: minmax(0, 1fr); }
+    .cs-split--detail .cs-list-wrap { display: none; }
+    .cs-split:not(.cs-split--detail) .cs-detail-wrap { display: none; }
+    .cs-detail-wrap { position: static; }
+    .cs-back { display: inline-flex; }
+    .cs-gen__form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 899px) {
+    .cs-list .crow { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "time status" "patient patient" "spec spec"; }
+}
+@media (max-width: 767px) {
+    .cs-day .input { width: auto; flex: 1; }
+    .cs-day { width: 100%; }
+    .cs-week { gap: 4px; }
+    .cs-day-btn { min-height: 58px; padding: 4px 0; }
+    .cs-day-btn__s { font-size: 10px; }
+    .slots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .slot--with-del { padding-right: 54px; }
+    .slot__del { width: 40px; height: 40px; right: 4px; }
+    .cs-detail { padding: var(--sp-3) var(--sp-4); }
+    .cs-weeknav { width: 100%; justify-content: space-between; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .slot--free, .cs-day-btn, button.crow, .slot__del { transition: none; }
+}
+/* В списке консилиума второстепенные строки не длиннее двух линий; полный текст — в подробностях */
+.cs-list .arow__sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }

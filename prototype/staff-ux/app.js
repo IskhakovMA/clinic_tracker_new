@@ -181,6 +181,8 @@
         const params = new URLSearchParams(query || '');
         return { name: parts[0] || HOME[S.role], id: parts[1], params };
     }
+    // Точки расширения для модулей прототипа (consilium.js): страницы и хуки.
+    const EXT = { pages: {}, hooks: {} };
     function render() {
         closeMenus();
         DD = null;
@@ -191,7 +193,7 @@
         const pages = { today: () => pageToday(false), department: () => pageToday(true), patients: pagePatients, patient: () => pagePatient(r.id, r.params), consilium: pageConsilium, messages: pageMessages, analytics: pageAnalytics };
         const title = r.name === 'patient' ? 'Карточка пациента' : NAV_LABEL[r.name] || 'Раздел';
         const ok = r.name === 'patient' || allowedNav().has(r.name);
-        main.innerHTML = `<div class="page">${!ok ? pageDenied(title) : (pages[r.name] || (() => pageLater(title, r.name)))()}</div>`;
+        main.innerHTML = `<div class="page">${!ok ? pageDenied(title) : (EXT.pages[r.name] || pages[r.name] || (() => pageLater(title, r.name)))(r)}</div>`;
         document.title = `${title} — Система планирования (прототип)`;
         afterRender(r);
     }
@@ -386,8 +388,8 @@
         let primary = '';
         if (edit && !isTerminal(p)) {
             primary = p.stage === 'consult'
-                ? `<button class="btn btn--primary" type="button" data-act="advance">Перевести на этап…</button><button class="btn" type="button" data-act="decision">Отметить решение ОК…</button>`
-                : next ? `<button class="btn btn--primary" type="button" data-act="advance">Перевести: ${esc(STAGE(next))}…</button>` : '';
+                ? `<button class="btn btn--primary" type="button" data-act="advance">Перевести на этап</button><button class="btn" type="button" data-act="decision">Отметить решение ОК</button>`
+                : next ? `<button class="btn btn--primary" type="button" data-act="advance">Перевести: ${esc(STAGE(next))}</button>` : '';
         }
         const facts = [
             `<span>${p.age} ${plural(p.age, 'год', 'года', 'лет')}</span>`,
@@ -411,10 +413,10 @@
                         <button class="btn" type="button" data-menu="m-more" aria-haspopup="menu" aria-expanded="false">Ещё действия${ICON.chev}</button>
                         <div class="menu" id="m-more" role="menu" hidden>
                             ${edit && !isTerminal(p) ? `
-                                <button class="menu__item" role="menuitem" data-act="extra-exam"><span>Дополнительное обследование…<small>Вернуть на этап обследования</small></span></button>
-                                <button class="menu__item" role="menuitem" data-act="not-confirmed"><span>Диагноз не подтверждён…<small>Завершить маршрут</small></span></button>` : ''}
-                            ${R().dev ? `${edit && !isTerminal(p) ? '<div class="menu__sep" role="separator"></div>' : ''}<button class="menu__item" role="menuitem" data-act="change-doctor"><span>Сменить лечащего врача…</span></button>` : ''}
-                            ${edit ? `<div class="menu__sep" role="separator"></div><button class="menu__item menu__item--danger" role="menuitem" data-act="delete-patient"><span>Удалить пациента…<small>Нельзя, если есть записи консилиума</small></span></button>` : ''}
+                                <button class="menu__item" role="menuitem" data-act="extra-exam"><span>Дополнительное обследование<small>Вернуть на этап обследования</small></span></button>
+                                <button class="menu__item" role="menuitem" data-act="not-confirmed"><span>Диагноз не подтверждён<small>Завершить маршрут</small></span></button>` : ''}
+                            ${R().dev ? `${edit && !isTerminal(p) ? '<div class="menu__sep" role="separator"></div>' : ''}<button class="menu__item" role="menuitem" data-act="change-doctor"><span>Сменить лечащего врача</span></button>` : ''}
+                            ${edit ? `<div class="menu__sep" role="separator"></div><button class="menu__item menu__item--danger" role="menuitem" data-act="delete-patient"><span>Удалить пациента<small>Нельзя, если есть записи консилиума</small></span></button>` : ''}
                         </div>
                     </div>` : ''}
                 </div>
@@ -511,7 +513,7 @@
             ${consDecisionHtml(p)}
             <section class="section" aria-labelledby="attTitle"><div class="section__head"><h2 id="attTitle">Требует внимания</h2><span class="section__meta">${issues.length ? `${issues.length} ${plural(issues.length, 'открытая отметка', 'открытые отметки', 'открытых отметок')}` : 'открытых отметок нет'}</span>
                 ${edit ? '<span class="section__actions"><button class="btn btn--text" type="button" data-act="add-issue">' + ICON.plus + 'Добавить отметку</button></span>' : ''}</div>
-                ${issues.length ? issues.map(x => `<div class="issue"><div class="issue__text"><b>${esc(D.ATTENTION_REASONS[x.reasonCode])}</b><p>${esc(x.comment)} · ${esc(x.createdByName)}, ${fmtStamp(x.createdAt)}</p></div>${edit ? `<button class="btn btn--sm" type="button" data-act="close-issue" data-issue="${x.id}">Закрыть отметку…</button>` : ''}</div>`).join('') : '<p class="lead">Если с пациентом что-то идёт не по плану, добавьте отметку — она появится у заведующего и в «Рабочем дне».</p>'}
+                ${issues.length ? issues.map(x => `<div class="issue"><div class="issue__text"><b>${esc(D.ATTENTION_REASONS[x.reasonCode])}</b><p>${esc(x.comment)} · ${esc(x.createdByName)}, ${fmtStamp(x.createdAt)}</p></div>${edit ? `<button class="btn btn--sm" type="button" data-act="close-issue" data-issue="${x.id}">Закрыть отметку</button>` : ''}</div>`).join('') : '<p class="lead">Если с пациентом что-то идёт не по плану, добавьте отметку — она появится у заведующего и в «Рабочем дне».</p>'}
                 ${closed.length ? `<details class="deleted"><summary>История внимания<span class="count">${closed.length}</span></summary>${closed.map(x => `<div class="issue"><div class="issue__text"><b>${esc(D.ATTENTION_REASONS[x.reasonCode])}</b><p>${esc(x.comment)} · ${esc(x.createdByName)}, ${fmtStamp(x.createdAt)}</p><p>Закрыта ${fmtStamp(x.closedAt)}${x.closedByName ? ', ' + esc(x.closedByName) : ''}${x.resolutionComment ? ' — ' + esc(x.resolutionComment) : ''}</p></div><span class="pill pill--neutral">закрыта</span></div>`).join('')}</details>` : ''}
             </section>
             <section class="section" aria-labelledby="qTitle"><div class="section__head"><h2 id="qTitle">Качество данных</h2><span class="section__meta">заполненность ${q.score}%</span>${edit && q.missing.length ? '<span class="section__actions"><a class="btn btn--text" href="#" data-tab-go="data">Заполнить данные</a></span>' : ''}</div>
@@ -527,7 +529,8 @@
     function consDecisionHtml(p) {
         const cs = CORE.consiliumSummary(D.consilium, p.id);
         const marks = CORE.manualDecisions(p);
-        if (!cs.total && !marks.length) return '';
+        const extra = EXT.hooks.patientConsilium ? EXT.hooks.patientConsilium(p) : '';
+        if (!cs.total && !marks.length && !extra) return '';
         const markLine = (m) => { const o = p.history[m.occIndex]; const e = o.events[m.eventIndex];
             return `${esc(D.DECISIONS[m.decision])}<br><span class="muted">событие ${m.eventIndex + 1} из ${o.events.length} этапа «${esc(STAGE(m.stage))}»${e.date ? ', план ' + esc(fmtFull(e.date)) : ''}${e.actualDate ? ', факт ' + esc(fmtFull(e.actualDate)) : ''}${m.mark ? ` · отмечено ${esc(fmtStamp(m.mark.at))}, ${esc(m.mark.by)}` : ' · отметка из синтетических данных'}</span>`; };
         const signedLine = (c) => `${esc(D.TREATMENTS[c.treatment] || 'лечение не указано')}${c.scheme ? ' · ' + esc(c.scheme.name) : ''}<br><span class="muted">консилиум ${esc(c.time ? whenShort(c.date, c.time) : fmtShort(c.date))}${c.archived ? ' · запись в архиве' : ''}</span>`;
@@ -535,7 +538,7 @@
         return `<section class="section" aria-labelledby="okTitle"><div class="section__head"><h2 id="okTitle">Онкологический консилиум</h2><span class="section__meta">решения не синхронизируются и не меняют этап пациента</span></div><dl class="dl">
             <div><dt>Подписанные решения председателя</dt><dd>${cs.signed.length ? cs.signed.map(signedLine).join('<br>') : '<span class="muted">подписанных решений нет</span>'}</dd></div>
             <div><dt>Текущая запись на консилиум</dt><dd>${cur0 ? `<span class="status status--${st[1]}">${st[0]}</span><br><span class="muted">${cur0.time ? esc(whenShort(cur0.date, cur0.time)) : esc(fmtShort(cur0.date)) + ', время не назначено'}${cs.total > 1 ? ` · всего записей: ${cs.total}` : ''}</span>` : '<span class="muted">записи на консилиум нет</span>'}</dd></div>
-            <div><dt>Ручная отметка решения ОК</dt><dd>${marks.length ? marks.map(markLine).join('<br>') : '<span class="muted">не ставилась</span>'}</dd></div></dl></section>`;
+            <div><dt>Ручная отметка решения ОК</dt><dd>${marks.length ? marks.map(markLine).join('<br>') : '<span class="muted">не ставилась</span>'}</dd></div></dl>${extra}</section>`;
     }
     function quality(p) {
         const fields = [['ФИО', p.name], ['Телефон', p.phone], ['Полис ОМС', p.policy], ['Диагноз', p.icd], ['Текущий этап', p.stage], ['Лечащий врач', p.doctorId]];
@@ -577,7 +580,7 @@
                     </div>
                     <p class="field__error" id="e-err" role="alert" hidden></p>
                     <p class="field__hint">«По плану» или «с отклонением» система определит сама по совпадению факта с планом.</p>
-                    <div class="edit-actions"><button class="btn btn--text btn--danger-text" type="button" data-act="delete-event" data-key="${key}" style="margin-right:auto">Удалить событие…</button><button class="btn" type="button" data-act="cancel-edit">Отмена</button><button class="btn btn--primary" type="submit">Сохранить событие</button></div>
+                    <div class="edit-actions"><button class="btn btn--danger" type="button" data-act="delete-event" data-key="${key}" style="margin-right:auto">Удалить событие</button><button class="btn" type="button" data-act="cancel-edit">Отмена</button><button class="btn btn--primary" type="submit">Сохранить событие</button></div>
                 </form></td></tr>`;
                 return `<tr><td data-label="План">${ev.noPlan ? '<span class="muted">без плана</span>' : dt(ev.date, ev.time)}</td><td data-label="Факт">${dt(ev.actualDate, ev.actualTime)}</td>
                     <td data-label="Статус">${evStatus(ev, isCur)}${ev.consiliumDecision ? `<br><span class="muted">Ручная отметка решения ОК: ${esc(D.DECISIONS[ev.consiliumDecision])}</span>` : ''}${treat ? `<br><span class="muted">${ev.treatmentType ? esc(D.EVENT_TREATMENT[ev.treatmentType]) : 'вид лечения не указан'}</span>` : ''}</td>
@@ -636,7 +639,7 @@
             </div>
             <section class="section" aria-labelledby="consentTitle"><div class="section__head"><h2 id="consentTitle">Согласие на SMS</h2></div>
                 <p class="lead">${granted ? 'Пациент согласился получать напоминания о посещениях.' : n.consent === 'revoked' ? 'Пациент отозвал согласие. Новые напоминания не отправляются, ожидающие отменены.' : 'Без согласия пациента напоминания не создаются и не отправляются.'}</p>
-                ${edit ? (granted ? '<button class="btn" type="button" data-act="revoke-consent">Отозвать согласие…</button>' : '<button class="btn btn--primary" type="button" data-act="grant-consent">Зафиксировать согласие…</button>') : ''}
+                ${edit ? (granted ? '<button class="btn btn--danger btn--sm" type="button" data-act="revoke-consent">Отозвать согласие</button>' : '<button class="btn btn--primary btn--sm" type="button" data-act="grant-consent">Зафиксировать согласие</button>') : ''}
             </section>
             <section class="section" aria-labelledby="newTitle"><div class="section__head"><h2 id="newTitle">Новое напоминание</h2></div>
                 ${!granted ? `<div class="banner banner--warn" role="note"><span class="banner__body">Создать напоминание нельзя: нет действующего согласия пациента.</span></div>` : ''}
@@ -701,7 +704,7 @@
         return `<form class="section" data-form="complaint" novalidate><div class="section__head"><h2>Жалобы и комментарии</h2><span class="section__meta">видны всем сотрудникам с доступом к карточке</span></div>
             <div class="field"><label class="field__label" for="cText">Комментарий к пациенту</label><textarea class="textarea" id="cText" name="complaint" rows="6" maxlength="2000" placeholder="Жалобы пациента, договорённости, что важно знать коллегам">${esc(p.complaint)}</textarea>
             <span class="field__hint" id="cCount">${(p.complaint || '').length} из 2000 знаков</span></div>
-            <div class="edit-actions" style="justify-content:flex-start"><button class="btn btn--primary" type="submit">Сохранить комментарий</button>${p.complaint ? '<button class="btn" type="button" data-act="clear-complaint">Очистить…</button>' : ''}</div></form>`;
+            <div class="edit-actions" style="justify-content:flex-start"><button class="btn btn--primary" type="submit">Сохранить комментарий</button>${p.complaint ? '<button class="btn btn--danger" type="button" data-act="clear-complaint">Очистить</button>' : ''}</div></form>`;
     }
     function tabNotes(p, edit) {
         return `<p class="lead">Заметки привязаны к этапам маршрута: что важно на этом шаге.</p>${p.history.map((o, i) => {
@@ -985,7 +988,7 @@
         const opts = data || anDashboard();
         const r = anRange();
         const locs = []; Object.entries(anRef()).forEach(([code, x]) => { if (!locs.some(l => l[1] === (x.label || code))) locs.push([code, x.label || code]); });
-        const periods = [['7', 'Последние 7 дней'], ['30', 'Последние 30 дней'], ['90', 'Последние 90 дней'], ['custom', 'Свой период…']];
+        const periods = [['7', 'Последние 7 дней'], ['30', 'Последние 30 дней'], ['90', 'Последние 90 дней'], ['custom', 'Свой период']];
         const extra = ['nosology', 'department', 'attentionReason'].filter(k => f[k]).length;
         const chips = [];
         if (f.stage) chips.push(['stage', `Этап: ${STAGE(f.stage)}`]);
@@ -1058,7 +1061,7 @@
     // Аналитика председателя: записи консилиума (как viewConsiliumAnalytics в Stage 3.5)
     function pageChairAnalytics() {
         const f = S.an; const r = anRange(); const invalid = anRangeInvalid();
-        const periods = [['7', 'Последние 7 дней'], ['30', 'Последние 30 дней'], ['90', 'Последние 90 дней'], ['custom', 'Свой период…']];
+        const periods = [['7', 'Последние 7 дней'], ['30', 'Последние 30 дней'], ['90', 'Последние 90 дней'], ['custom', 'Свой период']];
         const head = `<div class="page-head"><div><h1>Аналитика</h1><p class="page-head__sub">Записи онкологического консилиума и загрузка расписания</p></div></div>
             <div class="toolbar an-toolbar">${ddHtml('anPeriod', 'Период', 'period', periods, f.period, true, 'an')}
             ${f.period === 'custom' ? `<div class="an-dates"><label class="sr-only" for="anFrom">Дата начала периода</label><input class="input" type="date" id="anFrom" value="${esc(f.from)}"><span aria-hidden="true">—</span><label class="sr-only" for="anTo">Дата окончания периода</label><input class="input" type="date" id="anTo" value="${esc(f.to)}"></div>` : ''}</div>
@@ -1126,7 +1129,7 @@
         const head = '<li class="crow crow--head" aria-hidden="true"><span>Время</span><span>Пациент</span><span>Специалисты</span><span>Статус решения</span></li>';
         const list = (rows, withDate) => rows.length ? `<ul class="agenda__list crows">${head}${rows.map(c => consRow(c, withDate)).join('')}</ul>` : '<div class="agenda__list"><p class="agenda__empty">Записей нет.</p></div>';
         return `<div class="page-head"><div><h1>Онкологический консилиум</h1><p class="page-head__sub">${S.role === 'chair' ? 'Очередь консилиума' : 'Записи ваших пациентов'}</p></div>
-                <div class="page-head__actions">${S.role === 'chair' ? '<a class="btn" href="../redesign/#/consilium">Рассмотрение и подписание (Stage 3.5)</a>' : ''}${R().write && S.role !== 'chair' ? '<button class="btn btn--primary" type="button" data-act="book">Записать на консилиум…</button>' : ''}</div></div>
+                <div class="page-head__actions">${S.role === 'chair' ? '<a class="btn" href="../redesign/#/consilium">Рассмотрение и подписание (Stage 3.5)</a>' : ''}${R().write && S.role !== 'chair' ? '<button class="btn btn--primary" type="button" data-act="book">Записать на консилиум</button>' : ''}</div></div>
             <div class="banner banner--info" role="note"><span class="banner__body">Здесь перепроектирован только список записей. Полная сетка расписания, запись, рассмотрение, подписание решения и архив работают в <a href="../redesign/#/consilium">прототипе Stage 3.5</a> и сюда не перенесены.</span></div>
             ${gate || `<div class="agenda"><section class="agenda__group" aria-labelledby="cToday"><h2 id="cToday">Сегодня, ${fmtShort(TODAY)}<span class="count">${today.length}</span></h2>${list(today, false)}</section>
                 <section class="agenda__group" aria-labelledby="cLater"><h2 id="cLater">Позже<span class="count">${later.length}</span></h2>${list(later, true)}</section></div>`}`;
@@ -1285,6 +1288,7 @@
             if (ne && ne.kind === 'today') items.push({ id: `t-${p.id}`, p, title: `Сегодня: ${ne && ne.title}`, note: ne.ev.time || 'время не указано', tone: 'info' });
             openIssues(p).forEach(x => items.push({ id: `a-${x.id}`, p, title: D.ATTENTION_REASONS[x.reasonCode], note: 'требует внимания', tone: 'warn' }));
         });
+        if (EXT.hooks.bellItems) items.push(...EXT.hooks.bellItems());
         return items;
     }
     function toggleBell(force) {
@@ -1294,7 +1298,7 @@
         const items = bellItems();
         panel.innerHTML = `<div class="bell-panel__head"><h2 id="bellTitle">Уведомления сотрудника</h2>${items.length ? '<button class="btn btn--text btn--sm" type="button" data-act="read-all">Прочитать все</button>' : ''}</div>
             <p class="muted" style="padding:0 var(--sp-4) var(--sp-2);font-size:var(--fs-sm)">Напоминания вам, а не сообщения пациентам.</p>
-            ${items.length ? `<ul class="bell-list">${items.map(i => `<li><a href="#/patient/${i.p.id}" data-bell="${i.id}"><span class="status status--${i.tone}">${esc(i.title)}</span><span>${esc(i.p.name)}</span><small>${esc(i.note)}${S.read.has(i.id) ? ' · прочитано' : ''}</small></a></li>`).join('')}</ul>` : '<p class="agenda__empty">Новых уведомлений нет.</p>'}`;
+            ${items.length ? `<ul class="bell-list">${items.map(i => `<li><a href="${i.href || `#/patient/${i.p.id}`}" data-bell="${i.id}"><span class="status status--${i.tone}">${esc(i.title)}</span><span>${esc(i.p.name)}</span><small>${esc(i.note)}${S.read.has(i.id) ? ' · прочитано' : ''}</small></a></li>`).join('')}</ul>` : '<p class="agenda__empty">Новых уведомлений нет.</p>'}`;
         panel.hidden = false;
         $('#bellBtn').setAttribute('aria-expanded', 'true');
         const first = panel.querySelector('a, button'); if (first) first.focus();
@@ -1325,7 +1329,7 @@
         layer.innerHTML = `<div class="scrim" data-scrim><div class="dialog${danger ? ' dialog--danger' : ''}" role="${danger ? 'alertdialog' : 'dialog'}" aria-modal="true" aria-labelledby="dlgTitle" aria-describedby="dlgBody">
             <div class="dialog__head">${icon ? `<span class="dialog__icon">${icon}</span>` : ''}<h2 id="dlgTitle">${title}</h2></div>
             <div class="dialog__body" id="dlgBody">${body}</div>
-            <div class="dialog__foot">${actions.map((a, i) => `<button class="btn${a.kind ? ' btn--' + a.kind : ''}" type="button" data-dlg="${i}" ${a.autofocus ? 'data-autofocus' : ''}>${a.label}</button>`).join('')}</div></div></div>`;
+            <div class="dialog__foot">${actions.map((a, i) => `<button class="btn${a.kind ? ' btn--' + (a.kind === 'danger' ? 'danger-solid' : a.kind) : ''}" type="button" data-dlg="${i}" ${a.autofocus ? 'data-autofocus' : ''}>${a.label}</button>`).join('')}</div></div></div>`;
         const dlg = $('.dialog', layer);
         dlg.addEventListener('click', (e) => {
             const b = e.target.closest('[data-dlg]');
@@ -1396,7 +1400,7 @@
                     <p class="muted">${ne && ne.ev.date ? `По плану: ${fmtFull(ne.ev.date)}${ne.ev.time ? ', ' + esc(ne.ev.time) : ''}. Если даты различаются, событие будет отмечено «с отклонением».` : 'Плановая дата не была назначена.'}</p>
                     ${fact ? `<p class="banner banner--info" style="margin:var(--sp-2) 0"><span class="banner__body">Факт события ${nEv} из ${nEv} уже отмечен: <b>${esc(fmtFull(fact.actualDate))}${fact.actualTime ? ', ' + esc(fact.actualTime) : ''}</b>. Перевод его не изменит; другая дата или ${fact.actualTime ? 'другое время' : 'любое указанное время'} заблокируют перевод.</span></p>`
                         : `<p class="muted">Факт будет записан в событие ${nEv} из ${nEv} текущего этапа${cur(p).events.length ? '' : ' (событие будет создано)'}.</p>`}
-                    ${p.stage === 'consult' ? '<p class="muted">Перевод этапа не создаёт и не меняет ручную отметку решения ОК и не связан с подписанным решением председателя. Отметка делается отдельно: «Отметить решение ОК…».</p>' : ''}`,
+                    ${p.stage === 'consult' ? '<p class="muted">Перевод этапа не создаёт и не меняет ручную отметку решения ОК и не связан с подписанным решением председателя. Отметка делается отдельно: «Отметить решение ОК».</p>' : ''}`,
                 actions: [{ label: 'Отмена' }, { label: 'Перевести на этап', kind: 'primary', run: (dlg) => {
                     const d = $('#advD', dlg).value; const err = $('#advErr', dlg);
                     if (!d || d > TODAY) { err.hidden = false; err.textContent = !d ? 'Укажите фактическую дату.' : 'Фактическая дата не может быть в будущем.'; $('#advD', dlg).focus(); return false; }
@@ -1465,13 +1469,13 @@
         'delete-event'(btn) {
             const p = currentPatient(); const [, i, j] = btn.dataset.key.split(':').map(Number); const ev = p.history[i].events[j];
             dialog({ title: 'Удалить событие?', body: `<p>${esc(STAGE(p.history[i].stage))}: ${ev.date ? 'план ' + fmtFull(ev.date) : 'без плановой даты'}${ev.actualDate ? ', факт ' + fmtFull(ev.actualDate) : ''}.</p><p>Событие исчезнет из маршрута, но данные сохранятся — его можно вернуть в разделе «Удалённые события».</p>`,
-                actions: [{ label: 'Отмена', autofocus: true }, { label: 'Удалить событие', kind: 'primary', run: () => { p.history[i].events.splice(j, 1); (S.deleted[p.id] = S.deleted[p.id] || []).push({ occ: i, idx: j, ev, at: now(), by: R().user.short }); touch(p); render(); toast('Событие удалено. Его можно восстановить ниже.'); } }] });
+                actions: [{ label: 'Отмена', autofocus: true }, { label: 'Удалить событие', kind: 'danger', run: () => { p.history[i].events.splice(j, 1); (S.deleted[p.id] = S.deleted[p.id] || []).push({ occ: i, idx: j, ev, at: now(), by: R().user.short }); touch(p); render(); toast('Событие удалено. Его можно восстановить ниже.'); } }] });
         },
         'restore-event'(btn) { const p = currentPatient(); const d = S.deleted[p.id].splice(Number(btn.dataset.k), 1)[0]; p.history[d.occ].events.splice(Math.min(d.idx, p.history[d.occ].events.length), 0, d.ev); touch(p); render(); toast('Событие восстановлено на прежнее место в маршруте'); },
         'grant-consent'() { const p = currentPatient(); dialog({ title: 'Зафиксировать согласие на SMS', body: '<p>Подтвердите, что пациент дал согласие получать напоминания о посещениях.</p>', actions: [{ label: 'Отмена' }, { label: 'Зафиксировать согласие', kind: 'primary', autofocus: true, run: () => { Object.assign(p.notifications, { consent: 'granted', smsEnabled: true, consentAt: now(), consentBy: R().user.short }); touch(p); render(); toast('Согласие зафиксировано'); } }] }); },
         'revoke-consent'() { const p = currentPatient(); const pend = p.notifications.items.filter(i => i.status === 'pending').length; dialog({ title: 'Отозвать согласие на SMS?', danger: true, icon: ICON.warn, body: `<p>Пациент перестанет получать напоминания.${pend ? ` Ожидающие отправки напоминания (${pend}) будут отменены.` : ''}</p><p class="muted">Согласие можно будет зафиксировать снова.</p>`, actions: [{ label: 'Отмена', autofocus: true }, { label: 'Отозвать согласие', kind: 'danger', run: () => { p.notifications.consent = 'revoked'; p.notifications.smsEnabled = false; p.notifications.consentAt = now(); p.notifications.items.forEach(i => { if (i.status === 'pending') i.status = 'cancelled'; }); touch(p); render(); toast('Согласие отозвано'); } }] }); },
-        book() { dialog({ title: 'Записать на консилиум', body: '<p>Форма записи в первом прототипе не перепроектировалась — она остаётся в Stage 3.5.</p>', actions: [{ label: 'Понятно', kind: 'primary', autofocus: true }] }); },
-        logout() { closeAI(); resetAI(); S.an = { ...AN_DEFAULT }; S.anDetail = null; S.loggedOut = true; closeDialog && $('#layer').innerHTML && closeDialog(); render(); const r = $('input[name=role]:checked'); if (r) r.focus(); toast('Вы вышли из системы'); },
+        book() { const p = currentPatient(); location.hash = `#/consilium/book${p ? '?patient=' + p.id : ''}`; },
+        logout() { if (EXT.hooks.reset) EXT.hooks.reset(); closeAI(); resetAI(); S.an = { ...AN_DEFAULT }; S.anDetail = null; S.loggedOut = true; closeDialog && $('#layer').innerHTML && closeDialog(); render(); const r = $('input[name=role]:checked'); if (r) r.focus(); toast('Вы вышли из системы'); },
         'clear-complaint'() { const p = currentPatient(); dialog({ title: 'Очистить комментарий?', body: '<p>Текст комментария будет удалён из карточки.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Очистить', kind: 'danger', run: () => { p.complaint = ''; touch(p); render(); toast('Комментарий очищен'); } }] }); },
         chat(btn) {
             const c = S.convs.find(x => x.id === btn.dataset.conv); const p = D.patients.find(x => x.id === c.patientId);
@@ -1534,7 +1538,7 @@
     }
     function ddPick(i) {
         const { btn, opts } = DD; const v = opts[i].dataset.value; const key = btn.dataset.dd; const id = btn.id; const pop = btn.closest('.popover');
-        const store = btn.dataset.store === 'an' ? S.an : S.list;
+        const store = btn.dataset.store === 'an' ? S.an : btn.dataset.store === 'cons' ? S.cons : S.list;
         ddClose(true);
         if (store[key] === v) return;
         store[key] = v;
@@ -1688,7 +1692,7 @@
     document.addEventListener('change', (e) => {
         const f = e.target.closest('[data-filter]');
         if (f) { S.list[f.dataset.filter] = f.value; const keep = f.id; const inPop = !!f.closest('.popover'); render(); if (inPop) { $('[data-menu="m-filters"]').click(); } const el = document.getElementById(keep); if (el) el.focus(); return; }
-        if (e.target.id === 'demoRole') { resetAI(); S.an = { ...AN_DEFAULT }; S.anDetail = null; S.role = e.target.value; localSet('staffux-role', S.role); S.list.doctor = ''; S.editing = null; const r = parseRoute(); if (r.name === 'patient' && !scope().some(p => p.id === r.id)) location.hash = '#/patients'; render(); if (AI.open) renderAI(); toast(`Роль: ${R().label}`); return; }
+        if (e.target.id === 'demoRole') { if (EXT.hooks.reset) EXT.hooks.reset(); resetAI(); S.an = { ...AN_DEFAULT }; S.anDetail = null; S.role = e.target.value; localSet('staffux-role', S.role); S.list.doctor = ''; S.editing = null; const r = parseRoute(); if (r.name === 'patient' && !scope().some(p => p.id === r.id)) location.hash = '#/patients'; render(); if (AI.open) renderAI(); toast(`Роль: ${R().label}`); return; }
         if (e.target.id === 'anFrom' || e.target.id === 'anTo') { S.an[e.target.id === 'anFrom' ? 'from' : 'to'] = e.target.value; S.anDetail = null; const id = e.target.id; render(); const el = document.getElementById(id); if (el) el.focus(); return; }
         if (e.target.id === 'demoState') { S.demo = e.target.value; render(); if (AI.open) renderAI(); return; }
         const chk = e.target.closest('[data-check]');
@@ -1749,6 +1753,9 @@
     $('#nav').addEventListener('click', (e) => { if (e.target.closest('a')) toggleSide(false); });
     $('#themeBtn').addEventListener('click', () => { const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', t); localSet('staffux-theme', t); });
 
+    /* Внутренний API для модулей прототипа (не публичный интерфейс системы). */
+    window.StaffUx = { EXT, D, S, R, ROLES, TODAY, esc, $, $$, ICON, navIcon, dialog, closeDialog, toast, render, renderShell, scope, canEdit, currentPatient, parseRoute,
+        STAGE, fmtFull, fmtShort, whenShort, fmtStamp, plural, now, demoGate, ddHtml, closeMenus, ACTIONS, CORE };
     window.addEventListener('hashchange', () => { S.editing = null; toggleBell(false); render(); const h = $('#main h1'); if (h && !parseRoute().params.get('stage')) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); } });
     render();
 })();
