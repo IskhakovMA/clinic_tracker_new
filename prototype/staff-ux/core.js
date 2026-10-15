@@ -12,7 +12,7 @@
 
     /* Открытые (без факта) плановые события пациента.
        Просроченные — из всех этапов маршрута (как правило overdue_event качества данных),
-       предстоящие и без даты — только из текущего этапа. Для завершённого маршрута — нет. */
+       предстоящие и без даты — только из текущего этапа. Для завершенного маршрута — нет. */
     function openEvents(p, today, terminal) {
         if (!p || !p.history || !p.history.length || terminal.includes(p.stage)) return [];
         const last = p.history.length - 1;
@@ -23,6 +23,22 @@
             else if (occIndex === last) out.push({ ev, occIndex, eventIndex, stage: occ.stage });
         }));
         return out;
+    }
+    /* Соответствие факта плану: true — по плану, false — с отклонением, null/нет значения — не определено.
+       Событие без плана сравнивать не с чем. Отсутствие значения не считается «по плану». */
+    const planMatchState = (ev) => ev.noPlan ? 'noplan' : ev.matchedPlan === true ? 'match' : ev.matchedPlan === false ? 'mismatch' : 'unknown';
+    /* Единое состояние события для карточки и расписания. Открытость — только по openEvents (правило «Рабочего дня»).
+       Событие с датой без факта, которое openEvents не считает открытым (маршрут завершен или этап уже пройден),
+       — «факт не отмечен», а не просрочка. Плановая дата и история не меняются. */
+    const UNCLOSED_REASON = { route_closed: 'маршрут завершен', stage_passed: 'этап пройден' };
+    function eventState(p, occIndex, eventIndex, today, terminal) {
+        const ev = p.history[occIndex].events[eventIndex];
+        if (ev.actualDate) return { kind: 'done', planMatch: planMatchState(ev) };
+        const open = openEvents(p, today, terminal).some(x => x.occIndex === occIndex && x.eventIndex === eventIndex);
+        if (ev.noPlan || !ev.date) return { kind: 'nodate', open };
+        if (!open) return { kind: 'unclosed', open, reason: terminal.includes(p.stage) ? 'route_closed' : 'stage_passed' };
+        const days = daysBetween(today, ev.date);
+        return { kind: days < 0 ? 'overdue' : days === 0 ? 'today' : 'planned', open, days };
     }
     const overdueEvents = (p, today, terminal) => openEvents(p, today, terminal).filter(x => x.ev.date && x.ev.date < today);
 
@@ -73,8 +89,8 @@
 
     /* ---------- Решение ОК и перевод этапа: две самостоятельные операции ----------
        Утверждено владельцем проекта: ручная отметка решения ОК не переводит пациента,
-       перевод этапа не создаёт и не меняет отметку, подписанное решение председателя —
-       отдельная сущность (записи консилиума), ручная отметка его не создаёт.
+       перевод этапа не создает и не меняет отметку, подписанное решение председателя —
+       отдельная сущность (записи консилиума), ручная отметка его не создает.
        Новых медицинских правил здесь нет: проверяются только этап «Направлен на ОК»,
        право редактирования, выбор события и допустимое значение решения. */
     const DECISION_CODES = ['treatment_strategy_defined', 'treatment_strategy_changed', 'dispensary_observation'];
@@ -88,7 +104,7 @@
         if (!canEditPatient(role, inScope)) return { available: false, reason: 'no_edit_right' };
         const occ = p.history[p.history.length - 1];
         if (!occ || occ.stage !== 'consult' || !occ.events.length) return { available: false, reason: 'no_events' };
-        // Событие с уже сохранённой отметкой повторно не отмечается: процедура изменения решения — в WP2.2.
+        // Событие с уже сохраненной отметкой повторно не отмечается: процедура изменения решения — в WP2.2.
         const events = occ.events.map((ev, eventIndex) => ({ ev, eventIndex, marked: Boolean(ev.consiliumDecision) }));
         if (events.every(x => x.marked)) return { available: false, reason: 'all_marked', occIndex: p.history.length - 1, events };
         return { available: true, reason: '', occIndex: p.history.length - 1, events };
@@ -122,7 +138,7 @@
         const ev = idx >= 0 ? occ.events[idx] : null;
         if (!ev || !ev.actualDate) return null;
         const dateDiffers = actualDate !== ev.actualDate;
-        // Пустое введённое время — изменение не запрошено. Любое непустое время, отличное от записанного
+        // Пустое введенное время — изменение не запрошено. Любое непустое время, отличное от записанного
         // (в том числе когда записанное время пустое), — конфликт: факт не меняется и не игнорируется молча.
         const timeDiffers = Boolean(actualTime) && actualTime !== (ev.actualTime || '');
         return dateDiffers || timeDiffers ? { eventIndex: idx, total: occ.events.length, actualDate: ev.actualDate, actualTime: ev.actualTime || '' } : null;
@@ -135,7 +151,7 @@
         const occ = p.history[p.history.length - 1];
         if (!occ.events.length) occ.events.push({ date: '', time: '', actualDate: '', actualTime: '', matchedPlan: null, noPlan: false });
         const ev = occ.events[occ.events.length - 1];
-        // Факт пишется, только если его ещё нет; совпадающий существующий факт остаётся без изменений.
+        // Факт пишется, только если его еще нет; совпадающий существующий факт остается без изменений.
         if (!ev.actualDate) {
             ev.actualDate = actualDate; ev.actualTime = actualTime || ev.time || '';
             ev.matchedPlan = ev.date ? ev.date === actualDate && (ev.time || '') === (ev.actualTime || '') : null;
@@ -161,6 +177,6 @@
     const manualDecisions = (p) => p.history.flatMap((o, occIndex) => o.events.map((e, eventIndex) => ({ occIndex, eventIndex, stage: o.stage, decision: e.consiliumDecision, mark: e.decisionMark || null })).filter(x => x.decision));
     const signedDecisions = (consilium, patientId) => consilium.filter(c => c.patientId === patientId && c.status === 'signed').map(c => ({ id: c.id, treatment: c.treatment, scheme: c.scheme || null, date: c.date, time: c.time }));
 
-    root.StaffUxCore = { openEvents, overdueEvents, pickNextEvent, periodSummary, groupSchemes, TREND_MAX_DAYS, daysBetween, addDays,
+    root.StaffUxCore = { openEvents, planMatchState, eventState, UNCLOSED_REASON, overdueEvents, pickNextEvent, periodSummary, groupSchemes, TREND_MAX_DAYS, daysBetween, addDays,
         DECISION_CODES, ROLE_CAN_EDIT, ALLOWED_FROM_CONSULT, canEditPatient, decisionAvailability, defaultDecisionEvent, applyManualDecision, stageChangeConflict, applyStageChange, consiliumSummary, manualDecisions, signedDecisions };
 })(typeof window !== 'undefined' ? window : globalThis);

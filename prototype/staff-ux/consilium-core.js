@@ -20,12 +20,12 @@
         recorded: { label: 'Записан', step: 'Ожидает рассмотрения председателем', tone: 'muted' },
         in_review: { label: 'На рассмотрении', step: 'Председатель рассматривает запись', tone: 'info' },
         needs_revision: { label: 'На доработке', step: 'Возвращена врачу: нужно исправить и отправить повторно', tone: 'warn' },
-        revised: { label: 'Возвращён с доработки', step: 'Исправлена врачом, ожидает повторного рассмотрения', tone: 'info' },
+        revised: { label: 'Возвращен с доработки', step: 'Исправлена врачом, ожидает повторного рассмотрения', tone: 'info' },
         signed: { label: 'Решение подписано', step: 'Решение подписано председателем, изменения невозможны', tone: 'good' },
     };
     const EDITABLE = ['recorded', 'needs_revision', 'revised'];        // consEditable: правка и перенос автором
     const REVIEWABLE = ['recorded', 'revised'];                         // start_review
-    const AWAITING = ['recorded', 'revised', 'in_review'];             // ещё нет подписанного решения и не на доработке
+    const AWAITING = ['recorded', 'revised', 'in_review'];             // еще нет подписанного решения и не на доработке
 
     /* Сетка времени текущей недели (как DEFAULT_TIMES Stage 3.5): 09:00–16:45, шаг 15 минут. */
     const DEFAULT_TIMES = []; for (let m = 9 * 60; m < 17 * 60; m += 15) DEFAULT_TIMES.push(fromMin(m));
@@ -49,7 +49,7 @@
 
     const weekDates = (today) => { const t = parse(today); const monday = iso(new Date(t.getFullYear(), t.getMonth(), t.getDate() - ((t.getDay() + 6) % 7))); return Array.from({ length: 7 }, (_, k) => addDays(monday, k)); };
 
-    /* schedule_slots: сохранённые слоты председателя + автоматически открытая текущая неделя. */
+    /* schedule_slots: сохраненные слоты председателя + автоматически открытая текущая неделя. */
     function allSlots(state, today, groups) {
         const out = state.slots.map(x => ({ ...x, isDefaultWeek: false }));
         const keys = new Set(out.map(x => `${x.date}|${x.time}|${x.group}`));
@@ -141,11 +141,11 @@
     }
 
     /* Изменение и перенос (update) — только автором и только в статусах recorded / needs_revision / revised.
-       Правка записи «На доработке» — повторная отправка председателю (→ «Возвращён с доработки»). */
+       Правка записи «На доработке» — повторная отправка председателю (→ «Возвращен с доработки»). */
     function update(state, id, input, ctx) {
         const c = state.consilium.find(x => x.id === id);
         if (!c) fail('not_found', 'Запись не найдена.');
-        if (c.createdBy !== input.actor.userId) fail('forbidden_author', 'Изменять запись может только её автор.');
+        if (c.createdBy !== input.actor.userId) fail('forbidden_author', 'Изменять запись может только ее автор.');
         if (!EDITABLE.includes(c.status)) fail('not_editable', 'Запись на рассмотрении у председателя недоступна для редактирования.');
         const chk = bookingCheck(state, { ...input, recordId: id, group: c.group }, ctx);
         if (!chk.ok) fail(chk.code, chk.message);
@@ -187,7 +187,7 @@
         if (decision.treatment === 'chemotherapy' && !String(decision.schemeName || '').trim()) fail('scheme_required', 'Для химиотерапевтического лечения укажите схему.');
         Object.assign(c, { status: 'signed', treatment: decision.treatment, scheme: decision.treatment === 'chemotherapy' ? { code: decision.schemeCode || '', name: String(decision.schemeName).trim() } : null,
             goc: !!decision.goc, goc65: !!decision.goc65, routeStage: ctx.patientStage || null, signedDoctor: ctx.doctorName || c.doctor, signedAt: ctx.now, signedBy: actor.name });
-        log(state, 'consilium_signed', c.id, actor, ctx);   // подпись снимает текущий комментарий возврата; история возвратов остаётся
+        log(state, 'consilium_signed', c.id, actor, ctx);   // подпись снимает текущий комментарий возврата; история возвратов остается
         return c;
     }
     /* Возврат на доработку (return_for_revision): из «На рассмотрении», с обязательным комментарием,
@@ -217,7 +217,7 @@
         log(state, archived ? 'consilium_archived' : 'consilium_restored', c.id, actor, ctx || { now: '' });
         return c;
     }
-    /* Избранное председателя (закладка на пациента с записью; доступ к карточке не даёт). */
+    /* Избранное председателя (закладка на пациента с записью; доступ к карточке не дает). */
     function toggleFavorite(state, patientId, actor, ctx) {
         if (!actor.perms.useConsiliumFavorites) fail('forbidden_role', 'Избранное доступно только председателю консилиума.');
         if (!state.consilium.some(c => c.patientId === patientId)) fail('not_found', 'У пациента нет записи на консилиум.');
@@ -241,7 +241,7 @@
     /* Слоты председателя (generate_schedule / delete_schedule_slot). */
     /* Как generate_schedule() в WP2.1: INSERT OR IGNORE — повторы пропускаются, существующие слоты и записи
        не меняются, уже открытый день можно расширять. Интервал — только 15/30/60 (Literal в ConsiliumScheduleGenerateIn).
-       Сохранённый слот замещает автоматический с теми же датой, временем и группой (в т. ч. выходной текущей недели).
+       Сохраненный слот замещает автоматический с теми же датой, временем и группой (в т. ч. выходной текущей недели).
        Запрет прошедших дат — правило интерфейса приложения (сервер его не проверяет). Все проверки — до изменений. */
     const INTERVALS = [15, 30, 60];
     const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -269,9 +269,9 @@
         created.replacedAuto = created.filter(x => x.replacesAuto).length;
         return created;
     }
-    /* Как delete_schedule_slot() в WP2.1: удаляется только сохранённая строка слота; занятый слот удалить нельзя.
+    /* Как delete_schedule_slot() в WP2.1: удаляется только сохраненная строка слота; занятый слот удалить нельзя.
        Для текущей недели schedule_slots() снова подставляет автоматический слот на то же время, поэтому
-       удаление сохранённого слота НЕ закрывает время. Результат сообщает, что останется на этом времени:
+       удаление сохраненного слота НЕ закрывает время. Результат сообщает, что останется на этом времени:
        fallback = null — время закрыто; иначе — автоматический слот и его состояние для записи. Закрытие
        автоматического времени — новое правило, которого нет в WP2.1 (зависимость WP2.3). */
     function slotDeletionImpact(state, id, ctx) {

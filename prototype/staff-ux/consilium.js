@@ -7,7 +7,7 @@
     const X = window.StaffUx;
     const K = window.StaffUxConsilium;
     if (!X || !K) return;
-    const { D, S, R, TODAY, esc, $, $$, dialog, toast, render, scope, canEdit, STAGE, fmtFull, fmtShort, fmtStamp, plural, now, demoGate, ddHtml, closeMenus, ICON } = X;
+    const { D, S, R, TODAY, fold, esc, $, $$, dialog, toast, render, scope, canEdit, STAGE, fmtFull, fmtShort, fmtStamp, plural, now, demoGate, ddHtml, closeMenus, ICON } = X;
 
     /* ---------- Данные и роли ---------- */
     D.consilium.forEach(c => { if (c.diagnosisLocalization === undefined) c.diagnosisLocalization = c.localization || ''; if (!c.revisions) c.revisions = []; });
@@ -91,8 +91,8 @@
     const shortDoctor = (c) => { const full = doctorOf(c); const p = full.split(' '); return p.length === 3 ? `${p[0]} ${p[1][0]}. ${p[2][0]}.` : (c.doctor || full || '—'); };
     // Подсказка о следующем действии в строке списка (по роли).
     const rowHint = (c) => isChair()
-        ? { recorded: 'нужно рассмотреть', revised: 'рассмотреть повторно', in_review: 'оформить решение', needs_revision: 'ждёт врача', signed: 'готово' }[c.status]
-        : c.createdBy === R().user.id ? { recorded: 'ждёт председателя', revised: 'ждёт председателя', in_review: 'изменения недоступны', needs_revision: 'нужна доработка', signed: 'готово' }[c.status] : '';
+        ? { recorded: 'нужно рассмотреть', revised: 'рассмотреть повторно', in_review: 'оформить решение', needs_revision: 'ждет врача', signed: 'готово' }[c.status]
+        : c.createdBy === R().user.id ? { recorded: 'ждет председателя', revised: 'ждет председателя', in_review: 'изменения недоступны', needs_revision: 'нужна доработка', signed: 'готово' }[c.status] : '';
     const listHead = '<li class="crow crow--head" aria-hidden="true"><span>Время</span><span>Пациент</span><span>Специалисты</span><span>Статус</span></li>';
 
     /* ---------- Подробности записи ---------- */
@@ -125,13 +125,13 @@
             ${actionsFor(c)}
             ${canSeeHistory && c.revisions.length ? `<details class="deleted" ${c.status === 'needs_revision' ? 'open' : ''}><summary>История возвратов<span class="count">${c.revisions.length}</span></summary><ol class="hist">${c.revisions.map(r => `<li><div class="hist__head"><b>Раунд ${r.round}</b><time datetime="${esc(r.at)}">${esc(fmtStamp(r.at))} · ${esc(r.author)}</time></div><p>${esc(r.text)}</p></li>`).join('')}</ol></details>` : ''}
             ${auditBlock(c)}
-            ${p && scope().includes(p) ? `<p><a href="#/patient/${p.id}">Открыть карточку пациента</a></p>` : v.kind === 'full' ? '<p class="muted">Карточка пациента вне вашей области доступа — её открывает лечащий врач.</p>' : ''}
+            ${p && scope().includes(p) ? `<p><a href="#/patient/${p.id}">Открыть карточку пациента</a></p>` : v.kind === 'full' ? '<p class="muted">Карточка пациента вне вашей области доступа — ее открывает лечащий врач.</p>' : ''}
         </section>`;
     }
     function nextStepText(c) {
         const mine = c.createdBy === R().user.id;
-        if (isChair()) return { recorded: 'Начните рассмотрение, чтобы оформить решение.', revised: 'Врач исправил запись — рассмотрите её повторно.', in_review: 'Заполните решение и подпишите его или верните запись врачу.', needs_revision: 'Ожидается доработка врачом. Повторное рассмотрение станет доступно после отправки.', signed: 'Решение подписано. Изменения невозможны.' }[c.status];
-        if (mine) return { recorded: 'Ожидает председателя. Пока рассмотрение не начато, запись можно изменить, перенести или удалить.', revised: 'Отправлена повторно. Ожидает рассмотрения председателем.', in_review: 'Председатель рассматривает запись — изменения сейчас недоступны.', needs_revision: 'Исправьте запись по комментарию председателя и отправьте её повторно.', signed: 'Решение подписано. Запись можно перенести в архив.' }[c.status];
+        if (isChair()) return { recorded: 'Начните рассмотрение, чтобы оформить решение.', revised: 'Врач исправил запись — рассмотрите ее повторно.', in_review: 'Заполните решение и подпишите его или верните запись врачу.', needs_revision: 'Ожидается доработка врачом. Повторное рассмотрение станет доступно после отправки.', signed: 'Решение подписано. Изменения невозможны.' }[c.status];
+        if (mine) return { recorded: 'Ожидает председателя. Пока рассмотрение не начато, запись можно изменить, перенести или удалить.', revised: 'Отправлена повторно. Ожидает рассмотрения председателем.', in_review: 'Председатель рассматривает запись — изменения сейчас недоступны.', needs_revision: 'Исправьте запись по комментарию председателя и отправьте ее повторно.', signed: 'Решение подписано. Запись можно перенести в архив.' }[c.status];
         return K.STATUS[c.status].step;
     }
     function signedBlock(c) {
@@ -141,7 +141,7 @@
             <div><dt>Отметки ГОК</dt><dd>${esc([c.goc && 'ГОК', c.goc65 && 'ГОК 65+'].filter(Boolean).join(', ') || 'Нет')}</dd></div>
             <div><dt>Подписано</dt><dd>${c.signedAt ? `${esc(fmtStamp(c.signedAt))}${c.signedBy ? ', ' + esc(c.signedBy) : ''}` : 'председателем консилиума'}</dd></div>
             <div><dt>Этап маршрута на момент подписи</dt><dd>${c.routeStage ? esc(STAGE(c.routeStage)) : 'не установлен'} <span class="muted">· только снимок, этап пациента не меняется</span></dd></div>
-        </dl><p class="an-rule">Подписанное решение — отдельная сущность: оно не создаёт ручную отметку решения ОК в карточке и не переводит пациента на другой этап.</p></div>`;
+        </dl><p class="an-rule">Подписанное решение — отдельная сущность: оно не создает ручную отметку решения ОК в карточке и не переводит пациента на другой этап.</p></div>`;
     }
     function auditBlock(c) {
         const rows = CS.audit.filter(a => a.recordId === c.id || a.recordId === c.patientId);
@@ -163,7 +163,7 @@
             if (K.EDITABLE.includes(c.status) && c.status !== 'needs_revision') out.push(`<a class="btn" href="#/consilium/book?id=${c.id}">Изменить или перенести</a>`);
             if (K.EDITABLE.includes(c.status)) out.push(`<button class="btn btn--danger" type="button" data-cs-act="delete" data-id="${c.id}">Удалить запись</button>`);
             if (K.canArchive(c, actor())) out.push(`<button class="btn" type="button" data-cs-act="${c.archived ? 'restore' : 'archive'}" data-id="${c.id}">${c.archived ? 'Восстановить из архива' : 'Перенести в архив'}</button>`);
-            if (c.status === 'in_review') out.push('<p class="muted">Изменение и удаление недоступны, пока идёт рассмотрение.</p>');
+            if (c.status === 'in_review') out.push('<p class="muted">Изменение и удаление недоступны, пока идет рассмотрение.</p>');
         }
         return out.length ? `<div class="cs-actions">${out.join('')}</div>` : '';
     }
@@ -187,8 +187,8 @@
 
     /* ---------- Заседание (председатель) ---------- */
     function sessionRecords() {
-        const f = S.cons; const q = f.q.trim().toLowerCase();
-        return CS.consilium.filter(c => c.date === f.date && (!f.group || c.group === f.group) && (!q || c.patientName.toLowerCase().includes(q) || (c.policy || '').includes(q))).sort(K.sortByTime);
+        const f = S.cons; const q = fold(f.q.trim());
+        return CS.consilium.filter(c => c.date === f.date && (!f.group || c.group === f.group) && (!q || fold(c.patientName).includes(q) || (c.policy || '').includes(q))).sort(K.sortByTime);
     }
     const FILTERS = [['all', 'Все', () => true], ['awaiting', 'Ожидают рассмотрения', c => K.REVIEWABLE.includes(c.status)], ['in_review', 'На рассмотрении', c => c.status === 'in_review'], ['needs_revision', 'На доработке', c => c.status === 'needs_revision'], ['signed', 'Подписано', c => c.status === 'signed']];
     function viewSession() {
@@ -228,15 +228,15 @@
         const sel = list.find(c => c.id === S.cons.sel);
         const ret = list.filter(c => c.status === 'needs_revision').length;
         if (!list.length) return `<div class="table-wrap"><div class="state"><h2>Записей на консилиум пока нет</h2><p>Запишите пациента: выберите свободный слот в расписании или нажмите «Записать пациента».</p><a class="btn btn--primary" href="#/consilium/book">Записать пациента</a></div></div>`;
-        return `${ret ? `<div class="banner banner--warn" role="note"><span class="banner__title">${ICON.warn} На доработке: ${ret}</span><span class="banner__body">Председатель вернул ${plural(ret, 'запись', 'записи', 'записей')}. Откройте запись, чтобы увидеть причину и отправить её повторно.</span></div>` : ''}
+        return `${ret ? `<div class="banner banner--warn" role="note"><span class="banner__title">${ICON.warn} На доработке: ${ret}</span><span class="banner__body">Председатель вернул ${plural(ret, 'запись', 'записи', 'записей')}. Откройте запись, чтобы увидеть причину и отправить ее повторно.</span></div>` : ''}
             <div class="cs-split${sel ? ' cs-split--detail' : ''}">
                 <div class="cs-list-wrap"><ul class="agenda__list crows cs-list" aria-label="Мои записи на консилиум">${listHead}${list.map(c => recRow(c, { withDate: true })).join('')}</ul></div>
-                <div class="cs-detail-wrap">${sel ? detailBlock(sel, list) : '<div class="cs-placeholder"><p>Выберите запись, чтобы увидеть её статус, причину возврата и доступные действия.</p></div>'}</div>
+                <div class="cs-detail-wrap">${sel ? detailBlock(sel, list) : '<div class="cs-placeholder"><p>Выберите запись, чтобы увидеть ее статус, причину возврата и доступные действия.</p></div>'}</div>
             </div>`;
     }
     function viewArchive() {
-        const a = S.cons.arch; const q = a.q.trim().toLowerCase();
-        const list = ownRecords(true).filter(c => (!a.date || c.date === a.date) && (!q || c.patientName.toLowerCase().includes(q) || (c.policy || '').includes(q)));
+        const a = S.cons.arch; const q = fold(a.q.trim());
+        const list = ownRecords(true).filter(c => (!a.date || c.date === a.date) && (!q || fold(c.patientName).includes(q) || (c.policy || '').includes(q)));
         const sel = list.find(c => c.id === S.cons.sel);
         return `<p class="lead">Архив — подписанные решения, которые вы перенесли из списка «Мои записи». Архив не меняет решение и не удаляет историю; запись можно восстановить.</p>
             <div class="toolbar"><div class="search">${ICON.search}<label class="sr-only" for="csArQ">Поиск по ФИО или полису</label><input class="input" id="csArQ" type="search" placeholder="ФИО или полис" value="${esc(a.q)}" autocomplete="off"></div>
@@ -248,11 +248,11 @@
 
     /* ---------- История решений (председатель) ---------- */
     function viewHistory() {
-        const h = S.cons.hist; const q = h.q.trim().toLowerCase();
-        const list = CS.consilium.filter(c => c.date >= h.from && c.date <= h.to && (!h.status || c.status === h.status) && (!h.group || c.group === h.group) && (!q || c.patientName.toLowerCase().includes(q) || (c.policy || '').includes(q)))
+        const h = S.cons.hist; const q = fold(h.q.trim());
+        const list = CS.consilium.filter(c => c.date >= h.from && c.date <= h.to && (!h.status || c.status === h.status) && (!h.group || c.group === h.group) && (!q || fold(c.patientName).includes(q) || (c.policy || '').includes(q)))
             .sort((a, b) => K.sortByTime(b, a));
         const sel = list.find(c => c.id === S.cons.sel);
-        return `<p class="lead">Все записи консилиума, включая архивные отметки авторов. Подписанное решение изменить нельзя; история возвратов хранится в каждой записи. Удалённые врачами записи в интерфейсе не показываются (в системе их история сохраняется).</p>
+        return `<p class="lead">Все записи консилиума, включая архивные отметки авторов. Подписанное решение изменить нельзя; история возвратов хранится в каждой записи. Удаленные врачами записи в интерфейсе не показываются (в системе их история сохраняется).</p>
             <div class="toolbar cs-toolbar" role="group" aria-label="Фильтры истории">
                 <div class="an-dates"><label class="sr-only" for="csHFrom">С даты</label><input class="input" type="date" id="csHFrom" value="${esc(h.from)}"><span aria-hidden="true">—</span><label class="sr-only" for="csHTo">По дату</label><input class="input" type="date" id="csHTo" value="${esc(h.to)}"></div>
                 ${ddHtml('csHStatus', 'Статус', 'hstatus', [['', 'Любой'], ...Object.entries(K.STATUS).map(([k, v]) => [k, v.label])], h.status, false, 'cons')}
@@ -273,7 +273,7 @@
             ${rows.length ? `<div class="table-scroll"><table class="htable"><thead><tr><th>Дата и время</th><th>Пациент</th><th>Диагноз</th><th>${extraHead}</th></tr></thead><tbody>${rows.map(c => `<tr><td data-label="Дата">${esc(when(c))}</td><td data-label="Пациент">${esc(c.patientName)}<br><span class="muted">${esc(doctorOf(c))}</span></td><td data-label="Диагноз" class="mono">${esc(c.icd)}</td><td data-label="${extraHead}">${cell(c)}</td></tr>`).join('')}</tbody></table></div>` : `<p class="an-empty">${empty}</p>`}</section>`;
         const treat = (c) => esc(D.TREATMENTS[c.treatment] || '—') + (c.scheme ? ': ' + esc(c.scheme.name) : '');
         return `<div class="toolbar"><label class="field__label" for="csRegDate">Дата заседания</label><input class="input" type="date" id="csRegDate" value="${esc(date)}"></div>
-            <p class="an-rule">Реестры формируются автоматически из подписанных решений. Экспорт в Excel в прототип не перенесён — он работает в <a href="../redesign/#/consilium">Stage 3.5</a>.</p>
+            <p class="an-rule">Реестры формируются автоматически из подписанных решений. Экспорт в Excel в прототип не перенесен — он работает в <a href="../redesign/#/consilium">Stage 3.5</a>.</p>
             ${reg('Хирургическое лечение', signed.filter(c => c.treatment === 'surgery'), 'Направление создано', c => `<label class="radio"><input type="checkbox" data-cs-ref="${c.id}" ${c.referralCompleted ? 'checked' : ''} ${perms().markReferralCompletion ? '' : 'disabled'}> ${c.referralCompleted ? 'Отмечено' : 'Отметить'}</label>`, 'Хирургических назначений за этот день нет.')}
             ${reg('Химиотерапевтическое лечение', signed.filter(c => c.treatment === 'chemotherapy'), 'Схема', c => c.scheme ? `${c.scheme.code ? `<span class="mono">${esc(c.scheme.code)}</span> — ` : ''}${esc(c.scheme.name)}` : '—', 'Химиотерапевтических назначений за этот день нет.')}
             ${reg('ГОК', signed.filter(c => c.goc), 'Лечение', treat, 'Случаев ГОК за этот день нет.')}
@@ -286,7 +286,7 @@
         return `<div class="cs-week" role="group" aria-label="Дни недели">${days.map(d => {
             const s = K.daySummary(CS, d, group, ctx());
             const past = d < TODAY;
-            const label = !s.opened ? (s.occupied ? `${s.occupied} занято` : 'не открыт') : past ? 'прошёл' : s.free ? `${s.free} своб.` : s.unavailable === s.total ? (K.isWeekend(d) && S.cons.wp23 ? 'выходной' : 'недоступен') : 'нет своб.';
+            const label = !s.opened ? (s.occupied ? `${s.occupied} занято` : 'не открыт') : past ? 'прошел' : s.free ? `${s.free} своб.` : s.unavailable === s.total ? (K.isWeekend(d) && S.cons.wp23 ? 'выходной' : 'недоступен') : 'нет своб.';
             const tone = !s.opened || past ? 'off' : s.free ? 'free' : 'full';
             return `<button class="cs-day-btn cs-day-btn--${tone}${d === TODAY ? ' is-today' : ''}" type="button" ${attr}="${d}" aria-pressed="${d === selDay}" aria-label="${esc(dayTitle(d))}: ${esc(label)}${d === TODAY ? ', сегодня' : ''}">
                 <span class="cs-day-btn__wd">${WD[dow(d)]}</span><span class="cs-day-btn__d">${Number(d.slice(8))}</span><span class="cs-day-btn__s">${esc(label)}</span></button>`;
@@ -314,7 +314,7 @@
             }
             if (st.state !== 'free') return { st: 'off', html: `<div class="slot slot--off" title="${esc(st.reason)}"><span class="slot__time">${esc(slot.time)}</span><span class="slot__txt">${esc(st.state === 'past' ? 'Время прошло' : 'Выходной')}</span><span class="sr-only">: ${esc(st.reason.replace(/^Выходной:\s*/, ''))}</span></div>` };
             const keepsAuto = isChair() && !slot.isDefaultWeek && K.weekDates(TODAY).includes(slot.date) && K.DEFAULT_TIMES.includes(slot.time);
-            const del = isChair() && !slot.isDefaultWeek ? `<button class="slot__del" type="button" data-cs-act="delslot" data-id="${slot.id}" aria-label="Удалить сохранённый слот ${esc(slot.time)}${keepsAuto ? ' (время останется открытым автоматически)' : ''}" title="${keepsAuto ? 'Время останется открытым автоматически' : 'Удалить слот'}">${ICON.x}</button>` : '';
+            const del = isChair() && !slot.isDefaultWeek ? `<button class="slot__del" type="button" data-cs-act="delslot" data-id="${slot.id}" aria-label="Удалить сохраненный слот ${esc(slot.time)}${keepsAuto ? ' (время останется открытым автоматически)' : ''}" title="${keepsAuto ? 'Время останется открытым автоматически' : 'Удалить слот'}">${ICON.x}</button>` : '';
             if (mode === 'pick') {
                 const on = S.cons.bk && S.cons.bk.date === date && S.cons.bk.time === slot.time;
                 return { st: 'free', html: `<button class="slot slot--free${on ? ' is-selected' : ''}" type="button" data-cs-pick="${slot.time}" data-date="${date}" aria-pressed="${!!on}"><span class="slot__time">${esc(slot.time)}</span><span class="slot__txt">${on ? 'Выбрано' : 'Свободно'}</span></button>` };
@@ -331,7 +331,7 @@
         const g = sGroup(); const d = S.cons.day;
         const r = slotButtons(g, d, 'view');
         const past = d < TODAY;
-        const empty = !r.opened ? `<div class="cs-empty"><b>${past ? 'Этот день прошёл.' : 'Расписание на этот день не открыто.'}</b><p>${isChair() ? 'Откройте слоты ниже — до этого записаться на этот день нельзя.' : 'Председатель ещё не открыл этот день для записи. Пустое расписание не означает, что можно записаться на любое время.'}</p></div>`
+        const empty = !r.opened ? `<div class="cs-empty"><b>${past ? 'Этот день прошел.' : 'Расписание на этот день не открыто.'}</b><p>${isChair() ? 'Откройте слоты ниже — до этого записаться на этот день нельзя.' : 'Председатель еще не открыл этот день для записи. Пустое расписание не означает, что можно записаться на любое время.'}</p></div>`
             : S.cons.onlyFree && !r.counts.free ? '<div class="cs-empty"><b>Свободных слотов нет.</b><p>Выберите другой день или снимите фильтр «Только свободные».</p></div>' : '';
         return `<div class="toolbar cs-toolbar" role="group" aria-label="Группа и неделя">
                 ${ddHtml('csSGroup', 'Группа', 'sgroup', GROUPS.map(k => [k, D.GROUPS[k]]), g, true, 'cons')}
@@ -383,13 +383,13 @@
                 : fieldsFor(p) };
         return S.cons.bk;
     }
-    const icdLoc = (code) => { for (const v of Object.values(window.ICD10 || {})) if (v.diagnoses.some(d => d.code === code)) return v.label; return ''; };
+    const icdLoc = (code) => { for (const v of Object.values(window.ICD10 || {})) if (v.diagnoses.some(d => d.code === code)) return X.ui(v.label); return ''; };
     const fieldsFor = (p) => p ? { policy: p.policy || '', hasBenefit: false, localization: icdLoc(p.icd) || p.localization || '', icd: K.validDiagnosis(p.icd, false) || '', additionalDiagnosis: '', comment: '', additionalParticipant: '', uvRuv: false, needsSurgeon: false, needsRadiotherapist: false } : { policy: '', hasBenefit: false, localization: '', icd: '', additionalDiagnosis: '', comment: '', additionalParticipant: '', uvRuv: false, needsSurgeon: false, needsRadiotherapist: false };
     function viewBook(r) {
-        if (!perms().bookConsilium) return `<div class="table-wrap"><div class="state"><h2>Запись на консилиум недоступна</h2><p>${isChair() ? 'Председатель рассматривает и подписывает записи, но не создаёт их. Записывают пациентов лечащий врач, заведующий отделением и разработчик.' : 'У вашей роли нет права записи на консилиум.'}</p><a class="btn" href="#/consilium">К консилиуму</a></div></div>`;
+        if (!perms().bookConsilium) return `<div class="table-wrap"><div class="state"><h2>Запись на консилиум недоступна</h2><p>${isChair() ? 'Председатель рассматривает и подписывает записи, но не создает их. Записывают пациентов лечащий врач, заведующий отделением и разработчик.' : 'У вашей роли нет права записи на консилиум.'}</p><a class="btn" href="#/consilium">К консилиуму</a></div></div>`;
         const b = bookState(r);
         const rec = b.id ? CS.consilium.find(c => c.id === b.id) : null;
-        if (b.id && (!rec || rec.createdBy !== R().user.id || !K.EDITABLE.includes(rec.status))) return `<div class="table-wrap"><div class="state"><h2>Запись недоступна для изменения</h2><p>${rec ? (rec.status === 'in_review' ? 'Председатель рассматривает запись — изменения недоступны.' : rec.status === 'signed' ? 'Решение подписано — запись изменить нельзя.' : 'Изменять запись может только её автор.') : 'Запись не найдена.'}</p><a class="btn" href="#/consilium/mine">К моим записям</a></div></div>`;
+        if (b.id && (!rec || rec.createdBy !== R().user.id || !K.EDITABLE.includes(rec.status))) return `<div class="table-wrap"><div class="state"><h2>Запись недоступна для изменения</h2><p>${rec ? (rec.status === 'in_review' ? 'Председатель рассматривает запись — изменения недоступны.' : rec.status === 'signed' ? 'Решение подписано — запись изменить нельзя.' : 'Изменять запись может только ее автор.') : 'Запись не найдена.'}</p><a class="btn" href="#/consilium/mine">К моим записям</a></div></div>`;
         const pool = scope().filter(p => canEdit(p)).sort((a, c) => a.name.localeCompare(c.name, 'ru'));
         const p = D.patients.find(x => x.id === b.patientId);
         const existing = p && !rec ? CS.consilium.find(c => c.patientId === p.id) : null;
@@ -408,7 +408,7 @@
             slotsHtml = `<div class="cs-weeknav"><button class="btn btn--icon" type="button" data-bk-week="-7" aria-label="Предыдущая неделя">‹</button><span class="cs-weeknav__label">${esc(fmtShort(selDays[0]))} — ${esc(fmtShort(selDays[6]))}</span><button class="btn btn--icon" type="button" data-bk-week="7" aria-label="Следующая неделя">›</button></div>
                 ${weekStrip(group, b.date, b.week, 'data-bk-day')}
                 <h3 class="cs-subhead">${esc(dayTitle(b.date))}</h3>
-                ${!sr.opened ? `<div class="cs-empty"><b>${b.date < TODAY ? 'Этот день прошёл.' : 'Председатель не открыл этот день для записи.'}</b><p>Выберите другой день недели или следующую неделю.</p></div>` : !sr.counts.free ? '<div class="cs-empty"><b>Свободных слотов нет.</b><p>Все слоты этого дня заняты или недоступны. Выберите другой день.</p></div>' : ''}
+                ${!sr.opened ? `<div class="cs-empty"><b>${b.date < TODAY ? 'Этот день прошел.' : 'Председатель не открыл этот день для записи.'}</b><p>Выберите другой день недели или следующую неделю.</p></div>` : !sr.counts.free ? '<div class="cs-empty"><b>Свободных слотов нет.</b><p>Все слоты этого дня заняты или недоступны. Выберите другой день.</p></div>' : ''}
                 ${sr.html}`;
         }
         const ready = p && group && !existing;
@@ -426,7 +426,7 @@
             ${ready || rec ? `<section class="section" aria-labelledby="bk2"><div class="section__head"><h2 id="bk2" tabindex="-1">2. Время заседания</h2><span class="section__meta">${b.time ? `выбрано: ${esc(fmtShort(b.date))}, ${esc(b.time)}` : 'выберите свободный слот'}</span></div>${err('slot')}${slotsHtml}</section>
             <section class="section" aria-labelledby="bk3"><div class="section__head"><h2 id="bk3">3. Сведения для консилиума</h2></div>
                 <div class="edit-grid">
-                    <div class="field"><label class="field__label" for="bkLoc">Локализация <span class="req">*</span></label><input class="input" id="bkLoc" name="localization" list="bkLocs" value="${esc(f.localization)}" autocomplete="off"><datalist id="bkLocs">${Object.values(window.ICD10 || {}).map(x => `<option value="${esc(x.label)}"></option>`).join('')}</datalist></div>
+                    <div class="field"><label class="field__label" for="bkLoc">Локализация <span class="req">*</span></label><input class="input" id="bkLoc" name="localization" list="bkLocs" value="${esc(f.localization)}" autocomplete="off"><datalist id="bkLocs">${Object.values(window.ICD10 || {}).map(x => `<option value="${esc(X.ui(x.label))}"></option>`).join('')}</datalist></div>
                     <div class="field"><label class="field__label" for="bkIcd">Основной диагноз МКБ-10 (C00–C97) <span class="req">*</span></label><input class="input mono" id="bkIcd" name="icd" value="${esc(f.icd)}" autocomplete="off"></div>
                     <div class="field"><label class="field__label" for="bkAdd">Дополнительный диагноз</label><input class="input mono" id="bkAdd" name="additionalDiagnosis" value="${esc(f.additionalDiagnosis)}" autocomplete="off"></div>
                     <div class="field"><label class="field__label" for="bkPolicy">Полис ОМС</label><input class="input mono" id="bkPolicy" name="policy" value="${esc(f.policy)}" autocomplete="off"></div>
@@ -440,7 +440,7 @@
                     <div><dt>Дата и время</dt><dd>${b.time ? esc(`${dayTitle(b.date)}, ${b.time}`) : '<span class="status status--warn">слот не выбран</span>'}</dd></div>
                     <div><dt>Лечащий врач</dt><dd>${esc((p || {}).doctorFull || '—')}</dd></div></dl>
                 ${err('submit')}
-                <label class="radio cs-demo"><input type="checkbox" name="conflictDemo" ${b.conflictDemo ? 'checked' : ''}> Демо: другой сотрудник займёт выбранный слот перед подтверждением</label>
+                <label class="radio cs-demo"><input type="checkbox" name="conflictDemo" ${b.conflictDemo ? 'checked' : ''}> Демо: другой сотрудник займет выбранный слот перед подтверждением</label>
                 <div class="cs-actions"><button class="btn btn--primary" type="submit">${rec ? (rec.status === 'needs_revision' ? 'Отправить на повторное рассмотрение' : 'Сохранить изменения') : 'Записать пациента'}</button><a class="btn" href="${rec ? `#/consilium/mine?rec=${rec.id}` : '#/consilium'}">Отмена</a></div>
             </section>` : ''}
             </form>`;
@@ -490,31 +490,31 @@
         dialog({ title: 'Подписать решение консилиума?', icon: ICON.lock,
             body: `<p><b>${esc(c.patientName)}</b> · ${esc(when(c))} · ${esc(D.GROUPS[c.group])}</p>
                 <dl class="dl"><div><dt>Назначенное лечение</dt><dd>${esc(D.TREATMENTS[d.treatment])}</dd></div>${d.treatment === 'chemotherapy' ? `<div><dt>Схема</dt><dd>${esc(d.schemeName)}</dd></div>` : ''}<div><dt>Отметки</dt><dd>${esc([d.goc && 'ГОК', d.goc65 && 'ГОК 65+'].filter(Boolean).join(', ') || 'Нет')}</dd></div></dl>
-                <p><b>После подписания решение изменить нельзя.</b> Этап маршрута пациента не изменится, ручная отметка решения ОК в карточке не создаётся.</p>`,
+                <p><b>После подписания решение изменить нельзя.</b> Этап маршрута пациента не изменится, ручная отметка решения ОК в карточке не создается.</p>`,
             actions: [{ label: 'Отмена', autofocus: true }, { label: 'Подписать решение', kind: 'primary', run: () => {
-                run(() => K.sign(CS, c.id, d, actor(), ctx({ patientStage: p ? p.stage : null, doctorName: doctorOf(c) })), 'Решение подписано. Этап пациента не изменён.');
+                run(() => K.sign(CS, c.id, d, actor(), ctx({ patientStage: p ? p.stage : null, doctorName: doctorOf(c) })), 'Решение подписано. Этап пациента не изменен.');
                 delete S.cons.drafts[c.id];
             } }] });
     }
-    /* Удаление сохранённого слота. В WP2.1 удаляется только сохранённая строка; на текущей неделе
+    /* Удаление сохраненного слота. В WP2.1 удаляется только сохраненная строка; на текущей неделе
        то же время снова открыто автоматически — интерфейс предупреждает об этом и не называет это закрытием. */
     const fallbackText = (fb) => fb.state === 'free' ? 'останется открытым для записи: текущая неделя открыта автоматически'
-        : fb.state === 'weekend' ? 'вернётся к автоматическому слоту выходного. Сейчас он недоступен только по демонстрационному правилу WP2.3 — текущий backend такой слот не закрывает'
-        : fb.state === 'past' ? 'вернётся к автоматическому слоту; время уже прошло' : 'вернётся к автоматическому слоту';
+        : fb.state === 'weekend' ? 'вернется к автоматическому слоту выходного. Сейчас он недоступен только по демонстрационному правилу WP2.3 — текущий backend такой слот не закрывает'
+        : fb.state === 'past' ? 'вернется к автоматическому слоту; время уже прошло' : 'вернется к автоматическому слоту';
     function deleteSlotFlow(id) {
         const impact = K.slotDeletionImpact(CS, id, ctx());
         if (!impact) { toast('Слот не найден'); return; }
         const t = impact.slot.time;
         const doDelete = () => {
-            try { K.deleteSlot(CS, id, actor(), ctx()); render(); toast(impact.fallback ? `Сохранённый слот ${t} удалён. Время ${fallbackText(impact.fallback)}.` : `Слот ${t} удалён — это время закрыто для записи.`); }
+            try { K.deleteSlot(CS, id, actor(), ctx()); render(); toast(impact.fallback ? `Сохраненный слот ${t} удален. Время ${fallbackText(impact.fallback)}.` : `Слот ${t} удален — это время закрыто для записи.`); }
             catch (e) { render(); toast(e.message); }
         };
         if (!impact.fallback) { doDelete(); return; }
-        dialog({ title: `Удалить сохранённый слот ${esc(t)}?`, icon: ICON.warn,
+        dialog({ title: `Удалить сохраненный слот ${esc(t)}?`, icon: ICON.warn,
             body: `<p>${esc(dayTitle(impact.slot.date))}, ${esc(t)} · ${esc(D.GROUPS[impact.slot.group])}.</p>
                 <div class="banner banner--warn" role="note"><span class="banner__body"><b>Время не закроется.</b> После удаления время ${esc(t)} ${esc(fallbackText(impact.fallback))}.</span></div>
                 <p class="muted">Закрыть время автоматической недели нельзя: в текущей версии (WP2.1) такой операции нет, это потребует нового правила расписания (WP2.3).</p>`,
-            actions: [{ label: 'Отмена', autofocus: true }, { label: 'Удалить сохранённый слот', kind: 'danger', run: () => doDelete() }] });
+            actions: [{ label: 'Отмена', autofocus: true }, { label: 'Удалить сохраненный слот', kind: 'danger', run: () => doDelete() }] });
     }
     function returnDialog(c) {
         const last = c.revisions[c.revisions.length - 1];

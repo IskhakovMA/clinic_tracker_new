@@ -14,7 +14,7 @@
     --ease: cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-/* Тёмная тема — основная. Цвета Stage 3.5, контраст текста подтянут. */
+/* Темная тема — основная. Цвета Stage 3.5, контраст текста подтянут. */
 :root, [data-theme="dark"] {
     --bg: #0f1216;
     --surface: #151a21;
@@ -703,6 +703,8 @@ a.crow:hover { background: var(--surface-2); }
     transform: translateX(100%); transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
 }
 .ai-panel.is-open { transform: none; }
+/* Закрытая панель не должна получать фокус с клавиатуры: display у .ai-panel перекрывал атрибут hidden (v3.1, QA). */
+.ai-panel[hidden], .ai-scrim[hidden] { display: none; }
 .ai-panel__head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); padding: var(--sp-4) var(--sp-5) var(--sp-3); border-bottom: 1px solid var(--line); }
 .ai-panel__title { font-size: var(--fs-lg); }
 .ai-panel__sub { font-size: var(--fs-sm); color: var(--text-3); margin-top: 2px; overflow-wrap: anywhere; }
@@ -921,7 +923,7 @@ button.slot--busy { cursor: pointer; }
 button.slot--busy:hover { border-color: var(--accent-text); }
 .slot--off { background: repeating-linear-gradient(45deg, var(--surface-2) 0 6px, var(--surface) 6px 12px); color: var(--text-3); }
 .slot--off .slot__time { color: var(--text-3); font-weight: 500; }
-/* Удаление сохранённого слота — малое опасное действие-иконка (система кнопок: 32 px, на телефоне 40 px).
+/* Удаление сохраненного слота — малое опасное действие-иконка (система кнопок: 32 px, на телефоне 40 px).
    Красная только иконка, рамка нейтральная — расписание не перегружается красным; под кнопку зарезервировано место. */
 .slot--with-del { padding-right: 46px; }
 .slot__del { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 32px; height: 32px; display: grid; place-items: center; padding: 0;
@@ -978,3 +980,49 @@ button.slot--busy:hover { border-color: var(--accent-text); }
 }
 /* В списке консилиума второстепенные строки не длиннее двух линий; полный текст — в подробностях */
 .cs-list .arow__sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ================= Staff UX v3.1: расписание событий пациентов ================= */
+.ev-toolbar { flex-wrap: wrap; }
+.ev-block { margin-bottom: var(--sp-6); }
+.ev-block .section__head h2 { font-size: var(--fs-lg); }
+.ev-list .crow { grid-template-columns: 7rem minmax(0, 1.6fr) minmax(0, 0.9fr) 12rem; column-gap: var(--sp-4); }
+a.ev-row { color: inherit; text-decoration: none; }
+.ev-notime { color: var(--text-3); font-size: var(--fs-sm); }
+.ev-date { width: 160px; margin-left: var(--sp-2); }
+.ev-nodate { margin-bottom: var(--sp-5); }
+@media (max-width: 1180px) { .ev-list .crow { grid-template-columns: 6.5rem minmax(0, 1.5fr) minmax(0, 0.9fr) 10rem; } }
+@media (max-width: 899px) {
+    .ev-list .crow { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "time status" "patient patient" "doctor doctor"; row-gap: var(--sp-1); }
+    .ev-list .crow > :nth-child(1) { grid-area: time; } .ev-list .crow > :nth-child(2) { grid-area: patient; }
+    .ev-list .crow > :nth-child(3) { grid-area: doctor; } .ev-list .crow > :nth-child(4) { grid-area: status; justify-self: end; text-align: right; }
+    .ev-list .crow--head { display: none; }
+}
+@media (max-width: 767px) { .ev-date { width: auto; flex: 1; margin-left: 0; } }
+
+/* ================= Staff UX v3.1: создание пациента ================= */
+.np-form { max-width: 960px; }
+.np-form .section { padding: var(--sp-5); border: 1px solid var(--line); border-radius: var(--r-lg, var(--r-md)); background: var(--surface); }
+.np-form .section + .section { margin-top: var(--sp-4); }
+.np-form .edit-grid { align-items: start; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+.np-form .edit-grid + .edit-grid { margin-top: var(--sp-3); }
+.field--wide { grid-column: 1 / -1; }
+.req { color: var(--danger); font-weight: 600; }
+.np-preview { margin: var(--sp-3) 0 0; font-size: var(--fs-sm); color: var(--text-2); }
+.np-summary, #npNet { margin-bottom: var(--sp-4); }
+.np-summary:focus, #npNet:focus { outline: 2px solid var(--focus); outline-offset: 2px; }
+.np-summary a { color: inherit; }
+.np-dups { margin-top: var(--sp-3); }
+.np-dups .plain-list { margin-top: var(--sp-2); }
+.np-combo { position: relative; }
+/* Список перерисовывается при каждом вводе — без анимации появления, иначе он мерцает. */
+.np-combo__list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); max-height: 280px; overflow-y: auto; z-index: 20; animation: none; }
+.np-combo__list .dd__opt { white-space: normal; align-items: flex-start; padding-top: 6px; padding-bottom: 6px; }
+.np-combo__list .dd__opt.is-active { background: var(--accent-soft); }
+.np-combo__list .mono { flex: 0 0 4.2rem; }
+.np-combo__label { min-width: 0; overflow-wrap: anywhere; }
+.np-actions { position: sticky; bottom: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); margin-top: var(--sp-4); padding: var(--sp-3) 0; background: var(--bg); border-top: 1px solid var(--line); z-index: 5; }
+.np-actions__note { flex: 1 1 200px; }
+@media (max-width: 767px) {
+    .np-form .section { padding: var(--sp-4); }
+    .np-actions .btn { flex: 1 1 auto; }
+}

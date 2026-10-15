@@ -105,7 +105,10 @@
     const showsDoctor = () => S.role !== 'doctor' && S.role !== 'chair';
 
     /* ---------- Производные данные пациента ---------- */
-    const STAGE = (s) => D.STAGES[s] || s;
+    // Подписи справочников (этапы, клиентские пути, МКБ-10, чек-листы) — по стандарту Staff UX «е» вместо «ё»;
+    // справочники и записи не меняются. Поиск не различает «е/ё». ФИО и тексты людей показываются как есть.
+    const { ui, fold } = window.StaffUxText;
+    const STAGE = (s) => ui(D.STAGES[s] || s);
     const isTerminal = (p) => D.TERMINAL.includes(p.stage);
     const cur = (p) => p.history[p.history.length - 1];
     // Ближайшее событие — самое раннее открытое событие по дате и времени (core.js); просрочка не скрывается более поздним событием.
@@ -207,7 +210,7 @@
 
     function demoGate(emptyText) {
         if (S.demo === 'loading') return `<div class="table-wrap" aria-busy="true"><div class="skeleton" aria-label="Загрузка данных">${'<div></div>'.repeat(6)}</div></div>`;
-        if (S.demo === 'error') return `<div class="table-wrap"><div class="state state--error" role="alert"><h2>Не удалось загрузить данные</h2><p>Сервер не ответил. Данные не изменены — попробуйте ещё раз.</p><button class="btn" data-act="retry">Повторить</button></div></div>`;
+        if (S.demo === 'error') return `<div class="table-wrap"><div class="state state--error" role="alert"><h2>Не удалось загрузить данные</h2><p>Сервер не ответил. Данные не изменены — попробуйте еще раз.</p><button class="btn" data-act="retry">Повторить</button></div></div>`;
         if (S.demo === 'empty') return `<div class="table-wrap"><div class="state"><h2>${emptyText}</h2></div></div>`;
         return null;
     }
@@ -235,7 +238,7 @@
         const date = parse(TODAY);
         return `<div class="page-head"><div><h1>${dept ? 'Отделение' : `Добрый день, ${esc(u.name.split(' ')[1])}`}</h1>
                 <p class="page-head__sub">${date.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })} · ${esc(R().scopeText.toLowerCase())}</p></div>
-                ${R().write ? `<div class="page-head__actions"><a class="btn btn--primary" href="#/patients" data-act="new-patient">${ICON.plus}Новый пациент</a></div>` : ''}</div>
+                ${R().write ? `<div class="page-head__actions"><a class="btn btn--primary" href="#/patients/new" data-act="new-patient">${ICON.plus}Новый пациент</a></div>` : ''}</div>
             ${gate || `<div class="agenda">
                 ${group('Просрочено', by('overdue').sort((a, b) => nextEvent(a).d - nextEvent(b).d), 'danger', 'Просроченных событий нет.', p => item(p, `<span class="status status--danger">${esc(nextEvent(p).label)}</span>`))}
                 ${group('Сегодня', by('today'), 'today', 'На сегодня плановых событий нет.', p => item(p, `<span class="status status--info">сегодня${nextEvent(p).ev.time ? ' в ' + esc(nextEvent(p).ev.time) : ''}</span>`))}
@@ -243,7 +246,7 @@
                 ${group('Требуют внимания', attention, 'warn', 'Открытых отметок внимания нет.', p => item(p, `<span class="status status--warn">${esc(D.ATTENTION_REASONS[openIssues(p)[0].reasonCode])}</span>`))}
             </div>`}`;
     }
-    const eventTitleOf = (stage) => ({ 'primary-appointment': 'Первичный приём', exam: 'Обследование', appointment: 'Приём врача', consult: 'Онкоконсилиум', 'treatment-prep': 'Лечение', treatment: 'Лечение' }[stage] || 'Событие');
+    const eventTitleOf = (stage) => ({ 'primary-appointment': 'Первичный прием', exam: 'Обследование', appointment: 'Прием врача', consult: 'Онкоконсилиум', 'treatment-prep': 'Лечение', treatment: 'Лечение' }[stage] || 'Событие');
     const eventTitle = (p) => eventTitleOf(p.stage);
 
     /* ---------- Список пациентов ---------- */
@@ -252,17 +255,17 @@
         { id: 'attention', label: 'Требуют внимания', tone: 'warn', test: p => openIssues(p).length > 0 },
         { id: 'overdue', label: 'Просрочено', tone: 'danger', test: p => { const n = nextEvent(p); return n && n.kind === 'overdue'; } },
         { id: 'soon', label: 'Ближайшие 3 дня', test: p => { const n = nextEvent(p); return n && (n.kind === 'today' || n.kind === 'soon'); } },
-        { id: 'closed', label: 'Завершённые', test: p => isTerminal(p) },
+        { id: 'closed', label: 'Завершенные', test: p => isTerminal(p) },
         { id: 'all', label: 'Все', test: () => true },
     ];
-    const SORTS = { urgent: 'Сначала срочные', name: 'По ФИО', next: 'По ближайшему событию', updated: 'Сначала изменённые' };
+    const SORTS = { urgent: 'Сначала срочные', name: 'По ФИО', next: 'По ближайшему событию', updated: 'Сначала измененные' };
     const DEADLINES = { overdue: 'Просрочено', today: 'Сегодня', soon: 'В ближайшие 3 дня', nodate: 'Дата не назначена' };
     function filtered() {
         const L = S.list;
         const view = VIEWS.find(v => v.id === L.view) || VIEWS[0];
-        const q = L.q.trim().toLowerCase();
+        const q = fold(L.q.trim());
         let rows = scope().filter(view.test).filter(p => {
-            if (q && !(`${p.name} ${p.policy} ${p.icd} ${p.nosologyLabel}`.toLowerCase().includes(q))) return false;
+            if (q && !fold(`${p.name} ${p.policy} ${p.icd} ${p.nosologyLabel}`).includes(q)) return false;
             if (L.stage && p.stage !== L.stage) return false;
             if (L.doctor && p.doctorId !== L.doctor) return false;
             if (L.reason && !openIssues(p).some(x => x.reasonCode === L.reason)) return false;
@@ -327,7 +330,7 @@
                 ${ddHtml('fStage', 'Этап', 'stage', [['', 'Все этапы', all.length], ...stages.map(st => [st, STAGE(st), all.filter(p => p.stage === st).length])], L.stage)}
                 ${showsDoctor() ? ddHtml('fDoctor', 'Врач', 'doctor', [['', 'Все врачи', all.length], ...doctors.map(d => [d.id, d.short, all.filter(p => p.doctorId === d.id).length])], L.doctor) : ''}
                 <div class="menu-wrap">
-                    <button class="btn" type="button" data-menu="m-filters" aria-haspopup="dialog" aria-expanded="false">${ICON.filter}Ещё фильтры${extra ? ` · ${extra}` : ''}</button>
+                    <button class="btn" type="button" data-menu="m-filters" aria-haspopup="dialog" aria-expanded="false">${ICON.filter}Еще фильтры${extra ? ` · ${extra}` : ''}</button>
                     <div class="menu menu--left popover" id="m-filters" role="dialog" aria-label="Дополнительные фильтры" hidden>
                         ${ddHtml('fDeadline', 'Ближайший срок', 'deadline', [['', 'Любой'], ...Object.entries(DEADLINES).map(([k, v]) => [k, v, all.filter(p => { const n = nextEvent(p); return n && n.kind === k; }).length])], L.deadline)}
                         ${ddHtml('fReason', 'Причина внимания', 'reason', [['', 'Любая'], ...Object.entries(D.ATTENTION_REASONS).map(([k, v]) => [k, v, all.filter(p => openIssues(p).some(x => x.reasonCode === k)).length])], L.reason)}
@@ -340,13 +343,13 @@
             <div class="chips" aria-live="polite">
                 <span class="result-line">${gate ? '' : `Показано ${rows.length} ${plural(rows.length, 'пациент', 'пациента', 'пациентов')} · ${esc((VIEWS.find(v => v.id === L.view) || VIEWS[0]).label.toLowerCase())}`}</span>
                 ${chips.map(([k, t]) => `<button class="chip" type="button" data-clear="${k}" aria-label="Убрать фильтр ${esc(t)}">${esc(t)}${ICON.x}</button>`).join('')}
-                ${chips.length ? '<button class="btn btn--text btn--sm" type="button" data-act="clear-all">Сбросить всё</button>' : ''}
+                ${chips.length ? '<button class="btn btn--text btn--sm" type="button" data-act="clear-all">Сбросить все</button>' : ''}
             </div>
             ${gate || (rows.length ? `<div class="table-wrap"><table class="ptable">
                 <caption class="sr-only">Список пациентов. Нажмите на ФИО, чтобы открыть карточку.</caption>
                 <thead><tr><th scope="col">Пациент</th><th scope="col">Этап маршрута</th><th scope="col">Ближайшее событие</th><th scope="col">Требует внимания</th>${showsDoctor() ? '<th scope="col">Лечащий врач</th>' : ''}</tr></thead>
                 <tbody>${rows.map(rowHtml).join('')}</tbody></table></div>`
-            : `<div class="table-wrap"><div class="state"><h2>Ничего не найдено</h2><p>Измените условия поиска или сбросьте фильтры.</p>${chips.length ? '<button class="btn" data-act="clear-all">Сбросить всё</button>' : ''}</div></div>`)}`;
+            : `<div class="table-wrap"><div class="state"><h2>Ничего не найдено</h2><p>Измените условия поиска или сбросьте фильтры.</p>${chips.length ? '<button class="btn" data-act="clear-all">Сбросить все</button>' : ''}</div></div>`)}`;
     }
     function rowHtml(p) {
         const ne = nextEvent(p);
@@ -354,10 +357,10 @@
         const issues = openIssues(p);
         const pr = p.priority !== 'normal' ? ` <span class="pill ${p.priority === 'urgent' ? 'pill--danger' : 'pill--warn'}">${D.PRIORITY[p.priority]}</span>` : '';
         return `<tr data-row="${p.id}">
-            <td><a class="pname" href="#/patient/${p.id}">${esc(p.name)}</a>${pr}<span class="psub">${p.age} ${plural(p.age, 'год', 'года', 'лет')} · <span class="mono">${esc(p.icd)}</span> · ${esc(p.nosologyLabel)}</span></td>
-            <td class="stage-cell" data-label="Этап"><b>${esc(STAGE(p.stage))}</b><span>${isTerminal(p) ? 'маршрут завершён' : `шаг ${st.n} из ${st.total}`}</span></td>
-            <td class="ev-cell" data-label="Событие"><div class="cell2">${ne ? `<span class="status status--${ne.tone}">${esc(ne.label)}</span><span class="cell2__sub">${esc(ne.title)}${ne.overdueTotal > 1 ? ` · просрочено: ${ne.overdueTotal}` : ''}${ne.ev.date ? ' · ' + esc(whenShort(ne.ev.date, ne.ev.time)) : ''}</span>` : `<span class="status status--muted">${isTerminal(p) ? 'маршрут завершён' : 'нет запланированных'}</span>`}</div></td>
-            <td class="att-cell" data-label="Внимание"><div class="cell2">${issues.length ? `<span class="status status--warn">${esc(D.ATTENTION_REASONS[issues[0].reasonCode])}</span><span class="cell2__sub">${issues.length > 1 ? `и ещё ${issues.length - 1}` : `с ${esc(fmtShort(issues[0].createdAt))}`}</span>` : '<span class="cell2__sub" aria-label="нет отметок">—</span>'}</div></td>
+            <td><a class="pname" href="#/patient/${p.id}">${esc(p.name)}</a>${pr}<span class="psub">${p.age} ${plural(p.age, 'год', 'года', 'лет')} · <span class="mono">${esc(p.icd)}</span> · ${esc(ui(p.nosologyLabel))}</span></td>
+            <td class="stage-cell" data-label="Этап"><b>${esc(STAGE(p.stage))}</b><span>${isTerminal(p) ? 'маршрут завершен' : `шаг ${st.n} из ${st.total}`}</span></td>
+            <td class="ev-cell" data-label="Событие"><div class="cell2">${ne ? `<span class="status status--${ne.tone}">${esc(ne.label)}</span><span class="cell2__sub">${esc(ne.title)}${ne.overdueTotal > 1 ? ` · просрочено: ${ne.overdueTotal}` : ''}${ne.ev.date ? ' · ' + esc(whenShort(ne.ev.date, ne.ev.time)) : ''}</span>` : `<span class="status status--muted">${isTerminal(p) ? 'маршрут завершен' : 'нет запланированных'}</span>`}</div></td>
+            <td class="att-cell" data-label="Внимание"><div class="cell2">${issues.length ? `<span class="status status--warn">${esc(D.ATTENTION_REASONS[issues[0].reasonCode])}</span><span class="cell2__sub">${issues.length > 1 ? `и еще ${issues.length - 1}` : `с ${esc(fmtShort(issues[0].createdAt))}`}</span>` : '<span class="cell2__sub" aria-label="нет отметок">—</span>'}</div></td>
             ${showsDoctor() ? `<td data-label="Врач">${esc(p.doctor)}</td>` : ''}</tr>`;
     }
 
@@ -393,7 +396,7 @@
         }
         const facts = [
             `<span>${p.age} ${plural(p.age, 'год', 'года', 'лет')}</span>`,
-            `<span><span class="k">Диагноз</span> <span class="mono">${esc(p.icd)}</span> · ${esc(p.nosologyLabel)}</span>`,
+            `<span><span class="k">Диагноз</span> <span class="mono">${esc(p.icd)}</span> · ${esc(ui(p.nosologyLabel))}</span>`,
             `<span><span class="k">Телефон</span> ${esc(p.phone)}</span>`,
             `<span><span class="k">Полис ОМС</span> ${p.policy ? `<span class="mono">${esc(p.policy)}</span>` : '<span class="status status--warn">не указан</span>'}</span>`,
         ];
@@ -410,11 +413,11 @@
                     <button class="btn" type="button" data-act="assistant">${ICON.spark}Спросить помощника</button>
                     <button class="btn" type="button" data-act="copy" data-id="${p.id}">${ICON.copy}Скопировать сводку</button>
                     ${(edit && !isTerminal(p)) || R().dev || edit ? `<div class="menu-wrap">
-                        <button class="btn" type="button" data-menu="m-more" aria-haspopup="menu" aria-expanded="false">Ещё действия${ICON.chev}</button>
+                        <button class="btn" type="button" data-menu="m-more" aria-haspopup="menu" aria-expanded="false">Еще действия${ICON.chev}</button>
                         <div class="menu" id="m-more" role="menu" hidden>
                             ${edit && !isTerminal(p) ? `
                                 <button class="menu__item" role="menuitem" data-act="extra-exam"><span>Дополнительное обследование<small>Вернуть на этап обследования</small></span></button>
-                                <button class="menu__item" role="menuitem" data-act="not-confirmed"><span>Диагноз не подтверждён<small>Завершить маршрут</small></span></button>` : ''}
+                                <button class="menu__item" role="menuitem" data-act="not-confirmed"><span>Диагноз не подтвержден<small>Завершить маршрут</small></span></button>` : ''}
                             ${R().dev ? `${edit && !isTerminal(p) ? '<div class="menu__sep" role="separator"></div>' : ''}<button class="menu__item" role="menuitem" data-act="change-doctor"><span>Сменить лечащего врача</span></button>` : ''}
                             ${edit ? `<div class="menu__sep" role="separator"></div><button class="menu__item menu__item--danger" role="menuitem" data-act="delete-patient"><span>Удалить пациента<small>Нельзя, если есть записи консилиума</small></span></button>` : ''}
                         </div>
@@ -453,7 +456,7 @@
         const factor = p.priority === 'urgent' ? 0.5 : p.priority === 'high' ? 0.7 : 1;
         const d = parse(base); const total = Math.max(1, Math.round((stage === 'appointment' ? ref.stage1Days : ref.stage2Standard) * factor)); let n = 0;
         while (n < total) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) n++; }
-        return { date: D.helpers.iso(d), label: ref.label };
+        return { date: D.helpers.iso(d), label: ui(ref.label) };
     }
     function routeHtml(p) {
         const steps = p.history.map((occ, i) => {
@@ -462,20 +465,20 @@
             const repeat = p.history.slice(0, i).some(o => o.stage === occ.stage);
             const pend = last && !isTerminal(p) ? nextEvent(p) : null;
             const date = last && pend && pend.ev.date ? `<span class="step__date${pend.kind === 'overdue' ? ' step__date--late' : ''}">${pend.kind === 'overdue' ? 'срок ' : 'до '}${fmtShort(pend.ev.date)}</span>` : `<span class="step__date">${fmtShort(occ.enteredAt)}</span>`;
-            return `<li class="step ${done ? 'step--done' : 'step--current'}"><button class="step__btn" type="button" data-stage="${i}" ${last && !done ? 'aria-current="step"' : ''} aria-label="${esc(STAGE(occ.stage))}${repeat ? ' (повторно)' : ''}: ${done ? 'завершён' : 'текущий этап'}. Показать события этапа">
+            return `<li class="step ${done ? 'step--done' : 'step--current'}"><button class="step__btn" type="button" data-stage="${i}" ${last && !done ? 'aria-current="step"' : ''} aria-label="${esc(STAGE(occ.stage))}${repeat ? ' (повторно)' : ''}: ${done ? 'завершен' : 'текущий этап'}. Показать события этапа">
                 <span class="step__dot">${done ? ICON.check : i + 1}</span><span class="step__name">${esc(STAGE(occ.stage))}${repeat ? ' (доп.)' : ''}</span>${date}</button></li>`;
         });
         if (!isTerminal(p)) {
             const after = D.STAGE_ORDER.slice(D.STAGE_ORDER.indexOf(p.stage) + 1);
             after.forEach((s, k) => steps.push(`<li class="step"><button class="step__btn" type="button" disabled aria-label="${esc(STAGE(s))}: впереди"><span class="step__dot">${p.history.length + k + 1}</span><span class="step__name">${esc(STAGE(s))}</span><span class="step__date">впереди</span></button></li>`));
         }
-        return `<section class="route" aria-labelledby="routeTitle"><div class="route__title"><h2 id="routeTitle" class="sr-only">Маршрут лечения</h2><span>Маршрут лечения</span>${isTerminal(p) ? `<span class="pill pill--neutral">Маршрут завершён: ${esc(STAGE(p.stage))}</span>` : ''}</div><ol>${steps.join('')}</ol></section>`;
+        return `<section class="route" aria-labelledby="routeTitle"><div class="route__title"><h2 id="routeTitle" class="sr-only">Маршрут лечения</h2><span>Маршрут лечения</span>${isTerminal(p) ? `<span class="pill pill--neutral">Маршрут завершен: ${esc(STAGE(p.stage))}</span>` : ''}</div><ol>${steps.join('')}</ol></section>`;
     }
 
     function asideHtml(p) {
         const c = D.consilium.find(x => x.patientId === p.id && !x.archived);
         const consent = { granted: '<span class="status status--good">получено</span>', revoked: '<span class="status status--danger">отозвано</span>', not_recorded: '<span class="status status--warn">не зафиксировано</span>' }[p.notifications.consent];
-        const CS = { recorded: 'записан', in_review: 'на рассмотрении', signed: 'решение подписано', needs_revision: 'возвращён на доработку', revised: 'доработан' };
+        const CS = { recorded: 'записан', in_review: 'на рассмотрении', signed: 'решение подписано', needs_revision: 'возвращен на доработку', revised: 'доработан' };
         return `<aside class="aside" aria-labelledby="asideTitle"><h2 id="asideTitle">Сведения</h2><dl class="dl">
             <div><dt>Лечащий врач</dt><dd>${esc(p.doctorFull)}</dd></div>
             <div><dt>Заведующий</dt><dd>${esc(p.head || '—')}</dd></div>
@@ -506,14 +509,14 @@
                 <div class="now__grid">
                     <div><div class="kv__k">Ближайшее событие</div><div class="kv__v">${ne ? (ne.ev.date ? `${fmtFull(ne.ev.date)}${ne.ev.time ? ', ' + esc(ne.ev.time) : ''}` : 'Дата не назначена') : 'Нет запланированных'}</div>${ne ? `<span class="status status--${ne.tone}">${esc(ne.label)}</span>` : ''}</div>
                     <div><div class="kv__k">Чек-лист этапа</div><div class="kv__v">${cl.required.length ? `${done} из ${cl.required.length} выполнено` : 'Не предусмотрен'}</div>${cl.required.length ? `<div class="progress" aria-hidden="true" style="margin-top:6px"><i style="width:${Math.round(done / cl.required.length * 100)}%"></i></div>` : ''}</div>
-                    <div><div class="kv__k">Что дальше</div><div class="kv__v">${isTerminal(p) ? 'Маршрут завершён' : p.stage === 'consult' ? 'Решение консилиума' : esc(STAGE(NEXT[p.stage] || ''))}</div></div>
+                    <div><div class="kv__k">Что дальше</div><div class="kv__v">${isTerminal(p) ? 'Маршрут завершен' : p.stage === 'consult' ? 'Решение консилиума' : esc(STAGE(NEXT[p.stage] || ''))}</div></div>
                 </div>
                 ${edit && ne ? `<p style="margin-top:var(--sp-3)"><a href="#" data-tab-go="events" data-stage-go="${p.history.length - 1}">Изменить даты или отметить выполнение →</a></p>` : ''}
             </div></section>
             ${consDecisionHtml(p)}
             <section class="section" aria-labelledby="attTitle"><div class="section__head"><h2 id="attTitle">Требует внимания</h2><span class="section__meta">${issues.length ? `${issues.length} ${plural(issues.length, 'открытая отметка', 'открытые отметки', 'открытых отметок')}` : 'открытых отметок нет'}</span>
                 ${edit ? '<span class="section__actions"><button class="btn btn--text" type="button" data-act="add-issue">' + ICON.plus + 'Добавить отметку</button></span>' : ''}</div>
-                ${issues.length ? issues.map(x => `<div class="issue"><div class="issue__text"><b>${esc(D.ATTENTION_REASONS[x.reasonCode])}</b><p>${esc(x.comment)} · ${esc(x.createdByName)}, ${fmtStamp(x.createdAt)}</p></div>${edit ? `<button class="btn btn--sm" type="button" data-act="close-issue" data-issue="${x.id}">Закрыть отметку</button>` : ''}</div>`).join('') : '<p class="lead">Если с пациентом что-то идёт не по плану, добавьте отметку — она появится у заведующего и в «Рабочем дне».</p>'}
+                ${issues.length ? issues.map(x => `<div class="issue"><div class="issue__text"><b>${esc(D.ATTENTION_REASONS[x.reasonCode])}</b><p>${esc(x.comment)} · ${esc(x.createdByName)}, ${fmtStamp(x.createdAt)}</p></div>${edit ? `<button class="btn btn--sm" type="button" data-act="close-issue" data-issue="${x.id}">Закрыть отметку</button>` : ''}</div>`).join('') : '<p class="lead">Если с пациентом что-то идет не по плану, добавьте отметку — она появится у заведующего и в «Рабочем дне».</p>'}
                 ${closed.length ? `<details class="deleted"><summary>История внимания<span class="count">${closed.length}</span></summary>${closed.map(x => `<div class="issue"><div class="issue__text"><b>${esc(D.ATTENTION_REASONS[x.reasonCode])}</b><p>${esc(x.comment)} · ${esc(x.createdByName)}, ${fmtStamp(x.createdAt)}</p><p>Закрыта ${fmtStamp(x.closedAt)}${x.closedByName ? ', ' + esc(x.closedByName) : ''}${x.resolutionComment ? ' — ' + esc(x.resolutionComment) : ''}</p></div><span class="pill pill--neutral">закрыта</span></div>`).join('')}</details>` : ''}
             </section>
             <section class="section" aria-labelledby="qTitle"><div class="section__head"><h2 id="qTitle">Качество данных</h2><span class="section__meta">заполненность ${q.score}%</span>${edit && q.missing.length ? '<span class="section__actions"><a class="btn btn--text" href="#" data-tab-go="data">Заполнить данные</a></span>' : ''}</div>
@@ -522,7 +525,7 @@
             </section>
             <section class="section" aria-labelledby="feedTitle"><div class="section__head"><h2 id="feedTitle">Последние изменения</h2><span class="section__actions"><a class="btn btn--text" href="#" data-tab-go="history">Вся история</a></span></div>
                 <ul class="feed">${feed.map(f => `<li><time datetime="${esc(f.at)}">${fmtStamp(f.at)}</time><span>${esc(f.text)}</span></li>`).join('')}</ul></section>
-            <details class="deleted"><summary>Сводка для отчётности</summary><pre class="summary">${esc(summaryText(p))}</pre><p><button class="btn btn--sm" type="button" data-act="copy" data-id="${p.id}">${ICON.copy}Скопировать сводку</button></p></details>`;
+            <details class="deleted"><summary>Сводка для отчетности</summary><pre class="summary">${esc(summaryText(p))}</pre><p><button class="btn btn--sm" type="button" data-act="copy" data-id="${p.id}">${ICON.copy}Скопировать сводку</button></p></details>`;
     }
     // Подписанное решение (председатель, раздел консилиума) и ручная отметка в карточке показаны раздельно и ни одно не меняет этап.
     // Подписанные решения председателя, статус текущей записи и ручные отметки показаны раздельно и ничего не меняют.
@@ -544,23 +547,26 @@
         const fields = [['ФИО', p.name], ['Телефон', p.phone], ['Полис ОМС', p.policy], ['Диагноз', p.icd], ['Текущий этап', p.stage], ['Лечащий врач', p.doctorId]];
         const missing = fields.filter(x => !x[1]).map(x => x[0]);
         const findings = [
-            !p.doctorId && ['Не назначен лечащий врач', 'Пациент не сопоставлен с учётной записью лечащего врача.'],
+            !p.doctorId && ['Не назначен лечащий врач', 'Пациент не сопоставлен с учетной записью лечащего врача.'],
             !p.policy && ['Не указан номер полиса ОМС', 'Полис ОМС нужен для полноты регистрационной карточки.'],
         ].filter(Boolean);
         return { missing, findings, score: Math.round((fields.length - missing.length) / fields.length * 100) };
     }
     function summaryText(p) {
-        const L = [`Пациент: ${p.name}, ${p.age} ${plural(p.age, 'год', 'года', 'лет')}.`, `Полис ОМС: ${p.policy || 'не указан'}.`, `Диагноз (МКБ-10): ${p.icd || 'не указан'} — ${p.nosologyLabel}.`, `Приоритет: ${D.PRIORITY[p.priority]}.`, `Лечащий врач: ${p.doctorFull}. Заведующий: ${p.head || 'не указан'}.`, '', `Текущий этап: ${STAGE(p.stage)}.`, 'Хронология:'];
+        const L = [`Пациент: ${p.name}, ${p.age} ${plural(p.age, 'год', 'года', 'лет')}.`, `Полис ОМС: ${p.policy || 'не указан'}.`, `Диагноз (МКБ-10): ${p.icd || 'не указан'} — ${ui(p.nosologyLabel)}.`, `Приоритет: ${D.PRIORITY[p.priority]}.`, `Лечащий врач: ${p.doctorFull}. Заведующий: ${p.head || 'не указан'}.`, '', `Текущий этап: ${STAGE(p.stage)}.`, 'Хронология:'];
         p.history.forEach((o, i) => { L.push(`${i + 1}. ${STAGE(o.stage)} — с ${fmtStamp(o.enteredAt)}`); if (o.note) L.push(`   Заметка: ${o.note}`); });
         return L.join('\n');
     }
 
-    const evStatus = (ev, isCur) => {
-        if (ev.actualDate) return ev.noPlan ? '<span class="status status--good">состоялось</span>' : ev.matchedPlan === false ? '<span class="status status--warn">с отклонением от плана</span>' : '<span class="status status--good">по плану</span>';
-        if (!ev.date) return '<span class="status status--warn">дата не назначена</span>';
-        const d = days(TODAY, ev.date);
-        if (d < 0) return `<span class="status status--danger">просрочено на ${-d} ${plural(-d, 'день', 'дня', 'дней')}</span>`;
-        if (d === 0) return '<span class="status status--info">сегодня</span>';
+    // Статус события — по единому правилу core.js (eventState поверх openEvents), как в «Расписании» и «Рабочем дне».
+    const evStatus = (p, occIndex, eventIndex, isCur) => {
+        const ev = p.history[occIndex].events[eventIndex];
+        const st = CORE.eventState(p, occIndex, eventIndex, TODAY, D.TERMINAL);
+        if (st.kind === 'done') return ev.noPlan ? '<span class="status status--good">состоялось</span>' : { match: '<span class="status status--good">по плану</span>', mismatch: '<span class="status status--warn">с отклонением от плана</span>', unknown: '<span class="status status--muted">соответствие плану не определено</span>' }[st.planMatch];
+        if (st.kind === 'nodate') return '<span class="status status--warn">дата не назначена</span>';
+        if (st.kind === 'unclosed') return `<span class="status status--muted">факт не отмечен</span> <span class="muted">${CORE.UNCLOSED_REASON[st.reason]}</span>`;
+        if (st.kind === 'overdue') return `<span class="status status--danger">просрочено на ${-st.days} ${plural(-st.days, 'день', 'дня', 'дней')}</span>`;
+        if (st.kind === 'today') return '<span class="status status--info">сегодня</span>';
         return `<span class="status status--muted">${isCur ? 'ожидается' : 'запланировано'}</span>`;
     };
     const dt = (d, t) => d ? `${fmtFull(d)}${t ? ', ' + esc(t) : ''}` : '<span class="muted">—</span>';
@@ -583,14 +589,14 @@
                     <div class="edit-actions"><button class="btn btn--danger" type="button" data-act="delete-event" data-key="${key}" style="margin-right:auto">Удалить событие</button><button class="btn" type="button" data-act="cancel-edit">Отмена</button><button class="btn btn--primary" type="submit">Сохранить событие</button></div>
                 </form></td></tr>`;
                 return `<tr><td data-label="План">${ev.noPlan ? '<span class="muted">без плана</span>' : dt(ev.date, ev.time)}</td><td data-label="Факт">${dt(ev.actualDate, ev.actualTime)}</td>
-                    <td data-label="Статус">${evStatus(ev, isCur)}${ev.consiliumDecision ? `<br><span class="muted">Ручная отметка решения ОК: ${esc(D.DECISIONS[ev.consiliumDecision])}</span>` : ''}${treat ? `<br><span class="muted">${ev.treatmentType ? esc(D.EVENT_TREATMENT[ev.treatmentType]) : 'вид лечения не указан'}</span>` : ''}</td>
+                    <td data-label="Статус">${evStatus(p, i, j, isCur)}${ev.consiliumDecision ? `<br><span class="muted">Ручная отметка решения ОК: ${esc(D.DECISIONS[ev.consiliumDecision])}</span>` : ''}${treat ? `<br><span class="muted">${ev.treatmentType ? esc(D.EVENT_TREATMENT[ev.treatmentType]) : 'вид лечения не указан'}</span>` : ''}</td>
                     <td>${edit ? `<button class="btn btn--text btn--sm" type="button" data-act="edit-event" data-key="${key}" aria-label="Изменить событие этапа ${esc(STAGE(occ.stage))}">Изменить</button>` : ''}</td></tr>`;
             }).join('');
             const dl = stageDeadline(p, occ.stage);
             const lastEv = occ.events[occ.events.length - 1];
             const check = lastEv ? (lastEv.actualDate || lastEv.date) : null;
             const late = dl && check && check > dl.date;
-            const dlHtml = dl ? `<div class="banner ${late ? 'banner--danger' : 'banner--info'}" role="note"><span class="banner__body">${late ? `Регламентный срок нарушен: событие должно было состояться не позднее ${fmtFull(dl.date)}` : `Регламентный срок: не позднее ${fmtFull(dl.date)}`} (${esc(dl.label)}${p.priority !== 'normal' ? ', с учётом приоритета' : ''}).</span></div>` : '';
+            const dlHtml = dl ? `<div class="banner ${late ? 'banner--danger' : 'banner--info'}" role="note"><span class="banner__body">${late ? `Регламентный срок нарушен: событие должно было состояться не позднее ${fmtFull(dl.date)}` : `Регламентный срок: не позднее ${fmtFull(dl.date)}`} (${esc(dl.label)}${p.priority !== 'normal' ? ', с учетом приоритета' : ''}).</span></div>` : '';
             return `<section class="stage-block" id="stage-${i}" aria-labelledby="sh-${i}" tabindex="-1">
                 <div class="stage-block__head"><h3 id="sh-${i}">${i + 1}. ${esc(STAGE(occ.stage))}</h3><span class="muted">с ${fmtStamp(occ.enteredAt)}</span>${isCur ? '<span class="pill pill--info">текущий этап</span>' : ''}
                     ${edit && isCur ? `<span class="section__actions" style="margin-left:auto"><button class="btn btn--text btn--sm" type="button" data-act="add-event" data-occ="${i}">${ICON.plus}Добавить событие</button></span>` : ''}</div>
@@ -601,8 +607,8 @@
         }).join('');
         const del = S.deleted[p.id] || [];
         return `<p class="lead">Плановые и фактические даты по этапам. Нажмите на этап маршрута вверху, чтобы перейти к нему.</p>${blocks}
-            ${edit ? `<details class="deleted" ${del.length ? '' : ''}><summary>Удалённые события<span class="count">${del.length}</span></summary>
-                ${del.length ? `<table class="etable"><thead><tr><th>Этап</th><th>План</th><th>Удалено</th><th><span class="sr-only">Действия</span></th></tr></thead><tbody>${del.map((d, k) => `<tr><td data-label="Этап">${esc(STAGE(p.history[d.occ].stage))}</td><td data-label="План">${dt(d.ev.date, d.ev.time)}</td><td data-label="Удалено">${fmtStamp(d.at)}, ${esc(d.by)}</td><td><button class="btn btn--sm" type="button" data-act="restore-event" data-k="${k}">Восстановить</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted" style="padding:var(--sp-2) 0">Удалённых событий нет. Удалённое событие можно вернуть отсюда — данные не стираются.</p>'}
+            ${edit ? `<details class="deleted" ${del.length ? '' : ''}><summary>Удаленные события<span class="count">${del.length}</span></summary>
+                ${del.length ? `<table class="etable"><thead><tr><th>Этап</th><th>План</th><th>Удалено</th><th><span class="sr-only">Действия</span></th></tr></thead><tbody>${del.map((d, k) => `<tr><td data-label="Этап">${esc(STAGE(p.history[d.occ].stage))}</td><td data-label="План">${dt(d.ev.date, d.ev.time)}</td><td data-label="Удалено">${fmtStamp(d.at)}, ${esc(d.by)}</td><td><button class="btn btn--sm" type="button" data-act="restore-event" data-k="${k}">Восстановить</button></td></tr>`).join('')}</tbody></table>` : '<p class="muted" style="padding:var(--sp-2) 0">Удаленных событий нет. Удаленное событие можно вернуть отсюда — данные не стираются.</p>'}
             </details>` : ''}`;
     }
 
@@ -611,7 +617,7 @@
         const cl = D.helpers.checklistFor(p.nosology, p.stage);
         if (!cl.required.length && !cl.optional.length) return '<div class="state"><h2>Для текущего этапа чек-лист не предусмотрен</h2></div>';
         const done = cl.required.filter(n => c.checklist[n]).length;
-        const item = (n, k) => `<li class="${c.checklist[n] ? 'is-done' : ''}"><label><input type="checkbox" data-check="${esc(n)}" ${c.checklist[n] ? 'checked' : ''} ${edit ? '' : 'disabled'}><span>${esc(n)}</span></label></li>`;
+        const item = (n, k) => `<li class="${c.checklist[n] ? 'is-done' : ''}"><label><input type="checkbox" data-check="${esc(n)}" ${c.checklist[n] ? 'checked' : ''} ${edit ? '' : 'disabled'}><span>${esc(ui(n))}</span></label></li>`;
         return `<section class="section"><div class="section__head"><h2>Обязательные пункты</h2><span class="section__meta">${done} из ${cl.required.length} выполнено · этап «${esc(STAGE(p.stage))}»</span></div>
                 <div class="progress" aria-hidden="true" style="margin-bottom:var(--sp-3)"><i style="width:${Math.round(done / Math.max(cl.required.length, 1) * 100)}%"></i></div>
                 <ul class="checks">${cl.required.map(item).join('')}</ul></section>
@@ -635,7 +641,7 @@
         return `<div class="state-line">
                 <div class="state-card state-card--info"><div class="state-card__label">Отправка SMS в организации</div><div class="state-card__value">Тестовый режим</div><div class="state-card__note">Реальные сообщения сейчас не отправляются</div></div>
                 <div class="state-card state-card--${consent[0]}"><div class="state-card__label">Согласие пациента</div><div class="state-card__value">${consent[1]}</div><div class="state-card__note">${consent[2]}</div></div>
-                <div class="state-card"><div class="state-card__label">Следующее напоминание</div><div class="state-card__value">${pending ? fmtStamp(pending.scheduledAt) : 'Не запланировано'}</div><div class="state-card__note">${pending ? 'будет отправлено автоматически' : granted ? 'создаётся по плановым событиям' : 'нужно согласие пациента'}</div></div>
+                <div class="state-card"><div class="state-card__label">Следующее напоминание</div><div class="state-card__value">${pending ? fmtStamp(pending.scheduledAt) : 'Не запланировано'}</div><div class="state-card__note">${pending ? 'будет отправлено автоматически' : granted ? 'создается по плановым событиям' : 'нужно согласие пациента'}</div></div>
             </div>
             <section class="section" aria-labelledby="consentTitle"><div class="section__head"><h2 id="consentTitle">Согласие на SMS</h2></div>
                 <p class="lead">${granted ? 'Пациент согласился получать напоминания о посещениях.' : n.consent === 'revoked' ? 'Пациент отозвал согласие. Новые напоминания не отправляются, ожидающие отменены.' : 'Без согласия пациента напоминания не создаются и не отправляются.'}</p>
@@ -650,7 +656,7 @@
                     </div>
                     <div class="field"><span class="field__label" id="smsTextLabel">Текст сообщения</span>
                         <div class="message" aria-labelledby="smsTextLabel">${esc(preview)}</div>
-                        <span class="field__hint">Текст формируется из утверждённого шаблона и не редактируется.${when ? '' : ' Дата и время посещения подставятся из ближайшего планового события — сейчас его нет.'}</span></div>
+                        <span class="field__hint">Текст формируется из утвержденного шаблона и не редактируется.${when ? '' : ' Дата и время посещения подставятся из ближайшего планового события — сейчас его нет.'}</span></div>
                     <div><button class="btn btn--primary" type="submit" ${granted ? '' : 'disabled'}>Создать напоминание</button></div>
                 </form>` : `<p class="lead">${ICON.lock} Создавать напоминания может лечащий врач или заведующий.</p>`}
             </section>
@@ -676,8 +682,8 @@
             const codes = Object.values(window.ICD10 || {}).flatMap(l => l.diagnoses);
             return `<form class="section" data-form="medical" novalidate><div class="section__head"><h2>Медицинские данные</h2></div>
                 <div class="edit-grid" style="max-width:640px">
-                    <div class="field"><label class="field__label" for="mIcd">Диагноз, код МКБ-10</label><input class="input mono" id="mIcd" name="icd" list="icdList" value="${esc(p.icd)}" autocomplete="off" required><datalist id="icdList">${codes.map(c => `<option value="${esc(c.code)}">${esc(c.label)}</option>`).join('')}</datalist><span class="field__hint">Начните вводить код или название</span></div>
-                    <div class="field"><label class="field__label" for="mNos">Клиентский путь</label><select class="select" id="mNos" name="nosology">${Object.entries(window.NOSOLOGY_REF || {}).map(([k, v]) => `<option value="${k}" ${p.nosology === k ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></div>
+                    <div class="field"><label class="field__label" for="mIcd">Диагноз, код МКБ-10</label><input class="input mono" id="mIcd" name="icd" list="icdList" value="${esc(p.icd)}" autocomplete="off" required><datalist id="icdList">${codes.map(c => `<option value="${esc(c.code)}">${esc(ui(c.label))}</option>`).join('')}</datalist><span class="field__hint">Начните вводить код или название</span></div>
+                    <div class="field"><label class="field__label" for="mNos">Клиентский путь</label><select class="select" id="mNos" name="nosology">${Object.entries(window.NOSOLOGY_REF || {}).map(([k, v]) => `<option value="${k}" ${p.nosology === k ? 'selected' : ''}>${esc(ui(v.label))}</option>`).join('')}</select></div>
                     <div class="field"><label class="field__label" for="mPgi">Результат ПГИ</label><select class="select" id="mPgi" name="pgiResult">${Object.entries(D.PGI).map(([k, v]) => `<option value="${k}" ${(p.pgiResult || '') === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></div>
                     <div class="field"><label class="field__label" for="mPgiD">Дата результата ПГИ</label><input class="input" id="mPgiD" name="pgiResultDate" type="date" max="${TODAY}" value="${esc(p.pgiResultDate || '')}"></div>
                     <div class="field"><label class="field__label" for="mPr">Приоритет</label><select class="select" id="mPr" name="priority">${Object.entries(D.PRIORITY).map(([k, v]) => `<option value="${k}" ${p.priority === k ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select><span class="field__hint">Срочный и высокий приоритет сокращают регламентные сроки</span></div>
@@ -690,7 +696,7 @@
                 <div><dt>Телефон</dt><dd>${esc(p.phone)}</dd></div><div><dt>Полис ОМС</dt><dd>${p.policy ? `<span class="mono">${esc(p.policy)}</span>` : '<span class="status status--warn">не указан</span>'}</dd></div></dl></section>
             <section class="section"><div class="section__head"><h2>Медицинские данные</h2>${ed('medical')}</div><dl class="dl">
                 <div><dt>Диагноз (МКБ-10)</dt><dd><span class="mono">${esc(p.icd)}</span></dd></div>
-                <div><dt>Клиентский путь</dt><dd>${esc(p.nosologyLabel)}</dd></div>
+                <div><dt>Клиентский путь</dt><dd>${esc(ui(p.nosologyLabel))}</dd></div>
                 <div><dt>Результат ПГИ</dt><dd>${esc(D.PGI[p.pgiResult || ''])}${p.pgiResultDate ? ' · ' + fmtFull(p.pgiResultDate) : ''}</dd></div>
                 <div><dt>Приоритет</dt><dd>${esc(D.PRIORITY[p.priority])}</dd></div>
                 ${p.diagnosisHistory.length ? `<div><dt>История диагноза</dt><dd>${p.diagnosisHistory.map(h => `${fmtFull(h.changedAt)}: ${esc(h.oldDiagnosis)} → ${esc(h.newDiagnosis)}`).join('<br>')}</dd></div>` : ''}</dl>
@@ -702,7 +708,7 @@
     function tabComments(p, edit) {
         if (!edit) return `<section class="section"><div class="section__head"><h2>Жалобы и комментарии</h2></div><p class="lead">${p.complaint ? esc(p.complaint) : '<span class="muted">Комментариев нет.</span>'}</p></section>`;
         return `<form class="section" data-form="complaint" novalidate><div class="section__head"><h2>Жалобы и комментарии</h2><span class="section__meta">видны всем сотрудникам с доступом к карточке</span></div>
-            <div class="field"><label class="field__label" for="cText">Комментарий к пациенту</label><textarea class="textarea" id="cText" name="complaint" rows="6" maxlength="2000" placeholder="Жалобы пациента, договорённости, что важно знать коллегам">${esc(p.complaint)}</textarea>
+            <div class="field"><label class="field__label" for="cText">Комментарий к пациенту</label><textarea class="textarea" id="cText" name="complaint" rows="6" maxlength="2000" placeholder="Жалобы пациента, договоренности, что важно знать коллегам">${esc(p.complaint)}</textarea>
             <span class="field__hint" id="cCount">${(p.complaint || '').length} из 2000 знаков</span></div>
             <div class="edit-actions" style="justify-content:flex-start"><button class="btn btn--primary" type="submit">Сохранить комментарий</button>${p.complaint ? '<button class="btn btn--danger" type="button" data-act="clear-complaint">Очистить</button>' : ''}</div></form>`;
     }
@@ -720,15 +726,15 @@
         const evLine = (e) => [e.noPlan ? 'без плана' : e.date ? `план ${fmtFull(e.date)}${e.time ? ', ' + esc(e.time) : ''}` : 'план не указан', e.actualDate ? `факт ${fmtFull(e.actualDate)}${e.actualTime ? ', ' + esc(e.actualTime) : ''}` : '', e.treatmentType ? esc(D.EVENT_TREATMENT[e.treatmentType]) : '', e.consiliumDecision ? `ручная отметка решения ОК: ${esc(D.DECISIONS[e.consiliumDecision])}` : ''].filter(Boolean).join(' · ');
         return `<p class="lead">Хронология маршрута — только для чтения. Изменить даты можно во вкладке «События и даты», заметки — в «Заметках».</p>
             <ol class="hist">${p.history.map((o, i) => `<li><div class="hist__head"><b>${i + 1}. ${esc(STAGE(o.stage))}</b><time datetime="${esc(o.enteredAt)}">статус проставлен ${fmtStamp(o.enteredAt)}</time></div>
-                ${o.events.length ? `<ul>${o.events.map(e => `<li>${evLine(e)} ${evStatus(e, false)}</li>`).join('')}</ul>` : ''}
+                ${o.events.length ? `<ul>${o.events.map((e, j) => `<li>${evLine(e)} ${evStatus(p, i, j, false)}</li>`).join('')}</ul>` : ''}
                 ${o.note ? `<p class="muted">Заметка: ${esc(o.note)}</p>` : ''}</li>`).join('')}</ol>
             <section class="section"><div class="section__head"><h2>История диагноза</h2></div>${p.diagnosisHistory.length ? `<ul class="feed">${p.diagnosisHistory.map(h => `<li><time datetime="${esc(h.changedAt)}">${fmtStamp(h.changedAt)}</time><span><span class="mono">${esc(h.oldDiagnosis)}</span> → <span class="mono">${esc(h.newDiagnosis)}</span></span></li>`).join('')}</ul>` : '<p class="muted">Диагноз не менялся.</p>'}</section>`;
     }
 
     /* ---------- Аналитика ----------
-       Расчёты — те же, что в Stage 3.5 (по backend/app/analytics и services/data_quality.py),
+       Расчеты — те же, что в Stage 3.5 (по backend/app/analytics и services/data_quality.py),
        выполняются в браузере по синтетическим пациентам в области доступа роли; сервер не вызывается.
-       Две разные вещи показаны раздельно: «Текущее состояние» (на момент расчёта, период не влияет)
+       Две разные вещи показаны раздельно: «Текущее состояние» (на момент расчета, период не влияет)
        и «За период» (динамика и события с плановой датой в периоде). */
     const AN_DEFAULT = { period: '30', from: '', to: '', stage: '', nosology: '', doctor: '', department: '', attentionReason: '' };
     S.an = { ...AN_DEFAULT };
@@ -739,15 +745,15 @@
         missing_treating_doctor: 'Не назначен лечащий врач', missing_required_field: 'Не заполнено обязательное поле', missing_policy_number: 'Не указан номер полиса ОМС',
         missing_diagnosis: 'Не указан диагноз', missing_stage: 'Не указан текущий этап', invalid_phone: 'Некорректный телефон',
         actual_date_in_future: 'Фактическая дата в будущем', stage_sequence_violation: 'Нарушение маршрута', overdue_event: 'Просроченное событие',
-        incomplete_required_checklist: 'Незавершённый обязательный чек-лист', possible_duplicate: 'Возможный дубль',
+        incomplete_required_checklist: 'Незавершенный обязательный чек-лист', possible_duplicate: 'Возможный дубль',
     };
     const AN_DEFINITIONS = {
-        total_patients: 'Все пациенты, доступные текущей роли с учётом фильтров.',
+        total_patients: 'Все пациенты, доступные текущей роли с учетом фильтров.',
         active_patients: 'Доступные пациенты в этапах маршрута до завершения.',
         completed_patients: 'Доступные пациенты на этапе «Завершил лечение».',
-        patients_need_attention: 'Пациенты, у которых сотрудник поставил и ещё не закрыл ручную отметку «Требует внимания». Просрочки без такой отметки сюда не входят — они в показателе «С просроченными событиями».',
+        patients_need_attention: 'Пациенты, у которых сотрудник поставил и еще не закрыл ручную отметку «Требует внимания». Просрочки без такой отметки сюда не входят — они в показателе «С просроченными событиями».',
         data_quality_issues: 'Критические проблемы и предупреждения качества данных по доступным пациентам (информационные замечания не входят).',
-        unassigned_patients: 'Доступные пациенты без закреплённой учётной записи лечащего врача.',
+        unassigned_patients: 'Доступные пациенты без закрепленной учетной записи лечащего врача.',
         patients_with_overdue: 'Пациенты с текущими просроченными плановыми событиями.',
         overdue_events: 'Плановые события с датой в прошлом без фактического выполнения.',
         critical_quality: 'Текущие критические проблемы качества данных.',
@@ -860,24 +866,24 @@
             card('patients_need_attention', 'С открытой отметкой «Требует внимания»', attentionIds.size, 'attention_patients', 'warn'),
             card('patients_with_overdue', 'С просроченными событиями', overdueIds.size, 'overdue_patients', 'danger'),
             card('data_quality_issues', 'Проблемы качества данных', critical.length + warnings.length, 'quality_all', 'danger'),
-            card('completed_patients', 'Завершённые', list.filter(p => p.stage === 'completed').length, 'completed'),
+            card('completed_patients', 'Завершенные', list.filter(p => p.stage === 'completed').length, 'completed'),
             card('unassigned_patients', 'Без назначенного врача', list.filter(p => !p.doctorId).length, 'unassigned_patients'),
             card('overdue_events', 'Просроченные события', overdueIssues.length, 'overdue_events'),
             card('critical_quality', 'Критические проблемы качества', critical.length, 'quality_critical'),
             card('warning_quality', 'Предупреждения качества', warnings.length, 'quality_warning'),
-            card('incomplete_required_checklists', 'Незавершённые пункты обязательных чек-листов', cl.incomplete, 'incomplete_checklists'),
+            card('incomplete_required_checklists', 'Незавершенные пункты обязательных чек-листов', cl.incomplete, 'incomplete_checklists'),
             card('pending_notifications', 'Уведомления, ожидающие отправки', list.reduce((n, p) => n + anNotif(p, 'pending'), 0), ''),
             card('failed_notifications', 'Ошибки отправки уведомлений', list.reduce((n, p) => n + anNotif(p, 'failed'), 0), ''),
         ];
         const stages = AN_STAGES.map(st => { const ps = list.filter(p => p.stage === st); return { key: st, label: STAGE(st), count: ps.length, overdue: ps.filter(p => overdueIds.has(p.id)).length, quality: ps.filter(p => problemIds.has(p.id)).length }; }).filter(r => r.count);
         const prof = new Map(); list.forEach(p => { const key = anCodes(p.nosology)[0] || ''; prof.set(key, (prof.get(key) || 0) + 1); });
-        const profiles = [...prof.entries()].sort((a, b) => b[1] - a[1] || cpCmp(a[0], b[0])).map(([key, count]) => ({ key, label: key ? (anRef()[key] || {}).label || key : 'Не указана', count, percent: anPercent(count, list.length) }));
+        const profiles = [...prof.entries()].sort((a, b) => b[1] - a[1] || cpCmp(a[0], b[0])).map(([key, count]) => ({ key, label: key ? ui((anRef()[key] || {}).label || key) : 'Не указана', count, percent: anPercent(count, list.length) }));
         const stageCount = (st) => list.filter(p => p.stage === st).length;
         const route = [
             { label: 'Активные', count: active, detail: 'active' },
             { label: 'Завершили лечение', count: stageCount('completed'), detail: 'patients', stage: 'completed' },
             { label: 'Диспансерное наблюдение', count: stageCount('dispensary-observation'), detail: 'patients', stage: 'dispensary-observation' },
-            { label: 'Диагноз не подтверждён', count: stageCount('diagnosis-not-confirmed'), detail: 'patients', stage: 'diagnosis-not-confirmed' },
+            { label: 'Диагноз не подтвержден', count: stageCount('diagnosis-not-confirmed'), detail: 'patients', stage: 'diagnosis-not-confirmed' },
         ].map(r => ({ ...r, percent: anPercent(r.count, list.length) }));
         const byCode = new Map(); [...critical, ...warnings].forEach(i => byCode.set(i.code, (byCode.get(i.code) || 0) + 1));
         const qualityRows = [...byCode.entries()].sort((a, b) => b[1] - a[1] || cpCmp(a[0], b[0])).map(([code, count]) => ({ code, label: AN_QUALITY_LABEL[code] || code, count }));
@@ -987,13 +993,13 @@
         const data = failed || S.demo === 'loading' || invalid ? null : anDashboard();
         const opts = data || anDashboard();
         const r = anRange();
-        const locs = []; Object.entries(anRef()).forEach(([code, x]) => { if (!locs.some(l => l[1] === (x.label || code))) locs.push([code, x.label || code]); });
+        const locs = []; Object.entries(anRef()).forEach(([code, x]) => { if (!locs.some(l => l[1] === ui(x.label || code))) locs.push([code, ui(x.label || code)]); });
         const periods = [['7', 'Последние 7 дней'], ['30', 'Последние 30 дней'], ['90', 'Последние 90 дней'], ['custom', 'Свой период']];
         const extra = ['nosology', 'department', 'attentionReason'].filter(k => f[k]).length;
         const chips = [];
         if (f.stage) chips.push(['stage', `Этап: ${STAGE(f.stage)}`]);
         if (f.doctor) chips.push(['doctor', `Врач: ${(opts.docs.find(d => d.id === f.doctor) || {}).name || ''}`]);
-        if (f.nosology) chips.push(['nosology', `Локализация: ${(anRef()[f.nosology] || {}).label || f.nosology}`]);
+        if (f.nosology) chips.push(['nosology', `Локализация: ${ui((anRef()[f.nosology] || {}).label || f.nosology)}`]);
         if (f.department) chips.push(['department', `Отделение: ${anDeptName(f.department)}`]);
         if (f.attentionReason) chips.push(['attentionReason', `Причина внимания: ${D.ATTENTION_REASONS[f.attentionReason]}`]);
         const toolbar = `<div class="toolbar an-toolbar" role="group" aria-label="Период и фильтры аналитики">
@@ -1002,7 +1008,7 @@
                 ${ddHtml('anStage', 'Этап', 'stage', [['', 'Все этапы'], ...AN_STAGES.map(st => [st, STAGE(st)])], f.stage, false, 'an')}
                 ${opts.docs.length > 1 ? ddHtml('anDoctor', 'Врач', 'doctor', [['', 'Все врачи'], ...opts.docs.map(d => [d.id, d.name])], f.doctor, false, 'an') : ''}
                 <div class="menu-wrap">
-                    <button class="btn" type="button" data-menu="m-anfilters" aria-haspopup="dialog" aria-expanded="false">${ICON.filter}Ещё фильтры${extra ? ` · ${extra}` : ''}</button>
+                    <button class="btn" type="button" data-menu="m-anfilters" aria-haspopup="dialog" aria-expanded="false">${ICON.filter}Еще фильтры${extra ? ` · ${extra}` : ''}</button>
                     <div class="menu menu--left popover" id="m-anfilters" role="dialog" aria-label="Дополнительные фильтры аналитики" hidden>
                         ${ddHtml('anNos', 'Локализация', 'nosology', [['', 'Любая'], ...locs], f.nosology, false, 'an')}
                         ${opts.depts.length > 1 ? ddHtml('anDept', 'Отделение', 'department', [['', 'Любое'], ...opts.depts.map(id => [id, anDeptName(id)])], f.department, false, 'an') : ''}
@@ -1014,7 +1020,7 @@
             ${invalid ? `<p class="field__error" id="anRangeErr" role="alert">${!r.from || !r.to ? 'Укажите обе даты периода.' : 'Дата начала периода позже даты окончания.'} Показатели не пересчитаны.</p>` : ''}
             <div class="chips" aria-live="polite"><span class="result-line">Период: ${r.from && r.to && !invalid ? `${esc(fmtFull(r.from))} — ${esc(fmtFull(r.to))}` : 'не задан'}</span>
                 ${chips.map(([k, t]) => `<button class="chip" type="button" data-an-clear="${k}" aria-label="Убрать фильтр ${esc(t)}">${esc(t)}${ICON.x}</button>`).join('')}
-                ${chips.length || f.period !== '30' ? '<button class="btn btn--text btn--sm" type="button" data-an-act="reset">Сбросить всё</button>' : ''}</div>`;
+                ${chips.length || f.period !== '30' ? '<button class="btn btn--text btn--sm" type="button" data-an-act="reset">Сбросить все</button>' : ''}</div>`;
         if (failed) return `${head}${toolbar}<div class="table-wrap"><div class="state state--error" role="alert"><h2>Не удалось загрузить аналитику</h2><p>Сервер не ответил. Попробуйте обновить данные.</p><button class="btn" type="button" data-act="retry">Повторить</button></div></div>`;
         if (S.demo === 'loading') return `${head}${toolbar}<div class="table-wrap" aria-busy="true"><div class="skeleton" aria-label="Загрузка аналитики">${'<div></div>'.repeat(6)}</div></div>`;
         if (!data) return `${head}${toolbar}`;
@@ -1046,14 +1052,14 @@
                             <div><dt>Информационные замечания</dt><dd>${data.infos} <span class="muted">не входят в число проблем</span></dd></div>
                         </dl>
                         ${anBars(data.qualityRows, { empty: 'Проблем качества данных по выбранным условиям нет.', tone: () => 'danger', attrs: x => anAttr('quality_all', x.label, { code: x.code }) })}
-                        <p class="an-rule"><b>Как считается в прототипе.</b> Заполненность — доля заполненных полей «${AN_FILL_FIELDS.map(x => x[0]).join('», «')}» у пациентов выборки${data.fill.missingByField.length ? ` (не заполнено: ${data.fill.missingByField.map(x => `${x.label.toLowerCase()} — ${x.count}`).join(', ')})` : ''}. Проблемы — по правилам качества данных Stage 3.5 на синтетических данных. В приложении сводка заполненности в аналитику не передаётся, поэтому прежний показатель «100%» сюда не перенесён.</p>`)}
+                        <p class="an-rule"><b>Как считается в прототипе.</b> Заполненность — доля заполненных полей «${AN_FILL_FIELDS.map(x => x[0]).join('», «')}» у пациентов выборки${data.fill.missingByField.length ? ` (не заполнено: ${data.fill.missingByField.map(x => `${x.label.toLowerCase()} — ${x.count}`).join(', ')})` : ''}. Проблемы — по правилам качества данных Stage 3.5 на синтетических данных. В приложении сводка заполненности в аналитику не передается, поэтому прежний показатель «100%» сюда не перенесен.</p>`)}
                 </div>
             </section>
             <section class="an-block" aria-labelledby="anPer">
                 <div class="an-block__head"><h2 id="anPer">За период</h2><span class="section__meta">${esc(fmtFull(r.from))} — ${esc(fmtFull(r.to))}${data.period.truncated ? ` · ${data.period.days} ${plural(data.period.days, 'день', 'дня', 'дней')}; график — последние ${CORE.TREND_MAX_DAYS}` : ''}</span></div>
                 <div class="an-grid an-grid--period">
                     ${sec('anTrend', 'Динамика пациентов', anTrend(data.period))}
-                    ${sec('anOverP', 'Просрочки с плановой датой в периоде', `<p class="an-big"><button class="btn btn--text an-link an-link--big" type="button" ${anAttr('overdue_period', 'Просрочки с плановой датой в периоде')}>${data.overdueInPeriod.length}</button> <span class="muted">${plural(data.overdueInPeriod.length, 'событие', 'события', 'событий')} у ${new Set(data.overdueInPeriod.map(i => i.patientId)).size} ${plural(new Set(data.overdueInPeriod.map(i => i.patientId)).size, 'пациента', 'пациентов', 'пациентов')}</span></p><p class="an-rule">Сейчас всего просрочено ${data.overdueIssues.length} — это текущее состояние, без учёта периода.</p>`)}
+                    ${sec('anOverP', 'Просрочки с плановой датой в периоде', `<p class="an-big"><button class="btn btn--text an-link an-link--big" type="button" ${anAttr('overdue_period', 'Просрочки с плановой датой в периоде')}>${data.overdueInPeriod.length}</button> <span class="muted">${plural(data.overdueInPeriod.length, 'событие', 'события', 'событий')} у ${new Set(data.overdueInPeriod.map(i => i.patientId)).size} ${plural(new Set(data.overdueInPeriod.map(i => i.patientId)).size, 'пациента', 'пациентов', 'пациентов')}</span></p><p class="an-rule">Сейчас всего просрочено ${data.overdueIssues.length} — это текущее состояние, без учета периода.</p>`)}
                 </div>
             </section>
             <p class="an-rule">Показатели считаются в браузере по синтетическим пациентам в области доступа вашей роли; сервер не вызывается.</p>`;
@@ -1080,7 +1086,7 @@
             <ul class="kpis kpis--static">${k.map(([l, v, t]) => `<li><div class="kpi"><span class="kpi__label">${l}</span><span class="kpi__value${t && v ? ' kpi__value--' + t : ''}">${v}</span></div></li>`).join('')}</ul>
             <div class="an-grid">
                 <section class="an-sec"><div class="section__head"><h3>Назначенное лечение</h3><span class="section__meta">подписанные решения</span></div>${anBars(treatments, { empty: 'Подписанных решений за период нет.' })}</section>
-                <section class="an-sec"><div class="section__head"><h3>Загрузка расписания</h3><span class="pill pill--warn">демонстрационная оценка</span></div><p class="an-big">${capacity ? pct(Math.round(occupied / capacity * 1000) / 10) : '—'} <span class="muted">условно</span></p><p class="an-rule"><b>Не фактическая загрузка.</b> Вместимость в прототипе условная — 16 слотов на каждую группу в день с записями, как в Stage 3.5; реальная вместимость задаётся сеткой консилиума и здесь не рассчитывается. Занято ${occupied} из условных ${capacity} слотов, дней с записями: ${activeDays}. Записи без времени (${rows.filter(c => !c.time).length}) слот не занимают. Специалисты нужны в ${rows.filter(c => c.needsSurgeon || c.needsRadiotherapist).length} записях.</p></section>
+                <section class="an-sec"><div class="section__head"><h3>Загрузка расписания</h3><span class="pill pill--warn">демонстрационная оценка</span></div><p class="an-big">${capacity ? pct(Math.round(occupied / capacity * 1000) / 10) : '—'} <span class="muted">условно</span></p><p class="an-rule"><b>Не фактическая загрузка.</b> Вместимость в прототипе условная — 16 слотов на каждую группу в день с записями, как в Stage 3.5; реальная вместимость задается сеткой консилиума и здесь не рассчитывается. Занято ${occupied} из условных ${capacity} слотов, дней с записями: ${activeDays}. Записи без времени (${rows.filter(c => !c.time).length}) слот не занимают. Специалисты нужны в ${rows.filter(c => c.needsSurgeon || c.needsRadiotherapist).length} записях.</p></section>
                 <section class="an-sec"><div class="section__head"><h3>Схемы химиотерапии</h3></div>${anBars(schemes, { empty: 'Подписанных схем за период нет.' })}</section>
             </div></section>
             <p class="an-rule">Считается по синтетическим записям консилиума во вкладке; сервер не вызывается.</p>`;
@@ -1105,8 +1111,8 @@
         return `<div class="state"><h2>Раздел «${esc(title)}» недоступен</h2><p>Для вашей роли этот раздел не входит в меню.</p><a class="btn" href="#/${HOME[S.role]}">На главную</a></div>`;
     }
 
-    /* ---------- Онкоконсилиум (сокращённо: показан общий подход) ---------- */
-    const CONS_STATUS = { recorded: ['Записан', 'muted'], in_review: ['На рассмотрении', 'info'], signed: ['Решение подписано', 'good'], needs_revision: ['Возвращён на доработку', 'warn'], revised: ['Доработан', 'info'] };
+    /* ---------- Онкоконсилиум (сокращенно: показан общий подход) ---------- */
+    const CONS_STATUS = { recorded: ['Записан', 'muted'], in_review: ['На рассмотрении', 'info'], signed: ['Решение подписано', 'good'], needs_revision: ['Возвращен на доработку', 'warn'], revised: ['Доработан', 'info'] };
     const consSpecialists = (c) => [c.needsSurgeon && 'Хирург', c.needsRadiotherapist && 'Лучевой терапевт'].filter(Boolean);
     function consRow(c, withDate) {
         const p = D.patients.find(x => x.id === c.patientId);
@@ -1116,7 +1122,7 @@
         const tag = open ? 'a' : 'div';
         return `<li><${tag} class="crow"${open ? ` href="#/patient/${c.patientId}"` : ''}>
             <span class="arow__cell crow__time">${c.time ? `<span class="arow__main mono">${esc(c.time)}</span>` : '<span class="arow__main crow__notime">Время не назначено</span>'}<span class="arow__sub">${withDate ? esc(fmtShort(c.date)) + ' · ' : ''}${esc(D.GROUPS[c.group] || '')}</span></span>
-            <span class="arow__cell"><span class="arow__main arow__name">${esc(c.patientName)}</span><span class="arow__sub">${esc(c.localization || '')} · <span class="mono">${esc(c.icd)}</span> · врач ${esc(c.doctor)}</span></span>
+            <span class="arow__cell"><span class="arow__main arow__name">${esc(c.patientName)}</span><span class="arow__sub">${esc(ui(c.localization || ''))} · <span class="mono">${esc(c.icd)}</span> · врач ${esc(c.doctor)}</span></span>
             <span class="arow__cell"><span class="arow__main">${spec.length ? esc(spec.join(', ')) : '<span class="muted">Не требуются</span>'}</span>${spec.length ? `<span class="arow__sub">${spec.length === 2 ? 'нужны два специалиста' : 'нужен один специалист'}</span>` : ''}</span>
             <span class="arow__cell arow__status"><span class="status status--${st[1]}">${st[0]}</span></span></${tag}></li>`;
     }
@@ -1135,7 +1141,7 @@
                 <section class="agenda__group" aria-labelledby="cLater"><h2 id="cLater">Позже<span class="count">${later.length}</span></h2>${list(later, true)}</section></div>`}`;
     }
     function pageLater(title, id) {
-        return `<div class="page-head"><div><h1>${navIcon(id)}${esc(title)}</h1></div></div><div class="later"><b>Раздел работает как в Stage 3.5</b><p>В этом прототипе перепроектированы рабочий день, список и карточка пациента, уведомления. Раздел «${esc(title)}» остаётся на своём месте в меню и работает без изменений.</p><p><a class="btn" href="../redesign/#/${esc(id)}">Открыть раздел «${esc(title)}» в Stage 3.5</a></p></div>`;
+        return `<div class="page-head"><div><h1>${navIcon(id)}${esc(title)}</h1></div></div><div class="later"><b>Раздел работает как в Stage 3.5</b><p>В этом прототипе перепроектированы рабочий день, список и карточка пациента, уведомления. Раздел «${esc(title)}» остается на своем месте в меню и работает без изменений.</p><p><a class="btn" href="../redesign/#/${esc(id)}">Открыть раздел «${esc(title)}» в Stage 3.5</a></p></div>`;
     }
 
     /* ---------- ИИ-помощник: боковая панель (по образцу Stage 3.5) ----------
@@ -1155,11 +1161,11 @@
     const overdueCount = (p) => CORE.overdueEvents(p, TODAY, D.TERMINAL).length;
     const aiRef = (p, sub) => ({ id: p.id, title: p.name, sub: sub || `${STAGE(p.stage)} · ${p.doctor || 'врач не назначен'}` });
     function aiAnswer(text) {
-        const q = text.toLowerCase();
+        const q = fold(text);
         const list = scope();
         const needs = list.filter(p => overdueCount(p) || openIssues(p).length);
         const ctx = AI.ctx && D.patients.find(p => p.id === AI.ctx);
-        if (/(измени|переведи|перевед|отметь|удали|создай|запиши|назначь|закрой|отправь|исправь)/.test(q)) return { text: 'Помощник работает только в режиме просмотра: он не создаёт, не изменяет и не удаляет данные, не переводит этапы и не отправляет сообщения. Это действие выполняется в соответствующем разделе системы.' };
+        if (/(измени|переведи|перевед|отметь|удали|создай|запиши|назначь|закрой|отправь|исправь)/.test(q)) return { text: 'Помощник работает только в режиме просмотра: он не создает, не изменяет и не удаляет данные, не переводит этапы и не отправляет сообщения. Это действие выполняется в соответствующем разделе системы.' };
         if (/(диагноз постав|какое лечение|назначить лечение|тяжест|прогноз|дозиров)/.test(q)) return { text: 'Помощник не ставит диагнозы, не назначает лечение и не оценивает медицинскую тяжесть — это решение врача и консилиума. Могу показать сведения о маршруте и событиях в пределах вашей области доступа.' };
         if (/(телефон|полис|снилс|паспорт)/.test(q)) return { text: 'Телефоны, полисы ОМС и другие персональные идентификаторы помощник не запрашивает и не раскрывает. Их можно посмотреть в карточке пациента, если она вам доступна.' };
         if (ctx && !/(мои|отделени|нагрузк|сколько пациентов|причин)/.test(q)) {
@@ -1174,7 +1180,7 @@
                 iss.length ? `Отметка внимания: «${D.ATTENTION_REASONS[iss[0].reasonCode]}» с ${fmtFull(iss[0].createdAt)}.` : 'Открытых отметок внимания нет.',
                 ne ? `Ближайшее событие: ${ne.title}, ${ne.ev.date ? fmtFull(ne.ev.date) + (ne.ev.time ? ', ' + ne.ev.time : '') + ` (${ne.label})` : 'дата не назначена'}.` : 'Запланированных событий нет.',
                 cl.required.length ? `Чек-лист этапа: выполнено ${done} из ${cl.required.length}.${missing.length ? '\nНе выполнено:\n' + missing.map(n => `• ${n}`).join('\n') : ''}` : 'Чек-лист для текущего этапа не предусмотрен.',
-                isTerminal(ctx) ? 'Маршрут завершён.' : `Следующий этап по маршруту: ${ctx.stage === 'consult' ? 'по решению консилиума' : STAGE(NEXT[ctx.stage] || '')}.`,
+                isTerminal(ctx) ? 'Маршрут завершен.' : `Следующий этап по маршруту: ${ctx.stage === 'consult' ? 'по решению консилиума' : STAGE(NEXT[ctx.stage] || '')}.`,
             ];
             return { text: lines.join('\n'), refs: [aiRef(ctx)] };
         }
@@ -1235,7 +1241,7 @@
                         <button type="button" class="btn btn--sm btn--text" data-ai-clear ${AI.messages.length ? '' : 'disabled'}>${AI.loading ? 'Отменить и очистить' : 'Очистить диалог'}</button>
                         <button type="submit" class="btn btn--sm btn--primary" ${AI.loading ? 'disabled' : ''}>Отправить</button></div>
                 </form>`
-            : `<div class="ai-unavailable" role="status"><b>ИИ-помощник временно недоступен</b><span>Основная система продолжает работать. В прототипе доступность задаёт переключатель «Состояние экрана».</span><button class="btn btn--sm" type="button" data-ai-retry>Проверить снова</button></div></div>`}`;
+            : `<div class="ai-unavailable" role="status"><b>ИИ-помощник временно недоступен</b><span>Основная система продолжает работать. В прототипе доступность задает переключатель «Состояние экрана».</span><button class="btn btn--sm" type="button" data-ai-retry>Проверить снова</button></div></div>`}`;
         const sc = $('#aiScroll'); if (sc && AI.messages.length) sc.scrollTop = sc.scrollHeight;
     }
     function openAI(ctxId) {
@@ -1270,7 +1276,7 @@
         const gen = AI.gen;
         const a = aiAnswer(msg);   // ответ считается по роли и контексту на момент вопроса
         AI.timer = setTimeout(() => {
-            if (gen !== AI.gen) return;   // ответ отменён
+            if (gen !== AI.gen) return;   // ответ отменен
             AI.timer = 0;
             AI.messages.push({ role: 'assistant', text: a.text, refs: a.refs || [] });
             AI.loading = false; renderAI();
@@ -1322,7 +1328,7 @@
     let lastFocus = null;
     function dialog({ title, body, actions, danger, icon }) {
         lastFocus = document.activeElement;
-        // Пункт меню скрывается вместе с меню — фокус вернётся на кнопку меню.
+        // Пункт меню скрывается вместе с меню — фокус вернется на кнопку меню.
         const fromMenu = lastFocus && lastFocus.closest('.menu');
         if (fromMenu) lastFocus = document.querySelector(`[data-menu="${fromMenu.id}"]`);
         const layer = $('#layer');
@@ -1367,16 +1373,13 @@
         'close-menus'() { closeMenus(); },
         'clear-all'() { Object.assign(S.list, { q: '', stage: '', doctor: '', deadline: '', reason: '', priority: '' }); render(); $('#listQ') && $('#listQ').focus(); },
         'clear-extra'() { Object.assign(S.list, { deadline: '', reason: '', priority: '' }); render(); },
-        'new-patient'(btn, e) {
-            if (e) e.preventDefault();
-            dialog({ title: 'Новый пациент', body: '<p>Форма создания пациента в этом прототипе не перепроектировалась: она будет показана на следующем этапе вместе с поиском по МКБ-10.</p><p class="muted">В Stage 3.5 форма доступна полностью.</p>', actions: [{ label: 'Понятно', kind: 'primary', autofocus: true }] });
-        },
+        'new-patient'(btn, e) { if (e) e.preventDefault(); location.hash = '#/patients/new'; },
         import() { dialog({ title: 'Загрузить пациентов из файла', body: '<p>Сначала система проверит файл и покажет, что изменится: сколько пациентов будет добавлено, есть ли конфликты и подтверждено ли происхождение файла. Ничего не меняется до вашего подтверждения.</p><p class="muted">В прототипе файлы не загружаются.</p>', actions: [{ label: 'Закрыть', autofocus: true }] }); },
-        export() { toast(`Выгрузка ${scope().length} ${plural(scope().length, 'пациента', 'пациентов', 'пациентов')} подготовлена (в прототипе файл не создаётся)`); },
+        export() { toast(`Выгрузка ${scope().length} ${plural(scope().length, 'пациента', 'пациентов', 'пациентов')} подготовлена (в прототипе файл не создается)`); },
         copy(btn) {
             const p = D.patients.find(x => x.id === btn.dataset.id);
             const ne = nextEvent(p);
-            const text = `${p.name}, ${p.age} ${plural(p.age, 'год', 'года', 'лет')}\nДиагноз: ${p.icd} (${p.nosologyLabel})\nЭтап: ${STAGE(p.stage)}\nБлижайшее событие: ${ne && ne.ev.date ? fmtFull(ne.ev.date) + ' (' + ne.label + ')' : 'нет'}\nЛечащий врач: ${p.doctorFull}`;
+            const text = `${p.name}, ${p.age} ${plural(p.age, 'год', 'года', 'лет')}\nДиагноз: ${p.icd} (${ui(p.nosologyLabel)})\nЭтап: ${STAGE(p.stage)}\nБлижайшее событие: ${ne && ne.ev.date ? fmtFull(ne.ev.date) + ' (' + ne.label + ')' : 'нет'}\nЛечащий врач: ${p.doctorFull}`;
             const done = () => toast('Сводка скопирована в буфер обмена');
             // Если браузер не дал доступ к буферу — показать сводку выделенной, чтобы скопировать вручную.
             const manual = () => { dialog({ title: 'Сводка пациента', body: `<p>Браузер не разрешил автоматическое копирование. Текст уже выделен — нажмите Ctrl+C (⌘C на Mac).</p><label class="sr-only" for="sumText">Сводка</label><textarea class="textarea" id="sumText" rows="6" readonly>${esc(text)}</textarea>`, actions: [{ label: 'Закрыть', kind: 'primary' }] }); const t = $('#sumText'); t.focus(); t.select(); };
@@ -1400,7 +1403,7 @@
                     <p class="muted">${ne && ne.ev.date ? `По плану: ${fmtFull(ne.ev.date)}${ne.ev.time ? ', ' + esc(ne.ev.time) : ''}. Если даты различаются, событие будет отмечено «с отклонением».` : 'Плановая дата не была назначена.'}</p>
                     ${fact ? `<p class="banner banner--info" style="margin:var(--sp-2) 0"><span class="banner__body">Факт события ${nEv} из ${nEv} уже отмечен: <b>${esc(fmtFull(fact.actualDate))}${fact.actualTime ? ', ' + esc(fact.actualTime) : ''}</b>. Перевод его не изменит; другая дата или ${fact.actualTime ? 'другое время' : 'любое указанное время'} заблокируют перевод.</span></p>`
                         : `<p class="muted">Факт будет записан в событие ${nEv} из ${nEv} текущего этапа${cur(p).events.length ? '' : ' (событие будет создано)'}.</p>`}
-                    ${p.stage === 'consult' ? '<p class="muted">Перевод этапа не создаёт и не меняет ручную отметку решения ОК и не связан с подписанным решением председателя. Отметка делается отдельно: «Отметить решение ОК».</p>' : ''}`,
+                    ${p.stage === 'consult' ? '<p class="muted">Перевод этапа не создает и не меняет ручную отметку решения ОК и не связан с подписанным решением председателя. Отметка делается отдельно: «Отметить решение ОК».</p>' : ''}`,
                 actions: [{ label: 'Отмена' }, { label: 'Перевести на этап', kind: 'primary', run: (dlg) => {
                     const d = $('#advD', dlg).value; const err = $('#advErr', dlg);
                     if (!d || d > TODAY) { err.hidden = false; err.textContent = !d ? 'Укажите фактическую дату.' : 'Фактическая дата не может быть в будущем.'; $('#advD', dlg).focus(); return false; }
@@ -1410,7 +1413,7 @@
                     if (targets.length > 1 && !picked) { err.hidden = false; err.textContent = 'Выберите новый этап.'; $('input[name=advTo]', dlg).focus(); return false; }
                     const to = picked ? picked.value : targets[0];
                     moveStage(p, to, d, $('#advT', dlg).value);
-                    toast(`Пациент переведён: ${STAGE(to)}`);
+                    toast(`Пациент переведен: ${STAGE(to)}`);
                 } }],
             });
         },
@@ -1418,7 +1421,7 @@
             const p = currentPatient();
             const avail = CORE.decisionAvailability(p, S.role, scope().includes(p));
             if (!avail.available) {
-                const why = { not_consult: 'Отметка доступна только на этапе «Направлен на ОК».', no_edit_right: 'Ваша роль не позволяет изменять карточку этого пациента.', no_events: 'У этапа «Направлен на ОК» нет событий. Добавьте событие во вкладке «События и даты».', all_marked: 'Во всех событиях этапа «Направлен на ОК» отметка уже сохранена. Повторная запись не выполняется: процедура изменения решения ещё не согласована (WP2.2).' }[avail.reason];
+                const why = { not_consult: 'Отметка доступна только на этапе «Направлен на ОК».', no_edit_right: 'Ваша роль не позволяет изменять карточку этого пациента.', no_events: 'У этапа «Направлен на ОК» нет событий. Добавьте событие во вкладке «События и даты».', all_marked: 'Во всех событиях этапа «Направлен на ОК» отметка уже сохранена. Повторная запись не выполняется: процедура изменения решения еще не согласована (WP2.2).' }[avail.reason];
                 const existing = avail.reason === 'all_marked' ? `<ul class="plain-list">${avail.events.map(({ ev, eventIndex }) => `<li>Событие ${eventIndex + 1}: ${esc(D.DECISIONS[ev.consiliumDecision])}${ev.decisionMark ? ` — ${esc(ev.decisionMark.by)}, ${esc(fmtStamp(ev.decisionMark.at))}` : ''}</li>`).join('')}</ul>` : '';
                 dialog({ title: 'Отметить решение ОК', icon: ICON.lock, body: `<p>${why}</p>${existing}<p class="muted">Данные не изменены.</p>`, actions: [{ label: 'Понятно', kind: 'primary', autofocus: true }] });
                 return;
@@ -1430,7 +1433,7 @@
                 body: `<div class="banner banner--info" style="margin:0 0 var(--sp-3)"><span class="banner__body">Это <b>ручная отметка</b> в событии этапа. Она не переводит пациента на другой этап и не является подписанным решением председателя.</span></div>
                     <fieldset class="field" style="border:0;padding:0;margin:0 0 var(--sp-3)"><legend class="field__label">Событие этапа «Направлен на ОК»${avail.events.length > 1 ? ' — выберите' : ''}</legend>
                     ${avail.events.map(({ ev, eventIndex, marked }) => `<label class="radio${marked ? ' radio--disabled' : ''}"><input type="radio" name="decEv" value="${eventIndex}" ${def === eventIndex ? 'checked' : ''} ${marked ? 'disabled aria-describedby="decMarkedNote"' : ''}> Событие ${eventIndex + 1} из ${avail.events.length}: ${esc(evLabel(ev))}${marked && ev.decisionMark ? ` (${esc(ev.decisionMark.by)}, ${esc(fmtStamp(ev.decisionMark.at))})` : ''}</label>`).join('')}
-                    ${avail.events.some(x => x.marked) ? '<p class="field__hint" id="decMarkedNote">В событиях с сохранённой отметкой повторная запись недоступна: процедура изменения решения ещё не согласована (WP2.2).</p>' : ''}</fieldset>
+                    ${avail.events.some(x => x.marked) ? '<p class="field__hint" id="decMarkedNote">В событиях с сохраненной отметкой повторная запись недоступна: процедура изменения решения еще не согласована (WP2.2).</p>' : ''}</fieldset>
                     <fieldset class="field" style="border:0;padding:0;margin:0"><legend class="field__label">Решение ОК</legend>
                     ${Object.entries(D.DECISIONS).map(([k, v]) => `<label class="radio"><input type="radio" name="dec" value="${k}"> ${esc(v)}</label>`).join('')}</fieldset>
                     <p class="field__error" id="decErr" role="alert" hidden></p>`,
@@ -1442,19 +1445,19 @@
                     try { res = CORE.applyManualDecision(p, { role: S.role, inScope: scope().includes(p), eventIndex: Number(evInput.value), decision: decInput.value, at: now(), by: R().user.short }); }
                     catch (x) { err.hidden = false; err.textContent = /decision_exists/.test(x.message) ? 'В этом событии отметка уже сохранена. Повторная запись недоступна до согласования процедуры изменения решения (WP2.2).' : 'Отметку сохранить нельзя. Данные не изменены.'; return false; }
                     touch(p); render();
-                    toast(`Отметка сохранена в событии ${res.eventIndex + 1}. Этап пациента не изменён.`);
+                    toast(`Отметка сохранена в событии ${res.eventIndex + 1}. Этап пациента не изменен.`);
                 } }],
             });
         },
-        'extra-exam'() { const p = currentPatient(); dialog({ title: 'Направить на дополнительное обследование?', body: '<p>Пациент вернётся на этап «На обследовании». Пройденные этапы и события сохранятся в маршруте.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Направить на обследование', kind: 'primary', run: () => { moveStage(p, 'exam', ...implicitFact(p)); toast('Пациент направлен на дополнительное обследование'); } }] }); },
-        'not-confirmed'() { const p = currentPatient(); dialog({ title: 'Диагноз не подтверждён?', icon: ICON.warn, danger: true, body: '<p>Маршрут пациента будет <b>завершён</b> со статусом «Диагноз не подтверждён». Дальнейшие этапы станут недоступны.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Завершить маршрут', kind: 'danger', run: () => { moveStage(p, 'diagnosis-not-confirmed', ...implicitFact(p)); toast('Маршрут завершён: диагноз не подтверждён'); } }] }); },
+        'extra-exam'() { const p = currentPatient(); dialog({ title: 'Направить на дополнительное обследование?', body: '<p>Пациент вернется на этап «На обследовании». Пройденные этапы и события сохранятся в маршруте.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Направить на обследование', kind: 'primary', run: () => { moveStage(p, 'exam', ...implicitFact(p)); toast('Пациент направлен на дополнительное обследование'); } }] }); },
+        'not-confirmed'() { const p = currentPatient(); dialog({ title: 'Диагноз не подтвержден?', icon: ICON.warn, danger: true, body: '<p>Маршрут пациента будет <b>завершен</b> со статусом «Диагноз не подтвержден». Дальнейшие этапы станут недоступны.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Завершить маршрут', kind: 'danger', run: () => { moveStage(p, 'diagnosis-not-confirmed', ...implicitFact(p)); toast('Маршрут завершен: диагноз не подтвержден'); } }] }); },
         'change-doctor'() { const p = currentPatient(); dialog({ title: 'Сменить лечащего врача', body: `<div class="field"><label class="field__label" for="cdSel">Новый лечащий врач</label><select class="select" id="cdSel">${D.DOCTORS.map(d => `<option value="${d.id}" ${d.id === p.doctorId ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}</select><span class="field__hint">Карточка станет доступна новому врачу и его заведующему.</span></div>`, actions: [{ label: 'Отмена' }, { label: 'Сменить врача', kind: 'primary', run: (dlg) => { const d = D.DOCTORS.find(x => x.id === $('#cdSel', dlg).value); Object.assign(p, { doctorId: d.id, doctor: d.short, doctorFull: d.name, dept: d.dept, head: D.HEADS[d.dept] }); touch(p); render(); toast(`Лечащий врач: ${d.short}`); } }] }); },
         'delete-patient'() {
             const p = currentPatient();
             const cons = D.consilium.some(c => c.patientId === p.id);
             const del = (S.deleted[p.id] || []).length;
             if (cons || del) {
-                dialog({ title: 'Карточку нельзя удалить', icon: ICON.lock, body: `<p>${cons ? 'У пациента есть записи онкологического консилиума.' : 'У пациента есть удалённые события медицинской истории — они хранятся в базе.'} Такие карточки не удаляются, чтобы не потерять историю.</p><p class="muted">Данные не изменены.</p>`, actions: [{ label: 'Понятно', kind: 'primary', autofocus: true }] });
+                dialog({ title: 'Карточку нельзя удалить', icon: ICON.lock, body: `<p>${cons ? 'У пациента есть записи онкологического консилиума.' : 'У пациента есть удаленные события медицинской истории — они хранятся в базе.'} Такие карточки не удаляются, чтобы не потерять историю.</p><p class="muted">Данные не изменены.</p>`, actions: [{ label: 'Понятно', kind: 'primary', autofocus: true }] });
                 return;
             }
             dialog({ title: 'Удалить пациента?', danger: true, icon: ICON.warn, body: `<p>Карточка <b>${esc(p.name)}</b> будет удалена вместе с историей маршрута, событиями и уведомлениями.</p><p><b>Это действие нельзя отменить.</b></p>`,
@@ -1468,7 +1471,7 @@
         'add-event'(btn) { const p = currentPatient(); const i = Number(btn.dataset.occ); p.history[i].events.push({ date: '', time: '', actualDate: '', actualTime: '', matchedPlan: null, noPlan: false }); S.editing = `${p.id}:${i}:${p.history[i].events.length - 1}`; render(); $('#e-pd').focus(); },
         'delete-event'(btn) {
             const p = currentPatient(); const [, i, j] = btn.dataset.key.split(':').map(Number); const ev = p.history[i].events[j];
-            dialog({ title: 'Удалить событие?', body: `<p>${esc(STAGE(p.history[i].stage))}: ${ev.date ? 'план ' + fmtFull(ev.date) : 'без плановой даты'}${ev.actualDate ? ', факт ' + fmtFull(ev.actualDate) : ''}.</p><p>Событие исчезнет из маршрута, но данные сохранятся — его можно вернуть в разделе «Удалённые события».</p>`,
+            dialog({ title: 'Удалить событие?', body: `<p>${esc(STAGE(p.history[i].stage))}: ${ev.date ? 'план ' + fmtFull(ev.date) : 'без плановой даты'}${ev.actualDate ? ', факт ' + fmtFull(ev.actualDate) : ''}.</p><p>Событие исчезнет из маршрута, но данные сохранятся — его можно вернуть в разделе «Удаленные события».</p>`,
                 actions: [{ label: 'Отмена', autofocus: true }, { label: 'Удалить событие', kind: 'danger', run: () => { p.history[i].events.splice(j, 1); (S.deleted[p.id] = S.deleted[p.id] || []).push({ occ: i, idx: j, ev, at: now(), by: R().user.short }); touch(p); render(); toast('Событие удалено. Его можно восстановить ниже.'); } }] });
         },
         'restore-event'(btn) { const p = currentPatient(); const d = S.deleted[p.id].splice(Number(btn.dataset.k), 1)[0]; p.history[d.occ].events.splice(Math.min(d.idx, p.history[d.occ].events.length), 0, d.ev); touch(p); render(); toast('Событие восстановлено на прежнее место в маршруте'); },
@@ -1476,14 +1479,14 @@
         'revoke-consent'() { const p = currentPatient(); const pend = p.notifications.items.filter(i => i.status === 'pending').length; dialog({ title: 'Отозвать согласие на SMS?', danger: true, icon: ICON.warn, body: `<p>Пациент перестанет получать напоминания.${pend ? ` Ожидающие отправки напоминания (${pend}) будут отменены.` : ''}</p><p class="muted">Согласие можно будет зафиксировать снова.</p>`, actions: [{ label: 'Отмена', autofocus: true }, { label: 'Отозвать согласие', kind: 'danger', run: () => { p.notifications.consent = 'revoked'; p.notifications.smsEnabled = false; p.notifications.consentAt = now(); p.notifications.items.forEach(i => { if (i.status === 'pending') i.status = 'cancelled'; }); touch(p); render(); toast('Согласие отозвано'); } }] }); },
         book() { const p = currentPatient(); location.hash = `#/consilium/book${p ? '?patient=' + p.id : ''}`; },
         logout() { if (EXT.hooks.reset) EXT.hooks.reset(); closeAI(); resetAI(); S.an = { ...AN_DEFAULT }; S.anDetail = null; S.loggedOut = true; closeDialog && $('#layer').innerHTML && closeDialog(); render(); const r = $('input[name=role]:checked'); if (r) r.focus(); toast('Вы вышли из системы'); },
-        'clear-complaint'() { const p = currentPatient(); dialog({ title: 'Очистить комментарий?', body: '<p>Текст комментария будет удалён из карточки.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Очистить', kind: 'danger', run: () => { p.complaint = ''; touch(p); render(); toast('Комментарий очищен'); } }] }); },
+        'clear-complaint'() { const p = currentPatient(); dialog({ title: 'Очистить комментарий?', body: '<p>Текст комментария будет удален из карточки.</p>', actions: [{ label: 'Отмена', autofocus: true }, { label: 'Очистить', kind: 'danger', run: () => { p.complaint = ''; touch(p); render(); toast('Комментарий очищен'); } }] }); },
         chat(btn) {
             const c = S.convs.find(x => x.id === btn.dataset.conv); const p = D.patients.find(x => x.id === c.patientId);
             c.unread = 0; renderShell();
             const who = { patient: p.name.split(' ').slice(0, 2).join(' '), doctor: 'Вы', system: 'Система' };
             const ro = c.status === 'read_only' || !R().write;
             dialog({ title: `Переписка: ${esc(p.name)}`, body: `<ol class="thread">${c.messages.map(m => `<li class="thread__msg thread__msg--${m.from}"><span class="thread__who">${esc(who[m.from])} · ${esc(fmtStampShort(m.at))}</span>${esc(m.text)}</li>`).join('')}</ol>
-                ${ro ? '<p class="muted">Диалог доступен только для чтения.</p>' : '<div class="field"><label class="field__label" for="chatT">Ответ пациенту</label><textarea class="textarea" id="chatT" rows="3"></textarea><span class="field__hint">В прототипе сообщение остаётся во вкладке и никуда не отправляется.</span></div>'}`,
+                ${ro ? '<p class="muted">Диалог доступен только для чтения.</p>' : '<div class="field"><label class="field__label" for="chatT">Ответ пациенту</label><textarea class="textarea" id="chatT" rows="3"></textarea><span class="field__hint">В прототипе сообщение остается во вкладке и никуда не отправляется.</span></div>'}`,
                 actions: ro ? [{ label: 'Закрыть', kind: 'primary', autofocus: true }] : [{ label: 'Закрыть' }, { label: 'Отправить', kind: 'primary', run: (dlg) => { const t = $('#chatT', dlg).value.trim(); if (!t) { $('#chatT', dlg).focus(); return false; } c.messages.push({ id: `m-new-${Date.now()}`, from: 'doctor', at: now(), text: t, status: 'sent' }); render(); toast('Сообщение добавлено (демо, не отправлено)'); } }] });
         },
         'read-all'() { bellItems().forEach(i => S.read.add(i.id)); renderShell(); toggleBell(true); },
@@ -1507,7 +1510,7 @@
             const out = anCsv(anDashboard()); const link = document.createElement('a');
             link.href = URL.createObjectURL(out.blob); link.download = out.name; document.body.append(link); link.click();
             setTimeout(() => { URL.revokeObjectURL(link.href); link.remove(); }, 0);
-            toast(`CSV «${out.name}»: ${out.count} ${plural(out.count, 'показатель', 'показателя', 'показателей')} с учётом фильтров. Собран в браузере из синтетических данных.`);
+            toast(`CSV «${out.name}»: ${out.count} ${plural(out.count, 'показатель', 'показателя', 'показателей')} с учетом фильтров. Собран в браузере из синтетических данных.`);
             return;
         }
         if (a === 'reset') { S.an = { ...AN_DEFAULT }; S.anDetail = null; render(); $('#anPeriod').focus(); toast('Фильтры аналитики сброшены'); return; }
@@ -1538,7 +1541,7 @@
     }
     function ddPick(i) {
         const { btn, opts } = DD; const v = opts[i].dataset.value; const key = btn.dataset.dd; const id = btn.id; const pop = btn.closest('.popover');
-        const store = btn.dataset.store === 'an' ? S.an : btn.dataset.store === 'cons' ? S.cons : S.list;
+        const store = btn.dataset.store === 'an' ? S.an : btn.dataset.store === 'cons' ? S.cons : btn.dataset.store === 'ev' ? S.ev : S.list;
         ddClose(true);
         if (store[key] === v) return;
         store[key] = v;
@@ -1548,9 +1551,9 @@
         const again = document.getElementById(id); if (again) again.focus();
     }
     function ddTypeahead(ch) {
-        const t = Date.now(); ddType.s = (t - ddType.t > 600 ? '' : ddType.s) + ch.toLowerCase(); ddType.t = t;
+        const t = Date.now(); ddType.s = (t - ddType.t > 600 ? '' : ddType.s) + fold(ch); ddType.t = t;
         const n = DD.opts.length; const start = ddType.s.length === 1 ? DD.idx + 1 : DD.idx;
-        for (let k = 0; k < n; k++) { const o = DD.opts[(start + k) % n]; if (o.textContent.trim().toLowerCase().startsWith(ddType.s)) { ddMove((start + k) % n); return; } }
+        for (let k = 0; k < n; k++) { const o = DD.opts[(start + k) % n]; if (fold(o.textContent.trim()).startsWith(ddType.s)) { ddMove((start + k) % n); return; } }
     }
     function ddKey(e, btn) {
         const open = DD && DD.btn === btn; const k = e.key;
@@ -1718,7 +1721,7 @@
         } else if (form.dataset.form === 'note') {
             const i = Number(form.dataset.key.split(':')[2]); p.history[i].note = fd.note.trim(); S.editing = null; touch(p); render(); const t = document.getElementById(`n-${i}`); if (t) t.focus(); toast('Заметка сохранена');
         } else if (form.dataset.form === 'complaint') {
-            p.complaint = fd.complaint.trim(); touch(p); render(); $('#cText').focus(); toast('Комментарий сохранён');
+            p.complaint = fd.complaint.trim(); touch(p); render(); $('#cText').focus(); toast('Комментарий сохранен');
         } else if (form.dataset.form === 'medical') {
             const err = $('#m-err'); const code = fd.icd.trim().toUpperCase();
             const known = Object.values(window.ICD10 || {}).some(l => l.diagnoses.some(d => d.code === code));
@@ -1754,7 +1757,7 @@
     $('#themeBtn').addEventListener('click', () => { const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'; document.documentElement.setAttribute('data-theme', t); localSet('staffux-theme', t); });
 
     /* Внутренний API для модулей прототипа (не публичный интерфейс системы). */
-    window.StaffUx = { EXT, D, S, R, ROLES, TODAY, esc, $, $$, ICON, navIcon, dialog, closeDialog, toast, render, renderShell, scope, canEdit, currentPatient, parseRoute,
+    window.StaffUx = { EXT, D, S, R, ROLES, TODAY, ui, fold, esc, $, $$, ICON, navIcon, dialog, closeDialog, toast, render, renderShell, scope, canEdit, currentPatient, parseRoute, pagePatients,
         STAGE, fmtFull, fmtShort, whenShort, fmtStamp, plural, now, demoGate, ddHtml, closeMenus, ACTIONS, CORE };
     window.addEventListener('hashchange', () => { S.editing = null; toggleBell(false); render(); const h = $('#main h1'); if (h && !parseRoute().params.get('stage')) { h.setAttribute('tabindex', '-1'); h.focus({ preventScroll: true }); } });
     render();
