@@ -1,7 +1,7 @@
 """Regression tests for the consilium security fixes (integration stage 2)."""
 from datetime import date
 
-from .conftest import DEV_USERNAME, create_account, get_conn, login
+from .conftest import DEV_USERNAME, create_account, get_conn, legacy_export, login, stage_body, unsigned_import
 from .test_consilium_appointments import appointment_payload, create_patient
 
 
@@ -955,10 +955,10 @@ def _export_document(client):
 
 
 def _import(client, document, mode):
-    return client.post(
-        "/api/import/commit", json={"raw": json.dumps(document, ensure_ascii=False), "mode": mode},
-        headers=client.csrf,
-    )
+    raw = json.dumps(document, ensure_ascii=False)
+    if "signature" in document:
+        return client.post("/api/import/commit", json={"raw": raw, "mode": mode}, headers=client.csrf)
+    return unsigned_import(client, raw, mode)
 
 
 @pytest.mark.parametrize("state", ["signed", "recorded"])
@@ -976,7 +976,7 @@ def test_dangerous_import_stops_before_any_change(client, state, mode):
     assert _row(aid) == before_row
     denied = [r for r in _audit_rows("import_committed") if r["result"] == "denied"]
     expected_signed = 1 if state == "signed" else 0
-    assert denied[-1]["detail"] == f"mode={mode} consilium_records=1 signed={expected_signed}"
+    assert denied[-1]["detail"].startswith(f"mode={mode} consilium_records=1 signed={expected_signed} ")
 
 
 def test_safe_imports_still_work_next_to_consilium_records(client):
@@ -984,12 +984,18 @@ def test_safe_imports_still_work_next_to_consilium_records(client):
     login(client, DEV_USERNAME)
     other = create_patient(client, name="Пациент Без Консилиума", diagnosis="C50.1", nosology="breast")
     document = _export_document(client)
-    only_other = {**document, "patients": [p for p in document["patients"] if p["id"] == other["id"]]}
+    # Часть выгрузки — уже другой файл: подпись не сохраняется, импорт как прежний формат.
+    legacy = legacy_export(document)
+    only_other = {**legacy, "patients": [p for p in legacy["patients"] if p["id"] == other["id"]]}
 
     updated = _import(client, only_other, "update")
     assert updated.status_code == 200, updated.text
-    assert updated.json()["updated"] == 1
-    added = _import(client, document, "add")
+    # Неразрушающий update: карточка совпадает с файлом и не перезаписывается.
+    assert updated.json()["unchanged"] == 1 and updated.json()["updated"] == 0
+    # Старая выгрузка с существующими patient.id — повторный импорт (F10): 409.
+    assert _import(client, legacy, "add").status_code == 409
+    external = {**legacy, "patients": [{k: v for k, v in p.items() if k != "id"} for p in legacy["patients"]]}
+    added = _import(client, external, "add")
     assert added.status_code == 200, added.text
     assert _row(aid)["status"] == "signed"
 
@@ -1341,7 +1347,13 @@ def test_add_import_keeps_consilium_records_and_routes(client):
     history_before = client.get(f"/api/patients/{patient['id']}").json()["history"]
     row_before = _row(aid)
     document = _export_document(client)
-    added = _import(client, document, "add")
+    # Повторное добавление собственной подписанной выгрузки — конфликт, без изменений.
+    assert _import(client, document, "add").status_code == 409
+    assert _row(aid) == row_before
+    assert _import(client, legacy_export(document), "add").status_code == 409   # F10
+    legacy = legacy_export(document)
+    external = {**legacy, "patients": [{k: v for k, v in p.items() if k != "id"} for p in legacy["patients"]]}
+    added = _import(client, external, "add")
     assert added.status_code == 200 and added.json()["added"] == len(document["patients"])
     assert _row(aid) == row_before
     assert client.get(f"/api/patients/{patient['id']}").json()["history"] == history_before
@@ -1533,7 +1545,7 @@ def test_route_context_stays_historical_after_the_route_moves_on(client):
     aid, patient = _make_state(client, "signed")
     signed_context = client.get("/api/consilium/appointments").json()["appointments"][0]["routeContext"]
     login(client, DEV_USERNAME)
-    moved = client.post(f"/api/patients/{patient['id']}/stage", json={"newStage": "treatment-prep"},
+    moved = client.post(f"/api/patients/{patient['id']}/stage", json=stage_body(client, patient['id'], {"newStage": "treatment-prep"}),
                         headers=client.csrf)
     assert moved.status_code == 200, moved.text
     assert client.get(f"/api/patients/{patient['id']}").json()["stage"] == "treatment-prep"

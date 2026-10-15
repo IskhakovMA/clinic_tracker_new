@@ -50,10 +50,12 @@ def test_export_roundtrips_through_import(auth_client):
     auth_client.post("/api/patients", json=make_patient_payload(name="Раундтрип Тест"), headers=auth_client.csrf)
     exported = auth_client.get("/api/export", headers=auth_client.csrf).text
 
+    # Неразрушающий roundtrip: своя подписанная выгрузка в режиме update ничего не меняет.
     r = auth_client.post(
-        "/api/import/commit", json={"raw": exported, "mode": "replace"}, headers=auth_client.csrf
+        "/api/import/commit", json={"raw": exported, "mode": "update"}, headers=auth_client.csrf
     )
     assert r.status_code == 200, r.text
+    assert r.json()["unchanged"] == 1
     patients = auth_client.get("/api/patients").json()
     assert len(patients) == 1
     assert patients[0]["name"] == "Раундтрип Тест"

@@ -320,6 +320,7 @@ def get_today_work(conn: sqlite3.Connection, user: policy.CurrentUser, args: Emp
             JOIN history_entries h ON h.id = e.history_entry_id
             JOIN patients ON patients.id = h.patient_id
             WHERE {cond}
+              AND e.deleted_at IS NULL
               AND patients.stage NOT IN ({','.join('?' for _ in TERMINAL_STAGES)})
               AND e.date = ?
               AND (e.actual_date IS NULL OR e.actual_date = '')

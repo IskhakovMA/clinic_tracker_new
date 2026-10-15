@@ -1,6 +1,6 @@
 import sqlite3
 
-from .conftest import make_patient_payload, current_schema_version
+from .conftest import make_patient_payload, current_schema_version, event_add_body, unsigned_import
 
 
 def test_empty_db_boots_and_serves(client):
@@ -23,7 +23,7 @@ def test_data_survives_reconnect(auth_client, tmp_path):
 
 def test_foreign_keys_cascade(auth_client, tmp_path):
     p = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf).json()
-    auth_client.post(f"/api/patients/{p['id']}/history/0/events", headers=auth_client.csrf)
+    auth_client.post(f"/api/patients/{p['id']}/history/0/events", json=event_add_body(auth_client, p['id'], 0), headers=auth_client.csrf)
     auth_client.delete(f"/api/patients/{p['id']}", headers=auth_client.csrf)
 
     conn = sqlite3.connect(str(tmp_path / "clinic.db"))
@@ -62,7 +62,7 @@ def test_import_rollback_on_failure(auth_client, monkeypatch):
             {"name": "Второй", "priority": "normal", "stage": "exam"},
         ],
     }, ensure_ascii=False)
-    r = auth_client.post("/api/import/commit", json={"raw": doc, "mode": "add"}, headers=auth_client.csrf)
+    r = unsigned_import(auth_client, doc, "add")
     assert r.status_code == 500
     # Transaction rolled back: neither patient persisted
     assert auth_client.get("/api/patients").json() == []

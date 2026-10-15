@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import config, process_guard, security
-from .db import get_connection, init_db
+from .db import SchemaVersionError, get_connection, init_db
 from .routes import ai, analytics, audit_log, auth, consilium, data_quality, importexport, internal_notifications, migrate, notifications, patients, staff, structure
 
 logging.basicConfig(
@@ -70,8 +70,12 @@ async def lifespan(_app: FastAPI):
         logger.critical("refusing to start: %s", exc)
         raise
     try:
-        conn = get_connection()
-        init_db(conn)
+        try:
+            conn = get_connection()
+            init_db(conn)
+        except SchemaVersionError as exc:
+            logger.critical("refusing to start: %s", exc)
+            raise
         security.purge_expired_sessions(conn)
         logger.info(
             "clinic-tracker backend starting on %s:%s (https=%s debug=%s)",

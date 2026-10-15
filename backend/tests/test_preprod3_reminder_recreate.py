@@ -8,7 +8,7 @@ time) never got a reminder again.
 """
 from datetime import datetime, timedelta, timezone
 
-from .conftest import get_conn
+from .conftest import event_patch, get_conn
 from .test_preprod2_reminders import _event, _queued, _setup
 
 
@@ -17,8 +17,7 @@ def _pending(pid):
 
 
 def _patch(auth_client, pid, field, value):
-    r = auth_client.patch(f"/api/patients/{pid}/history/0/events/0",
-                          json={"field": field, "value": value}, headers=auth_client.csrf)
+    r = event_patch(auth_client, pid, field, value)
     assert r.status_code == 200, r.text
 
 

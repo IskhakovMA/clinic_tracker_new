@@ -5,6 +5,7 @@ such as "25:00" (or a date of 0001-01-01) through the event PATCH route;
 the next global generate-due run then raised inside event_dt and stopped
 before reaching other doctors' patients.
 """
+from .conftest import event_patch
 from .test_notifications import _create_patient_direct, _grant
 
 
@@ -20,23 +21,11 @@ GOOD_EVENT = {"date": _future(1, 2), "time": "10:00", "treatmentType": "", "actu
 def test_event_patch_rejects_out_of_range_time(auth_client):
     pid = _create_patient_direct(events=[dict(GOOD_EVENT)])
     for bad in ("25:00", "-1:00", "12:60", "7pm"):
-        r = auth_client.patch(
-            f"/api/patients/{pid}/history/0/events/0",
-            json={"field": "time", "value": bad},
-            headers=auth_client.csrf,
-        )
+        r = event_patch(auth_client, pid, "time", bad)
         assert r.status_code == 422, (bad, r.status_code)
-    r = auth_client.patch(
-        f"/api/patients/{pid}/history/0/events/0",
-        json={"field": "date", "value": "not-a-date"},
-        headers=auth_client.csrf,
-    )
+    r = event_patch(auth_client, pid, "date", "not-a-date")
     assert r.status_code == 422
-    ok = auth_client.patch(
-        f"/api/patients/{pid}/history/0/events/0",
-        json={"field": "time", "value": "23:59"},
-        headers=auth_client.csrf,
-    )
+    ok = event_patch(auth_client, pid, "time", "23:59")
     assert ok.status_code == 200
 
 

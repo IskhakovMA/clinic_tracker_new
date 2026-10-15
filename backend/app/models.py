@@ -12,7 +12,7 @@ import re
 from datetime import date as date_type
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, StrictBool
 
 PRIORITIES = ("urgent", "high", "normal")
 STAGES = (
@@ -151,6 +151,31 @@ class EventIn(StrictRequestModel):
 class StageChangeIn(StrictRequestModel):
     newStage: Stage
     lastEventUpdate: Optional[EventIn] = None
+    # Событие, которое клиент видел последним, и его версия: факт пишется в
+    # него, только если оно всё ещё последнее активное и не изменилось.
+    # Обязательны, когда lastEventUpdate меняет существующее событие.
+    lastEventId: Optional[str] = Field(None, max_length=64)
+    lastEventVersion: Optional[int] = Field(None, ge=1, le=2**63 - 1)
+    # Этап и запись маршрута, которые видел клиент: перевод из устаревшей
+    # карточки отклоняется. Без них сервер отвечает 409 (устаревший клиент),
+    # а не угадывает. Одного названия этапа мало: этапы повторяются.
+    expectedStage: Optional[Stage] = None
+    expectedHistoryEntryId: Optional[str] = Field(None, max_length=64)
+
+
+class EventAddIn(StrictRequestModel):
+    """Добавление события: активные события этапа, которые видел клиент (по
+    порядку), и назначение — явное «Добавить событие» или автоматическое
+    создание при заполнении поля-заготовки пустого этапа."""
+    expectedEventIds: list[str] = Field(..., max_length=200)
+    purpose: Literal["add", "placeholder"] = "add"
+
+    @field_validator("expectedEventIds")
+    @classmethod
+    def _short_ids(cls, v):
+        if any(len(i) > 64 for i in v):
+            raise ValueError("event id too long")
+        return v
 
 
 class NoteIn(StrictRequestModel):
@@ -170,6 +195,12 @@ class ChecklistItemIn(StrictRequestModel):
 class EventFieldUpdateIn(StrictRequestModel):
     field: Literal["date", "time", "treatmentType", "actualDate", "actualTime"]
     value: str = Field("", max_length=20)
+    # Версия события, которую видел клиент: устаревшая правка получает 409.
+    version: int = Field(..., ge=1, le=2**63 - 1)
+
+
+class EventVersionIn(StrictRequestModel):
+    version: int = Field(..., ge=1, le=2**63 - 1)
 
 
 class PatientFieldUpdateIn(StrictRequestModel):
@@ -696,9 +727,45 @@ class ImportPreviewRequest(StrictRequestModel):
     raw: str = Field(..., max_length=6_000_000)  # ~5MB text + margin
 
 
+class UnsignedImportConfirmation(StrictRequestModel):
+    """Явное подтверждение импорта файла без проверенной подписи системы.
+
+    Относится к одному файлу (SHA-256 его содержимого из preview) и одному
+    режиму: другой файл или режим требует нового подтверждения."""
+    confirmed: StrictBool   # только JSON true, не 1 и не "true"
+    fileSha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    mode: ImportMode
+
+    @field_validator("confirmed")
+    @classmethod
+    def _must_be_true(cls, v):
+        if v is not True:
+            raise ValueError("unsigned import must be explicitly confirmed")
+        return v
+
+
+class PreserveIdsConfirmation(StrictRequestModel):
+    """Подтверждение разработчика: создать карточки с сохранением внутренних
+    идентификаторов из подписанного файла. Отдельно от подтверждения
+    происхождения; относится к одному файлу, режиму и действию."""
+    confirmed: StrictBool
+    fileSha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    mode: ImportMode
+    action: Literal["create_with_internal_ids"]
+
+    @field_validator("confirmed")
+    @classmethod
+    def _must_be_true(cls, v):
+        if v is not True:
+            raise ValueError("creating cards with internal ids must be explicitly confirmed")
+        return v
+
+
 class ImportCommitRequest(StrictRequestModel):
     raw: str = Field(..., max_length=6_000_000)
     mode: ImportMode
+    unsignedConfirmation: Optional[UnsignedImportConfirmation] = None
+    preserveIdsConfirmation: Optional[PreserveIdsConfirmation] = None
 
 
 # --- Notifications ------------------------------------------------------

@@ -1,4 +1,4 @@
-from .conftest import make_patient_payload
+from .conftest import make_patient_payload, event_delete, event_patch, stage_body, event_add_body
 
 
 def _create(auth_client, **overrides):
@@ -94,7 +94,7 @@ def test_stage_change_flow(auth_client):
     pid = _create(auth_client)["id"]
     r = auth_client.post(
         f"/api/patients/{pid}/stage",
-        json={"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-07-01", "actualTime": "10:00", "matchedPlan": False}},
+        json=stage_body(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-07-01", "actualTime": "10:00", "matchedPlan": False}}),
         headers=auth_client.csrf,
     )
     assert r.status_code == 200
@@ -103,7 +103,7 @@ def test_stage_change_flow(auth_client):
     assert len(body["history"]) == 2
     # same stage again -> 409
     r = auth_client.post(
-        f"/api/patients/{pid}/stage", json={"newStage": "appointment"}, headers=auth_client.csrf
+        f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "appointment"}), headers=auth_client.csrf
     )
     assert r.status_code == 409
 
@@ -112,10 +112,10 @@ def test_consult_can_return_to_exam_for_additional_assessment(auth_client):
     pid = _create(auth_client, stage="consult", events=[{"date": "2026-07-02", "time": "11:00"}])["id"]
     r = auth_client.post(
         f"/api/patients/{pid}/stage",
-        json={
+        json=stage_body(auth_client, pid, {
             "newStage": "exam",
             "lastEventUpdate": {"actualDate": "2026-07-02", "actualTime": "11:00", "matchedPlan": True},
-        },
+        }),
         headers=auth_client.csrf,
     )
     assert r.status_code == 200, r.text
@@ -134,49 +134,33 @@ def test_hormone_treatment_type_roundtrips(auth_client):
     body = auth_client.get(f"/api/patients/{pid}").json()
     assert body["history"][0]["events"][0]["treatmentType"] == "hormone"
 
-    r = auth_client.patch(
-        f"/api/patients/{pid}/history/0/events/0",
-        json={"field": "treatmentType", "value": "hormone"},
-        headers=auth_client.csrf,
-    )
+    r = event_patch(auth_client, pid, "treatmentType", "hormone")
     assert r.status_code == 200, r.text
     assert r.json()["history"][0]["events"][0]["treatmentType"] == "hormone"
 
 
 def test_events_lifecycle(auth_client):
     pid = _create(auth_client)["id"]
-    r = auth_client.post(f"/api/patients/{pid}/history/0/events", headers=auth_client.csrf)
+    r = auth_client.post(f"/api/patients/{pid}/history/0/events", json=event_add_body(auth_client, pid, 0), headers=auth_client.csrf)
     assert r.status_code == 200
     assert len(r.json()["history"][0]["events"]) == 1
 
-    r = auth_client.patch(
-        f"/api/patients/{pid}/history/0/events/0",
-        json={"field": "date", "value": "2026-08-01"},
-        headers=auth_client.csrf,
-    )
+    r = event_patch(auth_client, pid, "date", "2026-08-01")
     assert r.json()["history"][0]["events"][0]["date"] == "2026-08-01"
 
     # actual date matching plan -> matchedPlan True
-    r = auth_client.patch(
-        f"/api/patients/{pid}/history/0/events/0",
-        json={"field": "actualDate", "value": "2026-08-01"},
-        headers=auth_client.csrf,
-    )
+    r = event_patch(auth_client, pid, "actualDate", "2026-08-01")
     assert r.json()["history"][0]["events"][0]["matchedPlan"] is True
 
-    r = auth_client.delete(f"/api/patients/{pid}/history/0/events/0", headers=auth_client.csrf)
+    r = event_delete(auth_client, pid)
     assert r.status_code == 200
     assert r.json()["history"][0]["events"] == []
 
 
 def test_event_field_whitelist(auth_client):
     pid = _create(auth_client)["id"]
-    auth_client.post(f"/api/patients/{pid}/history/0/events", headers=auth_client.csrf)
-    r = auth_client.patch(
-        f"/api/patients/{pid}/history/0/events/0",
-        json={"field": "noPlan", "value": "true"},
-        headers=auth_client.csrf,
-    )
+    auth_client.post(f"/api/patients/{pid}/history/0/events", json=event_add_body(auth_client, pid, 0), headers=auth_client.csrf)
+    r = event_patch(auth_client, pid, "noPlan", "true")
     assert r.status_code == 422
 
 

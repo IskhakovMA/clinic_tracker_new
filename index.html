@@ -1342,17 +1342,30 @@
             </button>
         </div>
         <div class="modal__body">
+            <div id="importProvenance" aria-live="polite"></div>
             <div class="summary" id="importReviewSummary"></div>
             <div class="field">
                 <label class="field__label" for="importModeSelect">Режим импорта</label>
                 <select class="select" id="importModeSelect">
                     <option value="add">Добавить как новые записи</option>
-                    <option value="update">Обновить совпадающие по идентификатору</option>
-                    <option value="replace">Полностью заменить все данные</option>
+                    <option value="update">Обновить без потери данных (дописать новые события)</option>
+                    <option value="replace">Полная замена (только для пустой базы)</option>
                 </select>
                 <p class="field__hint" id="importModeHint"></p>
             </div>
             <div id="importConsiliumImpact" aria-live="polite"></div>
+            <div class="field is-hidden" id="importPreserveIdsField">
+                <label class="checkbox">
+                    <input type="checkbox" id="importPreserveIdsConfirm">
+                    <span>Создать карточки с сохранением внутренних идентификаторов из этого файла</span>
+                </label>
+            </div>
+            <div class="field is-hidden" id="importUnsignedConfirmField">
+                <label class="checkbox">
+                    <input type="checkbox" id="importUnsignedConfirm">
+                    <span>Я проверил(а) происхождение файла и понимаю риск создания дубликатов</span>
+                </label>
+            </div>
         </div>
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="closeImportReviewBtn">Отмена</button>
@@ -1623,6 +1636,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=analytics-quality-summary-v37"></script>
+<script src="/static/app.js?v=patient-event-integrity-v43"></script>
 </body>
 </html>

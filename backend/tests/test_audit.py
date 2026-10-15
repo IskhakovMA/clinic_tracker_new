@@ -1,6 +1,6 @@
 import json
 
-from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload
+from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, stage_body, unsigned_import
 
 SENSITIVE_MARKERS = [
     TEST_PASSWORD,
@@ -76,7 +76,7 @@ def test_crud_events_recorded_with_patient_id(auth_client):
 
 def test_stage_change_recorded(auth_client):
     pid = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf).json()["id"]
-    auth_client.post(f"/api/patients/{pid}/stage", json={"newStage": "appointment"}, headers=auth_client.csrf)
+    auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "appointment"}), headers=auth_client.csrf)
     events = auth_client.get("/api/audit").json()["events"]
     assert any(e["detail"] == "stage=appointment" for e in events)
 
@@ -87,7 +87,7 @@ def test_import_and_export_recorded_with_counts_only(auth_client):
         "patients": [{"name": "Импортов Тест", "priority": "normal", "stage": "exam"}],
     }, ensure_ascii=False)
     auth_client.post("/api/import/preview", json={"raw": doc})
-    auth_client.post("/api/import/commit", json={"raw": doc, "mode": "add"}, headers=auth_client.csrf)
+    unsigned_import(auth_client, doc, "add")
     auth_client.get("/api/export", headers=auth_client.csrf)
 
     events = auth_client.get("/api/audit").json()["events"]
@@ -100,7 +100,7 @@ def test_import_and_export_recorded_with_counts_only(auth_client):
 
 
 def test_rejected_import_recorded_as_denied(auth_client):
-    auth_client.post("/api/import/commit", json={"raw": "{not json", "mode": "add"}, headers=auth_client.csrf)
+    unsigned_import(auth_client, "{not json", "add")
     events = auth_client.get("/api/audit").json()["events"]
     denied = [e for e in events if e["event_type"] == "import_committed" and e["result"] == "denied"]
     assert denied

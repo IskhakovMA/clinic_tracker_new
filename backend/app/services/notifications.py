@@ -540,7 +540,7 @@ def planned_events(conn: sqlite3.Connection, user: policy.CurrentUser | None = N
             FROM events
             JOIN history_entries h ON h.id = events.history_entry_id
             JOIN patients ON patients.id = h.patient_id
-            WHERE {cond}
+            WHERE {cond} AND events.deleted_at IS NULL
             ORDER BY patients.id, events.id""",
         params,
     ).fetchall()
@@ -760,14 +760,15 @@ def mark_skipped(conn: sqlite3.Connection, row: dict, reason: str) -> None:
 
 def _current_event_time(conn: sqlite3.Connection, row) -> tuple[datetime | None, str | None]:
     ev = conn.execute(
-        """SELECT events.date, events.time, events.actual_date, events.no_plan, patients.stage
+        """SELECT events.date, events.time, events.actual_date, events.no_plan, events.deleted_at, patients.stage
            FROM events
            JOIN history_entries h ON h.id = events.history_entry_id
            JOIN patients ON patients.id = h.patient_id
            WHERE events.id = ? AND patients.id = ?""",
         (row["source_id"], row["patient_id"]),
     ).fetchone()
-    if ev is None:
+    if ev is None or ev["deleted_at"] is not None:
+        # Удалённое (в том числе мягко) событие не порождает SMS.
         return None, "event_removed"
     if ev["actual_date"] or ev["no_plan"] or ev["stage"] in TERMINAL_STAGES:
         return None, "event_inactive"

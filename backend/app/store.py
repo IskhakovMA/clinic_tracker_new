@@ -7,9 +7,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from typing import Optional
+from typing import Callable, Optional
 
-from .db import now_iso
+from .db import ARCHIVED_EVENT_DELETE_ERROR, now_iso, transaction
 from .models import (
     DANGEROUS_KEYS,
     PRIORITIES,
@@ -54,6 +54,10 @@ def new_id() -> str:
 
 def _event_row_to_dict(row: sqlite3.Row) -> dict:
     return {
+        # Стабильный идентификатор и версия: правка, удаление и восстановление
+        # адресуются по id и сверяют версию, а не позицию в списке.
+        "id": row["id"],
+        "version": row["version"],
         "date": row["date"],
         "time": row["time"],
         "treatmentType": row["treatment_type"],
@@ -98,26 +102,42 @@ def normalize_pgi_result_date(result: str | None, result_date: str | None) -> st
     return value
 
 
-def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: EventIn) -> None:
+def event_values(ev: EventIn) -> tuple:
+    """Медицинские значения события в том виде, в каком их хранит база
+    (date, time, treatment_type, actual_date, actual_time, matched_plan,
+    no_plan, consilium_decision) — для вставки и для сравнения при импорте."""
+    return (
+        ev.date or None,
+        ev.time or None,
+        ev.treatmentType or None,
+        ev.actualDate or None,
+        ev.actualTime or None,
+        None if ev.matchedPlan is None else int(ev.matchedPlan),
+        int(bool(ev.noPlan)),
+        ev.consiliumDecision or None,
+    )
+
+
+EVENT_VALUE_COLUMNS = ("date", "time", "treatment_type", "actual_date", "actual_time",
+                       "matched_plan", "no_plan", "consilium_decision")
+
+
+def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: EventIn,
+                 event_id: Optional[str] = None) -> str:
+    event_id = event_id or new_id()
     conn.execute(
         """INSERT INTO events (id, history_entry_id, seq, date, time, treatment_type,
                                 actual_date, actual_time, matched_plan, no_plan, consilium_decision, set_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            new_id(),
+            event_id,
             history_entry_id,
             seq,
-            ev.date or None,
-            ev.time or None,
-            ev.treatmentType or None,
-            ev.actualDate or None,
-            ev.actualTime or None,
-            None if ev.matchedPlan is None else int(ev.matchedPlan),
-            int(bool(ev.noPlan)),
-            ev.consiliumDecision or None,
+            *event_values(ev),
             now_iso() if (ev.actualDate or ev.noPlan) else None,
         ),
     )
+    return event_id
 
 
 def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]:
@@ -131,11 +151,16 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
     ).fetchall()
     history = []
     for h in history_rows:
+        # Карточка показывает активные события; удалённые — отдельным запросом.
         events = conn.execute(
-            "SELECT * FROM events WHERE history_entry_id = ? ORDER BY seq ASC", (h["id"],)
+            "SELECT * FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC", (h["id"],)
         ).fetchall()
         history.append(
             {
+                # Стабильный id записи маршрута: клиент называет его при смене
+                # этапа и добавлении события (повторный этап с тем же названием
+                # — другая запись).
+                "id": h["id"],
                 "stage": h["stage"],
                 "enteredAt": h["entered_at"],
                 "events": [_event_row_to_dict(e) for e in events],
@@ -328,9 +353,57 @@ def touch_patient(conn: sqlite3.Connection, patient_id: str) -> None:
     conn.execute("UPDATE patients SET updated_at = ? WHERE id = ?", (now_iso(), patient_id))
 
 
+class PatientDeleteBlocked(Exception):
+    """Карточку нельзя удалить физически: каскад уничтожил бы историю (409)."""
+
+    def __init__(self, reason: str, count: int, message: str):
+        self.reason = reason
+        self.count = count
+        super().__init__(message)
+
+
+def archived_event_count(conn: sqlite3.Connection, patient_id: str) -> int:
+    return conn.execute(
+        """SELECT COUNT(*) FROM events JOIN history_entries h ON h.id = events.history_entry_id
+           WHERE h.patient_id = ? AND events.deleted_at IS NOT NULL""",
+        (patient_id,),
+    ).fetchone()[0]
+
+
+def is_archived_event_delete_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.IntegrityError) and ARCHIVED_EVENT_DELETE_ERROR in str(exc)
+
+
 def delete_patient(conn: sqlite3.Connection, patient_id: str) -> bool:
-    with conn:
-        cur = conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
+    """Физическое удаление карточки, если оно не уничтожает историю.
+
+    Проверки и удаление идут под одной блокировкой записи: запись консилиума
+    или удалённое событие, появившиеся параллельно, не будут стёрты каскадом."""
+    with transaction(conn):
+        consilium_records = conn.execute(
+            "SELECT COUNT(*) FROM oncology_consilium_appointments WHERE patient_id = ?", (patient_id,)
+        ).fetchone()[0]
+        if consilium_records:
+            raise PatientDeleteBlocked(
+                "consilium_records", consilium_records,
+                "У пациента есть записи онкологического консилиума; карточку удалить нельзя.",
+            )
+        archived = archived_event_count(conn, patient_id)
+        if archived:
+            raise PatientDeleteBlocked(
+                "archived_events", archived,
+                "У пациента есть удалённые события медицинской истории; они хранятся в базе, "
+                "поэтому карточку удалить нельзя. Данные не изменены.",
+            )
+        try:
+            cur = conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
+        except sqlite3.IntegrityError as exc:
+            if is_archived_event_delete_error(exc):  # страховка базы данных
+                raise PatientDeleteBlocked(
+                    "archived_events", 1,
+                    "У пациента есть удалённые события медицинской истории; карточку удалить нельзя.",
+                ) from exc
+            raise
         return cur.rowcount > 0
 
 
@@ -432,65 +505,133 @@ def _history_entry_id(conn: sqlite3.Connection, patient_id: str, occ_index: int)
     return row["id"] if row else None
 
 
-def _event_id(conn: sqlite3.Connection, history_entry_id: str, event_index: int) -> Optional[str]:
-    row = conn.execute(
-        "SELECT id FROM events WHERE history_entry_id = ? ORDER BY seq ASC LIMIT 1 OFFSET ?",
-        (history_entry_id, event_index),
-    ).fetchone()
-    return row["id"] if row else None
+def _next_event_seq(conn: sqlite3.Connection, history_entry_id: str) -> int:
+    return conn.execute(
+        "SELECT COALESCE(MAX(seq), -1) + 1 AS s FROM events WHERE history_entry_id = ?", (history_entry_id,)
+    ).fetchone()["s"]
 
 
-def change_stage(conn: sqlite3.Connection, patient_id: str, new_stage: str, last_event_update: Optional[EventIn]) -> bool:
-    p = conn.execute("SELECT stage FROM patients WHERE id = ?", (patient_id,)).fetchone()
-    if p is None:
-        return False
-    if p["stage"] == new_stage:
-        return False
-    if last_event_update and last_event_update.consiliumDecision:
-        if p["stage"] != "consult":
-            raise ValueError("consiliumDecision is allowed only for the current OK stage")
-        if last_event_update.consiliumDecision == "dispensary_observation":
-            if new_stage != "dispensary-observation":
-                raise ValueError("dispensary_observation decision must end in dispensary-observation")
-        elif new_stage not in {"treatment-prep", "treatment"}:
-            raise ValueError("treatment OK decisions must continue the treatment flow")
+class EventConflict(Exception):
+    """Событие нельзя изменить в его текущем состоянии (409)."""
+
+
+def _active_event_count(conn: sqlite3.Connection, history_entry_id: str) -> int:
+    return conn.execute(
+        "SELECT COUNT(*) FROM events WHERE history_entry_id = ? AND deleted_at IS NULL", (history_entry_id,)
+    ).fetchone()[0]
+
+
+STALE_EVENTS_MESSAGE = "События этапа уже изменены другим пользователем. Обновите карточку пациента"
+EVENT_REF_REQUIRED_MESSAGE = (
+    "События этапа изменились или открыта устаревшая версия приложения: для записи факта "
+    "нужны идентификатор и версия события. Обновите страницу"
+)
+STAGE_REF_REQUIRED_MESSAGE = (
+    "Для перевода этапа нужны текущий этап и запись маршрута карточки. "
+    "Обновите страницу: открыта устаревшая версия приложения"
+)
+STALE_STAGE_MESSAGE = "Этап пациента уже изменён другим пользователем. Обновите карточку пациента"
+
+
+def change_stage(
+    conn: sqlite3.Connection,
+    patient_id: str,
+    new_stage: str,
+    last_event_update: Optional[EventIn],
+    *,
+    expected_event_id: Optional[str] = None,
+    expected_event_version: Optional[int] = None,
+    expected_stage: Optional[str] = None,
+    expected_history_entry_id: Optional[str] = None,
+) -> bool:
+    """Перевод пациента на новый этап с записью факта текущего события.
+
+    Всё выполняется под одной блокировкой записи (BEGIN IMMEDIATE): этап,
+    события и история читаются и меняются как одно целое. Если запрос
+    меняет существующее событие, клиент обязан назвать его id и версию —
+    без них сервер не угадывает, какое событие менять."""
     from . import config
-    if _count_history(conn, patient_id) >= config.MAX_HISTORY_ENTRIES_PER_PATIENT:
-        raise ValueError(f"no more than {config.MAX_HISTORY_ENTRIES_PER_PATIENT} history entries per patient")
-    with conn:
+    with transaction(conn):
+        p = conn.execute("SELECT stage FROM patients WHERE id = ?", (patient_id,)).fetchone()
+        if p is None:
+            return False
+        # Этап, который видел клиент, обязателен: иначе перевод из устаревшей
+        # карточки (или параллельный перевод) прошёл бы от чужого этапа.
+        if expected_stage is None or expected_history_entry_id is None:
+            raise EventConflict(STAGE_REF_REQUIRED_MESSAGE)
+        if p["stage"] != expected_stage:
+            raise EventConflict(STALE_STAGE_MESSAGE)
+        if p["stage"] == new_stage:
+            return False
+        old_stage = p["stage"]
+        if last_event_update and last_event_update.consiliumDecision:
+            if old_stage != "consult":
+                raise ValueError("consiliumDecision is allowed only for the current OK stage")
+            if last_event_update.consiliumDecision == "dispensary_observation":
+                if new_stage != "dispensary-observation":
+                    raise ValueError("dispensary_observation decision must end in dispensary-observation")
+            elif new_stage not in {"treatment-prep", "treatment"}:
+                raise ValueError("treatment OK decisions must continue the treatment flow")
         history_count = _count_history(conn, patient_id)
+        if history_count >= config.MAX_HISTORY_ENTRIES_PER_PATIENT:
+            raise ValueError(f"no more than {config.MAX_HISTORY_ENTRIES_PER_PATIENT} history entries per patient")
         current_entry_id = _history_entry_id(conn, patient_id, history_count - 1) if history_count > 0 else None
+        # Название этапа не доказывает актуальность: exam → appointment → exam
+        # снова даёт «exam». Клиент обязан назвать текущую запись маршрута.
+        if current_entry_id != expected_history_entry_id:
+            raise EventConflict(STALE_STAGE_MESSAGE)
         if current_entry_id and last_event_update is not None:
             events = conn.execute(
-                "SELECT id FROM events WHERE history_entry_id = ? ORDER BY seq ASC", (current_entry_id,)
+                "SELECT id, version FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC",
+                (current_entry_id,),
             ).fetchall()
             if events:
-                last_event_id = events[-1]["id"]
-                conn.execute(
+                last = events[-1]
+                if expected_event_id is None or expected_event_version is None:
+                    raise EventConflict(EVENT_REF_REQUIRED_MESSAGE)
+                # Карточка устарела: последнее активное событие уже другое
+                # (удалено, восстановлено или добавлено) либо изменено.
+                if last["id"] != expected_event_id or last["version"] != expected_event_version:
+                    raise EventConflict(STALE_EVENTS_MESSAGE)
+                cur = conn.execute(
                     """UPDATE events SET actual_date = ?, actual_time = ?, matched_plan = ?,
-                                           consilium_decision = COALESCE(?, consilium_decision), set_at = ?
-                       WHERE id = ?""",
+                                           consilium_decision = COALESCE(?, consilium_decision), set_at = ?,
+                                           version = version + 1
+                       WHERE id = ? AND deleted_at IS NULL AND version = ?""",
                     (
                         last_event_update.actualDate or None,
                         last_event_update.actualTime or "",
                         None if last_event_update.matchedPlan is None else int(last_event_update.matchedPlan),
                         last_event_update.consiliumDecision or None,
                         now_iso(),
-                        last_event_id,
+                        expected_event_id,
+                        expected_event_version,
                     ),
                 )
+                if cur.rowcount != 1:
+                    raise EventConflict(STALE_EVENTS_MESSAGE)
             else:
-                next_seq = 0
+                if expected_event_id is not None:
+                    # Клиент видел событие, которого среди активных уже нет.
+                    raise EventConflict(STALE_EVENTS_MESSAGE)
+                # Удалённые события сохраняют свои seq — новое встаёт после них.
+                next_seq = _next_event_seq(conn, current_entry_id)
                 insert_event(conn, current_entry_id, next_seq, last_event_update)
 
         now = now_iso()
-        next_seq = _count_history(conn, patient_id)
+        # Условие по прежнему этапу: два одновременных перевода не создадут
+        # две записи истории от одного исходного этапа.
+        cur = conn.execute(
+            "UPDATE patients SET stage = ?, updated_at = ? WHERE id = ? AND stage = ?",
+            (new_stage, now, patient_id, old_stage),
+        )
+        if cur.rowcount != 1:
+            raise EventConflict(STALE_STAGE_MESSAGE)
         conn.execute(
             "INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note) "
             "VALUES (?, ?, ?, ?, ?, NULL, '')",
-            (new_id(), patient_id, next_seq, new_stage, now),
+            (new_id(), patient_id, history_count, new_stage, now),
         )
-        conn.execute("UPDATE patients SET stage = ?, updated_at = ? WHERE id = ?", (new_stage, now, patient_id))
         if new_stage in TERMINAL_STAGES:
             _cancel_event_reminders(conn, "patient_id = ?", (patient_id,), "event_inactive")
         elif last_event_update is not None and current_entry_id:
@@ -515,35 +656,45 @@ def _cancel_event_reminders(conn: sqlite3.Connection, where: str, params: tuple,
     )
 
 
-def add_event(conn: sqlite3.Connection, patient_id: str, occ_index: int) -> bool:
+STALE_EVENT_SET_MESSAGE = "События этапа уже изменены другим пользователем. Обновите карточку пациента"
+ADD_CONTEXT_REQUIRED_MESSAGE = (
+    "Для добавления события нужен список событий этапа, который видела карточка. "
+    "Обновите страницу: открыта устаревшая версия приложения"
+)
+
+
+def add_event(
+    conn: sqlite3.Connection, patient_id: str, occ_index: int,
+    expected_event_ids: Optional[list[str]] = None, *, placeholder: bool = False,
+) -> Optional[str]:
+    """Добавить пустое событие в запись маршрута; возвращает id нового события.
+
+    Клиент называет активные события этапа, которые видел (по порядку).
+    Если набор уже другой — карточка устарела (EventConflict): так две
+    открытые копии пустого этапа не создадут два события. Проверяется
+    именно набор id, а не их число: удаление одного события и добавление
+    другого число не меняет. placeholder — автоматическое создание при
+    заполнении поля-заготовки: допустимо только для этапа без событий."""
     from . import config
-    entry_id = _history_entry_id(conn, patient_id, occ_index)
-    if entry_id is None:
-        return False
-    count = conn.execute("SELECT COUNT(*) FROM events WHERE history_entry_id = ?", (entry_id,)).fetchone()[0]
-    if count >= config.MAX_EVENTS_PER_HISTORY_ENTRY:
-        raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
-    with conn:
-        next_seq_row = conn.execute(
-            "SELECT COALESCE(MAX(seq), -1) + 1 AS s FROM events WHERE history_entry_id = ?", (entry_id,)
-        ).fetchone()
-        insert_event(conn, entry_id, next_seq_row["s"], EventIn())
+    if expected_event_ids is None:
+        raise EventConflict(ADD_CONTEXT_REQUIRED_MESSAGE)
+    if placeholder and expected_event_ids:
+        raise ValueError("placeholder event can be created only for a stage without events")
+    with transaction(conn):
+        entry_id = _history_entry_id(conn, patient_id, occ_index)
+        if entry_id is None:
+            return None
+        active = [r["id"] for r in conn.execute(
+            "SELECT id FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC", (entry_id,)
+        ).fetchall()]
+        if active != list(expected_event_ids):
+            raise EventConflict(STALE_EVENT_SET_MESSAGE)
+        # Лимит и следующий seq — под той же блокировкой записи, что и вставка.
+        if len(active) >= config.MAX_EVENTS_PER_HISTORY_ENTRY:
+            raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
+        event_id = insert_event(conn, entry_id, _next_event_seq(conn, entry_id), EventIn())
         touch_patient(conn, patient_id)
-    return True
-
-
-def remove_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, event_index: int) -> bool:
-    entry_id = _history_entry_id(conn, patient_id, occ_index)
-    if entry_id is None:
-        return False
-    event_id = _event_id(conn, entry_id, event_index)
-    if event_id is None:
-        return False
-    with conn:
-        _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_removed")
-        conn.execute("DELETE FROM events WHERE id = ?", (event_id,))
-        touch_patient(conn, patient_id)
-    return True
+    return event_id
 
 
 EVENT_FIELD_COLUMN = {
@@ -555,24 +706,102 @@ EVENT_FIELD_COLUMN = {
 }
 
 
-def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, event_index: int, field: str, value: str) -> bool:
+def event_of_patient(conn: sqlite3.Connection, patient_id: str, event_id: str) -> Optional[sqlite3.Row]:
+    """Событие пациента по стабильному id (активное или удалённое).
+
+    Событие другого пациента не находится — так id из чужой карточки
+    не даёт доступа к событию."""
+    return conn.execute(
+        """SELECT events.*, h.seq AS history_seq FROM events
+           JOIN history_entries h ON h.id = events.history_entry_id
+           WHERE events.id = ? AND h.patient_id = ?""",
+        (event_id, patient_id),
+    ).fetchone()
+
+
+def _event_conflict(row: sqlite3.Row, version: int, *, want_deleted: bool) -> None:
+    if want_deleted and row["deleted_at"] is None:
+        raise EventConflict("Событие не удалено")
+    if not want_deleted and row["deleted_at"] is not None:
+        raise EventConflict("Событие удалено. Обновите карточку пациента")
+    if row["version"] != version:
+        raise EventConflict("Событие уже изменено другим пользователем. Обновите карточку пациента")
+
+
+def event_facts(row: sqlite3.Row) -> dict:
+    """Только признаки события для аудита — без дат и решений."""
+    return {
+        "planned": int(bool(row["date"] or row["time"])),
+        "actual": int(bool(row["actual_date"])),
+        "decision": int(bool(row["consilium_decision"])),
+    }
+
+
+def delete_event(
+    conn: sqlite3.Connection, patient_id: str, event_id: str, version: int, user_id: str,
+    *, audit_hook: Optional[Callable[[sqlite3.Row], None]] = None,
+) -> Optional[sqlite3.Row]:
+    """Мягкое удаление: событие скрывается из маршрута, данные сохраняются.
+
+    Возвращает строку события до удаления или None, если события у пациента
+    нет. Уже удалённое или изменённое событие — EventConflict. audit_hook
+    пишет обязательную запись аудита в той же транзакции: ошибка аудита
+    откатывает удаление."""
+    with transaction(conn):
+        row = event_of_patient(conn, patient_id, event_id)
+        if row is None:
+            return None
+        cur = conn.execute(
+            """UPDATE events SET deleted_at = ?, deleted_by_user_id = ?, version = version + 1
+               WHERE id = ? AND version = ? AND deleted_at IS NULL""",
+            (now_iso(), user_id, event_id, version),
+        )
+        if cur.rowcount != 1:
+            if row["deleted_at"] is not None:
+                raise EventConflict("Событие уже удалено")
+            _event_conflict(row, version, want_deleted=False)
+            raise EventConflict("Событие уже изменено другим пользователем. Обновите карточку пациента")
+        _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_removed")
+        touch_patient(conn, patient_id)
+        if audit_hook is not None:
+            audit_hook(row)
+    return row
+
+
+def restore_event(
+    conn: sqlite3.Connection, patient_id: str, event_id: str, version: int,
+    *, audit_hook: Optional[Callable[[sqlite3.Row], None]] = None,
+) -> Optional[sqlite3.Row]:
+    """Вернуть удалённое событие на его место в истории (тот же этап и seq).
+
+    Этап пациента не меняется. Напоминание не создаётся здесь: его, если
+    событие ещё актуально, поставит обычная генерация по существующим правилам.
+    Сведения о прошлом удалении (кто и когда) остаются в журнале аудита:
+    audit_hook пишет восстановление в той же транзакции."""
+    from . import config
+    with transaction(conn):
+        row = event_of_patient(conn, patient_id, event_id)
+        if row is None:
+            return None
+        if row["deleted_at"] is not None and _active_event_count(conn, row["history_entry_id"]) >= config.MAX_EVENTS_PER_HISTORY_ENTRY:
+            raise ValueError(f"no more than {config.MAX_EVENTS_PER_HISTORY_ENTRY} events per history entry")
+        cur = conn.execute(
+            """UPDATE events SET deleted_at = NULL, deleted_by_user_id = NULL, version = version + 1
+               WHERE id = ? AND version = ? AND deleted_at IS NOT NULL""",
+            (event_id, version),
+        )
+        if cur.rowcount != 1:
+            _event_conflict(row, version, want_deleted=True)
+            raise EventConflict("Событие уже изменено другим пользователем. Обновите карточку пациента")
+        touch_patient(conn, patient_id)
+        if audit_hook is not None:
+            audit_hook(row)
+    return row
+
+
+def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field: str, value: str, version: int) -> Optional[sqlite3.Row]:
     if field not in EVENT_FIELD_COLUMN:
         raise ValueError("unknown event field")
-    entry_id = _history_entry_id(conn, patient_id, occ_index)
-    if entry_id is None:
-        return False
-    event_id = _event_id(conn, entry_id, event_index)
-    if event_id is None:
-        if event_index != 0:
-            return False
-        # Lazily materialize the first event of an occurrence that was
-        # created without one (e.g. a primary-appointment stage entered
-        # before its actual date/time is known) — the frontend renders an
-        # empty placeholder for event 0 in this case; the first edit to it
-        # is what actually creates the row.
-        with conn:
-            insert_event(conn, entry_id, 0, EventIn())
-        event_id = _event_id(conn, entry_id, 0)
     value = "" if value is None else str(value)
     if len(value) > 20:
         raise ValueError("value too long")
@@ -580,12 +809,19 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
     if field == "treatmentType" and value not in TREATMENT_TYPES:
         raise ValueError(f"treatmentType must be one of {TREATMENT_TYPES}")
     column = EVENT_FIELD_COLUMN[field]
-    previous = conn.execute(f"SELECT {column} FROM events WHERE id = ?", (event_id,)).fetchone()[0]  # nosec B608
     with conn:
-        conn.execute(
-            f"UPDATE events SET {column} = ? WHERE id = ?",  # nosec B608
-            (value or None, event_id),
+        row = event_of_patient(conn, patient_id, event_id)
+        if row is None:
+            return None
+        previous = row[column]
+        cur = conn.execute(
+            f"""UPDATE events SET {column} = ?, version = version + 1
+                WHERE id = ? AND version = ? AND deleted_at IS NULL""",  # nosec B608 - column from allowlist
+            (value or None, event_id, version),
         )
+        if cur.rowcount != 1:
+            _event_conflict(row, version, want_deleted=False)
+            raise EventConflict("Событие уже изменено другим пользователем. Обновите карточку пациента")
         # Перенос или факт визита: старое напоминание недействительно;
         # следующий generate-due создаст новое, если событие ещё актуально.
         # Правка, не меняющая время напоминания или активность, его не трогает.
@@ -594,12 +830,35 @@ def update_event(conn: sqlite3.Connection, patient_id: str, occ_index: int, even
         elif field == "actualDate" and value:
             _cancel_event_reminders(conn, "source_id = ?", (event_id,), "event_inactive")
         if field in ("actualDate", "actualTime"):
-            row = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
-            if not row["no_plan"]:
-                matched = (row["actual_date"] == row["date"]) and ((row["actual_time"] or "") == (row["time"] or ""))
+            current = conn.execute("SELECT * FROM events WHERE id = ?", (event_id,)).fetchone()
+            if not current["no_plan"]:
+                matched = (current["actual_date"] == current["date"]) and ((current["actual_time"] or "") == (current["time"] or ""))
                 conn.execute("UPDATE events SET matched_plan = ? WHERE id = ?", (int(matched), event_id))
         touch_patient(conn, patient_id)
-    return True
+    return row
+
+
+def deleted_events(conn: sqlite3.Connection, patient_id: str) -> list[dict]:
+    rows = conn.execute(
+        """SELECT events.*, h.seq AS history_seq, h.stage AS history_stage,
+                  u.full_name AS deleted_by_name
+           FROM events
+           JOIN history_entries h ON h.id = events.history_entry_id
+           LEFT JOIN users u ON u.id = events.deleted_by_user_id
+           WHERE h.patient_id = ? AND events.deleted_at IS NOT NULL
+           ORDER BY events.deleted_at DESC, events.id ASC""",
+        (patient_id,),
+    ).fetchall()
+    return [
+        {
+            **_event_row_to_dict(r),
+            "historyIndex": r["history_seq"],
+            "historyStage": r["history_stage"],
+            "deletedAt": r["deleted_at"],
+            "deletedByName": r["deleted_by_name"] or "Сотрудник",
+        }
+        for r in rows
+    ]
 
 
 def update_note(conn: sqlite3.Connection, patient_id: str, occ_index: int, note: str) -> bool:

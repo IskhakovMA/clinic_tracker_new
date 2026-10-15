@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import DEV_USERNAME, create_account, login, make_patient_payload, current_schema_version
+from .conftest import DEV_USERNAME, create_account, login, make_patient_payload, current_schema_version, unsigned_import
 
 # Схема v1 — как она выглядела до RBAC (упрощённо, но с теми же таблицами).
 V1_SCHEMA = """
@@ -183,8 +183,7 @@ def test_v1_export_format_still_imports(migrated):
         "schemaVersion": 1,
         "patients": [make_patient_payload(name="Старофайлов Импорт")],
     }, ensure_ascii=False)
-    r = client.post("/api/import/commit", json={"raw": old_doc, "mode": "add"},
-                    headers=client.csrf)
+    r = unsigned_import(client, old_doc, "add")
     assert r.status_code == 200
     assert r.json()["added"] == 1
     # запись попала в очередь несопоставленных, а не потерялась

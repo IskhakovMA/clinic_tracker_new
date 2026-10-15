@@ -7,7 +7,7 @@ past- or far-dated events) and the event count caps (NV2-08).
 """
 from datetime import datetime, timedelta, timezone
 
-from .conftest import get_conn, make_patient_payload
+from .conftest import get_conn, make_patient_payload, event_delete, event_patch, stage_body, event_add_body
 from .test_notifications import _create_patient_direct, _due_all, _grant
 
 
@@ -42,7 +42,7 @@ def _sent(conn, pid):
 
 def test_deleted_event_reminder_is_not_sent(auth_client):
     pid = _setup(auth_client)
-    assert auth_client.delete(f"/api/patients/{pid}/history/0/events/0", headers=auth_client.csrf).status_code == 200
+    assert event_delete(auth_client, pid).status_code == 200
     conn = get_conn()
     _process(conn)
     assert _sent(conn, pid) == []
@@ -50,8 +50,7 @@ def test_deleted_event_reminder_is_not_sent(auth_client):
 
 def test_rescheduled_event_old_reminder_is_not_sent(auth_client):
     pid = _setup(auth_client)
-    r = auth_client.patch(f"/api/patients/{pid}/history/0/events/0",
-                          json={"field": "date", "value": _event(days=20)["date"]}, headers=auth_client.csrf)
+    r = event_patch(auth_client, pid, "date", _event(days=20)["date"])
     assert r.status_code == 200
     conn = get_conn()
     _process(conn)
@@ -60,16 +59,14 @@ def test_rescheduled_event_old_reminder_is_not_sent(auth_client):
 
 def test_completed_event_and_closed_patient_reminders_are_not_sent(auth_client):
     pid = _setup(auth_client)
-    r = auth_client.patch(f"/api/patients/{pid}/history/0/events/0",
-                          json={"field": "actualDate", "value": datetime.now(timezone.utc).date().isoformat()},
-                          headers=auth_client.csrf)
+    r = event_patch(auth_client, pid, "actualDate", datetime.now(timezone.utc).date().isoformat())
     assert r.status_code == 200
     conn = get_conn()
     _process(conn)
     assert _sent(conn, pid) == []
 
     pid2 = _setup(auth_client)
-    r = auth_client.post(f"/api/patients/{pid2}/stage", json={"newStage": "completed"}, headers=auth_client.csrf)
+    r = auth_client.post(f"/api/patients/{pid2}/stage", json=stage_body(auth_client, pid2, {"newStage": "completed"}), headers=auth_client.csrf)
     assert r.status_code == 200
     _process(conn)
     assert _sent(conn, pid2) == []
@@ -111,7 +108,7 @@ def test_event_count_caps_are_enforced(auth_client, monkeypatch):
     r = auth_client.post("/api/patients", json=make_patient_payload(events=[_event()] * 4), headers=auth_client.csrf)
     assert r.status_code == 422
     pid = auth_client.post("/api/patients", json=make_patient_payload(events=[_event()] * 3), headers=auth_client.csrf).json()["id"]
-    r = auth_client.post(f"/api/patients/{pid}/history/0/events", headers=auth_client.csrf)
+    r = auth_client.post(f"/api/patients/{pid}/history/0/events", json=event_add_body(auth_client, pid, 0), headers=auth_client.csrf)
     assert r.status_code == 422
 
 
@@ -119,6 +116,6 @@ def test_history_entry_cap_is_enforced(auth_client, monkeypatch):
     from backend.app import config
     monkeypatch.setattr(config, "MAX_HISTORY_ENTRIES_PER_PATIENT", 2)
     pid = auth_client.post("/api/patients", json=make_patient_payload(stage="exam"), headers=auth_client.csrf).json()["id"]
-    assert auth_client.post(f"/api/patients/{pid}/stage", json={"newStage": "consult"}, headers=auth_client.csrf).status_code == 200
-    r = auth_client.post(f"/api/patients/{pid}/stage", json={"newStage": "exam"}, headers=auth_client.csrf)
+    assert auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "consult"}), headers=auth_client.csrf).status_code == 200
+    r = auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "exam"}), headers=auth_client.csrf)
     assert r.status_code == 422

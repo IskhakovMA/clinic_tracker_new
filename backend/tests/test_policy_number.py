@@ -1,6 +1,6 @@
 import json
 
-from .conftest import make_patient_payload, current_schema_version
+from .conftest import make_patient_payload, current_schema_version, unsigned_import
 
 
 def test_create_update_get_and_list_patient_policy_number(auth_client):
@@ -63,7 +63,7 @@ def test_policy_number_import_export_and_legacy_import(auth_client):
     assert preview.status_code == 200, preview.text
     assert preview.json()["valid"] is True
 
-    committed = auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf)
+    committed = unsigned_import(auth_client, raw, "add")
     assert committed.status_code == 200, committed.text
     patients = sorted(auth_client.get("/api/patients").json(), key=lambda p: p["name"])
     assert patients[0]["policyNumber"] == ""

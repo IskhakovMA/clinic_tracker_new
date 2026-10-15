@@ -1,7 +1,7 @@
 """Full integration smoke: the entire operator workflow in one scenario."""
 import json
 
-from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload
+from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, event_add_body, preserve_ids_confirmation
 
 
 def test_full_scenario(client):
@@ -33,7 +33,7 @@ def test_full_scenario(client):
     assert r.json()["doctor"] == "Др. Смоуков"
 
     # 6. Add event
-    r = client.post(f"/api/patients/{pid}/history/0/events", headers=csrf)
+    r = client.post(f"/api/patients/{pid}/history/0/events", json=event_add_body(client, pid, 0), headers=csrf)
     assert len(r.json()["history"][0]["events"]) == 1
 
     # 7. Export
@@ -47,7 +47,10 @@ def test_full_scenario(client):
     assert client.get("/api/patients").json() == []
 
     # 9. Import the export back
-    r = client.post("/api/import/commit", json={"raw": exported.text, "mode": "add"}, headers=csrf)
+    # Карточка с прежними id создаётся только с подтверждением разработчика.
+    assert client.post("/api/import/commit", json={"raw": exported.text, "mode": "add"}, headers=csrf).status_code == 428
+    r = client.post("/api/import/commit", json={"raw": exported.text, "mode": "add",
+                    "preserveIdsConfirmation": preserve_ids_confirmation(exported.text, "add")}, headers=csrf)
     assert r.json()["added"] == 1
 
     # 10. Logout

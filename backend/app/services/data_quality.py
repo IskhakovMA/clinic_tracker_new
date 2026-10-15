@@ -272,7 +272,8 @@ def _attach_history_and_plans(conn: sqlite3.Connection, patients: list[PatientRe
             marks = ",".join("?" for _ in chunk)
             event_rows.extend(conn.execute(
                 f"""SELECT * FROM events
-                    WHERE history_entry_id IN ({marks}) ORDER BY history_entry_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
+                    WHERE history_entry_id IN ({marks}) AND deleted_at IS NULL
+                    ORDER BY history_entry_id, seq ASC""",  # nosec B608 - marks are bound placeholders.
                 chunk,
             ).fetchall())
         for e in event_rows:

@@ -26,9 +26,15 @@ def migrate_preview(
     if not policy.can_import(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
     try:
-        document, errors = importexport.validate_import(body.raw)
+        inspection = importexport.inspect_import(body.raw)
     except importexport.ImportStructureError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    if inspection.ids.internal_ids and not importexport.internal_ids_allowed(user):
+        # То же правило, что и у обычного импорта: файл с внутренними id — только разработчику.
+        # Без сведений о базе: отказ одинаков при любом её состоянии.
+        return {"valid": False, "code": "internal_ids_forbidden",
+                "errors": [{"index": None, "field": "id", "message": importexport.INTERNAL_IDS_MESSAGE}]}
+    document, errors = inspection.document, inspection.errors
     if document is None:
         return {"valid": False, "errors": errors, "serverHasData": _patient_count(conn) > 0}
     scope_errors = importexport.scope_errors(conn, document, user)
@@ -46,22 +52,44 @@ def migrate_commit(
 ):
     if not policy.can_import(user):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    try:
+        inspection = importexport.inspect_import(body.raw)
+    except importexport.ImportStructureError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    # Запрет внутренних id — раньше любых проверок состояния базы.
+    if inspection.ids.internal_ids and not importexport.internal_ids_allowed(user):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=importexport.INTERNAL_IDS_MESSAGE)
     if _patient_count(conn) > 0:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Server already has patient data; use regular import instead of migration.",
         )
-    try:
-        document, errors = importexport.validate_import(body.raw)
-    except importexport.ImportStructureError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    document, errors = inspection.document, inspection.errors
     if document is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail={"errors": errors})
     scope_errors = importexport.scope_errors(conn, document, user)
     if scope_errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail={"errors": scope_errors})
-    result = importexport.commit_import(conn, document, "add", user)
-    audit.record(conn, audit.MIGRATION_COMMITTED, detail=f"added={result['added']}",
-                 **audit.actor_ctx(user))
+    def audit_hook(result: dict) -> None:
+        # Перенос локальных данных — неподписанный импорт: запись аудита
+        # обязательна и сохраняется вместе с данными.
+        audit.record_required(conn, audit.MIGRATION_COMMITTED,
+                              detail=(f"added={result['added']} provenance=local_migration "
+                                      f"file_status={inspection.provenance['status']} "
+                                      f"file_sha256={inspection.provenance['fileSha256']}"),
+                              **audit.actor_ctx(user))
+
+    try:
+        # Пустота базы проверяется повторно под блокировкой записи.
+        result = importexport.commit_import(conn, document, "add", user, audit_hook=audit_hook,
+                                            require_empty=True)
+    except importexport.ImportNotEmptyError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except (importexport.ImportConflictError, importexport.ImportArchiveConflictError,
+            importexport.ImportDuplicateError, importexport.ImportRestrictedError) as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except sqlite3.Error:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Перенос не сохранён: не удалось записать данные вместе с журналом аудита.")
     return result

@@ -124,7 +124,10 @@ def check_database(db_path: Path) -> dict:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
             version = row["version"] if row else None
             report["schema_version"] = version
-            if version != config.SCHEMA_VERSION:
+            if _db.schema_version_problem(conn) == "damaged":
+                report["ok"] = False
+                report["problems"].append("schema version damaged (several rows or not an integer)")
+            elif version != config.SCHEMA_VERSION:
                 report["ok"] = False
                 report["problems"].append(
                     f"schema version {version} != expected {config.SCHEMA_VERSION}"
@@ -204,6 +207,10 @@ def identify_backup_build(path: Path, schema_version: int) -> str:
 def _stored_schema_version(path: Path) -> int | None:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
+        # Та же проверка, что при запуске: копия с повреждённой версией схемы
+        # (несколько строк, не целое число) не должна заменить рабочую базу.
+        if _db.schema_version_problem(conn) == "damaged":
+            raise MaintenanceError("Резервная копия отклонена: версия схемы повреждена или не распознана")
         has_table = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
         ).fetchone()

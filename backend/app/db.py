@@ -128,6 +128,11 @@ CREATE TABLE IF NOT EXISTS events (
         OR consilium_decision IS NULL
     ),
     set_at TEXT,
+    -- Мягкое удаление: событие остаётся в истории и восстанавливается.
+    deleted_at TEXT,
+    deleted_by_user_id TEXT REFERENCES users(id),
+    -- Версия строки для защиты от устаревших правок (optimistic locking).
+    version INTEGER NOT NULL DEFAULT 1,
     UNIQUE (history_entry_id, seq)
 );
 
@@ -338,6 +343,7 @@ CREATE TABLE IF NOT EXISTS consilium_schedule_slots (
 INDEX_SQL = """
 CREATE INDEX IF NOT EXISTS idx_history_patient ON history_entries(patient_id);
 CREATE INDEX IF NOT EXISTS idx_events_history ON events(history_entry_id);
+CREATE INDEX IF NOT EXISTS idx_events_history_active ON events(history_entry_id, deleted_at);
 CREATE INDEX IF NOT EXISTS idx_future_plans_patient ON future_plans(patient_id);
 CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(name);
 CREATE INDEX IF NOT EXISTS idx_patients_policy_number ON patients(policy_number);
@@ -1114,6 +1120,113 @@ def migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
         END""")
 
 
+def migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
+    """v19 → v20: soft deletion and row version of patient events.
+
+    - deleted_at / deleted_by_user_id: an event removed from the route stays
+      in the database and can be restored; existing events stay active (NULL).
+    - version: incremented on every change; edits, deletions and restores
+      carry the version the client saw, so a stale card cannot overwrite a
+      newer state. Existing events start at 1.
+    Columns are only added, never dropped or rewritten.
+    """
+    for column, ddl in (
+        ("deleted_at", "deleted_at TEXT"),
+        ("deleted_by_user_id", "deleted_by_user_id TEXT REFERENCES users(id)"),
+        ("version", "version INTEGER NOT NULL DEFAULT 1"),
+    ):
+        _add_column_if_missing(conn, "events", column, ddl)
+    # Удалённое событие — часть медицинской истории: ни один путь (каскад от
+    # пациента или этапа, импорт, прямой SQL, старая сборка на этой базе) не
+    # может стереть его физически. Каскадные удаления тоже вызывают триггер,
+    # поэтому вся операция откатывается целиком.
+    conn.execute(ARCHIVED_EVENT_DELETE_TRIGGER_SQL)
+    # INSERT OR REPLACE удаляет конфликтующую строку без DELETE-триггера
+    # (recursive_triggers выключен): вставка поверх удалённого события запрещена.
+    conn.execute(ARCHIVED_EVENT_REPLACE_TRIGGER_SQL)
+    # Удалённое событие не правится: меняется только отметка удаления
+    # (восстановление). Это же не даёт старой сборке, не знающей deleted_at,
+    # записать факт в скрытое событие.
+    conn.execute(ARCHIVED_EVENT_UPDATE_TRIGGER_SQL)
+
+
+ARCHIVED_EVENT_DELETE_ERROR = "archived_event_delete_forbidden"
+ARCHIVED_EVENT_UPDATE_ERROR = "archived_event_update_forbidden"
+ARCHIVED_EVENT_UPDATE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_archived_not_updated
+    BEFORE UPDATE ON events
+    WHEN OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NOT NULL
+    BEGIN
+        SELECT RAISE(ABORT, '{ARCHIVED_EVENT_UPDATE_ERROR}');
+    END;
+"""
+ARCHIVED_EVENT_REPLACE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_archived_not_replaced
+    BEFORE INSERT ON events
+    WHEN EXISTS (
+        SELECT 1 FROM events
+        WHERE deleted_at IS NOT NULL
+          AND (id = NEW.id OR (history_entry_id = NEW.history_entry_id AND seq = NEW.seq))
+    )
+    BEGIN
+        SELECT RAISE(ABORT, '{ARCHIVED_EVENT_DELETE_ERROR}');
+    END;
+"""
+ARCHIVED_EVENT_DELETE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_archived_not_deleted
+    BEFORE DELETE ON events
+    WHEN OLD.deleted_at IS NOT NULL
+    BEGIN
+        SELECT RAISE(ABORT, '{ARCHIVED_EVENT_DELETE_ERROR}');
+    END;
+"""
+
+
+class SchemaVersionError(RuntimeError):
+    """The database file was written by a different (newer or unknown) build."""
+
+
+def _check_schema_version(conn: sqlite3.Connection) -> None:
+    """Refuse a database this build does not understand, before any DDL.
+
+    A newer schema can hold data this build would misread: v20 keeps deleted
+    patient events in place, and code that ignores deleted_at shows them as
+    active. A missing table (new file) or a known older version is migrated
+    as before; anything else stops the start instead of serving wrong data."""
+    problem = schema_version_problem(conn)
+    if problem == "damaged":
+        raise SchemaVersionError(
+            "Версия схемы базы данных повреждена или не распознана. Запуск остановлен, "
+            "база не изменена; проверьте файл командой check-db --no-migrate."
+        )
+    if problem is not None:
+        raise SchemaVersionError(
+            f"База данных имеет схему {problem}, а эта сборка поддерживает не выше "
+            f"v{config.SCHEMA_VERSION}. Запуск остановлен, база не изменена. Запустите сборку, "
+            "которая поддерживает эту схему (откат приложения на старую схему не поддерживается)."
+        )
+
+
+def schema_version_problem(conn: sqlite3.Connection) -> str | None:
+    """None if schema_version is absent, empty or one supported integer;
+    "damaged" for several rows or a non-integer/non-positive value;
+    "v<N>" for a version newer than this build. Shared by start-up,
+    check-db and backup validation."""
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()
+    if not has_table:
+        return None
+    versions = [r[0] for r in conn.execute("SELECT version FROM schema_version").fetchall()]
+    if not versions:
+        return None
+    if len(versions) != 1 or type(versions[0]) is not int or versions[0] < 1:
+        return "damaged"
+    if versions[0] > config.SCHEMA_VERSION:
+        return f"v{versions[0]}"
+    return None
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -1132,6 +1245,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         raise RuntimeError("init_db must not run inside an open transaction")
     conn.execute("BEGIN IMMEDIATE")
     try:
+        _check_schema_version(conn)        # новая или повреждённая схема — отказ до любых изменений
         _execute_script(conn, SCHEMA_SQL)  # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
@@ -1149,6 +1263,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v16_to_v17(conn)         # strict slot and patient uniqueness
         migrate_v17_to_v18(conn)         # resubmission marker, immutable signed decisions
         migrate_v18_to_v19(conn)         # route context of decisions, soft deletion
+        migrate_v19_to_v20(conn)         # soft deletion and version of patient events
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
@@ -1219,6 +1334,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 18:
             migrate_v18_to_v19(conn)
+            migrate_v19_to_v20(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 19:
+            migrate_v19_to_v20(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
@@ -1243,8 +1362,15 @@ def get_connection() -> sqlite3.Connection:
     Tests should build their own via `_connect` + `init_db` against a temp path."""
     global _singleton_conn
     if _singleton_conn is None:
-        _singleton_conn = _connect(config.DB_PATH)
-        init_db(_singleton_conn)
+        conn = _connect(config.DB_PATH)
+        try:
+            init_db(conn)
+        except BaseException:
+            # Не оставлять неинициализированное соединение (например, к базе
+            # более новой схемы) для следующих вызовов.
+            conn.close()
+            raise
+        _singleton_conn = conn
     return _singleton_conn
 
 

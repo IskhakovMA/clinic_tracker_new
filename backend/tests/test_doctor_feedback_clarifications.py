@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, create_account, create_department, get_conn, login, make_patient_payload, current_schema_version
+from .conftest import DEV_USERNAME, create_account, create_department, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
 
 
 def _create_patient(client, **overrides):
@@ -19,7 +19,7 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
     )
     first = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
-        json={
+        json=stage_body(auth_client, patient['id'], {
             "newStage": "treatment-prep",
             "lastEventUpdate": {
                 "actualDate": "2026-08-20",
@@ -27,7 +27,7 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
                 "matchedPlan": True,
                 "consiliumDecision": "treatment_strategy_defined",
             },
-        },
+        }),
         headers=auth_client.csrf,
     )
     assert first.status_code == 200, first.text
@@ -35,19 +35,19 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
 
     consult_again = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
-        json={"newStage": "consult", "lastEventUpdate": {"actualDate": "2026-08-21"}},
+        json=stage_body(auth_client, patient['id'], {"newStage": "consult", "lastEventUpdate": {"actualDate": "2026-08-21"}}),
         headers=auth_client.csrf,
     )
     assert consult_again.status_code == 200, consult_again.text
     changed = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
-        json={
+        json=stage_body(auth_client, patient['id'], {
             "newStage": "treatment-prep",
             "lastEventUpdate": {
                 "actualDate": "2026-08-22",
                 "consiliumDecision": "treatment_strategy_changed",
             },
-        },
+        }),
         headers=auth_client.csrf,
     )
     assert changed.status_code == 200, changed.text
@@ -67,13 +67,13 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
     )
     terminal = auth_client.post(
         f"/api/patients/{terminal_patient['id']}/stage",
-        json={
+        json=stage_body(auth_client, terminal_patient['id'], {
             "newStage": "dispensary-observation",
             "lastEventUpdate": {
                 "actualDate": "2026-08-23",
                 "consiliumDecision": "dispensary_observation",
             },
-        },
+        }),
         headers=auth_client.csrf,
     )
     assert terminal.status_code == 200, terminal.text
@@ -81,10 +81,10 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
 
     invalid = auth_client.post(
         f"/api/patients/{terminal_patient['id']}/stage",
-        json={
+        json=stage_body(auth_client, terminal_patient['id'], {
             "newStage": "treatment-prep",
             "lastEventUpdate": {"actualDate": "2026-08-24", "consiliumDecision": "treatment_strategy_defined"},
-        },
+        }),
         headers=auth_client.csrf,
     )
     assert invalid.status_code in {409, 422}
@@ -166,7 +166,7 @@ def test_import_export_accepts_prev7_legacy_and_v8_structured_fields(auth_client
     preview = auth_client.post("/api/import/preview", json={"raw": raw})
     assert preview.status_code == 200, preview.text
     assert preview.json()["valid"] is True
-    assert auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf).status_code == 200
+    assert unsigned_import(auth_client, raw, "add").status_code == 200
     imported = next(p for p in auth_client.get("/api/patients").json() if p["name"] == "Legacy v7 Codes")
     assert imported["consiliumCode"] == "OK-LEGACY"
     assert imported["pgiCode"] == "PGI-LEGACY"
@@ -199,7 +199,7 @@ def test_import_export_accepts_prev7_legacy_and_v8_structured_fields(auth_client
     }
     raw = json.dumps(v8_doc, ensure_ascii=False)
     assert auth_client.post("/api/import/preview", json={"raw": raw}).json()["valid"] is True
-    assert auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf).status_code == 200
+    assert unsigned_import(auth_client, raw, "add").status_code == 200
     exported = json.loads(auth_client.get("/api/export", headers=auth_client.csrf).text)
     structured = next(p for p in exported["patients"] if p["name"] == "Structured v8")
     assert exported["schemaVersion"] == current_schema_version()
@@ -355,13 +355,13 @@ def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_at
     )
     auth_client.post(
         f"/api/patients/{patient['id']}/stage",
-        json={
+        json=stage_body(auth_client, patient['id'], {
             "newStage": "treatment-prep",
             "lastEventUpdate": {
                 "actualDate": "2026-08-20",
                 "consiliumDecision": "treatment_strategy_defined",
             },
-        },
+        }),
         headers=auth_client.csrf,
     )
 

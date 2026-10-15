@@ -1,6 +1,6 @@
 import json
 
-from .conftest import make_patient_payload
+from .conftest import make_patient_payload, unsigned_import
 
 
 def _import_doc(patients, schema_version=1):
@@ -44,9 +44,10 @@ def test_valid_import_add_mode(auth_client):
     assert r.json()["valid"] is True
     assert r.json()["totalRecords"] == 1
 
-    r = auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf)
+    r = unsigned_import(auth_client, raw, "add")
     assert r.status_code == 200
-    assert r.json() == {"added": 1, "updated": 0, "skipped": 0}
+    assert r.json() == {"added": 1, "updated": 0, "skipped": 0, "unchanged": 0, "appendedEvents": 0,
+                        "provenance": "unsigned_external"}
 
     patients = auth_client.get("/api/patients").json()
     assert len(patients) == 1
@@ -100,9 +101,7 @@ def test_invalid_records_reported_with_index_and_field(auth_client):
 
 def test_partially_invalid_set_not_committed(auth_client):
     patients = [_valid_patient(id="ok"), _valid_patient(id="bad", stage="no-such")]
-    r = auth_client.post(
-        "/api/import/commit", json={"raw": _import_doc(patients), "mode": "add"}, headers=auth_client.csrf
-    )
+    r = unsigned_import(auth_client, _import_doc(patients), "add")
     assert r.status_code == 422
     assert auth_client.get("/api/patients").json() == []
 
@@ -138,30 +137,30 @@ def test_update_mode_only_touches_matches(auth_client):
         "/api/patients", json=make_patient_payload(), headers=auth_client.csrf
     ).json()
 
+    # Изменение существующих значений — конфликт (решение A): карточка не меняется.
     patients = [
         _valid_patient(id=existing["id"], name="Обновлённый Пациент"),
         _valid_patient(id="never-seen", name="Чужой"),
     ]
-    r = auth_client.post(
-        "/api/import/commit", json={"raw": _import_doc(patients), "mode": "update"}, headers=auth_client.csrf
-    )
-    assert r.json() == {"added": 0, "updated": 1, "skipped": 1}
+    r = unsigned_import(auth_client, _import_doc(patients), "update")
+    assert r.status_code == 409 and "обновление не выполнено" in r.json()["detail"]
     all_patients = auth_client.get("/api/patients").json()
     assert len(all_patients) == 1
     assert all_patients[0]["id"] == existing["id"]
-    assert all_patients[0]["name"] == "Обновлённый Пациент"
+    assert all_patients[0]["name"] == existing["name"]
 
 
-def test_replace_mode_swaps_everything(auth_client):
+def test_replace_mode_only_into_an_empty_database(auth_client):
     auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf)
     auth_client.post("/api/patients", json=make_patient_payload(name="Второй"), headers=auth_client.csrf)
 
-    r = auth_client.post(
-        "/api/import/commit",
-        json={"raw": _import_doc([_valid_patient()]), "mode": "replace"},
-        headers=auth_client.csrf,
-    )
-    assert r.json()["added"] == 1
+    r = unsigned_import(auth_client, _import_doc([_valid_patient()]), "replace")
+    assert r.status_code == 409 and "Полная замена заблокирована" in r.json()["detail"]
+    assert len(auth_client.get("/api/patients").json()) == 2
+    for patient in auth_client.get("/api/patients").json():
+        assert auth_client.delete(f"/api/patients/{patient['id']}", headers=auth_client.csrf).status_code == 200
+    r = unsigned_import(auth_client, _import_doc([_valid_patient()]), "replace")
+    assert r.status_code == 200 and r.json()["added"] == 1
     all_patients = auth_client.get("/api/patients").json()
     assert len(all_patients) == 1
     assert all_patients[0]["name"] == "Импортов Иван"

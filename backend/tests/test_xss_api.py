@@ -53,9 +53,9 @@ def test_payload_survives_export_import(auth_client):
     auth_client.post("/api/patients", json=make_patient_payload(name=payload), headers=auth_client.csrf)
     exported = auth_client.get("/api/export", headers=auth_client.csrf).text
     r = auth_client.post(
-        "/api/import/commit", json={"raw": exported, "mode": "replace"}, headers=auth_client.csrf
+        "/api/import/commit", json={"raw": exported, "mode": "update"}, headers=auth_client.csrf
     )
-    assert r.status_code == 200
+    assert r.status_code == 200 and r.json()["unchanged"] == 1
     assert auth_client.get("/api/patients").json()[0]["name"] == payload
 
 

@@ -6,6 +6,7 @@ import json
 import pytest
 
 from .conftest import (
+    unsigned_import,
     TEST_PASSWORD,
     create_account,
     create_department,
@@ -31,8 +32,7 @@ def test_legacy_import_without_doctor_id_becomes_unresolved(auth_client, wrap):
     raw = (json.dumps([record], ensure_ascii=False) if wrap == "v0_bare_array"
            else json.dumps({"schemaVersion": 1, "patients": [record]}, ensure_ascii=False))
 
-    r = auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"},
-                         headers=auth_client.csrf)
+    r = unsigned_import(auth_client, raw, "add")
     assert r.status_code == 200 and r.json()["added"] == 1
 
     imported = next(p for p in auth_client.get("/api/patients").json()

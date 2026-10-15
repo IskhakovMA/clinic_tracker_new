@@ -96,6 +96,7 @@ def _event_conditions(conn: sqlite3.Connection, user: policy.CurrentUser, today:
             JOIN history_entries h ON h.id = e.history_entry_id
             JOIN patients ON patients.id = h.patient_id
             WHERE {cond}
+              AND e.deleted_at IS NULL
               AND patients.stage NOT IN ({','.join('?' for _ in TERMINAL_STAGE_SET)})
               AND COALESCE(e.no_plan, 0) = 0
               AND e.date IS NOT NULL AND e.date != ''

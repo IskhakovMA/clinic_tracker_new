@@ -4,7 +4,7 @@ can_read/can_write; недоступный пациент неотличим о�
 """
 import sqlite3
 
-from typing import Literal
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
@@ -12,7 +12,9 @@ from .. import audit, policy, store
 from ..deps import get_db, require_active_password, require_csrf
 from ..models import (
     ChecklistItemIn,
+    EventAddIn,
     EventFieldUpdateIn,
+    EventVersionIn,
     AttentionIssueCloseIn,
     AttentionIssueCreateIn,
     NoteIn,
@@ -235,19 +237,16 @@ def delete_patient(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
-    # Удаление карточки каскадом удалило бы записи консилиума и подписанные
-    # решения; исторические решения ради удаления не уничтожаются.
-    consilium_records = conn.execute(
-        "SELECT COUNT(*) AS c FROM oncology_consilium_appointments WHERE patient_id = ?", (patient_id,)
-    ).fetchone()["c"]
-    if consilium_records:
+    # Удаление карточки каскадом удалило бы записи консилиума, подписанные
+    # решения и удалённые (архивные) события; история ради удаления не
+    # уничтожается. Проверка и удаление — одна транзакция в store.
+    try:
+        deleted = store.delete_patient(conn, patient_id)
+    except store.PatientDeleteBlocked as e:
         audit.record(conn, audit.PATIENT_DELETED, result=audit.RESULT_DENIED, patient_id=patient_id,
-                     detail=f"consilium_records={consilium_records}", **audit.actor_ctx(user))
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="У пациента есть записи онкологического консилиума; карточку удалить нельзя.",
-        )
-    if not store.delete_patient(conn, patient_id):
+                     detail=f"{e.reason}={e.count}", **audit.actor_ctx(user))
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    if not deleted:
         _not_found()
     audit.record(conn, audit.PATIENT_DELETED, patient_id=patient_id, **audit.actor_ctx(user))
     return {"deleted": True}
@@ -262,7 +261,12 @@ def change_stage(
 ):
     _require_writable(conn, user, patient_id)
     try:
-        ok = store.change_stage(conn, patient_id, body.newStage, body.lastEventUpdate)
+        ok = store.change_stage(conn, patient_id, body.newStage, body.lastEventUpdate,
+                                expected_event_id=body.lastEventId, expected_event_version=body.lastEventVersion,
+                                expected_stage=body.expectedStage,
+                                expected_history_entry_id=body.expectedHistoryEntryId)
+    except store.EventConflict as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     if not ok:
@@ -328,22 +332,41 @@ def update_checklist(
 def add_event(
     patient_id: str,
     occ_index: int,
+    body: Optional[EventAddIn] = None,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
     try:
-        ok = store.add_event(conn, patient_id, occ_index)
+        event_id = store.add_event(
+            conn, patient_id, occ_index, body.expectedEventIds if body else None,
+            placeholder=bool(body and body.purpose == "placeholder"),
+        )
+    except store.EventConflict as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    if not ok:
+    if event_id is None:
         _not_found()
-    _audit_history(conn, user, patient_id, occ_index, "event_add")
-    return store.patient_to_dict(conn, patient_id)
+    action = "event_placeholder" if body.purpose == "placeholder" else "event_add"
+    audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+                 detail=f"history={occ_index};event_id={event_id};action={action}", **audit.actor_ctx(user))
+    # createdEventId: какое событие создал именно этот запрос — клиент правит
+    # его, а не «последнее» в ответе (оно может быть чужим).
+    return {**store.patient_to_dict(conn, patient_id), "createdEventId": event_id}
+
+
+def _event_gone():
+    # Прежняя адресация по позиции могла изменить другое событие после
+    # правки списка, поэтому она отключена: события меняются только по id.
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Событие адресуется по идентификатору. Обновите страницу",
+    )
 
 
 @router.delete("/{patient_id}/history/{occ_index}/events/{event_index}", dependencies=[Depends(require_csrf)])
-def remove_event(
+def remove_event_by_position(
     patient_id: str,
     occ_index: int,
     event_index: int,
@@ -351,27 +374,138 @@ def remove_event(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
-    if not store.remove_event(conn, patient_id, occ_index, event_index):
-        _not_found()
-    _audit_history(conn, user, patient_id, occ_index, "event_delete", event_index=event_index)
-    return store.patient_to_dict(conn, patient_id)
+    _event_gone()
 
 
 @router.patch("/{patient_id}/history/{occ_index}/events/{event_index}", dependencies=[Depends(require_csrf)])
-def update_event(
+def update_event_by_position(
     patient_id: str,
     occ_index: int,
     event_index: int,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    _require_writable(conn, user, patient_id)
+    _event_gone()
+
+
+def _event_not_found():
+    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+
+def _event_audit_hook(conn: sqlite3.Connection, user, patient_id: str, event_type: str, action: str):
+    """Аудит удаления и восстановления: id события и признаки (есть ли плановая
+    и фактическая даты, отметка решения ОК) — без самих дат, решений и ФИО.
+
+    Запись обязательна и пишется в транзакции изменения: если она не
+    удалась, событие остаётся в прежнем состоянии."""
+    def hook(row) -> None:
+        facts = store.event_facts(row)
+        detail = (f"event_id={row['id']};history={row['history_seq']};action={action};"
+                  f"planned={facts['planned']};actual={facts['actual']};decision={facts['decision']}")
+        try:
+            audit.record_required(conn, event_type, patient_id=patient_id, detail=detail,
+                                  **audit.actor_ctx(user))
+        except sqlite3.Error as exc:
+            raise _AuditWriteFailed() from exc
+    return hook
+
+
+class _AuditWriteFailed(Exception):
+    """Обязательная запись аудита не сохранена — изменение откатывается."""
+
+
+def _audit_unavailable():
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Не удалось сохранить изменение вместе с записью журнала аудита. Событие не изменено, повторите попытку позже",
+    )
+
+
+def _database_busy():
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="База данных временно занята. Событие не изменено, повторите попытку",
+    )
+
+
+@router.patch("/{patient_id}/events/{event_id}", dependencies=[Depends(require_csrf)])
+def update_event(
+    patient_id: str,
+    event_id: str,
     body: EventFieldUpdateIn,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
     try:
-        ok = store.update_event(conn, patient_id, occ_index, event_index, body.field, body.value)
+        row = store.update_event(conn, patient_id, event_id, body.field, body.value, body.version)
+    except store.EventConflict as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    if not ok:
-        _not_found()
-    _audit_history(conn, user, patient_id, occ_index, "event_update", event_index=event_index, field=body.field)
+    if row is None:
+        _event_not_found()
+    audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+                 detail=f"event_id={event_id};history={row['history_seq']};action=event_update;field={body.field}",
+                 **audit.actor_ctx(user))
     return store.patient_to_dict(conn, patient_id)
+
+
+@router.delete("/{patient_id}/events/{event_id}", dependencies=[Depends(require_csrf)])
+def delete_event(
+    patient_id: str,
+    event_id: str,
+    version: int = Query(..., ge=1, le=2**63 - 1),
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    _require_writable(conn, user, patient_id)
+    hook = _event_audit_hook(conn, user, patient_id, audit.PATIENT_EVENT_DELETED, "event_delete")
+    try:
+        row = store.delete_event(conn, patient_id, event_id, version, user.id, audit_hook=hook)
+    except store.EventConflict as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except _AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError:
+        _database_busy()
+    if row is None:
+        _event_not_found()
+    return store.patient_to_dict(conn, patient_id)
+
+
+@router.post("/{patient_id}/events/{event_id}/restore", dependencies=[Depends(require_csrf)])
+def restore_event(
+    patient_id: str,
+    event_id: str,
+    body: EventVersionIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    _require_writable(conn, user, patient_id)
+    hook = _event_audit_hook(conn, user, patient_id, audit.PATIENT_EVENT_RESTORED, "event_restore")
+    try:
+        row = store.restore_event(conn, patient_id, event_id, body.version, audit_hook=hook)
+    except store.EventConflict as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+    except _AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError:
+        _database_busy()
+    if row is None:
+        _event_not_found()
+    return store.patient_to_dict(conn, patient_id)
+
+
+@router.get("/{patient_id}/events/deleted")
+def list_deleted_events(
+    patient_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    # Удалённые события видит и восстанавливает тот, кто может править пациента.
+    _require_writable(conn, user, patient_id)
+    return {"events": store.deleted_events(conn, patient_id)}

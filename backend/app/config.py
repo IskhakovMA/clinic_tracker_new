@@ -69,7 +69,7 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v10–v17: oncology consilium (see db.migrate_v9_to_v10 … migrate_v16_to_v17).
 # v18: consilium resubmission marker and immutable signed decisions.
 # v19: route context of signed decisions, soft deletion keeping return history.
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 

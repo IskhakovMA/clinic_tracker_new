@@ -177,8 +177,13 @@ def cmd_check_db(args: argparse.Namespace) -> int:
         # Apply the same idempotent schema creation the app runs at startup, so a
         # database from an older version is brought up to date before being judged
         # against the current schema. --no-migrate inspects the file as-is.
-        db.get_connection()
-        db.reset_singleton_for_tests()
+        try:
+            db.get_connection()
+        except db.SchemaVersionError as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        finally:
+            db.reset_singleton_for_tests()
 
     try:
         report = maintenance.check_database(config.DB_PATH)

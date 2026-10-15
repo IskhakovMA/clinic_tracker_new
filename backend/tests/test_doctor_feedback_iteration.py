@@ -3,7 +3,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version
+from .conftest import DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -349,7 +349,7 @@ def test_legacy_consilium_and_pgi_codes_are_preserved_but_not_active_fields(auth
     preview = auth_client.post("/api/import/preview", json={"raw": raw})
     assert preview.status_code == 200, preview.text
     assert preview.json()["valid"] is True
-    imported = auth_client.post("/api/import/commit", json={"raw": raw, "mode": "add"}, headers=auth_client.csrf)
+    imported = unsigned_import(auth_client, raw, "add")
     assert imported.status_code == 200, imported.text
     imported_patient = next(p for p in auth_client.get("/api/patients").json() if p["name"] == "Legacy Codes")
     assert imported_patient["consiliumCode"] == ""
@@ -366,7 +366,7 @@ def test_repeated_appointment_exam_cycles_are_preserved_and_quality_valid(auth_c
     for stage in ("exam", "appointment", "exam", "appointment", "consult"):
         response = auth_client.post(
             f"/api/patients/{pid}/stage",
-            json={"newStage": stage},
+            json=stage_body(auth_client, pid, {"newStage": stage}),
             headers=auth_client.csrf,
         )
         assert response.status_code == 200, response.text
@@ -399,12 +399,12 @@ def test_consilium_outcomes_treatment_and_dispensary_are_distinct(auth_client):
 
     normal = auth_client.post(
         f"/api/patients/{treatment['id']}/stage",
-        json={"newStage": "treatment-prep", "lastEventUpdate": {"actualDate": "2026-08-02", "matchedPlan": False}},
+        json=stage_body(auth_client, treatment['id'], {"newStage": "treatment-prep", "lastEventUpdate": {"actualDate": "2026-08-02", "matchedPlan": False}}),
         headers=auth_client.csrf,
     )
     terminal = auth_client.post(
         f"/api/patients/{dispensary['id']}/stage",
-        json={"newStage": "dispensary-observation", "lastEventUpdate": {"actualDate": "2026-08-02", "matchedPlan": False}},
+        json=stage_body(auth_client, dispensary['id'], {"newStage": "dispensary-observation", "lastEventUpdate": {"actualDate": "2026-08-02", "matchedPlan": False}}),
         headers=auth_client.csrf,
     )
     assert normal.status_code == 200, normal.text
@@ -457,7 +457,7 @@ def test_diagnosis_not_confirmed_lifecycle_search_filter_attention_and_quality(a
     assert issue.status_code == 201, issue.text
     closed = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
-        json={"newStage": "diagnosis-not-confirmed"},
+        json=stage_body(auth_client, patient['id'], {"newStage": "diagnosis-not-confirmed"}),
         headers=auth_client.csrf,
     )
     assert closed.status_code == 200, closed.text

@@ -1826,6 +1826,8 @@ const app = {
                 patient_created: 'Пациент добавлен',
                 patient_updated: 'Обновлены данные',
                 patient_deleted: 'Пациент удалён',
+                patient_event_deleted: 'Удалено событие маршрута',
+                patient_event_restored: 'Восстановлено событие маршрута',
                 import_committed: 'Импорт данных',
                 migration_committed: 'Перенос данных',
             };
@@ -3464,10 +3466,10 @@ const app = {
         ]);
     },
 
-    eventInput(p, occIndex, eventIndex, fieldName, type, value, label) {
+    eventInput(p, occIndex, ev, fieldName, type, value, label) {
         return el('input', {
             class: 'input', type, value: value || '', 'aria-label': label,
-            on: { change: (event) => this.updateEvent(p.id, occIndex, eventIndex, fieldName, event.target.value) },
+            on: { change: (event) => this.updateEvent(p.id, occIndex, ev, fieldName, event.target.value) },
         });
     },
 
@@ -3484,11 +3486,12 @@ const app = {
                 !ev.actualDate ? el('p', { class: 'alert alert--danger', text: 'Дата фактического первичного приёма не заполнена — это обязательное поле.' }) : null,
                 el('div', { class: 'event-card' }, [
                     el('div', { class: 'grid-2' }, [
-                        this.eventInput(p, occIndex, 0, 'actualDate', 'date', ev.actualDate, 'Фактическая дата'),
-                        this.eventInput(p, occIndex, 0, 'actualTime', 'time', ev.actualTime, 'Фактическое время'),
+                        this.eventInput(p, occIndex, events[0] || null, 'actualDate', 'date', ev.actualDate, 'Фактическая дата'),
+                        this.eventInput(p, occIndex, events[0] || null, 'actualTime', 'time', ev.actualTime, 'Фактическое время'),
                     ]),
                 ]),
                 this.noteField(p, occIndex, occ.note),
+                this.deletedEventsBlock(p),
             ]);
         }
 
@@ -3500,6 +3503,7 @@ const app = {
             return frag([
                 el('p', { class: 'muted', text: 'Для завершённого лечения плановые даты не заполняются.' }),
                 this.noteField(p, occIndex, occ.note),
+                this.deletedEventsBlock(p),
             ]);
         }
 
@@ -3553,7 +3557,7 @@ const app = {
                         el('span', { class: 'event-card__title', text: events.length > 1 ? `Событие ${idx + 1}` : 'Дата события' }),
                         el('button', {
                             type: 'button', class: 'btn btn--icon', 'aria-label': `Удалить событие ${idx + 1}`, title: 'Удалить событие',
-                            on: { click: () => this.removeEvent(p.id, occIndex, idx) },
+                            on: { click: () => this.removeEvent(p.id, ev, events.length > 1 ? `Событие ${idx + 1}` : 'Дата события') },
                         }, icon('trash')),
                     ]),
                     statusNode,
@@ -3567,22 +3571,22 @@ const app = {
                     el('div', { class: 'event-card__group' }, [
                         el('div', { class: 'event-card__legend', text: 'План' }),
                         el('div', { class: 'grid-2' }, [
-                            this.eventInput(p, occIndex, idx, 'date', 'date', ev.date, 'Плановая дата'),
-                            this.eventInput(p, occIndex, idx, 'time', 'time', ev.time, 'Плановое время'),
+                            this.eventInput(p, occIndex, ev, 'date', 'date', ev.date, 'Плановая дата'),
+                            this.eventInput(p, occIndex, ev, 'time', 'time', ev.time, 'Плановое время'),
                         ]),
                     ]),
                     el('div', { class: 'event-card__group' }, [
                         el('div', { class: 'event-card__legend', text: stageKey === 'appointment' ? 'Факт (заполните после приёма)' : 'Факт' }),
                         el('div', { class: 'grid-2' }, [
-                            this.eventInput(p, occIndex, idx, 'actualDate', 'date', ev.actualDate, 'Фактическая дата'),
-                            this.eventInput(p, occIndex, idx, 'actualTime', 'time', ev.actualTime, 'Фактическое время'),
+                            this.eventInput(p, occIndex, ev, 'actualDate', 'date', ev.actualDate, 'Фактическая дата'),
+                            this.eventInput(p, occIndex, ev, 'actualTime', 'time', ev.actualTime, 'Фактическое время'),
                         ]),
                     ]),
                     showType ? el('div', { class: 'event-card__group' }, [
                         el('div', { class: 'event-card__legend', text: 'Тип лечения' }),
                         el('select', {
                             class: 'select', 'aria-label': 'Тип лечения',
-                            on: { change: (event) => this.updateEvent(p.id, occIndex, idx, 'treatmentType', event.target.value) },
+                            on: { change: (event) => this.updateEvent(p.id, occIndex, ev, 'treatmentType', event.target.value) },
                         }, this.treatmentTypeOptions(ev.treatmentType || '')),
                     ]) : null,
                 ]);
@@ -3594,7 +3598,63 @@ const app = {
             }, [icon('plus'), addLabels[stageKey]]),
 
             this.noteField(p, occIndex, occ.note),
+            this.deletedEventsBlock(p),
         ]);
+    },
+
+    // Удалённые события пациента: хранятся в истории и восстанавливаются.
+    // Список загружается по запросу; права проверяет сервер (как на правку).
+    deletedEventsBlock(p) {
+        if (this.isReadOnly()) return null;
+        const list = el('div', { class: 'deleted-events', 'aria-live': 'polite' });
+        const toggle = el('button', {
+            type: 'button', class: 'btn btn--ghost btn--sm', 'aria-expanded': 'false',
+            text: 'Показать удалённые события',
+            on: { click: () => {
+                const open = toggle.getAttribute('aria-expanded') === 'true';
+                toggle.setAttribute('aria-expanded', open ? 'false' : 'true');
+                toggle.textContent = open ? 'Показать удалённые события' : 'Скрыть удалённые события';
+                if (open) list.replaceChildren();
+                else this.renderDeletedEvents(p.id, list);
+            } },
+        });
+        return el('div', { class: 'event-card__group' }, [toggle, list]);
+    },
+
+    eventSummaryText(ev) {
+        const parts = [];
+        if (ev.date) parts.push(`план ${this.formatDeadlineDate(new Date(`${ev.date}T12:00:00`))}${ev.time ? ` ${ev.time}` : ''}`);
+        if (ev.actualDate) parts.push(`факт ${this.formatDeadlineDate(new Date(`${ev.actualDate}T12:00:00`))}${ev.actualTime ? ` ${ev.actualTime}` : ''}`);
+        if (ev.consiliumDecision) parts.push(`решение ОК: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`);
+        return parts.length ? parts.join(', ') : 'даты не заполнены';
+    },
+
+    async renderDeletedEvents(patientId, container) {
+        container.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
+        let data;
+        try {
+            data = await apiGetJson(`/api/patients/${patientId}/events/deleted`);
+        } catch (e) {
+            container.replaceChildren(el('p', { class: 'alert alert--danger', role: 'alert', text: `Не удалось загрузить удалённые события: ${e.message}` }));
+            return;
+        }
+        const events = data.events || [];
+        if (!events.length) {
+            container.replaceChildren(el('div', { class: 'empty', text: 'Удалённых событий нет.' }));
+            return;
+        }
+        container.replaceChildren(frag(events.map(ev => el('div', { class: 'event-card' }, [
+            el('div', { class: 'event-card__head' }, [
+                el('span', { class: 'event-card__title', text: `${this.stageNames[ev.historyStage] || ev.historyStage}: ${this.eventSummaryText(ev)}` }),
+            ]),
+            el('p', { class: 'muted', text: `Удалено ${this.formatDateTime(ev.deletedAt)}, ${ev.deletedByName}` }),
+            el('button', {
+                type: 'button', class: 'btn btn--ghost btn--sm',
+                text: 'Восстановить событие',
+                'aria-label': `Восстановить событие: ${this.eventSummaryText(ev)}`,
+                on: { click: () => this.restoreEvent(patientId, ev, container) },
+            }),
+        ]))));
     },
 
     noteField(p, occIndex, note) {
@@ -5779,6 +5839,7 @@ const app = {
                 login_rate_limited: 'Вход заблокирован (частые попытки)', logout: 'Выход',
                 password_changed: 'Смена пароля', patient_created: 'Создан пациент',
                 patient_updated: 'Изменён пациент', patient_deleted: 'Удалён пациент',
+                patient_event_deleted: 'Удалено событие маршрута', patient_event_restored: 'Восстановлено событие маршрута',
                 import_preview: 'Проверка импорта', import_committed: 'Импорт выполнен',
                 export: 'Экспорт', migration_committed: 'Перенос локальных данных',
                 backup_created: 'Создана резервная копия', restore_performed: 'Восстановление из копии',
@@ -5847,33 +5908,85 @@ const app = {
         }
     },
 
+    // Активные события этапа, которые видит карточка: сервер добавит событие,
+    // только если набор не изменился (иначе 409 и обновление карточки).
+    seenEventIds(patientId, occIndex) {
+        const p = this.getPatient(patientId);
+        const occ = p && p.history ? p.history[occIndex] : null;
+        return occ ? (occ.events || []).map(ev => ev.id).filter(Boolean) : [];
+    },
+
     async addEvent(patientId, occIndex) {
         try {
-            const updated = await apiPost(`/api/patients/${patientId}/history/${occIndex}/events`);
+            const updated = await apiPost(`/api/patients/${patientId}/history/${occIndex}/events`, {
+                expectedEventIds: this.seenEventIds(patientId, occIndex), purpose: 'add',
+            });
             this.replacePatientInCache(updated);
             this.refreshCurrent();
         } catch (e) {
             ui.toast('Не удалось добавить событие: ' + e.message, 'danger');
+            await this.reloadPatientAfterConflict(patientId, e);
         }
     },
 
-    async removeEvent(patientId, occIndex, eventIndex) {
+    // Конфликт версии или удалённое событие: показать актуальную карточку.
+    async reloadPatientAfterConflict(patientId, error) {
+        if (error.status !== 409 && error.status !== 404 && error.status !== 410) return;
         try {
-            const updated = await apiDelete(`/api/patients/${patientId}/history/${occIndex}/events/${eventIndex}`);
+            this.replacePatientInCache(await apiGetJson(`/api/patients/${patientId}`));
+            this.refreshCurrent();
+        } catch (e) { /* сообщение об исходной ошибке уже показано */ }
+    },
+
+    async removeEvent(patientId, ev, title) {
+        const confirmed = await ui.confirm({
+            title: 'Удалить событие?',
+            text: `${title}: ${this.eventSummaryText(ev)}. Событие исчезнет из активной истории маршрута, но данные сохранятся — его можно будет восстановить в разделе «Удалённые события».`,
+            okLabel: 'Удалить событие',
+        });
+        if (!confirmed) return;
+        try {
+            const updated = await apiDelete(`/api/patients/${patientId}/events/${encodeURIComponent(ev.id)}?version=${ev.version}`);
             this.replacePatientInCache(updated);
             this.refreshCurrent();
+            ui.toast('Событие удалено. Его можно восстановить в разделе «Удалённые события».', 'good');
         } catch (e) {
             ui.toast('Не удалось удалить событие: ' + e.message, 'danger');
+            await this.reloadPatientAfterConflict(patientId, e);
         }
     },
 
-    async updateEvent(patientId, occIndex, eventIndex, fieldName, value) {
+    async restoreEvent(patientId, ev, container) {
         try {
-            const updated = await apiPatch(`/api/patients/${patientId}/history/${occIndex}/events/${eventIndex}`, { field: fieldName, value });
+            const updated = await apiPost(`/api/patients/${patientId}/events/${encodeURIComponent(ev.id)}/restore`, { version: ev.version });
+            this.replacePatientInCache(updated);
+            this.refreshCurrent();
+            ui.toast('Событие восстановлено на прежнее место в истории.', 'good');
+        } catch (e) {
+            ui.toast('Не удалось восстановить событие: ' + e.message, 'danger');
+            if (container && container.isConnected) await this.renderDeletedEvents(patientId, container);
+            await this.reloadPatientAfterConflict(patientId, e);
+        }
+    },
+
+    async updateEvent(patientId, occIndex, ev, fieldName, value) {
+        try {
+            let target = ev;
+            if (!target || !target.id) {
+                // У этапа ещё нет события (поле-заготовка): создать его, только
+                // если этап всё ещё пуст, и править именно созданное событие.
+                const created = await apiPost(`/api/patients/${patientId}/history/${occIndex}/events`, {
+                    expectedEventIds: [], purpose: 'placeholder',
+                });
+                target = created.history[occIndex].events.find(item => item.id === created.createdEventId);
+                if (!target) throw new Error('Созданное событие не найдено. Обновите карточку пациента');
+            }
+            const updated = await apiPatch(`/api/patients/${patientId}/events/${encodeURIComponent(target.id)}`, { field: fieldName, value, version: target.version });
             this.replacePatientInCache(updated);
             this.refreshCurrent();
         } catch (e) {
             ui.toast('Не удалось сохранить: ' + e.message, 'danger');
+            await this.reloadPatientAfterConflict(patientId, e);
         }
     },
 
@@ -5926,10 +6039,13 @@ const app = {
 
         const occ = this.getCurrentOccurrence(p);
         let lastEventUpdate = null;
+        let lastEventRef = {};
 
         if (occ) {
             const events = occ.events || [];
             const lastEvent = events.length ? events[events.length - 1] : { date: null, time: null };
+            // Сервер запишет факт, только если это событие всё ещё последнее и не изменилось.
+            if (lastEvent.id) lastEventRef = { lastEventId: lastEvent.id, lastEventVersion: lastEvent.version };
             if (!lastEvent.actualDate) {
                 const stageLabel = this.stageNames[occ.stage] || occ.stage;
                 const today = new Date();
@@ -5961,7 +6077,14 @@ const app = {
         }
 
         try {
-            const updated = await apiPost(`/api/patients/${id}/stage`, { newStage, lastEventUpdate });
+            // expectedStage и запись маршрута: перевод из устаревшей карточки сервер отклонит (409).
+            // expectedHistoryEntryId: та же запись маршрута, а не только то же
+            // название этапа (этапы повторяются: exam → appointment → exam).
+            const routeRef = { expectedStage: p.stage, expectedHistoryEntryId: occ ? occ.id : null };
+            const body = lastEventUpdate
+                ? { newStage, ...routeRef, lastEventUpdate, ...lastEventRef }
+                : { newStage, ...routeRef, lastEventUpdate };
+            const updated = await apiPost(`/api/patients/${id}/stage`, body);
             this.replacePatientInCache(updated);
             this.selectedTimelineNodes[id] = `occ:${updated.history.length - 1}`;
             await this.loadActivity();
@@ -5970,6 +6093,7 @@ const app = {
             return true;
         } catch (e) {
             ui.toast('Не удалось изменить этап: ' + e.message, 'danger');
+            await this.reloadPatientAfterConflict(id, e);
             return false;
         }
     },
@@ -8226,7 +8350,7 @@ const app = {
         try {
             const report = await apiPost('/api/import/preview', { raw: this.pendingImportRaw });
             if (!report.valid) {
-                this.showImportErrors(report.errors);
+                this.showImportErrors(report.errors, report.provenance, report.code);
                 return;
             }
             this.showImportReviewModal(report);
@@ -8236,7 +8360,52 @@ const app = {
         }
     },
 
-    showImportErrors(errors) {
+    // Происхождение файла определяет сервер (подпись системы или её отсутствие);
+    // здесь только показ статуса и сброс подтверждения для нового файла.
+    renderImportProvenance(provenance) {
+        const box = $('importProvenance');
+        const confirmField = $('importUnsignedConfirmField');
+        $('importUnsignedConfirm').checked = false;
+        $('importPreserveIdsConfirm').checked = false;
+        $('importPreserveIdsField').classList.add('is-hidden');
+        confirmField.classList.add('is-hidden');
+        if (!provenance) {
+            box.replaceChildren();
+            return;
+        }
+        const views = {
+            verified_signed: ['alert--info', 'Подпись системы проверена'],
+            unsigned_legacy: ['alert--warning', 'Происхождение файла не подтверждено'],
+            unsigned_external: ['alert--warning', 'Происхождение файла не подтверждено'],
+            invalid_signature: ['alert--danger', 'Подпись недействительна — импорт заблокирован'],
+            unsupported_signature: ['alert--danger', 'Подпись не может быть проверена — импорт заблокирован'],
+        };
+        const [tone, title] = views[provenance.status] || ['alert--danger', 'Происхождение файла не определено'];
+        const danger = tone === 'alert--danger';
+        box.replaceChildren(el('div', { class: `alert ${tone}`, role: danger ? 'alert' : null }, [
+            el('strong', { text: title }),
+            provenance.status === 'verified_signed' ? null : el('p', { text: provenance.message }),
+            provenance.status === 'verified_signed' && provenance.generatedAt
+                ? el('p', { text: `Выгрузка сформирована: ${provenance.generatedAt.slice(0, 16).replace('T', ' ')} UTC` })
+                : null,
+        ]));
+        if (provenance.confirmationRequired) confirmField.classList.remove('is-hidden');
+    },
+
+    showImportErrors(errors, provenance, code) {
+        this.importReport = null;
+        this.renderImportProvenance(provenance);
+        if (code === 'internal_ids_forbidden') {
+            // Решение сервера не зависит от содержимого базы; объясняем правило.
+            $('importReviewSummary').replaceChildren(el('div', { class: 'alert alert--danger', role: 'alert' }, [
+                el('strong', { text: 'Этот файл нельзя импортировать от вашего имени' }),
+                el('p', { text: errors[0] ? errors[0].message : '' }),
+            ]));
+            $('importModeSelect').disabled = true;
+            $('confirmImportCommitBtn').disabled = true;
+            ui.openModal('importReviewModal');
+            return;
+        }
         $('importReviewSummary').replaceChildren(frag([
             el('p', { class: 'alert alert--danger', text: `Файл не прошёл проверку и не будет импортирован. Ошибок: ${errors.length}.` }),
             ...errors.slice(0, 10).map(err => el('div', { class: 'plan-row' }, [
@@ -8251,6 +8420,7 @@ const app = {
 
     showImportReviewModal(report) {
         this.importReport = report;
+        this.renderImportProvenance(report.provenance);
         $('importModeSelect').disabled = false;
         $('confirmImportCommitBtn').disabled = false;
         $('importReviewSummary').replaceChildren(frag([
@@ -8276,9 +8446,9 @@ const app = {
     updateImportModeHint() {
         const mode = $('importModeSelect').value;
         const hints = {
-            add: 'Все записи из файла будут добавлены как новые. Существующие данные не изменятся.',
-            update: 'Обновятся только записи, совпадающие по идентификатору. Остальные из файла будут пропущены.',
-            replace: 'Все текущие данные на сервере будут удалены и заменены содержимым файла. Действие необратимо.',
+            add: 'Записи из файла будут добавлены как новые карточки; существующие данные не изменятся. Подписанный файл разработчика сохраняет прежние идентификаторы только после отдельного подтверждения.',
+            update: 'Совпадающие по идентификатору карточки не перезаписываются: допускается только дописать новые события. Если карточка изменилась после выгрузки, импорт будет отклонён.',
+            replace: 'Только для пустой базы: существующие пациенты не удаляются. Если в базе есть пациенты, импорт будет отклонён.',
         };
         $('importModeHint').textContent = hints[mode] || '';
         this.renderImportConsiliumImpact(mode);
@@ -8286,17 +8456,82 @@ const app = {
 
     // Влияние режима на записи консилиума считает сервер (то же правило, что
     // отклонит импорт при подтверждении); здесь только показ.
+    // Так же сервер считает удалённые события истории, которые режим стёр бы
+    // или снова сделал активными; сервер повторит проверку при подтверждении.
     renderImportConsiliumImpact(mode) {
         const box = $('importConsiliumImpact');
         const impact = (this.importReport && this.importReport.consiliumImpact || {})[mode];
-        const blocked = Boolean(impact && impact.blocked);
+        const archive = (this.importReport && this.importReport.archivedEventsImpact || {})[mode];
+        const duplicate = (this.importReport && this.importReport.duplicateImpact || {})[mode];
+        // Совпадения с недоступными карточками сервер сообщает обобщённо, без деталей.
+        const access = (this.importReport && this.importReport.accessImpact || {})[mode];
+        const accessBlocked = Boolean(access && access.blocked);
+        const consiliumBlocked = Boolean(impact && impact.blocked);
+        const archiveBlocked = Boolean(archive && archive.blocked);
+        const duplicateBlocked = Boolean(duplicate && duplicate.blocked);
+        // Что update/replace сделали бы с существующими карточками (решение A).
+        const overwrite = (this.importReport && this.importReport.overwriteImpact || {})[mode];
+        const overwriteBlocked = Boolean(overwrite && overwrite.blocked);
+        // Создание карточек с прежними id — отдельная отметка для этого режима (решение C).
+        const preserve = (this.importReport && this.importReport.idPreservation || {})[mode];
+        const preserveRequired = Boolean(preserve && preserve.required);
+        $('importPreserveIdsField').classList.toggle('is-hidden', !preserveRequired);
+        const provenance = this.importReport && this.importReport.provenance;
+        // Неподписанный файл: без отдельной отметки подтверждения кнопка недоступна.
+        const needsConfirmation = (Boolean(provenance && provenance.confirmationRequired) && !$('importUnsignedConfirm').checked)
+            || (preserveRequired && !$('importPreserveIdsConfirm').checked);
+        const blocked = consiliumBlocked || archiveBlocked || duplicateBlocked || accessBlocked || overwriteBlocked
+            || needsConfirmation;
         $('confirmImportCommitBtn').disabled = blocked;
+        const overwriteAlert = overwrite && (overwrite.blocked || mode === 'update')
+            ? el('div', { class: `alert ${overwrite.blocked ? 'alert--danger' : 'alert--info'}`, role: overwrite.blocked ? 'alert' : null }, [
+                el('strong', { text: overwrite.blocked ? 'Этот режим импорта недоступен: возможна потеря данных' : 'Последствия обновления' }),
+                mode === 'update'
+                    ? el('ul', { class: 'import-consilium-impact' }, [
+                        el('li', { text: `Карточек без изменений: ${overwrite.unchanged}` }),
+                        el('li', { text: `Карточек, куда будут дописаны новые события: ${overwrite.updated} (событий: ${overwrite.appendedEvents})` }),
+                        overwrite.conflicts ? el('li', { text: `Карточек с расхождениями: ${overwrite.conflicts}` }) : null,
+                    ])
+                    : null,
+                overwrite.reason ? el('p', { text: overwrite.reason }) : null,
+            ])
+            : null;
+        const preserveAlert = preserveRequired
+            ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: `Будут созданы карточки с прежними идентификаторами: ${preserve.patients}` }),
+                el('p', { text: preserve.message }),
+            ])
+            : null;
+        const duplicateAlert = duplicateBlocked
+            ? el('div', { class: 'alert alert--danger', role: 'alert' }, [
+                el('strong', { text: 'Этот режим импорта недоступен: записи уже есть в базе' }),
+                el('p', { text: duplicate.reason }),
+            ])
+            : null;
+        const archiveAlert = archiveBlocked
+            ? el('div', { class: 'alert alert--danger', role: 'alert' }, [
+                el('strong', { text: 'Этот режим импорта недоступен: удалённые события истории' }),
+                el('ul', { class: 'import-consilium-impact' }, [
+                    el('li', { text: `Пациентов с удалёнными событиями: ${archive.patients}` }),
+                    el('li', { text: `Удалённых событий: ${archive.events}` }),
+                ]),
+                el('p', { text: archive.reason }),
+                archive.advice ? el('p', { text: archive.advice }) : null,
+            ])
+            : null;
+        const accessAlert = accessBlocked
+            ? el('div', { class: 'alert alert--danger', role: 'alert' }, [
+                el('strong', { text: 'Этот режим импорта недоступен' }),
+                el('p', { text: access.reason }),
+            ])
+            : null;
+        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, preserveAlert].filter(Boolean);
         if (!impact || !impact.records) {
-            box.replaceChildren();
+            box.replaceChildren(...extra);
             return;
         }
-        box.replaceChildren(el('div', { class: `alert ${blocked ? 'alert--danger' : 'alert--info'}`, role: blocked ? 'alert' : null }, [
-            el('strong', { text: blocked ? 'Этот режим импорта недоступен' : 'Записи онкоконсилиума' }),
+        box.replaceChildren(el('div', { class: `alert ${consiliumBlocked ? 'alert--danger' : 'alert--info'}`, role: consiliumBlocked ? 'alert' : null }, [
+            el('strong', { text: consiliumBlocked ? 'Этот режим импорта недоступен' : 'Записи онкоконсилиума' }),
             el('ul', { class: 'import-consilium-impact' }, [
                 el('li', { text: `Будет затронуто записей консилиума: ${impact.records}` }),
                 el('li', { text: `Из них подписанных решений: ${impact.signed}` }),
@@ -8307,12 +8542,15 @@ const app = {
             ]),
             impact.reason ? el('p', { text: impact.reason }) : null,
             impact.advice ? el('p', { text: impact.advice }) : null,
-        ]));
+        ]), ...extra);
     },
 
     closeImportReviewModal() {
         ui.closeModal('importReviewModal');
         this.pendingImportRaw = null;
+        this.importReport = null;
+        $('importUnsignedConfirm').checked = false;
+        $('importPreserveIdsConfirm').checked = false;
     },
 
     async confirmImportCommit() {
@@ -8320,20 +8558,35 @@ const app = {
         const mode = $('importModeSelect').value;
         if (mode === 'replace') {
             const sure = await ui.confirm({
-                title: 'Заменить все данные?',
-                text: 'Режим «полная замена» удалит все текущие записи на сервере и запишет вместо них содержимое файла. Это необратимо.',
-                okLabel: 'Заменить всё',
+                title: 'Загрузить файл в пустую базу?',
+                text: 'Режим «полная замена» выполняется только в пустую базу: существующие записи не удаляются, при наличии пациентов сервер отклонит импорт.',
+                okLabel: 'Продолжить',
             });
             if (!sure) return;
         }
+        const provenance = this.importReport && this.importReport.provenance;
+        const body = { raw: this.pendingImportRaw, mode };
+        if (provenance && provenance.confirmationRequired) {
+            if (!$('importUnsignedConfirm').checked) return;
+            // Подтверждение относится к этому файлу (его хешу из проверки) и режиму.
+            body.unsignedConfirmation = { confirmed: true, fileSha256: provenance.fileSha256, mode };
+        }
+        const preserve = (this.importReport && this.importReport.idPreservation || {})[mode];
+        if (preserve && preserve.required) {
+            if (!$('importPreserveIdsConfirm').checked) return;
+            // Отдельное согласие: этот файл, этот режим, создание карточек с прежними id.
+            body.preserveIdsConfirmation = {
+                confirmed: true, fileSha256: provenance.fileSha256, mode, action: 'create_with_internal_ids',
+            };
+        }
         try {
-            const result = await apiPost('/api/import/commit', { raw: this.pendingImportRaw, mode });
+            const result = await apiPost('/api/import/commit', body);
             this.closeImportReviewModal();
             await this.loadPatients();
             await this.loadActivity();
             this.fillStaticSelects();
             this.showView('patients');
-            ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, пропущено ${result.skipped}.`, 'good');
+            ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`, 'good');
         } catch (e) {
             ui.toast('Импорт не выполнен: ' + e.message, 'danger');
         }
@@ -8861,7 +9114,14 @@ const app = {
         on('closeImportReviewBtn', 'click', () => this.closeImportReviewModal());
         on('closeImportIconBtn', 'click', () => this.closeImportReviewModal());
         on('confirmImportCommitBtn', 'click', () => this.confirmImportCommit());
-        on('importModeSelect', 'change', () => this.updateImportModeHint());
+        on('importModeSelect', 'change', () => {
+            // Подтверждение даётся для конкретного режима: смена режима его сбрасывает.
+            $('importUnsignedConfirm').checked = false;
+            $('importPreserveIdsConfirm').checked = false;
+            this.updateImportModeHint();
+        });
+        on('importUnsignedConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
+        on('importPreserveIdsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
 
         // Журнал аудита
         on('auditRefreshBtn', 'click', () => this.renderAudit());

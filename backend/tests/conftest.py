@@ -7,6 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 TEST_PASSWORD = "correct-horse-battery"
+TEST_EXPORT_SIGNING_KEY = "dGVzdC1vbmx5LWV4cG9ydC1zaWduaW5nLWtleS0zMmI"  # synthetic, 32 bytes base64url
+TEST_EXPORT_SIGNING_KEY_ID = "test-export-key"
 
 # Вымышленные сотрудники для тестов — реальные ФИО в fixtures не используются.
 DEV_USERNAME = "dev.tester"
@@ -18,6 +20,11 @@ def client(tmp_path, monkeypatch):
     """TestClient with an isolated temp database per test."""
     monkeypatch.setenv("CLINIC_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("CLINIC_AI_MODE", "disabled")
+    # Синтетический ключ подписи выгрузок — только для тестов, не для установок.
+    monkeypatch.setenv("CLINIC_EXPORT_SIGNING_KEY", TEST_EXPORT_SIGNING_KEY)
+    monkeypatch.setenv("CLINIC_EXPORT_SIGNING_KEY_ID", TEST_EXPORT_SIGNING_KEY_ID)
+    monkeypatch.delenv("CLINIC_EXPORT_SIGNING_KEY_FILE", raising=False)
+    monkeypatch.delenv("CLINIC_EXPORT_VERIFY_KEYS", raising=False)
 
     for mod in list(sys.modules):
         if mod.startswith("backend."):
@@ -116,3 +123,85 @@ def make_patient_payload(**overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def event_ref(client, patient_id: str, occ: int = 0, idx: int = 0) -> tuple[str, int]:
+    """Стабильный id и версия события по его месту в текущей карточке.
+
+    API меняет события только по id с проверкой версии; позиция здесь —
+    лишь способ найти событие в свежем ответе."""
+    event = client.get(f"/api/patients/{patient_id}").json()["history"][occ]["events"][idx]
+    return event["id"], event["version"]
+
+
+def event_patch(client, patient_id: str, field: str, value, occ: int = 0, idx: int = 0):
+    event_id, version = event_ref(client, patient_id, occ, idx)
+    return client.patch(f"/api/patients/{patient_id}/events/{event_id}",
+                        json={"field": field, "value": value, "version": version}, headers=client.csrf)
+
+
+def event_delete(client, patient_id: str, occ: int = 0, idx: int = 0):
+    event_id, version = event_ref(client, patient_id, occ, idx)
+    return client.delete(f"/api/patients/{patient_id}/events/{event_id}?version={version}", headers=client.csrf)
+
+
+def stage_body(client, patient_id: str, body: dict) -> dict:
+    """Тело перевода этапа так, как его собирает интерфейс.
+
+    Сервер требует этап и запись маршрута, которые видел клиент
+    (expectedStage, expectedHistoryEntryId), а если запрос
+    записывает факт в существующее событие — id и версию последнего активного
+    события текущего этапа. Их подставляет свежая карточка, если тест не
+    передал их сам."""
+    card = client.get(f"/api/patients/{patient_id}").json()
+    if "stage" not in card:
+        return body
+    current = card["history"][-1]["id"] if card["history"] else None
+    body = {"expectedStage": card["stage"], "expectedHistoryEntryId": current, **body}
+    if body.get("lastEventUpdate") is None or "lastEventId" in body:
+        return body
+    history = card["history"]
+    events = history[-1]["events"] if history else []
+    if not events:
+        return body
+    return {**body, "lastEventId": events[-1]["id"], "lastEventVersion": events[-1]["version"]}
+
+
+def event_add_body(client, patient_id: str, occ: int = 0, purpose: str = "add") -> dict:
+    """Тело добавления события так, как его собирает интерфейс: активные
+    события этапа из свежей карточки (сервер сверяет с ними набор)."""
+    events = client.get(f"/api/patients/{patient_id}").json()["history"][occ]["events"]
+    return {"expectedEventIds": [e["id"] for e in events], "purpose": purpose}
+
+
+def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True):
+    """Импорт файла без подписи системы так, как его делает интерфейс:
+    preview → явное подтверждение именно этого файла и режима → commit."""
+    body = {"raw": raw, "mode": mode}
+    if confirm:
+        import hashlib
+        body["unsignedConfirmation"] = {
+            "confirmed": True, "fileSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(), "mode": mode,
+        }
+    return client.post("/api/import/commit", json=body, headers=client.csrf)
+
+
+def legacy_export(document: dict) -> dict:
+    """Выгрузка в прежнем (неподписанном) формате: без признаков подписи и
+    без id записей маршрута и событий — как файлы до формата 2."""
+    import copy
+    legacy = {k: v for k, v in copy.deepcopy(document).items() if k not in ("format", "formatVersion", "signature")}
+    for patient in legacy.get("patients", []):
+        for entry in patient.get("history") or []:
+            entry.pop("id", None)
+            for event in entry.get("events") or []:
+                event.pop("id", None)
+    return legacy
+
+
+def preserve_ids_confirmation(raw: str, mode: str) -> dict:
+    """Подтверждение разработчика на создание карточек с прежними id
+    подписанного файла — для этого файла и режима."""
+    import hashlib
+    return {"confirmed": True, "fileSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            "mode": mode, "action": "create_with_internal_ids"}

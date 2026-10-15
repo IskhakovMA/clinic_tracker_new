@@ -18,6 +18,10 @@ Rationale: this is a single-operator local tool where losing an audit row
 is far less harmful than refusing to save a patient's treatment date. If
 this ever becomes multi-user or externally accessible, revisit and make
 security-relevant events fail-closed.
+
+Exception: deleting and restoring a patient event is audited fail-closed by
+record_required() in the same transaction as the change — the change is
+not kept without its audit row.
 """
 from __future__ import annotations
 
@@ -46,8 +50,11 @@ PGI_CODE_CHANGED = "pgi_code_changed"
 CONSILIUM_DECISION_RECORDED = "consilium_decision_recorded"
 PGI_RESULT_CHANGED = "pgi_result_changed"
 PATIENT_DELETED = "patient_deleted"
+PATIENT_EVENT_DELETED = "patient_event_deleted"
+PATIENT_EVENT_RESTORED = "patient_event_restored"
 IMPORT_PREVIEW = "import_preview"
 IMPORT_COMMITTED = "import_committed"
+IMPORT_IDS_PRESERVED = "import_internal_ids_preserved"
 EXPORT = "export"
 MIGRATION_COMMITTED = "migration_committed"
 BACKUP_CREATED = "backup_created"
@@ -111,6 +118,9 @@ CONSILIUM_SCHEDULE_SLOT_DELETED = "consilium_schedule_slot_deleted"
 CONSILIUM_REGISTRY_EXPORTED = "consilium_registry_exported"
 CONSILIUM_DEMO_RESET = "consilium_demo_reset"
 
+# Не удаляются audit-prune: история удалений медицинских событий.
+RETAINED_EVENT_TYPES = frozenset({PATIENT_EVENT_DELETED, PATIENT_EVENT_RESTORED})
+
 RESULT_OK = "ok"
 RESULT_DENIED = "denied"
 RESULT_ERROR = "error"
@@ -160,6 +170,35 @@ def record(
         logger.warning("audit write failed for event_type=%s", event_type)
 
 
+def record_required(
+    conn: sqlite3.Connection,
+    event_type: str,
+    *,
+    patient_id: str | None = None,
+    detail: str | None = None,
+    actor_user_id: str | None = None,
+    actor_role: str | None = None,
+    actor_department_id: str | None = None,
+) -> None:
+    """Fail-closed audit row inside the caller's open transaction.
+
+    Used where the audit row is part of the operation itself (deleting and
+    restoring patient events): it is written by the same connection before
+    the commit, and any error propagates so the caller rolls the change back.
+    Unlike record() it neither commits nor swallows errors. The same content
+    rules apply: identifiers and flags only, never patient field values."""
+    if not conn.in_transaction:
+        raise RuntimeError("record_required must run inside the operation's transaction")
+    conn.execute(
+        """INSERT INTO audit_events (created_at, event_type, actor, patient_id, result,
+                                     request_id, detail, actor_user_id, actor_role,
+                                     actor_department_id, target_user_id, target_department_id)
+           VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL)""",
+        (now_iso(), event_type, patient_id, RESULT_OK, detail,
+         actor_user_id, actor_role, actor_department_id),
+    )
+
+
 def actor_ctx(user) -> dict:
     """Kwargs для record(): контекст актора из CurrentUser (id и роль,
     первое отделение как основное — без персональных данных)."""
@@ -190,6 +229,13 @@ def prune(conn: sqlite3.Connection, retention_days: int | None = None) -> int:
     """Delete events older than the retention window. Returns rows removed."""
     days = config.AUDIT_RETENTION_DAYS if retention_days is None else int(retention_days)
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    # Удаление и восстановление событий медицинской истории — единственный
+    # след прошлых удалений (восстановление очищает deleted_at/deleted_by),
+    # поэтому эти записи хранятся столько же, сколько сами события.
+    kept = tuple(RETAINED_EVENT_TYPES)
     with conn:
-        cur = conn.execute("DELETE FROM audit_events WHERE created_at < ?", (cutoff,))
+        cur = conn.execute(
+            f"DELETE FROM audit_events WHERE created_at < ? AND event_type NOT IN ({','.join('?' * len(kept))})",  # nosec B608
+            (cutoff, *kept),
+        )
         return cur.rowcount

@@ -127,7 +127,8 @@ def test_categories_read_state_csrf_idempotency_and_lifecycle(client, monkeypatc
            WHERE h.patient_id = ?""",
         (today_pid,),
     ).fetchone()["id"]
-    store.update_event(conn, today_pid, 0, 0, "actualDate", "2026-08-12")
+    version = conn.execute("SELECT version FROM events WHERE id = ?", (event_id,)).fetchone()["version"]
+    store.update_event(conn, today_pid, event_id, "actualDate", "2026-08-12", version)
     today = client.get("/api/internal-notifications?drawer_filter=today").json()["items"]
     assert today == []
 

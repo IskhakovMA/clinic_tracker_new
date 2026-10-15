@@ -10,6 +10,8 @@
 import pytest
 
 from .conftest import (
+    unsigned_import,
+    stage_body,
     TEST_PASSWORD,
     create_account,
     create_department,
@@ -103,7 +105,7 @@ def test_readonly_roles_see_all_but_cannot_write(client, rbac, username):
     assert client.delete(f"/api/patients/{rbac['p_a1']}", headers=csrf).status_code == 403
     # смена этапа запрещена
     assert client.post(f"/api/patients/{rbac['p_a1']}/stage",
-                       json={"newStage": "appointment"}, headers=csrf).status_code == 403
+                       json=stage_body(client, rbac['p_a1'], {"newStage": "appointment"}), headers=csrf).status_code == 403
     # события, заметки, чек-листы запрещены; старый endpoint будущих планов удалён
     assert client.post(f"/api/patients/{rbac['p_a1']}/history/0/events", headers=csrf).status_code == 403
     assert client.patch(f"/api/patients/{rbac['p_a1']}/history/0/note",
@@ -114,8 +116,7 @@ def test_readonly_roles_see_all_but_cannot_write(client, rbac, username):
                       json={"field": "date", "value": "2026-08-01"}, headers=csrf).status_code == 404
     # импорт запрещён
     assert client.post("/api/import/preview", json={"raw": "[]"}).status_code == 403
-    assert client.post("/api/import/commit",
-                       json={"raw": "[]", "mode": "add"}, headers=csrf).status_code == 403
+    assert unsigned_import(client, "[]", "add").status_code == 403
     # экспорт запрещён (массовый экспорт read-only ролям не предоставляется)
     assert client.get("/api/export", headers=client.csrf).status_code == 403
     # управление сотрудниками и структурой запрещено
@@ -349,19 +350,17 @@ def test_import_scope_enforced(client, rbac):
     # врач: запись с чужим врачом отклоняется, без врача — закрепляется за собой
     as_user(client, "doc.a1")
     ok_doc = _json.dumps([make_patient_payload(name="Импортов Свой")], ensure_ascii=False)
-    r = client.post("/api/import/commit", json={"raw": ok_doc, "mode": "add"}, headers=client.csrf)
+    r = unsigned_import(client, ok_doc, "add")
     assert r.status_code == 200 and r.json()["added"] == 1
     foreign = _json.dumps(
         [dict(make_patient_payload(name="Импортов Чужой"), treatingDoctorUserId=rbac["doc_b1"])],
         ensure_ascii=False,
     )
-    r = client.post("/api/import/commit", json={"raw": foreign, "mode": "add"}, headers=client.csrf)
+    r = unsigned_import(client, foreign, "add")
     assert r.status_code == 422
     # режимы update/replace врачу недоступны
-    assert client.post("/api/import/commit",
-                       json={"raw": ok_doc, "mode": "replace"}, headers=client.csrf).status_code == 403
-    assert client.post("/api/import/commit",
-                       json={"raw": ok_doc, "mode": "update"}, headers=client.csrf).status_code == 403
+    assert unsigned_import(client, ok_doc, "replace").status_code == 403
+    assert unsigned_import(client, ok_doc, "update").status_code == 403
 
     # заведующий: врач чужого отделения — отказ, своего — успех
     as_user(client, "head.a")
@@ -369,19 +368,18 @@ def test_import_scope_enforced(client, rbac):
         [dict(make_patient_payload(name="Импортов Не-Тот"), treatingDoctorUserId=rbac["doc_b1"])],
         ensure_ascii=False,
     )
-    assert client.post("/api/import/commit",
-                       json={"raw": bad, "mode": "add"}, headers=client.csrf).status_code == 422
+    assert unsigned_import(client, bad, "add").status_code == 422
     good = _json.dumps(
         [dict(make_patient_payload(name="Импортов Тот"), treatingDoctorUserId=rbac["doc_a2"])],
         ensure_ascii=False,
     )
-    r = client.post("/api/import/commit", json={"raw": good, "mode": "add"}, headers=client.csrf)
+    r = unsigned_import(client, good, "add")
     assert r.status_code == 200 and r.json()["added"] == 1
 
     # разработчик: запись без врача остаётся unresolved
     as_user(client, "dev.rbac")
     plain = _json.dumps([make_patient_payload(name="Импортов Неразрешённый")], ensure_ascii=False)
-    r = client.post("/api/import/commit", json={"raw": plain, "mode": "add"}, headers=client.csrf)
+    r = unsigned_import(client, plain, "add")
     assert r.status_code == 200
     unresolved_names = {p["name"] for p in client.get("/api/patients/unresolved").json()["patients"]}
     assert "Импортов Неразрешённый" in unresolved_names
