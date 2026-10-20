@@ -21,7 +21,7 @@ from datetime import date, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import DEV_USERNAME, create_account, create_department, get_conn, login
+from .conftest import DEV_USERNAME, consilium_version, create_account, create_department, get_conn, login
 from .test_consilium_appointments import appointment_payload, create_patient
 
 DECISION = {"treatmentType": "surgery", "treatmentScheme": "", "treatmentSchemeCode": ""}
@@ -112,7 +112,7 @@ def _book(client, patient_id, d, t, **kw):
 
 def _move(client, appointment_id, patient_id, d, t, **kw):
     return client.put(f"/api/consilium/appointments/{appointment_id}", headers=client.csrf,
-                      json=appointment_payload(patient_id, scheduledDate=d, scheduledTime=t, **kw))
+                      json=appointment_payload(patient_id, version=consilium_version(appointment_id), scheduledDate=d, scheduledTime=t, **kw))
 
 
 def _generate(client, d=FUTURE, start="10:00", end="11:00", interval=30, group="thoracic"):
@@ -402,7 +402,7 @@ def test_cancel_vs_reoccupation_burst(client):
     seen = set()
     for i in range(BURST_ROUNDS):
         aid = _book(doc_a, pts["pa1"], FUTURE, "10:00").json()["id"]
-        res = _parallel(lambda: doc_a.delete(f"/api/consilium/appointments/{aid}", headers=doc_a.csrf),
+        res = _parallel(lambda: doc_a.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=doc_a.csrf),
                         lambda: _book(doc_b, pts["pb1"], FUTURE, "10:00"))
         cancel, rebook = res[0][0].status_code, res[1][0].status_code
         seen.add(rebook)
@@ -423,7 +423,7 @@ def test_cancel_held_then_reoccupation_takes_the_place(client, monkeypatch):
     doc_a, doc_b = _client_for(client, "doc.a"), _client_for(client, "doc.b")
 
     cancelled, rebooked, waited = _interleave(
-        lambda: doc_a.delete(f"/api/consilium/appointments/{aid}", headers=doc_a.csrf),
+        lambda: doc_a.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=doc_a.csrf),
         lambda: _book(doc_b, pts["pb1"], FUTURE, "10:00"), hold)
 
     assert waited and cancelled.status_code == 200 and rebooked.status_code == 201
@@ -647,23 +647,23 @@ def _case_resubmit(client, pts):
 def _case_hard_delete(client, pts):
     login(client, "doc.a")
     aid = _book(client, pts["pa1"], FUTURE, "10:00").json()["id"]
-    return "consilium_appointment_deleted", lambda: client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    return "consilium_appointment_deleted", lambda: client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
 
 
 def _case_soft_delete(client, pts):
     aid = _returned(client, pts)
-    return "consilium_appointment_deleted", lambda: client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    return "consilium_appointment_deleted", lambda: client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
 
 
 def _case_archive(client, pts):
     aid = _signed(client, pts)
-    return "consilium_archived", lambda: client.post(f"/api/consilium/appointments/{aid}/archive", json={}, headers=client.csrf)
+    return "consilium_archived", lambda: client.post(f"/api/consilium/appointments/{aid}/archive", json={"version": consilium_version(aid)}, headers=client.csrf)
 
 
 def _case_restore(client, pts):
     aid = _signed(client, pts)
-    assert client.post(f"/api/consilium/appointments/{aid}/archive", json={}, headers=client.csrf).status_code == 200
-    return "consilium_restored", lambda: client.post(f"/api/consilium/appointments/{aid}/restore", json={}, headers=client.csrf)
+    assert client.post(f"/api/consilium/appointments/{aid}/archive", json={"version": consilium_version(aid)}, headers=client.csrf).status_code == 200
+    return "consilium_restored", lambda: client.post(f"/api/consilium/appointments/{aid}/restore", json={"version": consilium_version(aid)}, headers=client.csrf)
 
 
 def _case_generate(client, pts):
@@ -756,7 +756,7 @@ def test_schedule_audit_detail_is_technical_and_complete(client):
         f"appointment_id={aid};group=thoracic;from_date={FUTURE};from_time=10:00;to_date={FUTURE};to_time=10:00;slot_changed=false",
         f"appointment_id={aid};group=thoracic;from_date={FUTURE};from_time=10:00;to_date={FUTURE2};to_time=09:30;slot_changed=true",
     ]
-    client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
     assert _audit("consilium_appointment_deleted")[-1]["detail"] == (
         f"mode=hard;appointment_id={aid};slot_date={FUTURE2};slot_time=09:30;group=thoracic")
 
@@ -770,8 +770,8 @@ def test_schedule_audit_detail_is_technical_and_complete(client):
 def test_archive_and_restore_detail(client):
     _, pts = _world(client)
     aid = _signed(client, pts)
-    client.post(f"/api/consilium/appointments/{aid}/archive", json={}, headers=client.csrf)
-    client.post(f"/api/consilium/appointments/{aid}/restore", json={}, headers=client.csrf)
+    client.post(f"/api/consilium/appointments/{aid}/archive", json={"version": consilium_version(aid)}, headers=client.csrf)
+    client.post(f"/api/consilium/appointments/{aid}/restore", json={"version": consilium_version(aid)}, headers=client.csrf)
     expected = f"appointment_id={aid};slot_date={FUTURE};slot_time=10:00;group=thoracic"
     assert _audit("consilium_archived")[-1]["detail"] == expected
     assert _audit("consilium_restored")[-1]["detail"] == expected
@@ -788,7 +788,7 @@ def _busy_cases(client, pts):
     return {
         "create": ("doc.a", lambda: _book(client, pts["pa2"], FUTURE, "10:30")),
         "update": ("doc.a", lambda: _move(client, aid, pts["pa1"], FUTURE, "10:30")),
-        "delete": ("doc.a", lambda: client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)),
+        "delete": ("doc.a", lambda: client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)),
         "generate": ("chair", lambda: _generate(client, FUTURE2)),
         "slot_delete": ("chair", lambda: _delete_slot(client, slot)),
         "review": ("chair", lambda: client.post(f"/api/consilium/appointments/{aid}/review", json={}, headers=client.csrf)),
@@ -847,15 +847,18 @@ def test_schedule_lifecycle_leaves_medical_history_untouched(client):
     client.post(f"/api/consilium/appointments/{aid}/return", json={"comment": "Уточнить"}, headers=client.csrf)
     login(client, "doc.a")
     assert _move(client, aid, pid, FUTURE, "12:00", comment="Исправлено").status_code == 200
+    resubmitted = client.post(f"/api/consilium/appointments/{aid}/resubmit",  # WP2.3-B1: явная подача
+                              json={"version": consilium_version(aid)}, headers=client.csrf)
+    assert resubmitted.status_code == 200, resubmitted.text
     login(client, "chair")
     client.post(f"/api/consilium/appointments/{aid}/review", json={}, headers=client.csrf)
     assert client.post(f"/api/consilium/appointments/{aid}/sign", json=DECISION, headers=client.csrf).status_code == 200
     _delete_slot(client, _slot_id(FUTURE, "09:00"))
     login(client, "doc.a")
-    assert client.post(f"/api/consilium/appointments/{aid}/archive", json={}, headers=client.csrf).status_code == 200
-    assert client.post(f"/api/consilium/appointments/{aid}/restore", json={}, headers=client.csrf).status_code == 200
+    assert client.post(f"/api/consilium/appointments/{aid}/archive", json={"version": consilium_version(aid)}, headers=client.csrf).status_code == 200
+    assert client.post(f"/api/consilium/appointments/{aid}/restore", json={"version": consilium_version(aid)}, headers=client.csrf).status_code == 200
     second = _book(client, pts["pa2"], FUTURE, "10:30").json()["id"]
-    client.delete(f"/api/consilium/appointments/{second}", headers=client.csrf)
+    client.delete(f"/api/consilium/appointments/{second}?version={consilium_version(second)}", headers=client.csrf)
 
     after = _med_digest(pid)
     before["patient"].pop("updated_at", None)
@@ -902,7 +905,7 @@ def test_rights_matrix_is_unchanged(client, who):
         "create_dept2_patient": _book(client, pts["pb2"], FUTURE, "10:30").status_code,
         "reschedule_docA_record": _move(client, own, pts["pa1"], FUTURE, "11:00").status_code,
         "reschedule_docB_record": _move(client, foreign, pts["pb1"], FUTURE, "11:30").status_code,
-        "cancel_docB_record": client.delete(f"/api/consilium/appointments/{foreign}", headers=client.csrf).status_code,
+        "cancel_docB_record": client.delete(f"/api/consilium/appointments/{foreign}?version={consilium_version(foreign)}", headers=client.csrf).status_code,
         "generate_slots": _generate(client, FUTURE2).status_code,
         "delete_slot": _delete_slot(client, _slot_id(FUTURE, "15:30")).status_code,
         "start_review": client.post(f"/api/consilium/appointments/{foreign}/review", json={}, headers=client.csrf).status_code,
@@ -923,6 +926,7 @@ APPOINTMENT_KEYS = {
     "treatmentSchemeCode", "goc", "goc65Plus", "uvRuv", "revisionComment", "revisionCount", "reviewStartedAt",
     "signedAt", "referralCompleted", "referralCompletedAt", "archived", "archivedAt", "archivedByUserId",
     "isFavorite", "createdAt", "updatedAt",
+    "version",  # WP2.3-B1: версия записи для контроля устаревшей формы
 }
 
 
@@ -964,11 +968,11 @@ def test_current_client_contract_is_unchanged(client):
     deleted_slot = _delete_slot(client, _slot_id(FUTURE, "10:00"))
     assert deleted_slot.status_code == 200 and deleted_slot.json() == {"deleted": True}
     login(client, "doc.a")
-    deleted = client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    deleted = client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
     assert deleted.status_code == 200
     assert deleted.json() == {"deleted": True, "historyPreserved": False, "releasedSlot": {
         "scheduledDate": FUTURE, "scheduledTime": "10:30", "consiliumGroup": "thoracic"}}
-    assert client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf).status_code == 404
+    assert client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf).status_code == 404
     schedule = client.get("/api/consilium/schedule").json()["slots"]
     assert schedule and set(schedule[0]) == {
         "id", "scheduledDate", "scheduledTime", "consiliumGroup", "consiliumGroupLabel", "occupied",

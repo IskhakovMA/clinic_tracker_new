@@ -520,7 +520,7 @@ def test_current_schema_initialises_repeatedly(tmp_path):
 
 
 @pytest.mark.parametrize("setup", [
-    "UPDATE schema_version SET version = 22",
+    "UPDATE schema_version SET version = 99",  # новее текущей (WP2.3-B1: текущая теперь v22)
     "UPDATE schema_version SET version = 0",
     "UPDATE schema_version SET version = -5",
     "UPDATE schema_version SET version = 'двадцать'",
@@ -553,16 +553,16 @@ def test_application_refuses_to_start_on_a_newer_schema(client, tmp_path, monkey
     other.mkdir()
     conn = _fresh_db(other / "clinic.db")
     with conn:
-        conn.execute("UPDATE schema_version SET version = 22")
+        conn.execute("UPDATE schema_version SET version = 99")
     conn.close()
     monkeypatch.setattr(config, "DATA_DIR", other)
     monkeypatch.setattr(config, "DB_PATH", other / "clinic.db")
     db.reset_singleton_for_tests()
-    with pytest.raises(db.SchemaVersionError, match="v22"):
+    with pytest.raises(db.SchemaVersionError, match="v99"):
         with TestClient(app, base_url="http://127.0.0.1"):
             pass
     raw = sqlite3.connect(other / "clinic.db")
-    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 22
+    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 99  # база «новее» осталась нетронутой
     raw.close()
 
 
@@ -571,7 +571,7 @@ def test_check_db_reports_a_newer_schema(client, capsys):
     from backend.app import db
 
     with get_conn() as conn:
-        conn.execute("UPDATE schema_version SET version = 22")
+        conn.execute("UPDATE schema_version SET version = 99")
     db.reset_singleton_for_tests()
     assert cli.main.__module__  # модуль загружен
     import sys
@@ -581,7 +581,7 @@ def test_check_db_reports_a_newer_schema(client, capsys):
         assert cli.main() == 1
     finally:
         sys.argv = argv
-    assert "v22" in capsys.readouterr().err
+    assert "v99" in capsys.readouterr().err
 
 
 def test_backups_are_recognised_by_schema_and_a_newer_one_is_rejected(auth_client, tmp_path, monkeypatch):

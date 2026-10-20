@@ -496,7 +496,8 @@ def test_16_17_migration_marks_old_decisions_legacy_without_inventing_anything(t
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 21
+    # WP2.3-B1: цепочка доводит v20 до текущей схемы (v22), а не только до v21.
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION >= 21
     after = _events_by_id(conn)
     assert after.keys() == before.keys()
     for eid, old in before.items():

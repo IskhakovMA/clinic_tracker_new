@@ -71,7 +71,8 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v19: route context of signed decisions, soft deletion keeping return history.
 # v20: soft deletion and row version of patient events.
 # v21: separate manual OK decision — author, time and source; immutable once recorded.
-SCHEMA_VERSION = 21
+# v22: repeated consiliums (one unfinished per patient), record version, resubmissions.
+SCHEMA_VERSION = 22
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 

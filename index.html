@@ -1053,6 +1053,14 @@
 
         <form class="modal__body form" id="consiliumForm">
             <p class="alert alert--danger is-hidden" id="consiliumFormError" role="alert"></p>
+            <div class="alert alert--warning is-hidden" id="consiliumConflict" role="alert">
+                <p id="consiliumConflictText"></p>
+                <button type="button" class="btn btn--primary btn--sm" id="consiliumConflictRefreshBtn">Обновить данные</button>
+            </div>
+            <div class="field field--wide is-hidden" id="consiliumConflictDraft">
+                <label class="field__label" for="consiliumConflictDraftText">Ваш несохраненный комментарий: перенесите нужное в поле «Комментарий»</label>
+                <textarea class="textarea" id="consiliumConflictDraftText" rows="3" readonly></textarea>
+            </div>
             <section class="consilium-revision-history is-hidden" id="consiliumFormRevisions" aria-label="История возвратов"></section>
 
             <fieldset class="fieldset">
@@ -1163,6 +1171,7 @@
             <button type="button" class="btn btn--danger is-hidden" id="deleteConsiliumBtn">Удалить</button>
             <div class="modal__foot-actions">
                 <button type="button" class="btn btn--ghost" id="closeConsiliumBtn">Отмена</button>
+                <button type="button" class="btn btn--ghost is-hidden" id="resubmitConsiliumBtn">Отправить на повторное рассмотрение</button>
                 <button type="submit" class="btn btn--primary" form="consiliumForm" id="submitConsiliumBtn">Создать запись</button>
             </div>
         </div>
@@ -1289,6 +1298,10 @@
             <button type="button" class="btn btn--icon" id="closeConsiliumDetailsIconBtn" aria-label="Закрыть">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
             </button>
+        </div>
+        <div class="alert alert--warning is-hidden" id="consiliumDetailsConflict" role="alert">
+            <p id="consiliumDetailsConflictText"></p>
+            <button type="button" class="btn btn--primary btn--sm" id="consiliumDetailsConflictRefreshBtn">Обновить данные</button>
         </div>
         <div class="modal__body form" id="consiliumDetailsBody"></div>
         <div class="modal__foot">

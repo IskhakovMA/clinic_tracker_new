@@ -1,7 +1,7 @@
 """Regression tests for the consilium security fixes (integration stage 2)."""
 from datetime import date
 
-from .conftest import DEV_USERNAME, create_account, get_conn, legacy_export, login, stage_body, unsigned_import
+from .conftest import DEV_USERNAME, consilium_version, create_account, get_conn, legacy_export, login, stage_body, unsigned_import
 from .test_consilium_appointments import appointment_payload, create_patient
 
 
@@ -246,6 +246,8 @@ ALLOWED = {
 
 
 def _post(client, appointment_id, action, body=None):
+    if body is None and action in ("archive", "restore", "resubmit"):
+        body = {"version": consilium_version(appointment_id)}  # WP2.3-B1: версия обязательна
     return client.post(
         f"/api/consilium/appointments/{appointment_id}/{action}", json=body or {}, headers=client.csrf,
     )
@@ -276,10 +278,13 @@ def _make_state(client, state):
         assert _post(client, aid, "return", {"comment": "Уточните данные"}).status_code == 200
     if state == "revised":
         login(client, DEV_USERNAME)
-        resubmitted = client.put(
+        corrected = client.put(
             f"/api/consilium/appointments/{aid}",
-            json=appointment_payload(patient["id"], comment="Исправлено"), headers=client.csrf,
+            json=appointment_payload(patient["id"], version=consilium_version(aid), comment="Исправлено"), headers=client.csrf,
         )
+        assert corrected.status_code == 200, corrected.text
+        # WP2.3-B1: повторная подача — отдельное действие, правка ее не заменяет.
+        resubmitted = _post(client, aid, "resubmit")
         assert resubmitted.status_code == 200, resubmitted.text
         login(client, "chair.states")
     status = get_conn().execute(
@@ -308,9 +313,9 @@ def _act(client, action, aid, patient):
     if action == "update":
         return client.put(
             f"/api/consilium/appointments/{aid}",
-            json=appointment_payload(patient["id"], comment="Правка"), headers=client.csrf,
+            json=appointment_payload(patient["id"], version=consilium_version(aid), comment="Правка"), headers=client.csrf,
         )
-    return client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    return client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
 
 
 @pytest.mark.parametrize("state", STATES)
@@ -834,9 +839,10 @@ ENDPOINTS = (
     ("GET", "/api/consilium/booked-patients", None, BOOKING),
     ("POST", "/api/consilium/appointments", "booking", BOOKING),
     ("PUT", "/api/consilium/appointments/{aid}", "booking", BOOKING),
-    ("DELETE", "/api/consilium/appointments/{aid}", None, BOOKING),
-    ("POST", "/api/consilium/appointments/{aid}/archive", {}, BOOKING),
-    ("POST", "/api/consilium/appointments/{aid}/restore", {}, BOOKING),
+    ("DELETE", "/api/consilium/appointments/{aid}?version={ver}", None, BOOKING),
+    ("POST", "/api/consilium/appointments/{aid}/archive", "version", BOOKING),
+    ("POST", "/api/consilium/appointments/{aid}/restore", "version", BOOKING),
+    ("POST", "/api/consilium/appointments/{aid}/resubmit", "version", BOOKING),
     ("POST", "/api/consilium/schedule/generate", {
         "scheduledDate": "2026-12-01", "consiliumGroup": "thoracic",
         "startTime": "10:00", "endTime": "11:00", "intervalMinutes": 30}, MANAGING),
@@ -882,9 +888,12 @@ def test_consilium_endpoint_authorization_matrix(client, role):
     assert me["useConsiliumFavorites"] is (role in FAVORITES)
 
     for method, template, body, allowed_roles in ENDPOINTS:
-        path = template.format(aid=aid, pid=patient["id"])
+        path = template.format(aid=aid, pid=patient["id"], ver=consilium_version(aid))
         if body == "booking":
-            body = appointment_payload(patient["id"])
+            # WP2.3-B1: правка передает версию записи (иначе 422 до проверки прав).
+            body = appointment_payload(patient["id"], **({"version": consilium_version(aid)} if method == "PUT" else {}))
+        elif body == "version":
+            body = {"version": consilium_version(aid)}
         before_denied, before_row = _denied_count(), _row(aid)
         response = client.request(method, path, json=body, headers=client.csrf)
         if role in allowed_roles:
@@ -1170,8 +1179,10 @@ def _three_rounds(client):
         assert _post(client, aid, "return", {"comment": comment}).status_code == 200
         login(client, "doctor.rounds")
         resubmitted = client.put(f"/api/consilium/appointments/{aid}", headers=client.csrf,
-                                 json=appointment_payload(patient["id"], comment=f"Исправление {index + 1}"))
+                                 json=appointment_payload(patient["id"], version=consilium_version(aid), comment=f"Исправление {index + 1}"))
         assert resubmitted.status_code == 200, resubmitted.text
+        # WP2.3-B1: исправление и повторная подача — разные действия.
+        assert _post(client, aid, "resubmit").status_code == 200
     return aid, patient, doctor, chair
 
 
@@ -1243,7 +1254,8 @@ def _signed_by_doctor(client):
     assert _post(client, aid, "return", {"comment": "Уточните перед подписью"}).status_code == 200
     login(client, "doctor.archive")
     assert client.put(f"/api/consilium/appointments/{aid}", headers=client.csrf,
-                      json=appointment_payload(patient["id"], comment="Исправлено")).status_code == 200
+                      json=appointment_payload(patient["id"], version=consilium_version(aid), comment="Исправлено")).status_code == 200
+    assert _post(client, aid, "resubmit").status_code == 200  # WP2.3-B1: явная повторная подача
     login(client, "chair.archive2")
     assert _post(client, aid, "review").status_code == 200
     assert _post(client, aid, "sign", DECISION).status_code == 200
@@ -1436,7 +1448,7 @@ def test_deleting_a_returned_record_keeps_its_history(client):
     history = _history(aid)
     assert [h[1] for h in history] == ["Текст первого возврата"]
 
-    response = client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    response = client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
     assert response.status_code == 200 and response.json()["historyPreserved"] is True
     row = _row(aid)
     assert row is not None and row["deleted_at"] and row["deleted_by_user_id"] == doctor
@@ -1469,7 +1481,7 @@ def test_deleting_a_returned_record_keeps_its_history(client):
 def test_record_without_history_is_still_removed(client):
     aid, _ = _make_state(client, "recorded")
     login(client, DEV_USERNAME)
-    response = client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
+    response = client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf)
     assert response.status_code == 200 and response.json()["historyPreserved"] is False
     assert _row(aid) is None
     assert _audit_rows("consilium_appointment_deleted")[-1]["detail"].startswith("mode=hard;")  # WP2.3-A: + id и слот
@@ -1477,7 +1489,7 @@ def test_record_without_history_is_still_removed(client):
 
 def test_soft_deleted_history_still_blocks_destructive_import_and_card_deletion(client):
     aid, patient, _ = _returned_record(client)
-    assert client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf).status_code == 200
+    assert client.delete(f"/api/consilium/appointments/{aid}?version={consilium_version(aid)}", headers=client.csrf).status_code == 200
     login(client, DEV_USERNAME)
     preview = client.post("/api/import/preview", headers=client.csrf,
                           json={"raw": json.dumps(_export_document(client), ensure_ascii=False)}).json()
@@ -1520,7 +1532,8 @@ def test_signing_records_route_context_without_moving_the_patient(client):
     unchanged()
     login(client, "doctor.route")
     assert client.put(f"/api/consilium/appointments/{aid}", headers=client.csrf,
-                      json=appointment_payload(patient["id"], comment="Исправлено")).status_code == 200
+                      json=appointment_payload(patient["id"], version=consilium_version(aid), comment="Исправлено")).status_code == 200
+    assert _post(client, aid, "resubmit").status_code == 200  # WP2.3-B1: явная повторная подача
     login(client, "chair.route")
     assert _post(client, aid, "review").status_code == 200
     signed = _post(client, aid, "sign", DECISION)

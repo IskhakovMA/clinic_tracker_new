@@ -316,6 +316,10 @@ CREATE TABLE IF NOT EXISTS oncology_consilium_appointments (
     referral_completed_by_user_id TEXT REFERENCES users(id),
     archived_at TEXT,
     archived_by_user_id TEXT REFERENCES users(id),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    backdating_reason_id TEXT REFERENCES consilium_backdating_reasons(id),
+    backdated INTEGER NOT NULL DEFAULT 0
+        CHECK (backdated IN (0, 1) AND (backdated = 0 OR backdating_reason_id IS NOT NULL)),
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -345,7 +349,35 @@ CREATE TABLE IF NOT EXISTS consilium_schedule_slots (
     consilium_group TEXT NOT NULL,
     created_by_user_id TEXT NOT NULL REFERENCES users(id),
     created_at TEXT NOT NULL,
+    backdating_reason_id TEXT REFERENCES consilium_backdating_reasons(id),
+    backdated INTEGER NOT NULL DEFAULT 0
+        CHECK (backdated IN (0, 1) AND (backdated = 0 OR backdating_reason_id IS NOT NULL)),
     UNIQUE (scheduled_date, scheduled_time, consilium_group)
+);
+
+-- v22 (WP2.3-B1). Причины оформления задним числом: отдельно от audit_events,
+-- текст может содержать сведения о пациенте. Таблица подготовлена для WP2.3-B3:
+-- ни один API её пока не пишет и не читает.
+CREATE TABLE IF NOT EXISTS consilium_backdating_reasons (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('slot', 'appointment')),
+    reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 2000),
+    created_by_user_id TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL
+);
+
+-- v22: повторные подачи после доработки, по одной на раунд возврата.
+-- submitted_by_user_id IS NULL только у строк, перенесенных из v21 (migrated = 1):
+-- автор прежних подач не хранился и не выдумывается.
+CREATE TABLE IF NOT EXISTS consilium_resubmissions (
+    id TEXT PRIMARY KEY,
+    appointment_id TEXT NOT NULL REFERENCES oncology_consilium_appointments(id) ON DELETE CASCADE,
+    round INTEGER NOT NULL CHECK (round >= 1),
+    submitted_by_user_id TEXT REFERENCES users(id),
+    submitted_at TEXT NOT NULL,
+    migrated INTEGER NOT NULL DEFAULT 0 CHECK (migrated IN (0, 1)),
+    CHECK (migrated = 1 OR submitted_by_user_id IS NOT NULL),
+    UNIQUE (appointment_id, round)
 );
 
 """
@@ -409,6 +441,10 @@ CREATE INDEX IF NOT EXISTS idx_consilium_favorites_patient
     ON consilium_chair_favorites(patient_id);
 CREATE INDEX IF NOT EXISTS idx_consilium_schedule_date
     ON consilium_schedule_slots(scheduled_date, scheduled_time, consilium_group);
+CREATE INDEX IF NOT EXISTS idx_consilium_resubmissions_appointment
+    ON consilium_resubmissions(appointment_id, round);
+CREATE INDEX IF NOT EXISTS idx_consilium_patient_open
+    ON oncology_consilium_appointments(patient_id, status, deleted_at);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_consilium_appointment_slot
     ON oncology_consilium_appointments(scheduled_date, scheduled_time, consilium_group)
     WHERE deleted_at IS NULL;
@@ -450,6 +486,9 @@ REQUIRED_TABLES = (
     "oncology_consilium_appointments",
     "consilium_chair_favorites",
     "consilium_revision_history",
+    "consilium_schedule_slots",
+    "consilium_backdating_reasons",
+    "consilium_resubmissions",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -872,34 +911,13 @@ def migrate_v15_to_v16(conn: sqlite3.Connection) -> None:
 def migrate_v16_to_v17(conn: sqlite3.Connection) -> None:
     """v16 → v17: strict slot and patient booking invariants.
 
-    The patient guard is a trigger rather than a unique index so an existing
-    local installation that already contains historical duplicates can start
-    without deleting medical records. Every new booking is still rejected as
-    soon as any appointment for that patient exists.
+    v17 added a trigger guard «one appointment per patient, forever». Since
+    v22 the patient guard is «at most one unfinished appointment per patient»
+    and is installed by _ensure_consilium_patient_guard (migrate_v21_to_v22).
+    Every migration function runs on each start, so the v17 trigger is no
+    longer created here — otherwise each start would bring it back. The slot
+    uniqueness of v17 is uq_consilium_appointment_slot in INDEX_SQL.
     """
-    _execute_script(conn,
-        """
-        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_insert
-        BEFORE INSERT ON oncology_consilium_appointments
-        WHEN EXISTS (
-            SELECT 1 FROM oncology_consilium_appointments
-            WHERE patient_id = NEW.patient_id
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
-        END;
-
-        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_update
-        BEFORE UPDATE OF patient_id ON oncology_consilium_appointments
-        WHEN NEW.patient_id != OLD.patient_id AND EXISTS (
-            SELECT 1 FROM oncology_consilium_appointments
-            WHERE patient_id = NEW.patient_id AND id != OLD.id
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
-        END;
-        """
-    )
 
 
 class SchemaMigrationError(RuntimeError):
@@ -945,6 +963,10 @@ def _assert_no_duplicate_consilium_slots(conn: sqlite3.Connection) -> None:
 _SIGNED_MUTABLE_COLUMNS = (
     "archived_at", "archived_by_user_id",
     "referral_completed_at", "referral_completed_by_user_id", "updated_at",
+    # v22: номер версии растет при архивировании подписанной записи; само
+    # решение и остальные столбцы по-прежнему защищены (version только растет —
+    # trg_consilium_version_forward).
+    "version",
 )
 
 
@@ -1110,26 +1132,8 @@ def migrate_v18_to_v19(conn: sqlite3.Connection) -> None:
     ).fetchone()
     if index is not None and "deleted_at" not in (index["sql"] or ""):
         conn.execute("DROP INDEX IF EXISTS uq_consilium_appointment_slot")  # INDEX_SQL recreates it partial
-    _ensure_trigger(conn, "trg_consilium_one_appointment_per_patient_insert", """
-        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_insert
-        BEFORE INSERT ON oncology_consilium_appointments
-        WHEN EXISTS (
-            SELECT 1 FROM oncology_consilium_appointments
-            WHERE patient_id = NEW.patient_id AND deleted_at IS NULL
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
-        END""")
-    _ensure_trigger(conn, "trg_consilium_one_appointment_per_patient_update", """
-        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_appointment_per_patient_update
-        BEFORE UPDATE OF patient_id ON oncology_consilium_appointments
-        WHEN NEW.patient_id != OLD.patient_id AND EXISTS (
-            SELECT 1 FROM oncology_consilium_appointments
-            WHERE patient_id = NEW.patient_id AND id != OLD.id AND deleted_at IS NULL
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'consilium_patient_already_booked');
-        END""")
+    # Защита пациента «одна неудаленная запись» v19 заменена в v22 правилом
+    # «не более одной незавершенной записи» (_ensure_consilium_patient_guard).
 
 
 def migrate_v19_to_v20(conn: sqlite3.Connection) -> None:
@@ -1318,6 +1322,159 @@ def migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
                     CONSILIUM_DECISION_ATTRIBUTED_INSERT_TRIGGER_SQL)
 
 
+# v22: защита пациента. У пациента может быть сколько угодно подписанных (и
+# удаленных) записей, но не более одной незавершенной. Триггер, а не уникальный
+# индекс: на старой установке могут быть исторические дубли (до v17), индекс не
+# создался бы и остановил запуск; такие дубли не удаляются — они блокируют только
+# новые записи пациента. UPDATE проверяется лишь при переходе записи в
+# незавершенные (смена пациента, снятие отметки удаления, выход из подписанных),
+# чтобы рассмотрение и возврат исторических дублей продолжали работать.
+CONSILIUM_PATIENT_GUARD_INSERT_SQL = """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_open_per_patient_insert
+        BEFORE INSERT ON oncology_consilium_appointments
+        WHEN NEW.deleted_at IS NULL AND NEW.status != 'signed' AND EXISTS (
+            SELECT 1 FROM oncology_consilium_appointments
+            WHERE patient_id = NEW.patient_id AND deleted_at IS NULL AND status != 'signed'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_patient_has_open_record');
+        END"""
+CONSILIUM_PATIENT_GUARD_UPDATE_SQL = """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_one_open_per_patient_update
+        BEFORE UPDATE OF patient_id, deleted_at, status ON oncology_consilium_appointments
+        WHEN NEW.deleted_at IS NULL AND NEW.status != 'signed'
+            AND (NEW.patient_id IS NOT OLD.patient_id OR OLD.deleted_at IS NOT NULL OR OLD.status = 'signed')
+            AND EXISTS (
+                SELECT 1 FROM oncology_consilium_appointments
+                WHERE patient_id = NEW.patient_id AND id != OLD.id
+                  AND deleted_at IS NULL AND status != 'signed'
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_patient_has_open_record');
+        END"""
+_LEGACY_PATIENT_GUARD_TRIGGERS = (
+    "trg_consilium_one_appointment_per_patient_insert",
+    "trg_consilium_one_appointment_per_patient_update",
+)
+
+# v22: версия записи. Растет при каждом изменении строки, в том числе прямым
+# SQL и путями кода, которые о ней не знают (AFTER UPDATE поднимает ее, если
+# сам оператор этого не сделал), и никогда не уменьшается.
+CONSILIUM_VERSION_BUMP_TRIGGER_SQL = """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_version_bump
+        AFTER UPDATE ON oncology_consilium_appointments
+        WHEN NEW.version = OLD.version
+        BEGIN
+            UPDATE oncology_consilium_appointments SET version = OLD.version + 1 WHERE id = NEW.id;
+        END"""
+CONSILIUM_VERSION_FORWARD_TRIGGER_SQL = """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_version_forward
+        BEFORE UPDATE OF version ON oncology_consilium_appointments
+        WHEN NEW.version < OLD.version
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_version_backwards');
+        END"""
+
+# v22: история повторных подач и причины задним числом не изменяются и не
+# удаляются, в том числе каскадом: запись консилиума с повторной подачей можно
+# только пометить удаленной (так и делает delete_owned — у нее есть раунды).
+CONSILIUM_APPEND_ONLY_TRIGGERS = (
+    ("trg_consilium_resubmissions_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_resubmissions_no_update
+        BEFORE UPDATE ON consilium_resubmissions
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_resubmission_immutable');
+        END"""),
+    ("trg_consilium_resubmissions_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_resubmissions_no_delete
+        BEFORE DELETE ON consilium_resubmissions
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_resubmission_immutable');
+        END"""),
+    ("trg_consilium_backdating_reasons_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_backdating_reasons_no_update
+        BEFORE UPDATE ON consilium_backdating_reasons
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_backdating_reason_immutable');
+        END"""),
+    ("trg_consilium_backdating_reasons_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_consilium_backdating_reasons_no_delete
+        BEFORE DELETE ON consilium_backdating_reasons
+        BEGIN
+            SELECT RAISE(ABORT, 'consilium_backdating_reason_immutable');
+        END"""),
+)
+
+
+def _ensure_consilium_patient_guard(conn: sqlite3.Connection) -> None:
+    """Install the v22 patient guard; drop the v17/v19 «one forever» triggers.
+
+    On an up-to-date database nothing is dropped or created."""
+    if not _table_columns(conn, "oncology_consilium_appointments"):
+        return
+    for name in _LEGACY_PATIENT_GUARD_TRIGGERS:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?", (name,)).fetchone():
+            conn.execute(f"DROP TRIGGER {name}")
+    _ensure_trigger(conn, "trg_consilium_one_open_per_patient_insert", CONSILIUM_PATIENT_GUARD_INSERT_SQL)
+    _ensure_trigger(conn, "trg_consilium_one_open_per_patient_update", CONSILIUM_PATIENT_GUARD_UPDATE_SQL)
+
+
+def migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
+    """v21 → v22: repeated consiliums, record version, separate resubmission.
+
+    - Patient guard: several signed consiliums per patient, at most one
+      unfinished (_ensure_consilium_patient_guard).
+    - version: integer row version for optimistic locking; existing rows start
+      at 1, every UPDATE raises it (trigger), it never decreases. It is the only
+      new column a signed record may change (_SIGNED_MUTABLE_COLUMNS), so the
+      signed-decision trigger is rebuilt with the new columns.
+    - consilium_resubmissions: one row per resubmitted return round. From v21
+      only the latest submission time is known (revision_submitted_at); it is
+      carried over with migrated = 1 and no author. Earlier rounds are not
+      reconstructed. Rows cannot be changed or deleted, also by cascade.
+    - backdated / backdating_reason_id and consilium_backdating_reasons are
+      prepared for WP2.3-B3 and stay unused by the API until then.
+    Existing clinical rows are not rewritten: columns are only added.
+    """
+    table = "oncology_consilium_appointments"
+    if not _table_columns(conn, table):
+        return
+    for column, ddl in (
+        ("version", "version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1)"),
+        ("backdating_reason_id", "backdating_reason_id TEXT REFERENCES consilium_backdating_reasons(id)"),
+        ("backdated", "backdated INTEGER NOT NULL DEFAULT 0 "
+                      "CHECK (backdated IN (0, 1) AND (backdated = 0 OR backdating_reason_id IS NOT NULL))"),
+    ):
+        _add_column_if_missing(conn, table, column, ddl)
+    for column, ddl in (
+        ("backdating_reason_id", "backdating_reason_id TEXT REFERENCES consilium_backdating_reasons(id)"),
+        ("backdated", "backdated INTEGER NOT NULL DEFAULT 0 "
+                      "CHECK (backdated IN (0, 1) AND (backdated = 0 OR backdating_reason_id IS NOT NULL))"),
+    ):
+        _add_column_if_missing(conn, "consilium_schedule_slots", column, ddl)
+
+    _ensure_consilium_patient_guard(conn)
+    _ensure_trigger(conn, "trg_consilium_signed_immutable",
+                    _signed_immutable_trigger_sql(sorted(_table_columns(conn, table))))
+    _ensure_trigger(conn, "trg_consilium_version_forward", CONSILIUM_VERSION_FORWARD_TRIGGER_SQL)
+    _ensure_trigger(conn, "trg_consilium_version_bump", CONSILIUM_VERSION_BUMP_TRIGGER_SQL)
+    for name, sql in CONSILIUM_APPEND_ONLY_TRIGGERS:
+        _ensure_trigger(conn, name, sql)
+
+    # Известная из v21 повторная подача последнего раунда — только если ее
+    # строки еще нет; повторный запуск ничего не добавляет.
+    conn.execute(
+        """INSERT INTO consilium_resubmissions
+               (id, appointment_id, round, submitted_by_user_id, submitted_at, migrated)
+           SELECT lower(hex(randomblob(16))), a.id, a.revision_count, NULL, a.revision_submitted_at, 1
+           FROM oncology_consilium_appointments a
+           WHERE a.revision_submitted_at IS NOT NULL AND a.revision_count > 0
+             AND NOT EXISTS (
+                 SELECT 1 FROM consilium_resubmissions r
+                 WHERE r.appointment_id = a.id AND r.round = a.revision_count)"""
+    )
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
@@ -1401,6 +1558,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v18_to_v19(conn)         # route context of decisions, soft deletion
         migrate_v19_to_v20(conn)         # soft deletion and version of patient events
         migrate_v20_to_v21(conn)         # separate manual OK decision: author, time, source
+        migrate_v21_to_v22(conn)         # repeated consiliums, record version, resubmissions
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
@@ -1479,6 +1637,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 20:
             migrate_v20_to_v21(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 21:
+            migrate_v21_to_v22(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

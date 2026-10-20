@@ -516,6 +516,17 @@ ConsiliumTreatmentType = Literal[
 ]
 
 
+class ConsiliumAppointmentUpdateIn(ConsiliumAppointmentIn):
+    """Правка и перенос записи (WP2.3-B1): version — версия записи, которую
+    видел клиент. Несовпадение — 409 consilium_version_conflict без изменений."""
+    version: int = Field(..., ge=1, le=2**63 - 1)
+
+
+class ConsiliumVersionIn(StrictRequestModel):
+    """Версия записи для архивирования, восстановления и повторной подачи."""
+    version: int = Field(..., ge=1, le=2**63 - 1)
+
+
 class ConsiliumDecisionIn(StrictRequestModel):
     treatmentType: ConsiliumTreatmentType
     treatmentScheme: str = Field("", max_length=1000)

@@ -302,8 +302,12 @@ def test_concurrent_init_db_is_safe(client, tmp_path, version):
         t.join()
     assert errors == []
     names = set(_triggers(path))
-    assert {"trg_consilium_signed_immutable", "trg_consilium_one_appointment_per_patient_insert",
-            "trg_consilium_one_appointment_per_patient_update"} <= names
+    # WP2.3-B1 (v22): «одна запись на пациента навсегда» заменена правилом «не более
+    # одной незавершенной»; старые триггеры v17/v19 после миграции не остаются.
+    assert {"trg_consilium_signed_immutable", "trg_consilium_one_open_per_patient_insert",
+            "trg_consilium_one_open_per_patient_update"} <= names
+    assert not names & {"trg_consilium_one_appointment_per_patient_insert",
+                        "trg_consilium_one_appointment_per_patient_update"}
 
 
 def test_init_db_on_an_up_to_date_database_drops_no_trigger(client, tmp_path):

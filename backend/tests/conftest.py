@@ -245,3 +245,14 @@ def preserve_ids_confirmation(raw: str, mode: str) -> dict:
     import hashlib
     return {"confirmed": True, "fileSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
             "mode": mode, "action": "create_with_internal_ids"}
+
+
+def consilium_version(appointment_id: str) -> int:
+    """Текущая версия записи консилиума (WP2.3-B1). Правка, отмена, архив,
+    восстановление и повторная подача передают версию, которую видел клиент;
+    тест берет ее из базы так же, как интерфейс — из последнего ответа сервера.
+    Для несуществующей записи — 1 (проверки 404)."""
+    row = get_conn().execute(
+        "SELECT version FROM oncology_consilium_appointments WHERE id = ?", (appointment_id,)
+    ).fetchone()
+    return row["version"] if row else 1

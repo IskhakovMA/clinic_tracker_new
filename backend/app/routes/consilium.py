@@ -4,16 +4,18 @@ from __future__ import annotations
 import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from .. import audit, config, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import (
     ConsiliumAppointmentIn,
+    ConsiliumAppointmentUpdateIn,
     ConsiliumDecisionIn,
     ConsiliumRegistryCompletionIn,
     ConsiliumRevisionIn,
     ConsiliumScheduleGenerateIn,
+    ConsiliumVersionIn,
     strict_iso_date,
 )
 from ..services import consilium
@@ -129,6 +131,12 @@ def _database_busy(exc: sqlite3.OperationalError, what: str = "Запись ко
     ) from exc
 
 
+def _version_conflict(exc: consilium.ConsiliumVersionConflict) -> JSONResponse:
+    """409 устаревшей версии (WP2.3-B1): detail — готовый текст для интерфейса,
+    code — для кнопки «Обновить данные». Данные не изменены, аудита нет."""
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc), "code": exc.code})
+
+
 def _detail(**facts) -> str:
     """Технический detail аудита расписания: только id, дата, время, группа и
     счётчики (значения проверены моделью или взяты из БД), без ФИО, диагнозов
@@ -242,13 +250,16 @@ def delete_consilium_schedule_slot(
 @router.post("/appointments/{appointment_id}/archive", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def archive_consilium_appointment(
     appointment_id: str,
+    body: ConsiliumVersionIn,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_booking(conn, user)
     hook = _schedule_audit(conn, user, audit.CONSILIUM_ARCHIVED, _slot_detail)
     try:
-        appointment = consilium.set_archived(conn, user, appointment_id, True, audit_hook=hook)
+        appointment = consilium.set_archived(conn, user, appointment_id, True, body.version, audit_hook=hook)
+    except consilium.ConsiliumVersionConflict as exc:
+        return _version_conflict(exc)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
@@ -263,13 +274,16 @@ def archive_consilium_appointment(
 @router.post("/appointments/{appointment_id}/restore", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def restore_consilium_appointment(
     appointment_id: str,
+    body: ConsiliumVersionIn,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_booking(conn, user)
     hook = _schedule_audit(conn, user, audit.CONSILIUM_RESTORED, _slot_detail)
     try:
-        appointment = consilium.set_archived(conn, user, appointment_id, False, audit_hook=hook)
+        appointment = consilium.set_archived(conn, user, appointment_id, False, body.version, audit_hook=hook)
+    except consilium.ConsiliumVersionConflict as exc:
+        return _version_conflict(exc)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
@@ -308,7 +322,7 @@ def create_consilium_appointment(
 @router.put("/appointments/{appointment_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def update_consilium_appointment(
     appointment_id: str,
-    body: ConsiliumAppointmentIn,
+    body: ConsiliumAppointmentUpdateIn,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
@@ -324,6 +338,8 @@ def update_consilium_appointment(
     )))
     try:
         appointment = consilium.update(conn, user, appointment_id, body, audit_hook=hook)
+    except consilium.ConsiliumVersionConflict as exc:
+        return _version_conflict(exc)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
@@ -338,6 +354,7 @@ def update_consilium_appointment(
 @router.delete("/appointments/{appointment_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def delete_consilium_appointment(
     appointment_id: str,
+    version: int = Query(..., ge=1, le=2**63 - 1),
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
@@ -345,7 +362,9 @@ def delete_consilium_appointment(
     hook = _schedule_audit(conn, user, audit.CONSILIUM_APPOINTMENT_DELETED, lambda f: _slot_detail(
         f, **({"mode": "soft", "history_preserved": True} if f["soft"] else {"mode": "hard"})))
     try:
-        appointment = consilium.delete_owned(conn, user, appointment_id, audit_hook=hook)
+        appointment = consilium.delete_owned(conn, user, appointment_id, version, audit_hook=hook)
+    except consilium.ConsiliumVersionConflict as exc:
+        return _version_conflict(exc)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
@@ -359,6 +378,34 @@ def delete_consilium_appointment(
         "scheduledTime": appointment["scheduledTime"],
         "consiliumGroup": appointment["consiliumGroup"],
     }}
+
+
+@router.post("/appointments/{appointment_id}/resubmit", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
+def resubmit_consilium_appointment(
+    appointment_id: str,
+    body: ConsiliumVersionIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """«Отправить на повторное рассмотрение» (WP2.3-B1): отдельное действие
+    после доработки; правка и перенос статус needs_revision не меняют."""
+    _require_booking(conn, user)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_RESUBMITTED, lambda f: (f["patient_id"], _detail(
+        appointment_id=f["appointment_id"], round=f["round"],
+    )))
+    try:
+        appointment = consilium.resubmit(conn, user, appointment_id, body.version, audit_hook=hook)
+    except consilium.ConsiliumVersionConflict as exc:
+        return _version_conflict(exc)
+    except consilium.ConsiliumStateError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
+    if appointment is None:
+        _not_found()
+    return appointment
 
 
 @router.post("/appointments/{appointment_id}/review", dependencies=[Depends(require_csrf), _DECISION_LIMIT])

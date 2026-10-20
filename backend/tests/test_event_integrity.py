@@ -310,6 +310,38 @@ def test_export_keeps_format_and_import_does_not_revive_deleted_events(auth_clie
 
 # 17–18. Миграция ------------------------------------------------------------
 
+_V22_COLUMN_DDL = (
+    "    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),\n",
+    "    backdating_reason_id TEXT REFERENCES consilium_backdating_reasons(id),\n",
+    "    backdated INTEGER NOT NULL DEFAULT 0\n"
+    "        CHECK (backdated IN (0, 1) AND (backdated = 0 OR backdating_reason_id IS NOT NULL)),\n",
+)
+
+
+def _strip_v22_consilium(conn):
+    """Убрать из свежей базы объекты v22 (WP2.3-B1), чтобы получить структуру v19.
+
+    backdating_reason_id — внешний ключ, DROP COLUMN к нему не применим, поэтому
+    две таблицы консилиума (пустые) пересобираются по их же DDL без столбцов v22."""
+    for name in [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name IN "
+            "('oncology_consilium_appointments', 'consilium_schedule_slots')")]:
+        conn.execute(f"DROP TRIGGER {name}")
+    for name in [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL AND tbl_name IN "
+            "('oncology_consilium_appointments', 'consilium_schedule_slots')")]:
+        conn.execute(f"DROP INDEX {name}")
+    conn.execute("DROP TABLE consilium_resubmissions")
+    conn.execute("DROP TABLE consilium_backdating_reasons")
+    for table in ("oncology_consilium_appointments", "consilium_schedule_slots"):
+        sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()[0]
+        for ddl in _V22_COLUMN_DDL:
+            sql = sql.replace(ddl, "")
+        assert "backdat" not in sql and "version INTEGER" not in sql, table
+        conn.execute(f"DROP TABLE {table}")
+        conn.execute(sql)
+
+
 def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path):
     from backend.app import config, db
     from backend.app.maintenance import identify_backup_build
@@ -335,6 +367,7 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
                        "consilium_decision_at", "consilium_decision_by_user_id",
                        "version", "deleted_by_user_id", "deleted_at"):
             conn.execute(f"ALTER TABLE events DROP COLUMN {column}")
+        _strip_v22_consilium(conn)
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
     conn.close()

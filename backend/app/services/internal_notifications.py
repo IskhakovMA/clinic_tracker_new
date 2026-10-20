@@ -217,10 +217,12 @@ def _consilium_revision_conditions(
     # раскрыло бы чужого пациента.
     condition, params = policy.patient_scope_filter(user)
     rows = conn.execute(
-        f"""SELECT a.id AS appointment_id, a.patient_id, a.updated_at,
-                   patients.name AS patient_name, patients.stage
+        f"""SELECT a.id AS appointment_id, a.patient_id, a.updated_at, a.revision_count,
+                   h.returned_at, patients.name AS patient_name, patients.stage
             FROM oncology_consilium_appointments a
             JOIN patients ON patients.id = a.patient_id
+            LEFT JOIN consilium_revision_history h
+                   ON h.appointment_id = a.id AND h.round = a.revision_count
             WHERE a.created_by_user_id = ?
               AND a.status = 'recorded'
               AND COALESCE(a.revision_comment, '') != ''
@@ -232,14 +234,16 @@ def _consilium_revision_conditions(
         [user.id, *params],
     ).fetchall()
     return [Condition(
-        stable_key=f"consilium_revision:appointment:{row['appointment_id']}:{row['updated_at']}",
+        # Ключ — раунд возврата (WP2.3-B1): правка и перенос записи до повторной
+        # подачи не создают нового уведомления; новый возврат — новый раунд.
+        stable_key=f"consilium_revision:appointment:{row['appointment_id']}:round:{row['revision_count']}",
         patient_id=row["patient_id"],
         notification_type="consilium_revision",
         source_type="consilium_revision",
         source_id=row["appointment_id"],
         title="Консилиум возвращён на доработку",
         description="Председатель оставил комментарий. Откройте запись, внесите изменения и отправьте её повторно.",
-        event_at=row["updated_at"],
+        event_at=row["returned_at"] or row["updated_at"],
         priority="high",
         patient_name=row["patient_name"] or "Пациент",
         stage=row["stage"] or "",

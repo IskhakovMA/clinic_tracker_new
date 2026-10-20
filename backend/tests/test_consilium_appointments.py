@@ -2,7 +2,7 @@ from io import BytesIO
 from zipfile import ZipFile
 from datetime import date, timedelta
 
-from .conftest import DEV_USERNAME, create_account, get_conn, login, make_patient_payload
+from .conftest import DEV_USERNAME, consilium_version, create_account, get_conn, login, make_patient_payload
 
 
 def appointment_payload(patient_id, **overrides):
@@ -52,7 +52,7 @@ def test_consilium_create_list_and_update_are_personal(auth_client):
     updated = auth_client.put(
         f"/api/consilium/appointments/{item['id']}",
         json=appointment_payload(
-            patient["id"],
+            patient["id"], version=consilium_version(item['id']),
             scheduledTime="12:00",
             comment="Обновлённый комментарий",
             needsRadiotherapist=True,
@@ -79,7 +79,7 @@ def test_consilium_booking_does_not_change_patient_route(auth_client):
     assert created.status_code == 201, created.text
     updated = auth_client.put(
         f"/api/consilium/appointments/{created.json()['id']}",
-        json=appointment_payload(patient["id"], scheduledTime="12:00"),
+        json=appointment_payload(patient["id"], version=consilium_version(created.json()['id']), scheduledTime="12:00"),
         headers=auth_client.csrf,
     )
     assert updated.status_code == 200, updated.text
@@ -106,7 +106,7 @@ def test_doctor_can_delete_unsigned_appointment_and_reuse_slot(auth_client):
     assert created.status_code == 201, created.text
 
     deleted = auth_client.delete(
-        f"/api/consilium/appointments/{created.json()['id']}",
+        f"/api/consilium/appointments/{created.json()['id']}?version={consilium_version(created.json()['id'])}",
         headers=auth_client.csrf,
     )
     assert deleted.status_code == 200, deleted.text
@@ -135,7 +135,7 @@ def test_consilium_update_cannot_replace_patient(auth_client):
     response = auth_client.put(
         f"/api/consilium/appointments/{appointment['id']}",
         json=appointment_payload(
-            second_patient["id"],
+            second_patient["id"], version=consilium_version(appointment['id']),
             primaryDiagnosis="C50.1",
             diagnosisLocalization="Молочная железа",
         ),
@@ -183,7 +183,7 @@ def test_consilium_reschedule_stays_in_original_icd_group(auth_client):
     ).json()
     moved = auth_client.put(
         f"/api/consilium/appointments/{created['id']}",
-        json=appointment_payload(patient["id"], scheduledDate="2026-11-13", scheduledTime="11:15"),
+        json=appointment_payload(patient["id"], version=consilium_version(created['id']), scheduledDate="2026-11-13", scheduledTime="11:15"),
         headers=auth_client.csrf,
     )
     assert moved.status_code == 200, moved.text
@@ -191,7 +191,7 @@ def test_consilium_reschedule_stays_in_original_icd_group(auth_client):
     assert moved.json()["scheduledTime"] == "11:15"
     wrong_group = auth_client.put(
         f"/api/consilium/appointments/{created['id']}",
-        json=appointment_payload(patient["id"], consiliumGroup="breast"),
+        json=appointment_payload(patient["id"], version=consilium_version(created['id']), consiliumGroup="breast"),
         headers=auth_client.csrf,
     )
     assert wrong_group.status_code == 409
@@ -214,7 +214,7 @@ def test_consilium_list_does_not_show_another_users_records(client):
     assert client.get("/api/consilium/appointments").json()["appointments"] == []
     assert client.put(
         f"/api/consilium/appointments/{first.json()['id']}",
-        json=appointment_payload(patient["id"]),
+        json=appointment_payload(patient["id"], version=consilium_version(first.json()['id'])),
         headers=client.csrf,
     ).status_code == 404
 
@@ -324,8 +324,17 @@ def test_consilium_chair_sees_all_returns_signs_and_gets_analytics(client):
 
     revised = client.put(
         f"/api/consilium/appointments/{created['id']}",
-        json=appointment_payload(patient["id"], comment="Добавлены уточнённые сведения"),
+        json=appointment_payload(patient["id"], version=consilium_version(created['id']), comment="Добавлены уточнённые сведения"),
         headers=client.csrf,
+    )
+    assert revised.status_code == 200, revised.text
+    # WP2.3-B1: правка не означает повторную подачу — статус и уведомление прежние,
+    # повторного уведомления нет; подача — отдельным действием /resubmit.
+    assert revised.json()["status"] == "needs_revision"
+    assert len(client.get("/api/internal-notifications?type=consilium_revision").json()["items"]) == 1
+    revised = client.post(
+        f"/api/consilium/appointments/{created['id']}/resubmit",
+        json={"version": revised.json()["version"]}, headers=client.csrf,
     )
     assert revised.status_code == 200, revised.text
     assert revised.json()["status"] == "revised"
@@ -494,7 +503,7 @@ def test_signed_record_is_locked_policy_is_saved_and_surgical_registry_is_checka
     login(client, DEV_USERNAME)
     locked = client.put(
         f"/api/consilium/appointments/{created['id']}",
-        json=payload, headers=client.csrf,
+        json={**payload, "version": consilium_version(created["id"])}, headers=client.csrf,
     )
     assert locked.status_code == 409
 
@@ -599,7 +608,7 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
     ).json()
     unsigned_archive = client.post(
         f"/api/consilium/appointments/{created['id']}/archive",
-        json={}, headers=client.csrf,
+        json={"version": consilium_version(created["id"])}, headers=client.csrf,
     )
     assert unsigned_archive.status_code == 409
 
@@ -621,7 +630,7 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
     assert [row["id"] for row in client.get("/api/consilium/appointments").json()["appointments"]] == [created["id"]]
     archived = client.post(
         f"/api/consilium/appointments/{created['id']}/archive",
-        json={}, headers=client.csrf,
+        json={"version": consilium_version(created["id"])}, headers=client.csrf,
     )
     assert archived.status_code == 200
     assert archived.json()["archived"] is True
@@ -631,7 +640,7 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
 
     restored = client.post(
         f"/api/consilium/appointments/{created['id']}/restore",
-        json={}, headers=client.csrf,
+        json={"version": consilium_version(created["id"])}, headers=client.csrf,
     )
     assert restored.status_code == 200
     assert restored.json()["archived"] is False
