@@ -449,6 +449,34 @@ class ImportPreserveIdsRequired(ValueError):
         super().__init__("preserve ids confirmation required")
 
 
+HISTORICAL_DECISIONS_MESSAGE = (
+    "Файл содержит решения ОК. Обычный импорт решений ОК не создает: перенос исторических решений "
+    "выполняется только после отдельного подтверждения именно этого файла, режима и числа решений. "
+    "Автор и время решений при переносе остаются неизвестными; сотрудник, выполняющий импорт, "
+    "автором решения не становится. Данные не изменены."
+)
+
+
+class ImportHistoricalDecisionsRequired(ValueError):
+    """Файл создал бы решения ОК, а перенос исторических решений не подтвержден (428)."""
+    code = "HISTORICAL_DECISIONS_CONFIRMATION_REQUIRED"
+
+    def __init__(self, decisions: int):
+        self.decisions = decisions
+        super().__init__(HISTORICAL_DECISIONS_MESSAGE)
+
+
+def historical_decision_count(document: ImportDocument, mode: str) -> int:
+    """Сколько решений ОК импорт в режиме mode создал бы в новых событиях.
+
+    Новые события с решением создают только add и replace (новые карточки целиком);
+    update решения не создает — дописываемое событие с решением отклоняется планом."""
+    if mode not in ("add", "replace"):
+        return 0
+    return sum(1 for p in document.patients for h in _file_history(p, None) for ev in h.events
+               if ev.consiliumDecision)
+
+
 class ImportNotEmptyError(ValueError):
     """Migration of local data is allowed only into an empty database."""
 
@@ -833,6 +861,8 @@ def _insert_full_patient(
     treating_doctor_user_id: Optional[str] = None,
     actor: Optional["policy.CurrentUser"] = None,
     layout: Optional[list[tuple[str, list[str]]]] = None,
+    decision_import: Optional[dict] = None,
+    imported_decisions: Optional[list] = None,
 ) -> None:
     now = now_iso()
     columns = _patient_columns(conn, p, treating_doctor_user_id, now)
@@ -852,7 +882,13 @@ def _insert_full_patient(
             (entry_id, patient_id, seq, h.stage, h.enteredAt, json.dumps(h.checklist) if h.checklist else None, h.note),
         )
         for ev_seq, ev in enumerate(h.events):
-            store.insert_event(conn, entry_id, ev_seq, ev, layout[seq][1][ev_seq] if layout else None)
+            # Решение ОК из файла — только подтвержденный перенос исторического решения
+            # (источник import): автор и время решения неизвестны и не придумываются,
+            # исполнитель импорта хранится отдельно и автором не становится.
+            event_id = store.insert_event(conn, entry_id, ev_seq, ev, layout[seq][1][ev_seq] if layout else None,
+                                          decision_import=decision_import)
+            if ev.consiliumDecision and imported_decisions is not None:
+                imported_decisions.append({"patientId": patient_id, "eventId": event_id, "historySeq": seq})
     for item in p.diagnosisHistory:
         conn.execute(
             """INSERT INTO patient_diagnosis_history
@@ -873,7 +909,7 @@ def commit_import(
     conn: sqlite3.Connection, document: ImportDocument, mode: str,
     actor: "policy.CurrentUser", *, ids: Optional[FileIds] = None,
     audit_hook: Optional[Callable[[dict], None]] = None, require_empty: bool = False,
-    preserve_ids_confirmed: bool = False,
+    preserve_ids_confirmed: bool = False, historical_decisions: Optional[dict] = None,
 ) -> dict:
     """Импорт от имени актора. Права на режим проверяет policy.can_import
     (update/replace — только Разработчик); закрепление каждого пациента за
@@ -929,6 +965,18 @@ def commit_import(
             # после отдельного подтверждения разработчика — проверяется последним,
             # чтобы не просить подтверждения операции, которая всё равно отклонена.
             raise ImportPreserveIdsRequired(len(document.patients))
+        # Перенос исторических решений ОК — только с отдельным подтверждением этого
+        # файла, режима и числа решений (проверяется под той же блокировкой, до записи).
+        # Без него файл с решениями не импортируется вовсе — частичного импорта нет.
+        decision_count = historical_decision_count(document, mode)
+        decision_import = None
+        if decision_count:
+            if not (historical_decisions and historical_decisions.get("confirmed")
+                    and historical_decisions.get("decisions") == decision_count):
+                raise ImportHistoricalDecisionsRequired(decision_count)
+            decision_import = {"imported_by": actor.id, "imported_at": now_iso(),
+                               "import_id": historical_decisions["import_id"]}
+        imported_decisions: list[dict] = []
 
         def layout_of(index: int):
             return ids.structure[index] if verified else None
@@ -943,7 +991,8 @@ def commit_import(
                 # Только в пустую базу (проверено планом выше): ничего не удаляется.
                 for index, (p, doctor_id) in enumerate(zip(document.patients, resolved)):
                     created_id = new_patient_id(p)
-                    _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index))
+                    _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index),
+                                         decision_import, imported_decisions)
                     created_ids.append(created_id)
                     added += 1
             elif mode == "update":
@@ -963,7 +1012,8 @@ def commit_import(
             else:  # add
                 for index, (p, doctor_id) in enumerate(zip(document.patients, resolved)):
                     created_id = new_patient_id(p)
-                    _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index))
+                    _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index),
+                                         decision_import, imported_decisions)
                     created_ids.append(created_id)
                     added += 1
         except sqlite3.IntegrityError as exc:
@@ -978,8 +1028,10 @@ def commit_import(
                   "unchanged": unchanged, "appendedEvents": appended_events}
         if audit_hook is not None:
             # Обязательная запись аудита — в той же транзакции: её сбой
-            # откатывает импорт целиком. Созданные id нужны только аудиту.
-            audit_hook({**result, "createdIds": list(created_ids)})
+            # откатывает импорт целиком. Созданные id и события с перенесенными
+            # решениями нужны только аудиту (ответ клиенту прежний).
+            audit_hook({**result, "createdIds": list(created_ids), "importedDecisions": len(imported_decisions),
+                        "decisionEvents": list(imported_decisions)})
 
     return result
 

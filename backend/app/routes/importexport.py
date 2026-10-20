@@ -4,9 +4,11 @@
 """
 import json
 import sqlite3
+import uuid
 from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import JSONResponse
 
 from .. import audit, config, export_signing, importexport, policy, store
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
@@ -38,6 +40,34 @@ PRESERVE_IDS_MESSAGE = (
     "Это не подтверждает, что именно эти карточки ранее существовали в базе. Нужна отдельная "
     "отметка подтверждения разработчика."
 )
+
+
+def historical_decisions_view(document, mode: str) -> dict:
+    """Сколько решений ОК создал бы режим и нужно ли отдельное подтверждение переноса."""
+    decisions = importexport.historical_decision_count(document, mode)
+    return {"required": decisions > 0, "decisions": decisions,
+            "message": importexport.HISTORICAL_DECISIONS_MESSAGE if decisions else ""}
+
+
+def historical_decisions_request(body, provenance: dict, import_id: str) -> dict | None:
+    """Подтверждение переноса исторических решений из запроса — только если оно
+    относится к этому файлу и режиму; число решений сверяется в транзакции импорта."""
+    c = body.historicalDecisionsConfirmation
+    if c is None or c.fileSha256 != provenance["fileSha256"] or c.mode != body.mode:
+        return None
+    return {"confirmed": True, "decisions": c.decisions, "import_id": import_id}
+
+
+def decision_audit(conn, ctx: dict, result: dict, *, import_id: str, file_sha256: str) -> None:
+    """По одной обязательной записи на каждое перенесенное решение ОК — в транзакции
+    импорта (сбой откатывает импорт целиком). Без кода решения и персональных данных."""
+    for d in result.get("decisionEvents", []):
+        audit.record_required(
+            conn, audit.CONSILIUM_DECISION_IMPORTED, patient_id=d["patientId"],
+            detail=(f"event_id={d['eventId']};history={d['historySeq']};source=import;"
+                    f"import_id={import_id};file_sha256={file_sha256}"),
+            **ctx,
+        )
 
 
 def _id_preservation(inspection, document, mode: str) -> dict:
@@ -94,6 +124,8 @@ def import_preview(
     }
     # Решение C: создание карточек с сохранением id подписанного файла.
     report["idPreservation"] = {mode: _id_preservation(inspection, document, mode) for mode in modes}
+    # WP2.2-B: перенос исторических решений ОК — только с отдельным подтверждением.
+    report["historicalDecisions"] = {mode: historical_decisions_view(document, mode) for mode in modes}
     return {"valid": True, "errors": [], "provenance": provenance, **report}
 
 
@@ -163,6 +195,10 @@ def import_commit(
                             detail={"errors": scope_errors})
 
     patients, events = len(document.patients), importexport.document_event_count(document)
+    # Идентификатор этой операции импорта: связывает общую запись аудита, записи о
+    # перенесенных решениях ОК и сами события с такими решениями.
+    import_id = uuid.uuid4().hex
+    historical = historical_decisions_request(body, provenance, import_id)
 
     def audit_hook(result: dict) -> None:
         # Обязательная запись (fail-closed) в транзакции импорта: без неё
@@ -173,9 +209,11 @@ def import_commit(
                     f"skipped={result['skipped']} unchanged={result['unchanged']} "
                     f"appended_events={result['appendedEvents']} {file_ref} "
                     f"key_id={provenance.get('keyId') or '-'} "
-                    f"unsigned_confirmed={int(confirmed)} patients={patients} events={events}"),
+                    f"unsigned_confirmed={int(confirmed)} patients={patients} events={events} "
+                    f"import_id={import_id} imported_decisions={result['importedDecisions']}"),
             **ctx,
         )
+        decision_audit(conn, ctx, result, import_id=import_id, file_sha256=provenance["fileSha256"])
         if preserve["required"]:
             # По одной обязательной записи на каждую карточку, созданную с прежним
             # id (patient_id указан — граница видна в журнале). Формулировка
@@ -190,7 +228,14 @@ def import_commit(
 
     try:
         result = importexport.commit_import(conn, document, body.mode, user, ids=inspection.ids,
-                                            audit_hook=audit_hook, preserve_ids_confirmed=preserve_confirmed)
+                                            audit_hook=audit_hook, preserve_ids_confirmed=preserve_confirmed,
+                                            historical_decisions=historical)
+    except importexport.ImportHistoricalDecisionsRequired as e:
+        audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
+                     detail=f"mode={body.mode} {file_ref} decisions={e.decisions} "
+                            "reason=historical_decisions_confirmation_required", **ctx)
+        return JSONResponse(status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                            content={"detail": str(e), "code": e.code, "decisions": e.decisions})
     except importexport.ImportPreserveIdsRequired:
         audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
                      detail=f"mode={body.mode} {file_ref} reason=preserve_ids_confirmation_required", **ctx)
@@ -260,10 +305,12 @@ def export_patients(
         # issues remain in the database and backups.
         row.pop("attention", None)
         # Только активные события; стабильные id пациента, записей маршрута и
-        # событий входят в подписанный файл (версия — нет). Удалённые события
+        # событий входят в подписанный файл (версия и сведения об авторе и времени
+        # ручной отметки решения ОК — нет: формат файла прежний). Удалённые события
         # остаются в базе и резервных копиях и в файл не попадают.
         row["history"] = [
-            {**entry, "events": [{k: v for k, v in ev.items() if k != "version"} for ev in entry["events"]]}
+            {**entry, "events": [{k: v for k, v in ev.items() if k not in store.EXPORT_EXCLUDED_EVENT_KEYS}
+                                 for ev in entry["events"]]}
             for entry in row["history"]
         ]
         exported.append(row)

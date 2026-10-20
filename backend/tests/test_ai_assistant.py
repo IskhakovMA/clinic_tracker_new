@@ -973,7 +973,8 @@ def test_ai_chat_does_not_write_audit_or_notification_read_state(auth_client, mo
 def test_ai_schema_has_no_ai_tables(auth_client):
     from backend.app import config
 
-    assert config.SCHEMA_VERSION == 20
+    # v21 (WP2.2-B) добавила только колонки и триггеры ручной отметки решения ОК в events.
+    assert config.SCHEMA_VERSION == 21
     tables = {
         row["name"]
         for row in get_conn().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()

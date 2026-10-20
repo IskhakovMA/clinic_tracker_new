@@ -167,6 +167,41 @@ def stage_body(client, patient_id: str, body: dict) -> dict:
     return {**body, "lastEventId": events[-1]["id"], "lastEventVersion": events[-1]["version"]}
 
 
+# Ручная отметка решения ОК (WP2.2-B) — отдельная операция врача, заведующего или
+# председателя; разработчик (auth_client) ее не выполняет. Вымышленный врач для тестов.
+DECISION_DOCTOR_USERNAME = "decision.doctor"
+
+
+def decision_doctor_id() -> str:
+    """Вымышленный врач для ручной отметки решения ОК (создается один раз на базу)."""
+    row = get_conn().execute("SELECT id FROM users WHERE username = ?", (DECISION_DOCTOR_USERNAME,)).fetchone()
+    if row:
+        return row[0]
+    dept = create_department("Отделение тестовых отметок ОК")
+    return create_account(DECISION_DOCTOR_USERNAME, "doctor", "Отметкин Врач Решениевич", department_ids=[dept])
+
+
+def mark_decision(client, patient_id: str, decision: str = "treatment_strategy_defined", *, occ: int = -1,
+                  idx: int = 0, as_user: str | None = DECISION_DOCTOR_USERNAME, back_to: str | None = DEV_USERNAME):
+    """Отметить решение ОК так, как это делает интерфейс: событие, его версия, этап и
+    запись маршрута — из свежей карточки. as_user — вход под этим сотрудником на время
+    отметки, back_to — вход обратно после нее."""
+    if as_user:
+        assert login(client, as_user).status_code == 200
+    card = client.get(f"/api/patients/{patient_id}").json()
+    entry = card["history"][occ]
+    event = entry["events"][idx]
+    r = client.post(
+        f"/api/patients/{patient_id}/events/{event['id']}/consilium-decision",
+        json={"decision": decision, "version": event["version"], "expectedStage": card["stage"],
+              "expectedHistoryEntryId": entry["id"]},
+        headers=client.csrf,
+    )
+    if as_user and back_to:
+        assert login(client, back_to).status_code == 200
+    return r
+
+
 def event_add_body(client, patient_id: str, occ: int = 0, purpose: str = "add") -> dict:
     """Тело добавления события так, как его собирает интерфейс: активные
     события этапа из свежей карточки (сервер сверяет с ними набор)."""
@@ -174,14 +209,19 @@ def event_add_body(client, patient_id: str, occ: int = 0, purpose: str = "add") 
     return {"expectedEventIds": [e["id"] for e in events], "purpose": purpose}
 
 
-def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True):
+def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, historical_decisions: int | None = None):
     """Импорт файла без подписи системы так, как его делает интерфейс:
-    preview → явное подтверждение именно этого файла и режима → commit."""
+    preview → явное подтверждение именно этого файла и режима → commit.
+    historical_decisions — отдельное подтверждение переноса этого числа решений ОК (WP2.2-B)."""
+    import hashlib
+    sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     body = {"raw": raw, "mode": mode}
     if confirm:
-        import hashlib
-        body["unsignedConfirmation"] = {
-            "confirmed": True, "fileSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(), "mode": mode,
+        body["unsignedConfirmation"] = {"confirmed": True, "fileSha256": sha, "mode": mode}
+    if historical_decisions is not None:
+        body["historicalDecisionsConfirmation"] = {
+            "confirmed": True, "fileSha256": sha, "mode": mode,
+            "action": "import_historical_consilium_decisions", "decisions": historical_decisions,
         }
     return client.post("/api/import/commit", json=body, headers=client.csrf)
 

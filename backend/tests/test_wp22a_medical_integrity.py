@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from .conftest import DEV_USERNAME, create_account, get_conn, login, make_patient_payload, stage_body
+from .conftest import DEV_USERNAME, create_account, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, stage_body
 from .test_consilium_appointments import appointment_payload
 from .test_consilium_security import DECISION, _make_state, _post
 
@@ -260,34 +260,38 @@ def test_i_partial_update_does_not_null_existing_fields(auth_client, partial):
 
 
 def test_legacy_decision_with_null_date_keeps_the_fact(auth_client):
-    """Решение ОК прежнего контракта больше не стирает существующий факт события (пробa аудита p03)."""
+    """WP2.2-B: решение ОК через перевод этапа больше не принимается — явный 422, а не
+    молчаливое игнорирование; существующий факт, этап и история не меняются (защита WP2.2-A
+    сохраняется, решение записывается отдельной операцией)."""
     pid = _with_fact(auth_client, stage="consult")
-    before = _event_row(pid)
+    before = _snapshot(pid)
     r = _stage(auth_client, pid, {"newStage": "treatment-prep",
                                   "lastEventUpdate": {"actualDate": None, "consiliumDecision": "treatment_strategy_defined"}})
-    assert r.status_code == 200, r.text
-    after = _event_row(pid)
-    assert (after["actual_date"], after["actual_time"], after["matched_plan"]) == (
-        before["actual_date"], before["actual_time"], before["matched_plan"])
-    assert after["set_at"] == before["set_at"]
-    assert after["consilium_decision"] == "treatment_strategy_defined" and after["version"] == before["version"] + 1
+    assert r.status_code == 422 and r.json()["code"] == "DECISION_SEPARATE_OPERATION"
+    assert _snapshot(pid) == before
 
 
 def test_legacy_decision_with_other_date_is_fact_conflict(auth_client):
+    """WP2.2-B: запрос с решением отклоняется до проверки факта (422); ничего не меняется."""
     pid = _with_fact(auth_client, stage="consult")
     before = _snapshot(pid)
     r = _stage(auth_client, pid, {"newStage": "treatment-prep",
                                   "lastEventUpdate": {"actualDate": "2026-08-21", "consiliumDecision": "treatment_strategy_defined"}})
-    assert r.status_code == 409 and r.json()["code"] == "FACT_CONFLICT"
+    assert r.status_code == 422 and r.json()["code"] == "DECISION_SEPARATE_OPERATION"
     assert _snapshot(pid) == before
 
 
 def test_old_client_payloads_stay_compatible(auth_client):
-    """Тела запросов, которые собирает действующий static/app.js (changeStage)."""
-    # 1. Факт уже есть, решение ОК: клиент повторяет записанные дату, время и matchedPlan.
+    """Тела запросов static/app.js (changeStage). WP2.2-B: решение ОК клиент отмечает
+    отдельной операцией, а перевод присылает без него."""
+    # 1. Факт уже есть: решение отмечено отдельно, перевод повторяет записанные дату и время.
     pid = _with_fact(auth_client, stage="consult")
+    conn = get_conn()
+    conn.execute("UPDATE patients SET treating_doctor_user_id = ? WHERE id = ?", (decision_doctor_id(), pid))
+    conn.commit()
+    assert mark_decision(auth_client, pid, "treatment_strategy_changed").status_code == 200
     r = _stage(auth_client, pid, {"newStage": "treatment-prep", "lastEventUpdate": {
-        "actualDate": "2026-08-20", "actualTime": "10:00", "matchedPlan": True, "consiliumDecision": "treatment_strategy_changed"}})
+        "actualDate": "2026-08-20", "actualTime": "10:00", "matchedPlan": True}})
     assert r.status_code == 200, r.text
     # 2. Факт есть, перевод без решения: lastEventUpdate = null.
     pid = _with_fact(auth_client)
@@ -301,16 +305,16 @@ def test_old_client_payloads_stay_compatible(auth_client):
 # ---------- обязательный аудит: успех пишет запись в той же транзакции ----------
 
 def test_stage_change_and_legacy_decision_write_required_audit(auth_client):
+    """Перевод пишет обязательный аудит; решения ОК он больше не записывает (WP2.2-B) —
+    записи consilium_decision_recorded от перевода нет."""
     p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20"}])
-    ev_id = _card(auth_client, p["id"])["history"][0]["events"][0]["id"]
-    r = _stage(auth_client, p["id"], {"newStage": "treatment-prep",
-                                      "lastEventUpdate": {"actualDate": "2026-08-20", "consiliumDecision": "treatment_strategy_defined"}})
+    r = _stage(auth_client, p["id"], {"newStage": "treatment-prep", "lastEventUpdate": {"actualDate": "2026-08-20"}})
     assert r.status_code == 200, r.text
     rows = get_conn().execute(
         "SELECT event_type, detail, actor_user_id FROM audit_events WHERE patient_id = ? ORDER BY id", (p["id"],)).fetchall()
     kinds = [(r["event_type"], r["detail"]) for r in rows]
     assert ("patient_updated", "stage=treatment-prep") in kinds
-    assert ("consilium_decision_recorded", f"event_id={ev_id};history=0") in kinds
+    assert not any(k == "consilium_decision_recorded" for k, _ in kinds)
     assert all(r["actor_user_id"] for r in rows)
 
 
@@ -330,15 +334,21 @@ def test_rollback_stage_change_when_audit_fails(auth_client):
 
 
 def test_rollback_legacy_decision_when_its_audit_fails(auth_client):
-    p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20"}])
+    """WP2.2-B: решение записывается отдельной операцией; сбой ее аудита откатывает
+    отметку целиком (подробно — test_wp22b_consilium_decision)."""
+    p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20"}], treatingDoctorUserId=decision_doctor_id())
     before = _snapshot(p["id"])
     _fail_audit("consilium_decision_recorded")
     try:
-        r = _stage(auth_client, p["id"], {"newStage": "treatment-prep",
-                                          "lastEventUpdate": {"actualDate": "2026-08-20", "consiliumDecision": "treatment_strategy_defined"}})
+        r = mark_decision(auth_client, p["id"], "treatment_strategy_defined")
         assert r.status_code == 503
-        # Ни этап, ни история, ни факт, ни решение, ни запись аудита о переводе не сохранились.
-        assert _snapshot(p["id"]) == before
+        after = _snapshot(p["id"])
+        # Вход врача и обратно пишут свои записи аудита сессии — медицинских изменений и
+        # записи о решении нет.
+        assert {k: v for k, v in after.items() if k != "audit"} == {k: v for k, v in before.items() if k != "audit"}
+        assert not get_conn().execute(
+            "SELECT 1 FROM audit_events WHERE event_type = 'consilium_decision_recorded' AND patient_id = ?",
+            (p["id"],)).fetchone()
     finally:
         _restore_audit()
 
@@ -582,9 +592,11 @@ def test_current_audit_retention_policy_is_documented_by_test(auth_client):
     старше срока, кроме удаления/восстановления событий; записи о переводе этапа, решении ОК,
     правках событий и действиях председателя очищаются по общему сроку."""
     from backend.app import audit
-    p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20"}])
+    # WP2.2-B: решение — отдельная отметка врача пациента, затем перевод этапа.
+    p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20"}], treatingDoctorUserId=decision_doctor_id())
+    assert mark_decision(auth_client, p["id"], "treatment_strategy_defined").status_code == 200
     assert _stage(auth_client, p["id"], {"newStage": "treatment-prep", "lastEventUpdate": {
-        "actualDate": "2026-08-20", "consiliumDecision": "treatment_strategy_defined"}}).status_code == 200
+        "actualDate": "2026-08-20"}}).status_code == 200
     ev = _card(auth_client, p["id"])["history"][0]["events"][0]
     assert auth_client.delete(f"/api/patients/{p['id']}/events/{ev['id']}?version={ev['version']}",
                               headers=auth_client.csrf).status_code == 200
@@ -656,10 +668,11 @@ def test_time_only_4_no_new_fact_leaves_time_untouched(auth_client, update):
 
 
 def test_time_only_4_legacy_decision_keeps_time(auth_client):
-    p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20", "time": "09:45"}])
+    """WP2.2-B: отдельная отметка решения ОК не трогает фактическое время, записанное без даты."""
+    p = _create(auth_client, stage="consult", events=[{"date": "2026-08-20", "time": "09:45"}],
+                treatingDoctorUserId=decision_doctor_id())
     _patch(auth_client, p["id"], "actualTime", "09:45")
-    r = _stage(auth_client, p["id"], {"newStage": "treatment-prep",
-                                      "lastEventUpdate": {"consiliumDecision": "treatment_strategy_defined"}})
+    r = mark_decision(auth_client, p["id"], "treatment_strategy_defined")
     assert r.status_code == 200, r.text
     row = _event_row(p["id"])
     assert (row["actual_date"], row["actual_time"], row["consilium_decision"]) == (None, "09:45", "treatment_strategy_defined")

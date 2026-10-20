@@ -13,6 +13,7 @@ from .. import audit, policy, store
 from ..deps import get_db, require_active_password, require_csrf
 from ..models import (
     ChecklistItemIn,
+    ConsiliumDecisionMarkIn,
     EventAddIn,
     EventFieldUpdateIn,
     EventVersionIn,
@@ -263,14 +264,10 @@ def change_stage(
     _require_writable(conn, user, patient_id)
 
     def hook(outcome: dict) -> None:
-        # Перевод и решение ОК прежнего контракта — в той же транзакции, что и
-        # изменение: без записи аудита этап, история и событие не сохраняются.
+        # Перевод — в той же транзакции, что и изменение: без записи аудита этап,
+        # история и событие не сохраняются. Решение ОК перевод не записывает.
         audit.record_required_or_fail(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
                                       detail=f"stage={body.newStage}", **audit.actor_ctx(user))
-        if outcome["decision"]:
-            audit.record_required_or_fail(
-                conn, audit.CONSILIUM_DECISION_RECORDED, patient_id=patient_id,
-                detail=f"event_id={outcome['event_id']};history={outcome['history_seq']}", **audit.actor_ctx(user))
 
     try:
         ok = store.change_stage(conn, patient_id, body.newStage, body.lastEventUpdate,
@@ -283,6 +280,9 @@ def change_stage(
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(e), "code": e.code})
     except store.EventConflict as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except store.DecisionRequiresSeparateOperation as e:
+        # Прежний контракт «решение вместе с переводом» больше не действует: явный отказ, не игнорирование.
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(e), "code": e.code})
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except audit.AuditWriteFailed:
@@ -533,6 +533,52 @@ def restore_event(
     except sqlite3.OperationalError:
         _database_busy()
     if row is None:
+        _event_not_found()
+    return store.patient_to_dict(conn, patient_id)
+
+
+@router.post("/{patient_id}/events/{event_id}/consilium-decision", dependencies=[Depends(require_csrf)])
+def mark_consilium_decision(
+    patient_id: str,
+    event_id: str,
+    body: ConsiliumDecisionMarkIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Ручная отметка решения ОК в явно выбранном событии текущего этапа ОК (WP2.2-B).
+
+    Порядок проверок как у остальных правок пациента: сначала видимость (404 —
+    существование чужого пациента не раскрывается), затем право записи и право
+    отметки решения (403). Этап пациента, факт события и решения председателя
+    не меняются; повторная отметка — 409."""
+    _require_writable(conn, user, patient_id)
+    if not policy.can_mark_consilium_decision(user):
+        _forbidden(conn, user, "action=consilium_decision_mark")
+
+    def hook(result: dict) -> None:
+        # Решение и запись аудита — одна транзакция: без записи журнала решение не сохраняется.
+        detail = f"event_id={result['event_id']};history={result['history_seq']};source=manual"
+        if result["archived_acknowledged"]:
+            # Сотрудник подтвердил, что видел архивные решения этого этапа (только id событий).
+            detail += (f";archived_decisions_acknowledged={len(result['archived_acknowledged'])}"
+                       f";archived_event_ids={','.join(result['archived_acknowledged'])}")
+        audit.record_required_or_fail(
+            conn, audit.CONSILIUM_DECISION_RECORDED, patient_id=patient_id, detail=detail,
+            **audit.actor_ctx(user))
+
+    try:
+        result = store.mark_consilium_decision(
+            conn, patient_id, event_id, body.decision, body.version,
+            expected_stage=body.expectedStage, expected_history_entry_id=body.expectedHistoryEntryId,
+            user_id=user.id, acknowledged_archived_event_ids=body.acknowledgedArchivedEventIds, audit_hook=hook)
+    except store.DecisionConflict as e:
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                            content={"detail": str(e), "code": e.code, **e.extra})
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Решение ОК не записано")
+    except sqlite3.OperationalError:
+        _database_busy("Решение ОК не записано")
+    if result is None:
         _event_not_found()
     return store.patient_to_dict(conn, patient_id)
 

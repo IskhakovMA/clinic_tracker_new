@@ -111,14 +111,16 @@ async function apiFetch(path, options) {
     const response = await fetch(path, opts);
     if (!response.ok) {
         let detail = `Ошибка запроса (${response.status})`;
+        let data = null;
         try {
-            const data = await response.json();
+            data = await response.json();
             if (data && typeof data.detail === 'string') detail = data.detail;
             else if (data && data.detail) detail = JSON.stringify(data.detail);
             else if (data && data.error) detail = data.error;
         } catch (e) { /* тело ответа не JSON */ }
         const err = new Error(detail);
         err.status = response.status;
+        err.data = data;   // code и сведения сервера для явного подтверждения (например, архивное решение ОК)
         throw err;
     }
     if (response.status === 204) return null;
@@ -235,6 +237,43 @@ const ui = {
             $('promptCancelBtn').addEventListener('click', onCancel);
             this.pendingPromptCancel = onCancel;
             this.openModal('promptModal');
+        });
+    },
+
+    /** Явный выбор одного значения из списка. options: [{value, label}]. Promise<value|null>. */
+    choose({ title, text, label, options, okLabel = 'Выбрать' }) {
+        return new Promise(resolve => {
+            $('choiceTitle').textContent = title;
+            $('choiceText').textContent = text;
+            $('choiceLabel').textContent = label;
+            $('choiceOkBtn').textContent = okLabel;
+            const select = $('choiceSelect');
+            // Значения по умолчанию нет: выбор должен быть явным.
+            select.replaceChildren(
+                el('option', { value: '', text: 'Выберите…' }),
+                ...options.map(o => el('option', { value: o.value, text: o.label })),
+            );
+            const form = $('choiceForm');
+            const finish = (value) => {
+                form.removeEventListener('submit', onSubmit);
+                $('choiceCancelBtn').removeEventListener('click', onCancel);
+                this.closeModal('choiceModal');
+                resolve(value);
+            };
+            const onSubmit = (event) => {
+                event.preventDefault();
+                if (!select.value) {
+                    select.focus();
+                    return;
+                }
+                finish(select.value);
+            };
+            const onCancel = () => finish(null);
+
+            form.addEventListener('submit', onSubmit);
+            $('choiceCancelBtn').addEventListener('click', onCancel);
+            this.pendingChoiceCancel = onCancel;
+            this.openModal('choiceModal');
         });
     },
 
@@ -2022,8 +2061,24 @@ const app = {
                 danger: false,
             });
             if (!proceed) return;
+            const body = { raw, mode: 'add' };
+            const historical = preview.historicalDecisions;
+            if (historical && historical.required) {
+                // Решения ОК в локальных данных — только с отдельным подтверждением переноса.
+                const transfer = await ui.confirm({
+                    title: `Перенести исторические решения ОК (${historical.decisions})?`,
+                    text: historical.message,
+                    okLabel: 'Перенести решения',
+                    danger: false,
+                });
+                if (!transfer) return;
+                body.historicalDecisionsConfirmation = {
+                    confirmed: true, fileSha256: historical.fileSha256, mode: 'add',
+                    action: 'import_historical_consilium_decisions', decisions: historical.decisions,
+                };
+            }
 
-            await apiPost('/api/migrate/localstorage/commit', { raw, mode: 'add' });
+            await apiPost('/api/migrate/localstorage/commit', body);
             await this.loadPatients();
             await this.loadActivity();
 
@@ -2817,7 +2872,7 @@ const app = {
                         text: 'Дополнительное обследование',
                         on: { click: () => this.advanceToStage(p.id, 'exam', this.stageNames.exam) },
                     }) : null,
-                    ...(p.stage === 'consult' && this.can('editPatients') ? this.renderConsiliumDecisionActions(p.id) : []),
+                    ...(p.stage === 'consult' ? this.renderConsiliumDecisionActions(p.id) : []),
                     ((p.stage === 'exam' || p.stage === 'appointment' || p.stage === 'consult') && this.can('editPatients')) ? el('button', {
                         type: 'button', class: 'btn btn--quiet',
                         text: 'Диагноз не подтверждён',
@@ -2843,47 +2898,139 @@ const app = {
         ]));
     },
 
+    /**
+     * Этап «Направлен на ОК»: ручная отметка решения ОК и перевод этапа — разные
+     * действия (WP2.2-B). Отметка записывает решение в выбранное событие и этап не
+     * меняет; перевод решения не записывает.
+     */
     renderConsiliumDecisionActions(patientId) {
-        return [
+        const mark = this.can('markConsiliumDecision')
+            ? Object.keys(this.CONSILIUM_DECISION_LABELS).map(code => el('button', {
+                type: 'button',
+                class: 'btn btn--ghost',
+                text: `Отметить решение ОК: ${this.CONSILIUM_DECISION_LABELS[code]}`,
+                on: { click: () => this.markConsiliumDecision(patientId, code) },
+            }))
+            : [];
+        const move = this.can('editPatients') ? [
             el('button', {
                 type: 'button',
                 class: 'btn btn--primary',
-                text: 'Определение тактики лечения',
-                on: {
-                    click: () => this.advanceToStage(patientId, 'treatment-prep', this.stageNames['treatment-prep'], {
-                        consiliumDecision: 'treatment_strategy_defined',
-                    }),
-                },
-            }),
-            el('button', {
-                type: 'button',
-                class: 'btn btn--ghost',
-                text: 'Изменение тактики лечения',
-                on: {
-                    click: () => this.advanceToStage(patientId, 'treatment-prep', this.stageNames['treatment-prep'], {
-                        consiliumDecision: 'treatment_strategy_changed',
-                    }),
-                },
+                text: `Перевести: ${this.stageNames['treatment-prep']}`,
+                on: { click: () => this.advanceToStage(patientId, 'treatment-prep', this.stageNames['treatment-prep']) },
             }),
             el('button', {
                 type: 'button',
                 class: 'btn btn--ghost',
                 text: 'Направить на дообследование',
-                on: {
-                    click: () => this.advanceToStage(patientId, 'exam', this.stageNames.exam),
-                },
+                on: { click: () => this.advanceToStage(patientId, 'exam', this.stageNames.exam) },
             }),
             el('button', {
                 type: 'button',
                 class: 'btn btn--ghost',
-                text: 'Диспансерное наблюдение',
-                on: {
-                    click: () => this.advanceToStage(patientId, 'dispensary-observation', this.stageNames['dispensary-observation'], {
-                        consiliumDecision: 'dispensary_observation',
-                    }),
-                },
+                text: `Перевести: ${this.stageNames['dispensary-observation']}`,
+                on: { click: () => this.advanceToStage(patientId, 'dispensary-observation', this.stageNames['dispensary-observation']) },
             }),
-        ];
+        ] : [];
+        return [...mark, ...move];
+    },
+
+    /**
+     * Ручная отметка решения ОК в явно выбранном событии текущего этапа ОК.
+     * Этап пациента не меняется; записанное решение не заменяется.
+     */
+    /** Кто и когда отметил решение ОК; для записей до обновления автор не известен. */
+    consiliumDecisionAttribution(ev) {
+        if (ev.consiliumDecisionSource === 'manual') {
+            return `Отметил: ${ev.consiliumDecisionByName || 'сотрудник'}, ${this.formatDateTime(ev.consiliumDecisionAt)}`;
+        }
+        if (ev.consiliumDecisionSource === 'import') {
+            return 'Историческое решение перенесено из файла импорта; автор и время решения неизвестны'
+                + (ev.consiliumDecisionImportedAt
+                    ? `. Импорт выполнил: ${ev.consiliumDecisionImportedByName || 'сотрудник'}, ${this.formatDateTime(ev.consiliumDecisionImportedAt)}`
+                    : '');
+        }
+        return 'Решение записано до обновления системы; автор и время не зафиксированы';
+    },
+
+    async markConsiliumDecision(patientId, decision) {
+        const p = this.getPatient(patientId);
+        const occ = p ? this.getCurrentOccurrence(p) : null;
+        if (!p || p.stage !== 'consult' || !occ) return false;
+        const events = occ.events || [];
+        if (!events.length) {
+            ui.toast('Решение ОК отмечается в событии этапа. Сначала добавьте событие этапа «Направлен на ОК».', 'warning');
+            return false;
+        }
+        const free = events.filter(ev => ev.id && !ev.consiliumDecision);
+        if (!free.length) {
+            ui.toast('Во всех событиях этапа решение ОК уже отмечено. Повторная запись не выполняется.', 'warning');
+            return false;
+        }
+        const describe = (ev) => {
+            const index = events.indexOf(ev) + 1;
+            const plan = ev.date ? `план ${ev.date}${ev.time ? ' ' + ev.time : ''}` : 'без плановой даты';
+            const fact = ev.actualDate ? `, факт ${ev.actualDate}${ev.actualTime ? ' ' + ev.actualTime : ''}` : '';
+            return `Событие ${index}: ${plan}${fact}`;
+        };
+        let target = free[0];
+        if (free.length > 1) {
+            // Несколько событий без решения: событие выбирается явно, последнее не подставляется.
+            const chosen = await ui.choose({
+                title: 'Событие для решения ОК',
+                text: `Решение «${this.CONSILIUM_DECISION_LABELS[decision]}» будет записано в выбранное событие этапа.`,
+                label: 'Событие',
+                options: free.map(ev => ({ value: ev.id, label: describe(ev) })),
+                okLabel: 'Продолжить',
+            });
+            if (!chosen) return false;
+            target = free.find(ev => ev.id === chosen);
+        }
+        const confirmed = await ui.confirm({
+            title: 'Отметить решение ОК?',
+            text: `${describe(target)}. Решение: «${this.CONSILIUM_DECISION_LABELS[decision]}». `
+                + 'Этап пациента не изменится. Записанное решение изменить нельзя.',
+            okLabel: 'Отметить',
+            danger: false,
+        });
+        if (!confirmed) return false;
+        const body = {
+            decision,
+            version: target.version,
+            expectedStage: p.stage,
+            expectedHistoryEntryId: occ.id,
+        };
+        try {
+            let updated = null;
+            // Сервер требует отдельного подтверждения, если в этом этапе ОК есть архивное
+            // (удаленное) событие с решением; подтверждается именно набор событий из ответа.
+            for (let attempt = 0; attempt < 3 && !updated; attempt += 1) {
+                try {
+                    updated = await apiPost(`/api/patients/${patientId}/events/${target.id}/consilium-decision`, body);
+                } catch (e) {
+                    if (!(e.status === 409 && e.data && e.data.code === 'ARCHIVED_DECISION_EXISTS')) throw e;
+                    const archived = e.data.archivedEventIds || [];
+                    const acknowledged = await ui.confirm({
+                        title: 'В архиве этапа есть решение ОК',
+                        text: `${e.message}${/[.!?]$/.test(e.message) ? '' : '.'} Архивных событий с решением: ${archived.length}. Их можно посмотреть в списке удаленных событий карточки.`,
+                        okLabel: 'Подтверждаю, отметить новое решение',
+                        danger: false,
+                    });
+                    if (!acknowledged) return false;
+                    body.acknowledgedArchivedEventIds = archived;
+                }
+            }
+            if (!updated) return false;
+            this.replacePatientInCache(updated);
+            await this.loadActivity();
+            this.refreshCurrent();
+            ui.toast('Решение ОК отмечено. Этап пациента не изменен.', 'good');
+            return true;
+        } catch (e) {
+            ui.toast('Не удалось отметить решение ОК: ' + e.message, 'danger');
+            await this.reloadPatientAfterConflict(patientId, e);
+            return false;
+        }
     },
 
     renderPatientAttentionSummary(p) {
@@ -3567,6 +3714,7 @@ const app = {
                             class: 'chip chip--accent',
                             text: `Решение: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`,
                         }),
+                        el('div', { class: 'pcard__sub', text: this.consiliumDecisionAttribution(ev) }),
                     ]) : null,
                     el('div', { class: 'event-card__group' }, [
                         el('div', { class: 'event-card__legend', text: 'План' }),
@@ -3648,6 +3796,7 @@ const app = {
                 el('span', { class: 'event-card__title', text: `${this.stageNames[ev.historyStage] || ev.historyStage}: ${this.eventSummaryText(ev)}` }),
             ]),
             el('p', { class: 'muted', text: `Удалено ${this.formatDateTime(ev.deletedAt)}, ${ev.deletedByName}` }),
+            ev.consiliumDecision ? el('p', { class: 'muted', text: this.consiliumDecisionAttribution(ev) }) : null,
             el('button', {
                 type: 'button', class: 'btn btn--ghost btn--sm',
                 text: 'Восстановить событие',
@@ -6019,9 +6168,7 @@ const app = {
     async advanceToStage(patientId, stage, stageLabel, options = {}) {
         const confirmed = await ui.confirm({
             title: 'Перевести на следующий этап?',
-            text: options.consiliumDecision
-                ? `Пациент будет переведён на этап «${stageLabel}». Решение ОК: ${this.CONSILIUM_DECISION_LABELS[options.consiliumDecision]}.`
-                : `Пациент будет переведён на этап «${stageLabel}».`,
+            text: `Пациент будет переведён на этап «${stageLabel}».`,
             okLabel: 'Перевести',
             danger: false,
         });
@@ -6050,29 +6197,27 @@ const app = {
                 const stageLabel = this.stageNames[occ.stage] || occ.stage;
                 const today = new Date();
                 const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                // Фактическое время, уже записанное правкой события, — факт: его не
+                // заменяет плановое время (иначе сервер ответит 409 FACT_CONFLICT).
+                const storedTime = lastEvent.actualTime || '';
                 if (!lastEvent.date) {
-                    lastEventUpdate = { actualDate: todayValue, actualTime: '', matchedPlan: null };
+                    lastEventUpdate = { actualDate: todayValue, actualTime: storedTime, matchedPlan: null };
                 } else if (lastEvent.date === todayValue) {
-                    lastEventUpdate = { actualDate: todayValue, actualTime: lastEvent.time || '', matchedPlan: true };
+                    const time = storedTime || lastEvent.time || '';
+                    lastEventUpdate = { actualDate: todayValue, actualTime: time, matchedPlan: time === (lastEvent.time || '') };
                 } else {
                     const answer = await ui.promptDateTime({
                         title: 'Фактическая дата события',
-                        text: `Плановая дата этапа «${stageLabel}»: ${lastEvent.date}${lastEvent.time ? ' ' + lastEvent.time : ''}. Укажите фактическую дату события.`,
+                        text: `Плановая дата этапа «${stageLabel}»: ${lastEvent.date}${lastEvent.time ? ' ' + lastEvent.time : ''}.`
+                            + (storedTime ? ` Фактическое время уже записано: ${storedTime}.` : '')
+                            + ' Укажите фактическую дату события.',
                         date: todayValue,
-                        time: lastEvent.time || '',
+                        time: storedTime || lastEvent.time || '',
                     });
                     if (!answer) return false;
                     const matchedPlan = answer.date === lastEvent.date && (answer.time || '') === (lastEvent.time || '');
                     lastEventUpdate = { actualDate: answer.date, actualTime: answer.time || '', matchedPlan };
                 }
-            }
-            if (options.consiliumDecision) {
-                lastEventUpdate = lastEventUpdate || {
-                    actualDate: lastEvent.actualDate || null,
-                    actualTime: lastEvent.actualTime || '',
-                    matchedPlan: lastEvent.matchedPlan === undefined ? null : lastEvent.matchedPlan,
-                };
-                lastEventUpdate.consiliumDecision = options.consiliumDecision;
             }
         }
 
@@ -8367,6 +8512,7 @@ const app = {
         const confirmField = $('importUnsignedConfirmField');
         $('importUnsignedConfirm').checked = false;
         $('importPreserveIdsConfirm').checked = false;
+        $('importHistoricalDecisionsConfirm').checked = false;
         $('importPreserveIdsField').classList.add('is-hidden');
         confirmField.classList.add('is-hidden');
         if (!provenance) {
@@ -8476,10 +8622,15 @@ const app = {
         const preserve = (this.importReport && this.importReport.idPreservation || {})[mode];
         const preserveRequired = Boolean(preserve && preserve.required);
         $('importPreserveIdsField').classList.toggle('is-hidden', !preserveRequired);
+        // Перенос исторических решений ОК — отдельная отметка для этого режима (WP2.2-B).
+        const historical = (this.importReport && this.importReport.historicalDecisions || {})[mode];
+        const historicalRequired = Boolean(historical && historical.required);
+        $('importHistoricalDecisionsField').classList.toggle('is-hidden', !historicalRequired);
         const provenance = this.importReport && this.importReport.provenance;
         // Неподписанный файл: без отдельной отметки подтверждения кнопка недоступна.
         const needsConfirmation = (Boolean(provenance && provenance.confirmationRequired) && !$('importUnsignedConfirm').checked)
-            || (preserveRequired && !$('importPreserveIdsConfirm').checked);
+            || (preserveRequired && !$('importPreserveIdsConfirm').checked)
+            || (historicalRequired && !$('importHistoricalDecisionsConfirm').checked);
         const blocked = consiliumBlocked || archiveBlocked || duplicateBlocked || accessBlocked || overwriteBlocked
             || needsConfirmation;
         $('confirmImportCommitBtn').disabled = blocked;
@@ -8525,7 +8676,13 @@ const app = {
                 el('p', { text: access.reason }),
             ])
             : null;
-        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, preserveAlert].filter(Boolean);
+        const historicalAlert = historicalRequired
+            ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: `Файл содержит решения ОК: ${historical.decisions}` }),
+                el('p', { text: historical.message }),
+            ])
+            : null;
+        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, preserveAlert, historicalAlert].filter(Boolean);
         if (!impact || !impact.records) {
             box.replaceChildren(...extra);
             return;
@@ -8551,6 +8708,7 @@ const app = {
         this.importReport = null;
         $('importUnsignedConfirm').checked = false;
         $('importPreserveIdsConfirm').checked = false;
+        $('importHistoricalDecisionsConfirm').checked = false;
     },
 
     async confirmImportCommit() {
@@ -8577,6 +8735,15 @@ const app = {
             // Отдельное согласие: этот файл, этот режим, создание карточек с прежними id.
             body.preserveIdsConfirmation = {
                 confirmed: true, fileSha256: provenance.fileSha256, mode, action: 'create_with_internal_ids',
+            };
+        }
+        const historical = (this.importReport && this.importReport.historicalDecisions || {})[mode];
+        if (historical && historical.required) {
+            if (!$('importHistoricalDecisionsConfirm').checked) return;
+            // Отдельное согласие на перенос исторических решений ОК: этот файл, режим и число решений.
+            body.historicalDecisionsConfirmation = {
+                confirmed: true, fileSha256: provenance.fileSha256, mode,
+                action: 'import_historical_consilium_decisions', decisions: historical.decisions,
             };
         }
         try {
@@ -9118,10 +9285,12 @@ const app = {
             // Подтверждение даётся для конкретного режима: смена режима его сбрасывает.
             $('importUnsignedConfirm').checked = false;
             $('importPreserveIdsConfirm').checked = false;
+            $('importHistoricalDecisionsConfirm').checked = false;
             this.updateImportModeHint();
         });
         on('importUnsignedConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
         on('importPreserveIdsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
+        on('importHistoricalDecisionsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
 
         // Журнал аудита
         on('auditRefreshBtn', 'click', () => this.renderAudit());
@@ -9170,6 +9339,10 @@ const app = {
         }
         if (id === 'promptModal' && ui.pendingPromptCancel) {
             ui.pendingPromptCancel();
+            return;
+        }
+        if (id === 'choiceModal' && ui.pendingChoiceCancel) {
+            ui.pendingChoiceCancel();
             return;
         }
         if (id === 'textPromptModal' && ui.pendingTextPromptCancel) {

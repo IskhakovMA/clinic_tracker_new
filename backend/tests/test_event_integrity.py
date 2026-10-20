@@ -4,7 +4,9 @@ import json
 import sqlite3
 
 from .conftest import (
+    decision_doctor_id,
     event_add_body,
+    mark_decision,
     stage_body,
     DEV_USERNAME,
     create_account,
@@ -59,12 +61,17 @@ def _audit(pid):
 
 
 def _decision_patient(client):
-    """Пациент с ручной отметкой решения ОК (штатный путь смены этапа)."""
-    patient = _create(client, stage="consult", events=[{"date": "2030-01-10", "time": "10:00"}])
+    """Пациент с ручной отметкой решения ОК и последующим переводом этапа.
+
+    WP2.2-B: решение отмечается отдельной операцией (врач пациента), перевод его
+    не записывает — поэтому две операции вместо прежнего совмещенного перевода."""
+    patient = _create(client, stage="consult", events=[{"date": "2030-01-10", "time": "10:00"}],
+                      treatingDoctorUserId=decision_doctor_id())
+    r = mark_decision(client, patient["id"], "treatment_strategy_defined")
+    assert r.status_code == 200, r.text
     r = client.post(f"/api/patients/{patient['id']}/stage", json=stage_body(client, patient['id'], {
         "newStage": "treatment-prep",
-        "lastEventUpdate": {"actualDate": "2030-01-10", "actualTime": "10:00", "matchedPlan": True,
-                            "consiliumDecision": "treatment_strategy_defined"},
+        "lastEventUpdate": {"actualDate": "2030-01-10", "actualTime": "10:00"},
     }), headers=client.csrf)
     assert r.status_code == 200, r.text
     return patient["id"]
@@ -315,12 +322,18 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
         conn.execute("INSERT INTO patients (id, name, priority, stage, arrival, created_at) VALUES ('p1', 'Синтетический', 'normal', 'exam', '2026-01-01', '2026-01-01')")
         conn.execute("INSERT INTO history_entries (id, patient_id, seq, stage, entered_at) VALUES ('h1', 'p1', 0, 'exam', '2026-01-01')")
         conn.execute("INSERT INTO events (id, history_entry_id, seq, date, actual_date) VALUES ('e1', 'h1', 0, '2026-01-10', '2026-01-10')")
-        # Привести таблицу событий к виду v19: без новых колонок, индекса и триггера.
+        # Привести таблицу событий к виду v19: без новых колонок, индекса и триггера
+        # (включая колонки и триггеры ручной отметки решения ОК v21).
         for trigger in ("trg_events_archived_not_deleted", "trg_events_archived_not_replaced",
-                        "trg_events_archived_not_updated"):
+                        "trg_events_archived_not_updated", "trg_events_consilium_decision_immutable",
+                        "trg_events_consilium_decision_attributed_update",
+                        "trg_events_consilium_decision_attributed_insert"):
             conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         conn.execute("DROP INDEX IF EXISTS idx_events_history_active")
-        for column in ("version", "deleted_by_user_id", "deleted_at"):
+        for column in ("consilium_decision_import_id", "consilium_decision_imported_at",
+                       "consilium_decision_imported_by_user_id", "consilium_decision_source",
+                       "consilium_decision_at", "consilium_decision_by_user_id",
+                       "version", "deleted_by_user_id", "deleted_at"):
             conn.execute(f"ALTER TABLE events DROP COLUMN {column}")
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
@@ -332,7 +345,7 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
     row = dict(conn.execute("SELECT * FROM events WHERE id = 'e1'").fetchone())
     assert row["deleted_at"] is None and row["deleted_by_user_id"] is None and row["version"] == 1
     assert row["date"] == "2026-01-10" and row["actual_date"] == "2026-01-10"
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 20
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION
     db.init_db(conn)                                             # повторная инициализация безопасна
     assert conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 1
     assert {r[1] for r in conn.execute("PRAGMA index_list(events)")} >= {"idx_events_history", "idx_events_history_active"}

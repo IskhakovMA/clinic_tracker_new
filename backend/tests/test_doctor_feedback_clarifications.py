@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, create_account, create_department, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
+from .conftest import DEV_USERNAME, create_account, create_department, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, current_schema_version, stage_body, unsigned_import
 
 
 def _create_patient(client, **overrides):
@@ -12,26 +12,29 @@ def _create_patient(client, **overrides):
 
 
 def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_client):
+    """Решения ОК хранятся в событиях каждого этапа ОК и не попадают в журнал аудита.
+
+    WP2.2-B: ручная отметка — отдельная операция врача пациента (не разработчика),
+    перевод этапа ее не записывает; прежний совмещенный запрос явно отклоняется."""
+    doctor = decision_doctor_id()
     patient = _create_patient(
         auth_client,
         stage="consult",
         events=[{"date": "2026-08-20", "time": "10:00"}],
+        treatingDoctorUserId=doctor,
     )
-    first = auth_client.post(
+    first = mark_decision(auth_client, patient["id"], "treatment_strategy_defined")
+    assert first.status_code == 200, first.text
+    assert first.json()["history"][0]["events"][0]["consiliumDecision"] == "treatment_strategy_defined"
+    moved = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
         json=stage_body(auth_client, patient['id'], {
             "newStage": "treatment-prep",
-            "lastEventUpdate": {
-                "actualDate": "2026-08-20",
-                "actualTime": "10:00",
-                "matchedPlan": True,
-                "consiliumDecision": "treatment_strategy_defined",
-            },
+            "lastEventUpdate": {"actualDate": "2026-08-20", "actualTime": "10:00"},
         }),
         headers=auth_client.csrf,
     )
-    assert first.status_code == 200, first.text
-    assert first.json()["history"][0]["events"][0]["consiliumDecision"] == "treatment_strategy_defined"
+    assert moved.status_code == 200, moved.text
 
     consult_again = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
@@ -39,15 +42,14 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
         headers=auth_client.csrf,
     )
     assert consult_again.status_code == 200, consult_again.text
+    added = auth_client.post(f"/api/patients/{patient['id']}/history/2/events",
+                             json={"expectedEventIds": []}, headers=auth_client.csrf)
+    assert added.status_code == 200, added.text
+    second = mark_decision(auth_client, patient["id"], "treatment_strategy_changed")
+    assert second.status_code == 200, second.text
     changed = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
-        json=stage_body(auth_client, patient['id'], {
-            "newStage": "treatment-prep",
-            "lastEventUpdate": {
-                "actualDate": "2026-08-22",
-                "consiliumDecision": "treatment_strategy_changed",
-            },
-        }),
+        json=stage_body(auth_client, patient['id'], {"newStage": "treatment-prep", "lastEventUpdate": {"actualDate": "2026-08-22"}}),
         headers=auth_client.csrf,
     )
     assert changed.status_code == 200, changed.text
@@ -64,21 +66,21 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
         name="ОК Диспансерный",
         stage="consult",
         events=[{"date": "2026-08-23"}],
+        treatingDoctorUserId=doctor,
     )
+    assert mark_decision(auth_client, terminal_patient["id"], "dispensary_observation").status_code == 200
     terminal = auth_client.post(
         f"/api/patients/{terminal_patient['id']}/stage",
         json=stage_body(auth_client, terminal_patient['id'], {
             "newStage": "dispensary-observation",
-            "lastEventUpdate": {
-                "actualDate": "2026-08-23",
-                "consiliumDecision": "dispensary_observation",
-            },
+            "lastEventUpdate": {"actualDate": "2026-08-23"},
         }),
         headers=auth_client.csrf,
     )
     assert terminal.status_code == 200, terminal.text
     assert terminal.json()["stage"] == "dispensary-observation"
 
+    # Прежний контракт «решение вместе с переводом» отклоняется явно.
     invalid = auth_client.post(
         f"/api/patients/{terminal_patient['id']}/stage",
         json=stage_body(auth_client, terminal_patient['id'], {
@@ -87,7 +89,7 @@ def test_consilium_decisions_persist_per_ok_event_and_do_not_leak_to_audit(auth_
         }),
         headers=auth_client.csrf,
     )
-    assert invalid.status_code in {409, 422}
+    assert invalid.status_code == 422 and invalid.json()["code"] == "DECISION_SEPARATE_OPERATION"
 
     audit_text = json.dumps(auth_client.get("/api/audit?limit=200").json()["events"], ensure_ascii=False)
     assert "consilium_decision_recorded" in audit_text
@@ -198,8 +200,16 @@ def test_import_export_accepts_prev7_legacy_and_v8_structured_fields(auth_client
         ],
     }
     raw = json.dumps(v8_doc, ensure_ascii=False)
-    assert auth_client.post("/api/import/preview", json={"raw": raw}).json()["valid"] is True
-    assert unsigned_import(auth_client, raw, "add").status_code == 200
+    preview = auth_client.post("/api/import/preview", json={"raw": raw}).json()
+    assert preview["valid"] is True
+    # WP2.2-B: файл с решением ОК импортируется только с отдельным подтверждением переноса
+    # исторических решений; без него — 428 и ничего не создается.
+    assert preview["historicalDecisions"]["add"] == {"required": True, "decisions": 1,
+                                                     "message": preview["historicalDecisions"]["add"]["message"]}
+    refused = unsigned_import(auth_client, raw, "add")
+    assert refused.status_code == 428 and refused.json()["code"] == "HISTORICAL_DECISIONS_CONFIRMATION_REQUIRED"
+    assert not any(p["name"] == "Structured v8" for p in auth_client.get("/api/patients").json())
+    assert unsigned_import(auth_client, raw, "add", historical_decisions=1).status_code == 200
     exported = json.loads(auth_client.get("/api/export", headers=auth_client.csrf).text)
     structured = next(p for p in exported["patients"] if p["name"] == "Structured v8")
     assert exported["schemaVersion"] == current_schema_version()
@@ -342,6 +352,7 @@ def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_at
         pgiResult="confirmed",
         pgiResultDate="2026-08-20",
         events=[{"date": "2026-08-20"}],
+        treatingDoctorUserId=decision_doctor_id(),
     )
     auth_client.patch(
         f"/api/patients/{patient['id']}",
@@ -353,17 +364,17 @@ def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_at
         json={"reasonCode": "doctor_decision_required", "comment": "synthetic attention", "eventDate": "2026-08-20"},
         headers=auth_client.csrf,
     )
-    auth_client.post(
+    # WP2.2-B: решение ОК — отдельная отметка врача пациента, затем перевод этапа.
+    assert mark_decision(auth_client, patient["id"], "treatment_strategy_defined").status_code == 200
+    moved = auth_client.post(
         f"/api/patients/{patient['id']}/stage",
         json=stage_body(auth_client, patient['id'], {
             "newStage": "treatment-prep",
-            "lastEventUpdate": {
-                "actualDate": "2026-08-20",
-                "consiliumDecision": "treatment_strategy_defined",
-            },
+            "lastEventUpdate": {"actualDate": "2026-08-20"},
         }),
         headers=auth_client.csrf,
     )
+    assert moved.status_code == 200, moved.text
 
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
     backup = maintenance.backup_database(db_path, tmp_path / "doctor-clarifications-v9.cbk")

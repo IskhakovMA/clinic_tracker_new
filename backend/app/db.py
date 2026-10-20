@@ -133,6 +133,18 @@ CREATE TABLE IF NOT EXISTS events (
     deleted_by_user_id TEXT REFERENCES users(id),
     -- Версия строки для защиты от устаревших правок (optimistic locking).
     version INTEGER NOT NULL DEFAULT 1,
+    -- Ручная отметка решения ОК (v21): автор и время назначает сервер, источник —
+    -- manual (отдельная операция), legacy (записано до v21), import (из файла).
+    consilium_decision_by_user_id TEXT REFERENCES users(id),
+    consilium_decision_at TEXT,
+    consilium_decision_source TEXT CHECK (
+        consilium_decision_source IN ('manual', 'legacy', 'import') OR consilium_decision_source IS NULL
+    ),
+    -- Перенос исторического решения из файла (source = import): исполнитель импорта,
+    -- время и идентификатор операции импорта. Это не автор и не время решения.
+    consilium_decision_imported_by_user_id TEXT REFERENCES users(id),
+    consilium_decision_imported_at TEXT,
+    consilium_decision_import_id TEXT,
     UNIQUE (history_entry_id, seq)
 );
 
@@ -1182,6 +1194,130 @@ ARCHIVED_EVENT_DELETE_TRIGGER_SQL = f"""
 """
 
 
+CONSILIUM_DECISION_IMMUTABLE_ERROR = "consilium_decision_immutable"
+CONSILIUM_DECISION_UNATTRIBUTED_ERROR = "consilium_decision_unattributed"
+# Записанное решение ОК, его автор, время и источник не меняются ни API, ни прямым
+# SQL: отметка однократная, исправление — будущая отдельная процедура.
+CONSILIUM_DECISION_IMMUTABLE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_consilium_decision_immutable
+    BEFORE UPDATE ON events
+    WHEN OLD.consilium_decision IS NOT NULL AND (
+        NEW.consilium_decision IS NOT OLD.consilium_decision
+        OR NEW.consilium_decision_by_user_id IS NOT OLD.consilium_decision_by_user_id
+        OR NEW.consilium_decision_at IS NOT OLD.consilium_decision_at
+        OR NEW.consilium_decision_source IS NOT OLD.consilium_decision_source
+        OR NEW.consilium_decision_imported_by_user_id IS NOT OLD.consilium_decision_imported_by_user_id
+        OR NEW.consilium_decision_imported_at IS NOT OLD.consilium_decision_imported_at
+        OR NEW.consilium_decision_import_id IS NOT OLD.consilium_decision_import_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, '{CONSILIUM_DECISION_IMMUTABLE_ERROR}');
+    END;
+"""
+# Новое решение в существующем событии — только ручная отметка с автором и временем;
+# сведения об авторе без самого решения не записываются.
+CONSILIUM_DECISION_ATTRIBUTED_UPDATE_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_consilium_decision_attributed_update
+    BEFORE UPDATE ON events
+    WHEN OLD.consilium_decision IS NULL AND (
+        (NEW.consilium_decision IS NOT NULL AND NOT (
+            NEW.consilium_decision_source IS 'manual'
+            AND NEW.consilium_decision_by_user_id IS NOT NULL
+            AND NEW.consilium_decision_at IS NOT NULL
+            AND NEW.consilium_decision_imported_by_user_id IS NULL
+            AND NEW.consilium_decision_imported_at IS NULL
+            AND NEW.consilium_decision_import_id IS NULL))
+        OR (NEW.consilium_decision IS NULL AND (
+            NEW.consilium_decision_source IS NOT NULL
+            OR NEW.consilium_decision_by_user_id IS NOT NULL
+            OR NEW.consilium_decision_at IS NOT NULL
+            OR NEW.consilium_decision_imported_by_user_id IS NOT NULL
+            OR NEW.consilium_decision_imported_at IS NOT NULL
+            OR NEW.consilium_decision_import_id IS NOT NULL))
+    )
+    BEGIN
+        SELECT RAISE(ABORT, '{CONSILIUM_DECISION_UNATTRIBUTED_ERROR}');
+    END;
+"""
+# Вставка события с решением: либо ручная отметка с автором и временем, либо перенос
+# исторического решения из файла (import) — без автора и времени решения, но с
+# исполнителем, временем и идентификатором операции импорта. legacy вставкой не
+# создается: этот источник ставит только миграция v20 → v21.
+# Сравнения NULL-безопасны (IS, COALESCE): иначе NULL в источнике давал бы NULL в WHEN
+# и триггер не срабатывал бы.
+CONSILIUM_DECISION_ATTRIBUTED_INSERT_TRIGGER_SQL = f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_consilium_decision_attributed_insert
+    BEFORE INSERT ON events
+    WHEN (NEW.consilium_decision IS NOT NULL AND NOT (
+            (NEW.consilium_decision_source IS 'manual'
+             AND NEW.consilium_decision_by_user_id IS NOT NULL
+             AND NEW.consilium_decision_at IS NOT NULL
+             AND NEW.consilium_decision_imported_by_user_id IS NULL
+             AND NEW.consilium_decision_imported_at IS NULL
+             AND NEW.consilium_decision_import_id IS NULL)
+            OR (NEW.consilium_decision_source IS 'import'
+             AND NEW.consilium_decision_by_user_id IS NULL
+             AND NEW.consilium_decision_at IS NULL
+             AND NEW.consilium_decision_imported_by_user_id IS NOT NULL
+             AND NEW.consilium_decision_imported_at IS NOT NULL
+             AND NEW.consilium_decision_import_id IS NOT NULL)))
+      OR (NEW.consilium_decision IS NULL AND (
+            NEW.consilium_decision_source IS NOT NULL
+            OR NEW.consilium_decision_by_user_id IS NOT NULL
+            OR NEW.consilium_decision_at IS NOT NULL
+            OR NEW.consilium_decision_imported_by_user_id IS NOT NULL
+            OR NEW.consilium_decision_imported_at IS NOT NULL
+            OR NEW.consilium_decision_import_id IS NOT NULL))
+    BEGIN
+        SELECT RAISE(ABORT, '{CONSILIUM_DECISION_UNATTRIBUTED_ERROR}');
+    END;
+"""
+
+
+def migrate_v20_to_v21(conn: sqlite3.Connection) -> None:
+    """v20 → v21: separate manual OK decision with author, time and source.
+
+    - consilium_decision_by_user_id / consilium_decision_at / consilium_decision_source
+      and, for decisions transferred from an import file, the import executor,
+      time and operation id (consilium_decision_imported_*) are only added. Decisions written before v21 keep their code and get
+      source = 'legacy'; author and time stay NULL — nothing is invented. Facts,
+      versions, deletion marks and the route history are not touched.
+    - The backfill runs inside init_db's IMMEDIATE transaction while the
+      triggers that refuse metadata-only updates (including the archived-event
+      guard of v20) are off, and only when a row still needs it, so a repeated
+      init_db changes nothing.
+    - Triggers then keep a recorded decision, its author, time and source
+      immutable and refuse unattributed decisions, also for direct SQL."""
+    for column, ddl in (
+        ("consilium_decision_by_user_id", "consilium_decision_by_user_id TEXT REFERENCES users(id)"),
+        ("consilium_decision_at", "consilium_decision_at TEXT"),
+        ("consilium_decision_source",
+         "consilium_decision_source TEXT CHECK (consilium_decision_source IN ('manual', 'legacy', 'import') "
+         "OR consilium_decision_source IS NULL)"),
+        ("consilium_decision_imported_by_user_id", "consilium_decision_imported_by_user_id TEXT REFERENCES users(id)"),
+        ("consilium_decision_imported_at", "consilium_decision_imported_at TEXT"),
+        ("consilium_decision_import_id", "consilium_decision_import_id TEXT"),
+    ):
+        _add_column_if_missing(conn, "events", column, ddl)
+    pending = conn.execute(
+        "SELECT 1 FROM events WHERE consilium_decision IS NOT NULL AND consilium_decision_source IS NULL LIMIT 1"
+    ).fetchone()
+    if pending:
+        for name in ("trg_events_consilium_decision_immutable", "trg_events_consilium_decision_attributed_update",
+                     "trg_events_archived_not_updated"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        conn.execute(
+            "UPDATE events SET consilium_decision_source = 'legacy' "
+            "WHERE consilium_decision IS NOT NULL AND consilium_decision_source IS NULL"
+        )
+        conn.execute(ARCHIVED_EVENT_UPDATE_TRIGGER_SQL)
+    _ensure_trigger(conn, "trg_events_consilium_decision_immutable", CONSILIUM_DECISION_IMMUTABLE_TRIGGER_SQL)
+    _ensure_trigger(conn, "trg_events_consilium_decision_attributed_update",
+                    CONSILIUM_DECISION_ATTRIBUTED_UPDATE_TRIGGER_SQL)
+    _ensure_trigger(conn, "trg_events_consilium_decision_attributed_insert",
+                    CONSILIUM_DECISION_ATTRIBUTED_INSERT_TRIGGER_SQL)
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
@@ -1264,6 +1400,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v17_to_v18(conn)         # resubmission marker, immutable signed decisions
         migrate_v18_to_v19(conn)         # route context of decisions, soft deletion
         migrate_v19_to_v20(conn)         # soft deletion and version of patient events
+        migrate_v20_to_v21(conn)         # separate manual OK decision: author, time, source
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
@@ -1338,6 +1475,10 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 19:
             migrate_v19_to_v20(conn)
+            migrate_v20_to_v21(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 20:
+            migrate_v20_to_v21(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] < config.SCHEMA_VERSION:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))

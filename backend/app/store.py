@@ -66,8 +66,31 @@ def _event_row_to_dict(row: sqlite3.Row) -> dict:
         "matchedPlan": None if row["matched_plan"] is None else bool(row["matched_plan"]),
         "noPlan": bool(row["no_plan"]),
         "consiliumDecision": row["consilium_decision"],
+        # Ручная отметка решения ОК: источник (manual / legacy / import), время и автор
+        # назначены сервером; у legacy и import автора и времени нет — они не придумываются.
+        "consiliumDecisionSource": row["consilium_decision_source"],
+        "consiliumDecisionAt": row["consilium_decision_at"],
+        "consiliumDecisionByUserId": row["consilium_decision_by_user_id"],
+        "consiliumDecisionByName": (row["consilium_decision_by_name"]
+                                    if "consilium_decision_by_name" in row.keys() else None),
+        # Перенос исторического решения из файла: кто и когда выполнил импорт (не автор решения).
+        "consiliumDecisionImportedAt": row["consilium_decision_imported_at"],
+        "consiliumDecisionImportedByUserId": row["consilium_decision_imported_by_user_id"],
+        "consiliumDecisionImportedByName": (row["consilium_decision_imported_by_name"]
+                                            if "consilium_decision_imported_by_name" in row.keys() else None),
+        "consiliumDecisionImportId": row["consilium_decision_import_id"],
         "setAt": row["set_at"],
     }
+
+
+# Поля решения ОК в выгрузке не передаются: формат файла прежний, автор — учетная
+# запись этой установки, а импортированное решение получает источник import.
+EXPORT_EXCLUDED_EVENT_KEYS = frozenset({
+    "version", "consiliumDecisionSource", "consiliumDecisionAt",
+    "consiliumDecisionByUserId", "consiliumDecisionByName",
+    "consiliumDecisionImportedAt", "consiliumDecisionImportedByUserId",
+    "consiliumDecisionImportedByName", "consiliumDecisionImportId",
+})
 
 
 def pgi_result_to_db(value) -> int | None:
@@ -123,18 +146,32 @@ EVENT_VALUE_COLUMNS = ("date", "time", "treatment_type", "actual_date", "actual_
 
 
 def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: EventIn,
-                 event_id: Optional[str] = None) -> str:
+                 event_id: Optional[str] = None, *, decision_import: Optional[dict] = None) -> str:
+    """Вставка события. Решение ОК во вставляемом событии допустимо только как
+    подтвержденный перенос исторического решения из файла (decision_import:
+    imported_by — исполнитель импорта, imported_at, import_id); автор и время самого
+    решения при этом не известны и не придумываются. Ручная отметка решения —
+    отдельная операция mark_consilium_decision."""
     event_id = event_id or new_id()
+    if ev.consiliumDecision and not decision_import:
+        raise ValueError(DECISION_SEPARATE_OPERATION_MESSAGE)
+    imported = decision_import if ev.consiliumDecision else None
     conn.execute(
         """INSERT INTO events (id, history_entry_id, seq, date, time, treatment_type,
-                                actual_date, actual_time, matched_plan, no_plan, consilium_decision, set_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                actual_date, actual_time, matched_plan, no_plan, consilium_decision, set_at,
+                                consilium_decision_source, consilium_decision_imported_by_user_id,
+                                consilium_decision_imported_at, consilium_decision_import_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             event_id,
             history_entry_id,
             seq,
             *event_values(ev),
             now_iso() if (ev.actualDate or ev.noPlan) else None,
+            "import" if imported else None,
+            imported["imported_by"] if imported else None,
+            imported["imported_at"] if imported else None,
+            imported["import_id"] if imported else None,
         ),
     )
     return event_id
@@ -153,7 +190,12 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
     for h in history_rows:
         # Карточка показывает активные события; удалённые — отдельным запросом.
         events = conn.execute(
-            "SELECT * FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC", (h["id"],)
+            """SELECT events.*, u.full_name AS consilium_decision_by_name,
+                      iu.full_name AS consilium_decision_imported_by_name FROM events
+               LEFT JOIN users u ON u.id = events.consilium_decision_by_user_id
+               LEFT JOIN users iu ON iu.id = events.consilium_decision_imported_by_user_id
+               WHERE events.history_entry_id = ? AND events.deleted_at IS NULL
+               ORDER BY events.seq ASC""", (h["id"],)
         ).fetchall()
         history.append(
             {
@@ -268,6 +310,9 @@ def create_patient(
     # Отображаемый текст врача следует за учётной записью; свободный текст
     # остаётся только для legacy-записей без сопоставления.
     doctor_text = _treating_doctor_name(conn, treating_doctor_user_id) or data.doctor
+    if any(ev.consiliumDecision for ev in data.events):
+        # Создание карточки не записывает решение ОК: это отдельная отметка в событии.
+        raise ValueError(DECISION_SEPARATE_OPERATION_MESSAGE)
     nosology = validate_new_combination(data.nosology, data.diagnosis)
     pgi_result_date = normalize_pgi_result_date(data.pgiResult, data.pgiResultDate)
     with conn:
@@ -533,6 +578,108 @@ FACT_TIME_CONFLICT_MESSAGE = (
 )
 FACT_TIME_WITHOUT_DATE_MESSAGE = "Фактическое время передано без фактической даты"
 
+DECISION_SEPARATE_OPERATION_MESSAGE = (
+    "Решение ОК отмечается отдельной операцией в выбранном событии этапа «Направлен на ОК» "
+    "и не передается вместе с переводом этапа или созданием карточки. Данные не изменены"
+)
+
+
+class DecisionRequiresSeparateOperation(ValueError):
+    """consiliumDecision пришел в перевод этапа (прежний контракт): 422 DECISION_SEPARATE_OPERATION."""
+    code = "DECISION_SEPARATE_OPERATION"
+
+
+class DecisionConflict(EventConflict):
+    """Ручную отметку решения ОК нельзя записать в этом состоянии (409)."""
+    def __init__(self, message: str, code: str, extra: Optional[dict] = None):
+        super().__init__(message)
+        self.code = code
+        self.extra = extra or {}
+
+
+DECISION_ARCHIVED_EXISTS_MESSAGE = (
+    "В этом этапе «Направлен на ОК» решение ОК уже отмечалось: событие с ним находится в архиве "
+    "(удалено). Новая отметка не исправляет и не удаляет прежнее решение — оно остается в архиве и "
+    "в истории пациента. Чтобы продолжить, подтвердите, что вы видели архивное решение. Данные не изменены"
+)
+
+
+DECISION_NOT_OK_STAGE_MESSAGE = (
+    "Решение ОК отмечается только на этапе «Направлен на ОК». Обновите карточку пациента"
+)
+DECISION_OTHER_ENTRY_MESSAGE = (
+    "Событие не относится к текущему этапу «Направлен на ОК». Обновите карточку пациента"
+)
+DECISION_ALREADY_RECORDED_MESSAGE = (
+    "Решение ОК в этом событии уже отмечено. Повторная запись и замена не выполняются, данные не изменены"
+)
+
+
+def mark_consilium_decision(
+    conn: sqlite3.Connection, patient_id: str, event_id: str, decision: str, version: int, *,
+    expected_stage: str, expected_history_entry_id: str, user_id: str,
+    acknowledged_archived_event_ids: Optional[list[str]] = None,
+    audit_hook: Optional[Callable[[dict], None]] = None,
+) -> Optional[dict]:
+    """Ручная отметка решения ОК в явно выбранном событии текущего этапа ОК.
+
+    Однократная запись: решение, автор (пользователь сессии), серверное время и
+    источник manual пишутся одним условным UPDATE под BEGIN IMMEDIATE вместе с
+    обязательным аудитом (audit_hook). Этап, история, факт события, matched_plan,
+    set_at и записи консилиума не меняются. Событие другого пациента не находится
+    (None → 404). Повтор или параллельная отметка — DecisionConflict (409)."""
+    with transaction(conn):
+        p = conn.execute("SELECT stage FROM patients WHERE id = ?", (patient_id,)).fetchone()
+        if p is None:
+            return None
+        row = event_of_patient(conn, patient_id, event_id)
+        if row is None:
+            return None
+        if p["stage"] != expected_stage:
+            raise DecisionConflict(STALE_STAGE_MESSAGE, "STALE_STAGE")
+        if p["stage"] != "consult":
+            raise DecisionConflict(DECISION_NOT_OK_STAGE_MESSAGE, "NOT_OK_STAGE")
+        history_count = _count_history(conn, patient_id)
+        current_entry_id = _history_entry_id(conn, patient_id, history_count - 1) if history_count > 0 else None
+        if current_entry_id is None or current_entry_id != expected_history_entry_id:
+            raise DecisionConflict(STALE_STAGE_MESSAGE, "STALE_STAGE")
+        if row["history_entry_id"] != current_entry_id:
+            raise DecisionConflict(DECISION_OTHER_ENTRY_MESSAGE, "EVENT_NOT_IN_CURRENT_STAGE")
+        if row["deleted_at"] is not None:
+            raise DecisionConflict("Событие удалено. Обновите карточку пациента", "EVENT_DELETED")
+        if row["consilium_decision"] is not None:
+            raise DecisionConflict(DECISION_ALREADY_RECORDED_MESSAGE, "DECISION_ALREADY_RECORDED")
+        if row["version"] != version:
+            raise DecisionConflict(
+                "Событие уже изменено другим пользователем. Обновите карточку пациента", "STALE_EVENT_VERSION")
+        # Архивные решения этой же записи маршрута (другие посещения этапа ОК не
+        # учитываются): новая отметка требует явного подтверждения именно этого набора
+        # событий. Проверка — в той же транзакции, что и запись: удаление или
+        # восстановление события между предупреждением и подтверждением дает новое
+        # предупреждение, а не отметку.
+        archived = [r["id"] for r in conn.execute(
+            """SELECT id FROM events WHERE history_entry_id = ? AND deleted_at IS NOT NULL
+               AND consilium_decision IS NOT NULL ORDER BY seq""", (current_entry_id,))]
+        if archived and sorted(set(acknowledged_archived_event_ids or [])) != sorted(archived):
+            raise DecisionConflict(DECISION_ARCHIVED_EXISTS_MESSAGE, "ARCHIVED_DECISION_EXISTS",
+                                   {"archivedEventIds": archived})
+        recorded_at = now_iso()
+        cur = conn.execute(
+            """UPDATE events SET consilium_decision = ?, consilium_decision_by_user_id = ?,
+                                 consilium_decision_at = ?, consilium_decision_source = 'manual',
+                                 version = version + 1
+               WHERE id = ? AND version = ? AND deleted_at IS NULL AND consilium_decision IS NULL""",
+            (decision, user_id, recorded_at, event_id, version),
+        )
+        if cur.rowcount != 1:
+            raise DecisionConflict(DECISION_ALREADY_RECORDED_MESSAGE, "DECISION_ALREADY_RECORDED")
+        touch_patient(conn, patient_id)
+        result = {"event_id": event_id, "history_seq": row["history_seq"], "recorded_at": recorded_at,
+                  "archived_acknowledged": archived}
+        if audit_hook is not None:
+            audit_hook(result)
+    return result
+
 
 def event_matched_plan(no_plan, plan_date, plan_time, actual_date, actual_time) -> Optional[int]:
     """Соответствие факта плану — единое вычисление для перевода этапа и правки события.
@@ -591,8 +738,14 @@ def change_stage(
     сервер дату не придумывает. matched_plan вычисляет сервер.
 
     audit_hook пишет обязательную запись аудита в той же транзакции: ошибка
-    аудита откатывает перевод целиком (этап, история, событие)."""
+    аудита откатывает перевод целиком (этап, история, событие).
+
+    Решение ОК перевод не записывает и не меняет (WP2.2-B): запрос с
+    consiliumDecision отклоняется явно (DecisionRequiresSeparateOperation, 422),
+    а не игнорируется."""
     from . import config
+    if last_event_update is not None and last_event_update.consiliumDecision:
+        raise DecisionRequiresSeparateOperation(DECISION_SEPARATE_OPERATION_MESSAGE)
     with transaction(conn):
         p = conn.execute("SELECT stage FROM patients WHERE id = ?", (patient_id,)).fetchone()
         if p is None:
@@ -606,14 +759,6 @@ def change_stage(
         if p["stage"] == new_stage:
             return False
         old_stage = p["stage"]
-        if last_event_update and last_event_update.consiliumDecision:
-            if old_stage != "consult":
-                raise ValueError("consiliumDecision is allowed only for the current OK stage")
-            if last_event_update.consiliumDecision == "dispensary_observation":
-                if new_stage != "dispensary-observation":
-                    raise ValueError("dispensary_observation decision must end in dispensary-observation")
-            elif new_stage not in {"treatment-prep", "treatment"}:
-                raise ValueError("treatment OK decisions must continue the treatment flow")
         history_count = _count_history(conn, patient_id)
         if history_count >= config.MAX_HISTORY_ENTRIES_PER_PATIENT:
             raise ValueError(f"no more than {config.MAX_HISTORY_ENTRIES_PER_PATIENT} history entries per patient")
@@ -622,14 +767,13 @@ def change_stage(
         # снова даёт «exam». Клиент обязан назвать текущую запись маршрута.
         if current_entry_id != expected_history_entry_id:
             raise EventConflict(STALE_STAGE_MESSAGE)
-        outcome = {"event_id": None, "fact": "none", "decision": False, "from_stage": old_stage,
+        outcome = {"event_id": None, "fact": "none", "from_stage": old_stage,
                    "history_seq": history_count - 1 if history_count > 0 else None}
         if current_entry_id and last_event_update is not None:
             # Поля, которых нет в запросе, не трогают сохраненные значения.
             sent = last_event_update.model_fields_set
             req_date = last_event_update.actualDate if "actualDate" in sent else None
             req_time = (last_event_update.actualTime or "") if "actualTime" in sent else ""
-            decision = last_event_update.consiliumDecision or None
             events = conn.execute(
                 "SELECT * FROM events WHERE history_entry_id = ? AND deleted_at IS NULL ORDER BY seq ASC",
                 (current_entry_id,),
@@ -665,22 +809,17 @@ def change_stage(
                         raise ValueError(FACT_TIME_WITHOUT_DATE_MESSAGE)
                     fact_date, fact_time, matched = None, last["actual_time"], last["matched_plan"]
                 outcome["event_id"] = last["id"]
-                outcome["decision"] = bool(decision)
-                # Строка меняется, только если записывается новый факт или решение
-                # прежнего контракта; иначе событие (и его версия) остаются как были.
-                if outcome["fact"] == "set" or decision:
+                # Строка меняется, только если записывается новый факт; иначе событие
+                # (и его версия) остаются как были. Решение ОК перевод не трогает.
+                if outcome["fact"] == "set":
                     cur = conn.execute(
                         """UPDATE events SET actual_date = ?, actual_time = ?, matched_plan = ?,
-                                               consilium_decision = COALESCE(?, consilium_decision),
-                                               set_at = CASE WHEN ? THEN ? ELSE set_at END,
-                                               version = version + 1
+                                               set_at = ?, version = version + 1
                            WHERE id = ? AND deleted_at IS NULL AND version = ?""",
                         (
                             fact_date,
                             fact_time,
                             matched,
-                            decision,
-                            int(outcome["fact"] == "set"),
                             now_iso(),
                             expected_event_id,
                             expected_event_version,
@@ -704,7 +843,6 @@ def change_stage(
                 next_seq = _next_event_seq(conn, current_entry_id)
                 outcome["event_id"] = insert_event(conn, current_entry_id, next_seq, ev)
                 outcome["fact"] = "set" if req_date else "none"
-                outcome["decision"] = bool(decision)
 
         now = now_iso()
         # Условие по прежнему этапу: два одновременных перевода не создадут
@@ -940,10 +1078,13 @@ def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field
 def deleted_events(conn: sqlite3.Connection, patient_id: str) -> list[dict]:
     rows = conn.execute(
         """SELECT events.*, h.seq AS history_seq, h.stage AS history_stage,
-                  u.full_name AS deleted_by_name
+                  u.full_name AS deleted_by_name, du.full_name AS consilium_decision_by_name,
+                  iu.full_name AS consilium_decision_imported_by_name
            FROM events
            JOIN history_entries h ON h.id = events.history_entry_id
            LEFT JOIN users u ON u.id = events.deleted_by_user_id
+           LEFT JOIN users du ON du.id = events.consilium_decision_by_user_id
+           LEFT JOIN users iu ON iu.id = events.consilium_decision_imported_by_user_id
            WHERE h.patient_id = ? AND events.deleted_at IS NOT NULL
            ORDER BY events.deleted_at DESC, events.id ASC""",
         (patient_id,),

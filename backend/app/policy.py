@@ -225,6 +225,17 @@ def can_decide_consilium(user: CurrentUser) -> bool:
     return user.role_id == ROLE_CONSILIUM_CHAIR
 
 
+# Ручная отметка решения ОК — медицинское действие (утверждено владельцем, WP2.2-B):
+# врач, заведующий и председатель консилиума, только для пациентов, которых они
+# могут изменять (объектная проверка can_write_patient — область видимости не
+# расширяется). Разработчик (техническая роль) и глобальные read-only роли — нет.
+_CONSILIUM_DECISION_MARK_ROLES = (ROLE_DOCTOR, ROLE_DEPARTMENT_HEAD, ROLE_CONSILIUM_CHAIR)
+
+
+def can_mark_consilium_decision(user: CurrentUser) -> bool:
+    return user.role_id in _CONSILIUM_DECISION_MARK_ROLES and _writes_allowed(user)
+
+
 def can_mark_referral_completion(user: CurrentUser) -> bool:
     """Отметка исполнения хирургического направления по подписанному решению:
     по логике реестров её ведёт председатель."""
@@ -283,6 +294,7 @@ def permissions_payload(user: CurrentUser) -> dict:
         "bookConsilium": can_book_consilium(user),
         "manageConsilium": can_manage_consilium(user),
         "decideConsilium": can_decide_consilium(user),
+        "markConsiliumDecision": can_mark_consilium_decision(user),
         "markReferralCompletion": can_mark_referral_completion(user),
         "useConsiliumFavorites": can_use_chair_favorites(user),
         "consiliumChair": user.role_id == ROLE_CONSILIUM_CHAIR,

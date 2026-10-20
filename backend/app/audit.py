@@ -51,6 +51,8 @@ PATIENT_DIAGNOSIS_CHANGED = "patient_diagnosis_changed"
 CONSILIUM_CODE_CHANGED = "consilium_code_changed"
 PGI_CODE_CHANGED = "pgi_code_changed"
 CONSILIUM_DECISION_RECORDED = "consilium_decision_recorded"
+# Перенос исторического решения ОК из файла импорта: по одной записи на каждое решение.
+CONSILIUM_DECISION_IMPORTED = "consilium_decision_imported"
 PGI_RESULT_CHANGED = "pgi_result_changed"
 PATIENT_DELETED = "patient_deleted"
 PATIENT_EVENT_DELETED = "patient_event_deleted"

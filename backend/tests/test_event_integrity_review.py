@@ -520,7 +520,7 @@ def test_current_schema_initialises_repeatedly(tmp_path):
 
 
 @pytest.mark.parametrize("setup", [
-    "UPDATE schema_version SET version = 21",
+    "UPDATE schema_version SET version = 22",
     "UPDATE schema_version SET version = 0",
     "UPDATE schema_version SET version = -5",
     "UPDATE schema_version SET version = 'двадцать'",
@@ -553,16 +553,16 @@ def test_application_refuses_to_start_on_a_newer_schema(client, tmp_path, monkey
     other.mkdir()
     conn = _fresh_db(other / "clinic.db")
     with conn:
-        conn.execute("UPDATE schema_version SET version = 21")
+        conn.execute("UPDATE schema_version SET version = 22")
     conn.close()
     monkeypatch.setattr(config, "DATA_DIR", other)
     monkeypatch.setattr(config, "DB_PATH", other / "clinic.db")
     db.reset_singleton_for_tests()
-    with pytest.raises(db.SchemaVersionError, match="v21"):
+    with pytest.raises(db.SchemaVersionError, match="v22"):
         with TestClient(app, base_url="http://127.0.0.1"):
             pass
     raw = sqlite3.connect(other / "clinic.db")
-    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 21
+    assert raw.execute("SELECT version FROM schema_version").fetchone()[0] == 22
     raw.close()
 
 
@@ -571,7 +571,7 @@ def test_check_db_reports_a_newer_schema(client, capsys):
     from backend.app import db
 
     with get_conn() as conn:
-        conn.execute("UPDATE schema_version SET version = 21")
+        conn.execute("UPDATE schema_version SET version = 22")
     db.reset_singleton_for_tests()
     assert cli.main.__module__  # модуль загружен
     import sys
@@ -581,7 +581,7 @@ def test_check_db_reports_a_newer_schema(client, capsys):
         assert cli.main() == 1
     finally:
         sys.argv = argv
-    assert "v21" in capsys.readouterr().err
+    assert "v22" in capsys.readouterr().err
 
 
 def test_backups_are_recognised_by_schema_and_a_newer_one_is_rejected(auth_client, tmp_path, monkeypatch):
@@ -593,19 +593,21 @@ def test_backups_are_recognised_by_schema_and_a_newer_one_is_rejected(auth_clien
 
     pid, archived = _archived_patient(auth_client)
     db_path = config.DB_PATH
-    current = maintenance.backup_database(db_path, tmp_path / "v20.cbk")
+    # Версии — от текущей сборки (WP2.2-B подняла схему до v21), смысл проверки прежний.
+    cur_v, newer_v = config.SCHEMA_VERSION, config.SCHEMA_VERSION + 1
+    current = maintenance.backup_database(db_path, tmp_path / f"v{cur_v}.cbk")
     report = maintenance.validate_backup(current)
-    assert report["schema_version"] == 20 and report["source_build"] == "current"
+    assert report["schema_version"] == cur_v and report["source_build"] == "current"
 
-    # Копия, сделанная более новой сборкой (v21), этой сборкой не принимается.
+    # Копия, сделанная более новой сборкой, этой сборкой не принимается.
     with get_conn() as conn:
-        conn.execute("UPDATE schema_version SET version = 21")
-    monkeypatch.setattr(config, "SCHEMA_VERSION", 21)
-    newer = maintenance.backup_database(db_path, tmp_path / "v21.cbk")
-    monkeypatch.setattr(config, "SCHEMA_VERSION", 20)
+        conn.execute("UPDATE schema_version SET version = ?", (newer_v,))
+    monkeypatch.setattr(config, "SCHEMA_VERSION", newer_v)
+    newer = maintenance.backup_database(db_path, tmp_path / f"v{newer_v}.cbk")
+    monkeypatch.setattr(config, "SCHEMA_VERSION", cur_v)
     with get_conn() as conn:
-        conn.execute("UPDATE schema_version SET version = 20")
-    with pytest.raises(maintenance.MaintenanceError, match="v21 не поддерживается"):
+        conn.execute("UPDATE schema_version SET version = ?", (cur_v,))
+    with pytest.raises(maintenance.MaintenanceError, match=f"v{newer_v} не поддерживается"):
         maintenance.validate_backup(newer)
     _assert_archive_intact(archived, _dev_id())
 

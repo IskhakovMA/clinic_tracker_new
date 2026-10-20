@@ -163,6 +163,28 @@ class StageChangeIn(StrictRequestModel):
     expectedHistoryEntryId: Optional[str] = Field(None, max_length=64)
 
 
+class ConsiliumDecisionMarkIn(StrictRequestModel):
+    """Ручная отметка решения ОК в явно выбранном событии (WP2.2-B).
+
+    Автора и время назначает сервер — поля для них нет, лишние поля отклоняются.
+    version — версия события, которую видел клиент; expectedStage и
+    expectedHistoryEntryId — этап и запись маршрута карточки, как при переводе."""
+    decision: ConsiliumDecision
+    version: int = Field(..., ge=1, le=2**63 - 1)
+    expectedStage: Stage
+    expectedHistoryEntryId: str = Field(..., min_length=1, max_length=64)
+    # Удаленные (архивные) события этой же записи маршрута с решением ОК, которые
+    # сотрудник видел и явно подтвердил: новая отметка их не исправляет и не скрывает.
+    acknowledgedArchivedEventIds: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("acknowledgedArchivedEventIds")
+    @classmethod
+    def _short_archived_ids(cls, v):
+        if any(len(i) > 64 or not i for i in v):
+            raise ValueError("invalid archived event id")
+        return v
+
+
 class EventAddIn(StrictRequestModel):
     """Добавление события: активные события этапа, которые видел клиент (по
     порядку), и назначение — явное «Добавить событие» или автоматическое
@@ -298,6 +320,11 @@ class EventOut(BaseModel):
     matchedPlan: Optional[bool] = None
     noPlan: bool = False
     consiliumDecision: Optional[str] = None
+    # Сведения о ручной отметке решения ОК (v21): только чтение, назначаются сервером.
+    consiliumDecisionSource: Optional[str] = None
+    consiliumDecisionAt: Optional[str] = None
+    consiliumDecisionByUserId: Optional[str] = None
+    consiliumDecisionByName: Optional[str] = None
     setAt: Optional[str] = None
 
 
@@ -761,11 +788,33 @@ class PreserveIdsConfirmation(StrictRequestModel):
         return v
 
 
+class HistoricalDecisionsConfirmation(StrictRequestModel):
+    """Отдельное подтверждение переноса исторических решений ОК из файла (WP2.2-B).
+
+    Обычный импорт решения ОК не создает. Подтверждение относится к одному файлу
+    (SHA-256), режиму, действию и точному числу решений из проверки файла: другой
+    файл, режим или число требуют нового подтверждения. Права на импорт оно не
+    расширяет; сотрудник, выполняющий импорт, автором решений не становится."""
+    confirmed: StrictBool
+    fileSha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    mode: ImportMode
+    action: Literal["import_historical_consilium_decisions"]
+    decisions: int = Field(..., ge=1, le=1_000_000)
+
+    @field_validator("confirmed")
+    @classmethod
+    def _must_be_true(cls, v):
+        if v is not True:
+            raise ValueError("transfer of historical consilium decisions must be explicitly confirmed")
+        return v
+
+
 class ImportCommitRequest(StrictRequestModel):
     raw: str = Field(..., max_length=6_000_000)
     mode: ImportMode
     unsignedConfirmation: Optional[UnsignedImportConfirmation] = None
     preserveIdsConfirmation: Optional[PreserveIdsConfirmation] = None
+    historicalDecisionsConfirmation: Optional[HistoricalDecisionsConfirmation] = None
 
 
 # --- Notifications ------------------------------------------------------

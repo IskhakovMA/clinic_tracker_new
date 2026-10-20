@@ -1360,6 +1360,12 @@
                     <span>Создать карточки с сохранением внутренних идентификаторов из этого файла</span>
                 </label>
             </div>
+            <div class="field is-hidden" id="importHistoricalDecisionsField">
+                <label class="checkbox">
+                    <input type="checkbox" id="importHistoricalDecisionsConfirm">
+                    <span>Перенести исторические решения ОК из этого файла: автор и время решений останутся неизвестными, я не становлюсь их автором</span>
+                </label>
+            </div>
             <div class="field is-hidden" id="importUnsignedConfirmField">
                 <label class="checkbox">
                     <input type="checkbox" id="importUnsignedConfirm">
@@ -1592,6 +1598,25 @@
 </div>
 
 <!-- МОДАЛКА: ВВОД ЗНАЧЕНИЯ -->
+<div class="modal modal--sm" id="choiceModal" role="dialog" aria-modal="true" aria-labelledby="choiceTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="choiceTitle"></h2>
+        </div>
+        <form class="modal__body" id="choiceForm">
+            <p class="confirm__text" id="choiceText"></p>
+            <div class="field">
+                <label class="field__label" for="choiceSelect" id="choiceLabel">Событие</label>
+                <select class="select" id="choiceSelect"></select>
+            </div>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="choiceCancelBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="choiceForm" id="choiceOkBtn">Выбрать</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal modal--sm" id="promptModal" role="dialog" aria-modal="true" aria-labelledby="promptTitle" hidden>
     <div class="modal__box">
         <div class="modal__head">

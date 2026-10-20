@@ -3,12 +3,15 @@ the server database. Only ever additive, only ever explicit, and only
 permitted while the server-side patient table is still empty — this is a
 one-shot bootstrap path, not a general-purpose import."""
 import sqlite3
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import JSONResponse
 
 from .. import audit, importexport, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
+from .importexport import decision_audit, historical_decisions_request, historical_decisions_view
 
 router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"])
 
@@ -41,6 +44,9 @@ def migrate_preview(
     if scope_errors:
         return {"valid": False, "errors": scope_errors, "serverHasData": _patient_count(conn) > 0}
     report = importexport.preview_report(conn, document, user)
+    # WP2.2-B: решения ОК из локальных данных переносятся только с отдельным подтверждением.
+    report["historicalDecisions"] = {**historical_decisions_view(document, "add"),
+                                     "fileSha256": inspection.provenance["fileSha256"]}
     return {"valid": True, "errors": [], "serverHasData": _patient_count(conn) > 0, **report}
 
 
@@ -71,19 +77,28 @@ def migrate_commit(
     if scope_errors:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             detail={"errors": scope_errors})
+    import_id = uuid.uuid4().hex
+    historical = historical_decisions_request(body, inspection.provenance, import_id)
+
     def audit_hook(result: dict) -> None:
         # Перенос локальных данных — неподписанный импорт: запись аудита
         # обязательна и сохраняется вместе с данными.
+        ctx = audit.actor_ctx(user)
         audit.record_required(conn, audit.MIGRATION_COMMITTED,
                               detail=(f"added={result['added']} provenance=local_migration "
                                       f"file_status={inspection.provenance['status']} "
-                                      f"file_sha256={inspection.provenance['fileSha256']}"),
-                              **audit.actor_ctx(user))
+                                      f"file_sha256={inspection.provenance['fileSha256']} "
+                                      f"import_id={import_id} imported_decisions={result['importedDecisions']}"),
+                              **ctx)
+        decision_audit(conn, ctx, result, import_id=import_id, file_sha256=inspection.provenance["fileSha256"])
 
     try:
         # Пустота базы проверяется повторно под блокировкой записи.
         result = importexport.commit_import(conn, document, "add", user, audit_hook=audit_hook,
-                                            require_empty=True)
+                                            require_empty=True, historical_decisions=historical)
+    except importexport.ImportHistoricalDecisionsRequired as e:
+        return JSONResponse(status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                            content={"detail": str(e), "code": e.code, "decisions": e.decisions})
     except importexport.ImportNotEmptyError as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
     except (importexport.ImportConflictError, importexport.ImportArchiveConflictError,
