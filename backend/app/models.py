@@ -97,6 +97,20 @@ def normalize_policy_number(v: Optional[str]) -> str:
 
 
 _EVENT_TIME_RE = re.compile(r"^([01]?[0-9]|2[0-3]):[0-5][0-9]$")
+_STRICT_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+
+
+def strict_iso_date(value: str) -> str:
+    """Только календарная дата YYYY-MM-DD (WP2.3-A, D2).
+
+    date.fromisoformat в Python 3.11+ принимает и другие формы ISO 8601
+    (2026-W47-4, 20261119, хвостовые символы); такие строки хранились бы как
+    есть и обходили бы уникальность слота консилиума. Формат проверяется
+    раньше календаря, ValueError — при любом отклонении."""
+    if not isinstance(value, str) or not _STRICT_DATE_RE.fullmatch(value):
+        raise ValueError("date must be YYYY-MM-DD")
+    date_type.fromisoformat(value)
+    return value
 
 
 def validate_event_value(field: str, value: str | None) -> str | None:
@@ -454,10 +468,9 @@ class ConsiliumAppointmentIn(StrictRequestModel):
     @classmethod
     def _valid_scheduled_date(cls, v):
         try:
-            date_type.fromisoformat(v)
+            return strict_iso_date(v)
         except ValueError:
             raise ValueError("scheduledDate must be YYYY-MM-DD")
-        return v
 
     @field_validator("scheduledTime")
     @classmethod
@@ -552,10 +565,9 @@ class ConsiliumScheduleGenerateIn(StrictRequestModel):
     @classmethod
     def _valid_schedule_date(cls, v):
         try:
-            date_type.fromisoformat(v)
+            return strict_iso_date(v)
         except ValueError:
             raise ValueError("scheduledDate must be YYYY-MM-DD")
-        return v
 
     @field_validator("startTime", "endTime")
     @classmethod

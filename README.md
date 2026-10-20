@@ -144,6 +144,7 @@ uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 python -m backend.cli create-developer    # создать учётную запись Разработчика (bootstrap)
 python -m backend.cli import-structure f  # локальный импорт оргструктуры из JSON (файл вне Git)
 python -m backend.cli check-db            # integrity_check, foreign_key_check, версия схемы, таблицы
+python -m backend.cli consilium-schedule-check  # только чтение: счётчики нестандартных дат и записей вне сетки консилиума
 python -m backend.cli backup-keygen f     # создать protected key file для encrypted backups
 python -m backend.cli backup              # encrypted backup через SQLite backup API + AES-GCM
 python -m backend.cli backup-inspect f    # безопасные metadata encrypted backup без расшифровки

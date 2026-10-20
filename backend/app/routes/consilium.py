@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
@@ -15,6 +14,7 @@ from ..models import (
     ConsiliumRegistryCompletionIn,
     ConsiliumRevisionIn,
     ConsiliumScheduleGenerateIn,
+    strict_iso_date,
 )
 from ..services import consilium
 from ..services.xlsx_export import workbook_bytes
@@ -74,7 +74,7 @@ def _validated_date(value: str | None) -> str | None:
     if not value:
         return None
     try:
-        date_type.fromisoformat(value)
+        strict_iso_date(value)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="date must be YYYY-MM-DD") from exc
     return value
@@ -109,10 +109,48 @@ def _required_audit(conn: sqlite3.Connection, user: policy.CurrentUser, event_ty
     return hook
 
 
-def _audit_unavailable():
+def _audit_unavailable(what: str = "Запись консилиума не изменена"):
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Не удалось сохранить изменение вместе с записью журнала аудита. Запись консилиума не изменена, повторите попытку позже",
+        detail=f"Не удалось сохранить изменение вместе с записью журнала аудита. {what}, повторите попытку позже",
+    )
+
+
+def _database_busy(exc: sqlite3.OperationalError, what: str = "Запись консилиума не изменена"):
+    """503 только для ожидаемой блокировки SQLite (SQLITE_BUSY/SQLITE_LOCKED,
+    включая расширенные коды): транзакция уже откатана, запрос можно повторить.
+    Любая другая ошибка SQL — дефект, она не маскируется и уходит дальше (500)."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is None or (code & 0xFF) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        raise exc
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=f"База данных временно занята. {what}, повторите попытку",
+    ) from exc
+
+
+def _detail(**facts) -> str:
+    """Технический detail аудита расписания: только id, дата, время, группа и
+    счётчики (значения проверены моделью или взяты из БД), без ФИО, диагнозов
+    и комментариев. Формат key=value;… как у остальных событий."""
+    return ";".join(f"{key}={str(value).lower() if isinstance(value, bool) else value}" for key, value in facts.items())
+
+
+def _schedule_audit(conn: sqlite3.Connection, user: policy.CurrentUser, event_type: str, render):
+    """Обязательный аудит операции расписания в её транзакции (WP2.3-A).
+
+    render(facts) → (patient_id, detail). Ошибка записи аудита — AuditWriteFailed:
+    вся операция откатывается, маршрут отвечает 503."""
+    def hook(facts: dict) -> None:
+        patient_id, detail = render(facts)
+        audit.record_required_or_fail(conn, event_type, patient_id=patient_id, detail=detail, **audit.actor_ctx(user))
+    return hook
+
+
+def _slot_detail(facts: dict, **prefix) -> tuple[str | None, str]:
+    return facts.get("patient_id"), _detail(
+        **prefix, appointment_id=facts["appointment_id"],
+        slot_date=facts["date"], slot_time=facts["time"], group=facts["group"],
     )
 
 
@@ -160,17 +198,21 @@ def generate_consilium_schedule(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_manage(conn, user)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_SCHEDULE_GENERATED, lambda f: (None, _detail(
+        created=f["created"], interval=f["interval"], slot_date=f["date"], group=f["group"],
+        start=f["start"], end=f["end"],
+    )))
     try:
         created = consilium.generate_schedule(
             conn, user, body.scheduledDate, body.consiliumGroup,
-            body.startTime, body.endTime, body.intervalMinutes,
+            body.startTime, body.endTime, body.intervalMinutes, audit_hook=hook,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-    audit.record(
-        conn, audit.CONSILIUM_SCHEDULE_GENERATED,
-        detail=f"created={created};interval={body.intervalMinutes}", **audit.actor_ctx(user),
-    )
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Расписание не изменено")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Расписание не изменено")
     return {"created": created, "slots": consilium.schedule_slots(conn, user)}
 
 
@@ -181,13 +223,19 @@ def delete_consilium_schedule_slot(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_manage(conn, user)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_SCHEDULE_SLOT_DELETED, lambda f: (None, _detail(
+        slot_id=f["slot_id"], slot_date=f["date"], slot_time=f["time"], group=f["group"],
+    )))
     try:
-        deleted = consilium.delete_schedule_slot(conn, slot_id)
+        deleted = consilium.delete_schedule_slot(conn, slot_id, audit_hook=hook)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Слот не удален")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Слот не удален")
     if not deleted:
         _not_found()
-    audit.record(conn, audit.CONSILIUM_SCHEDULE_SLOT_DELETED, **audit.actor_ctx(user))
     return {"deleted": True}
 
 
@@ -198,16 +246,17 @@ def archive_consilium_appointment(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_booking(conn, user)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_ARCHIVED, _slot_detail)
     try:
-        appointment = consilium.set_archived(conn, user, appointment_id, True)
+        appointment = consilium.set_archived(conn, user, appointment_id, True, audit_hook=hook)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
-    audit.record(
-        conn, audit.CONSILIUM_ARCHIVED, patient_id=appointment["patientId"],
-        **audit.actor_ctx(user),
-    )
     return appointment
 
 
@@ -218,16 +267,17 @@ def restore_consilium_appointment(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_booking(conn, user)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_RESTORED, _slot_detail)
     try:
-        appointment = consilium.set_archived(conn, user, appointment_id, False)
+        appointment = consilium.set_archived(conn, user, appointment_id, False, audit_hook=hook)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
-    audit.record(
-        conn, audit.CONSILIUM_RESTORED, patient_id=appointment["patientId"],
-        **audit.actor_ctx(user),
-    )
     return appointment
 
 
@@ -243,14 +293,15 @@ def create_consilium_appointment(
 ):
     _require_booking(conn, user)
     _require_writable_patient(conn, user, body.patientId)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_APPOINTMENT_CREATED, _slot_detail)
     try:
-        appointment = consilium.create(conn, user, body)
+        appointment = consilium.create(conn, user, body, audit_hook=hook)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    audit.record(
-        conn, audit.CONSILIUM_APPOINTMENT_CREATED, patient_id=body.patientId,
-        **audit.actor_ctx(user),
-    )
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Запись на консилиум не создана")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Запись на консилиум не создана")
     return appointment
 
 
@@ -266,16 +317,21 @@ def update_consilium_appointment(
     if existing is None:
         _not_found()
     _require_writable_patient(conn, user, body.patientId)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_APPOINTMENT_UPDATED, lambda f: (f["patient_id"], _detail(
+        appointment_id=f["appointment_id"], group=f["group"],
+        from_date=f["from_date"], from_time=f["from_time"], to_date=f["to_date"], to_time=f["to_time"],
+        slot_changed=f["slot_changed"],
+    )))
     try:
-        appointment = consilium.update(conn, user, appointment_id, body)
+        appointment = consilium.update(conn, user, appointment_id, body, audit_hook=hook)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
-    audit.record(
-        conn, audit.CONSILIUM_APPOINTMENT_UPDATED, patient_id=body.patientId,
-        **audit.actor_ctx(user),
-    )
     return appointment
 
 
@@ -286,17 +342,18 @@ def delete_consilium_appointment(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_booking(conn, user)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_APPOINTMENT_DELETED, lambda f: _slot_detail(
+        f, **({"mode": "soft", "history_preserved": True} if f["soft"] else {"mode": "hard"})))
     try:
-        appointment = consilium.delete_owned(conn, user, appointment_id)
+        appointment = consilium.delete_owned(conn, user, appointment_id, audit_hook=hook)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
-    audit.record(
-        conn, audit.CONSILIUM_APPOINTMENT_DELETED, patient_id=appointment["patientId"],
-        detail="mode=soft;history_preserved=true" if appointment["historyPreserved"] else "mode=hard",
-        **audit.actor_ctx(user),
-    )
     return {"deleted": True, "historyPreserved": appointment["historyPreserved"], "releasedSlot": {
         "scheduledDate": appointment["scheduledDate"],
         "scheduledTime": appointment["scheduledTime"],
@@ -318,6 +375,8 @@ def start_consilium_review(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
         _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
     return appointment
@@ -341,6 +400,8 @@ def sign_consilium(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
         _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
     return appointment
@@ -365,6 +426,8 @@ def return_consilium_for_revision(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
         _audit_unavailable()
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc)
     if appointment is None:
         _not_found()
     return appointment

@@ -1,15 +1,16 @@
 """Personal oncology-consilium appointment scheduling."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import uuid
 import json
-from datetime import datetime, timedelta
+from datetime import date as date_type, datetime, timedelta
 from pathlib import Path
 
 from .. import policy
-from ..db import in_chunks, now_iso
-from ..models import ConsiliumAppointmentIn
+from ..db import in_chunks, now_iso, transaction
+from ..models import ConsiliumAppointmentIn, strict_iso_date
 
 
 GROUPS = (
@@ -204,6 +205,8 @@ def set_archived(
     user: policy.CurrentUser,
     appointment_id: str,
     archived: bool,
+    *,
+    audit_hook=None,
 ) -> dict | None:
     """Move the author's signed record to their archive, or back.
 
@@ -211,13 +214,15 @@ def set_archived(
     decision itself is protected by trg_consilium_signed_immutable. Who
     archived and restored, and when, stays in the audit log.
     """
-    existing = get_owned(conn, user, appointment_id)
-    if existing is None:
-        return None
-    if existing["status"] != "signed":
-        raise ConsiliumStateError("Архивировать можно только подписанное решение")
     now = now_iso()
-    with conn:
+    # Проверка состояния, изменение и обязательный аудит — одна транзакция
+    # BEGIN IMMEDIATE (WP2.3-A): при сбое аудита архивная отметка откатывается.
+    with transaction(conn):
+        existing = get_owned(conn, user, appointment_id)
+        if existing is None:
+            return None
+        if existing["status"] != "signed":
+            raise ConsiliumStateError("Архивировать можно только подписанное решение")
         if archived:
             cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
@@ -232,9 +237,19 @@ def set_archived(
                    WHERE id = ? AND created_by_user_id = ? AND status = 'signed' AND archived_at IS NOT NULL""",
                 (now, appointment_id, user.id),
             )
-    if cursor.rowcount == 0:
-        raise ConsiliumStateError("Запись уже в архиве" if archived else "Запись не находится в архиве")
+        if cursor.rowcount == 0:
+            raise ConsiliumStateError("Запись уже в архиве" if archived else "Запись не находится в архиве")
+        if audit_hook is not None:
+            audit_hook(_slot_facts(existing))
     return get_owned(conn, user, appointment_id)
+
+
+def _slot_facts(item: dict) -> dict:
+    """Technical facts of a record for the audit detail: ids and slot only."""
+    return {
+        "appointment_id": item["id"], "patient_id": item["patientId"],
+        "date": item["scheduledDate"], "time": item["scheduledTime"], "group": item["consiliumGroup"],
+    }
 
 
 def get_for_management(conn: sqlite3.Connection, appointment_id: str) -> dict | None:
@@ -252,7 +267,7 @@ def get_owned(conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id
 
 
 def delete_owned(
-    conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str
+    conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str, *, audit_hook=None
 ) -> dict | None:
     """Delete an unsigned record that is not under review.
 
@@ -261,12 +276,12 @@ def delete_owned(
     It leaves every list, frees the slot and allows booking the patient
     again. A record without history is removed as before.
     """
-    existing = get_owned(conn, user, appointment_id)
-    if existing is None:
-        return None
-    soft = existing["revisionCount"] > 0
     now = now_iso()
-    with conn:
+    with transaction(conn):
+        existing = get_owned(conn, user, appointment_id)
+        if existing is None:
+            return None
+        soft = existing["revisionCount"] > 0
         if soft:
             cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
@@ -280,32 +295,40 @@ def delete_owned(
                 "WHERE id = ? AND created_by_user_id = ? AND status = 'recorded' AND deleted_at IS NULL",
                 (appointment_id, user.id),
             )
-    existing["historyPreserved"] = soft
-    if cursor.rowcount == 0:
-        raise ConsiliumStateError(
-            "Подписанная запись недоступна для удаления"
-            if existing["status"] == "signed"
-            else "Запись на рассмотрении у председателя недоступна для удаления"
-        )
+        existing["historyPreserved"] = soft
+        if cursor.rowcount == 0:
+            raise ConsiliumStateError(
+                "Подписанная запись недоступна для удаления"
+                if existing["status"] == "signed"
+                else "Запись на рассмотрении у председателя недоступна для удаления"
+            )
+        if audit_hook is not None:
+            audit_hook({**_slot_facts(existing), "soft": soft})
     return existing
 
 
 def create(
-    conn: sqlite3.Connection, user: policy.CurrentUser, body: ConsiliumAppointmentIn
+    conn: sqlite3.Connection, user: policy.CurrentUser, body: ConsiliumAppointmentIn, *, audit_hook=None
 ) -> dict:
+    """Book a patient on a slot.
+
+    The patient and slot checks, the INSERT and the required audit row run
+    in one BEGIN IMMEDIATE transaction (WP2.3-A): a concurrent slot deletion
+    or booking waits for it instead of slipping between check and write.
+    """
     appointment_id = uuid.uuid4().hex
     now = now_iso()
-    patient = conn.execute(
-        "SELECT policy_number, diagnosis FROM patients WHERE id = ?", (body.patientId,)
-    ).fetchone()
-    if patient is None:
-        raise ValueError("Пациент не найден")
-    _require_group_for_patient(patient["diagnosis"], body.consiliumGroup)
-    _require_patient_not_booked(conn, body.patientId)
-    policy_number = body.policyNumber or (patient["policy_number"] if patient else "") or None
-    _require_available_slot(conn, body.scheduledDate, body.scheduledTime, body.consiliumGroup)
     try:
-        with conn:
+        with transaction(conn):
+            patient = conn.execute(
+                "SELECT policy_number, diagnosis FROM patients WHERE id = ?", (body.patientId,)
+            ).fetchone()
+            if patient is None:
+                raise ValueError("Пациент не найден")
+            _require_group_for_patient(patient["diagnosis"], body.consiliumGroup)
+            _require_patient_not_booked(conn, body.patientId)
+            policy_number = body.policyNumber or (patient["policy_number"] if patient else "") or None
+            _require_available_slot(conn, body.scheduledDate, body.scheduledTime, body.consiliumGroup)
             conn.execute(
                 """INSERT INTO oncology_consilium_appointments (
                    id, patient_id, created_by_user_id, scheduled_date, scheduled_time,
@@ -324,6 +347,11 @@ def create(
                     int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now, now,
                 ),
             )
+            if audit_hook is not None:
+                audit_hook({
+                    "appointment_id": appointment_id, "patient_id": body.patientId,
+                    "date": body.scheduledDate, "time": body.scheduledTime, "group": body.consiliumGroup,
+                })
     except sqlite3.IntegrityError as exc:
         raise ValueError(_integrity_error_message(exc)) from exc
     return get_owned(conn, user, appointment_id)
@@ -536,6 +564,27 @@ def update(
     user: policy.CurrentUser,
     appointment_id: str,
     body: ConsiliumAppointmentIn,
+    *,
+    audit_hook=None,
+) -> dict | None:
+    """Edit or reschedule the author's record.
+
+    The state read, the new slot check, the UPDATE and the required audit
+    row run in one BEGIN IMMEDIATE transaction (WP2.3-A).
+    """
+    try:
+        with transaction(conn):
+            return _update_locked(conn, user, appointment_id, body, audit_hook)
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(_integrity_error_message(exc)) from exc
+
+
+def _update_locked(
+    conn: sqlite3.Connection,
+    user: policy.CurrentUser,
+    appointment_id: str,
+    body: ConsiliumAppointmentIn,
+    audit_hook,
 ) -> dict | None:
     existing = conn.execute(
         """SELECT id, patient_id, status, scheduled_date, scheduled_time, consilium_group
@@ -572,34 +621,38 @@ def update(
             exclude_appointment_id=appointment_id,
         )
     now = now_iso()
-    try:
-        with conn:
-            cursor = conn.execute(
-                """UPDATE oncology_consilium_appointments
-               SET scheduled_date = ?, scheduled_time = ?,
-                   has_benefit = ?, treating_doctor_name = ?, policy_number = ?, diagnosis_localization = ?,
-                   primary_diagnosis = ?, additional_diagnosis = ?, comment = ?,
-                   additional_participant = ?, needs_surgeon = ?,
-                   needs_radiotherapist = ?, uv_ruv = ?,
-                   revision_submitted_at = CASE
-                       WHEN revision_comment IS NOT NULL THEN ? ELSE revision_submitted_at END,
-                   updated_at = ?
-               WHERE id = ? AND created_by_user_id = ? AND status = 'recorded' AND deleted_at IS NULL""",
-                (
-                body.scheduledDate, body.scheduledTime,
-                int(body.hasBenefit), _current_treating_doctor_name(conn, existing["patient_id"]),
-                body.policyNumber or None,
-                body.diagnosisLocalization or None,
-                body.primaryDiagnosis, body.additionalDiagnosis or None,
-                body.comment or None, body.additionalParticipant or None,
-                int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now, now,
-                appointment_id, user.id,
-                ),
-            )
-    except sqlite3.IntegrityError as exc:
-        raise ValueError(_integrity_error_message(exc)) from exc
+    cursor = conn.execute(
+        """UPDATE oncology_consilium_appointments
+           SET scheduled_date = ?, scheduled_time = ?,
+               has_benefit = ?, treating_doctor_name = ?, policy_number = ?, diagnosis_localization = ?,
+               primary_diagnosis = ?, additional_diagnosis = ?, comment = ?,
+               additional_participant = ?, needs_surgeon = ?,
+               needs_radiotherapist = ?, uv_ruv = ?,
+               revision_submitted_at = CASE
+                   WHEN revision_comment IS NOT NULL THEN ? ELSE revision_submitted_at END,
+               updated_at = ?
+           WHERE id = ? AND created_by_user_id = ? AND status = 'recorded' AND deleted_at IS NULL""",
+        (
+            body.scheduledDate, body.scheduledTime,
+            int(body.hasBenefit), _current_treating_doctor_name(conn, existing["patient_id"]),
+            body.policyNumber or None,
+            body.diagnosisLocalization or None,
+            body.primaryDiagnosis, body.additionalDiagnosis or None,
+            body.comment or None, body.additionalParticipant or None,
+            int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now, now,
+            appointment_id, user.id,
+        ),
+    )
     if cursor.rowcount == 0:
         raise ConsiliumStateError("Запись на рассмотрении у председателя недоступна для редактирования")
+    if audit_hook is not None:
+        audit_hook({
+            "appointment_id": appointment_id, "patient_id": existing["patient_id"],
+            "group": existing["consilium_group"],
+            "from_date": existing["scheduled_date"], "from_time": existing["scheduled_time"],
+            "to_date": body.scheduledDate, "to_time": body.scheduledTime,
+            "slot_changed": not same_slot,
+        })
     return get_owned(conn, user, appointment_id)
 
 
@@ -834,6 +887,8 @@ def generate_schedule(
     start_time: str,
     end_time: str,
     interval_minutes: int,
+    *,
+    audit_hook=None,
 ) -> int:
     if consilium_group not in GROUP_LABELS:
         raise ValueError("Unknown consilium group")
@@ -845,7 +900,7 @@ def generate_schedule(
         raise ValueError("Сетка расписания не может быть длиннее 12 часов")
     created = 0
     now = now_iso()
-    with conn:
+    with transaction(conn):
         moment = start
         while moment < end:
             cursor = conn.execute(
@@ -856,24 +911,36 @@ def generate_schedule(
             )
             created += cursor.rowcount
             moment += timedelta(minutes=interval_minutes)
+        if audit_hook is not None:
+            audit_hook({"created": created, "date": scheduled_date, "group": consilium_group,
+                        "start": start_time, "end": end_time, "interval": interval_minutes})
     return created
 
 
-def delete_schedule_slot(conn: sqlite3.Connection, slot_id: str) -> bool:
-    slot = conn.execute(
-        "SELECT * FROM consilium_schedule_slots WHERE id = ?", (slot_id,)
-    ).fetchone()
-    if slot is None:
-        return False
-    occupied = conn.execute(
-        """SELECT 1 FROM oncology_consilium_appointments
-           WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ? AND deleted_at IS NULL""",
-        (slot["scheduled_date"], slot["scheduled_time"], slot["consilium_group"]),
-    ).fetchone()
-    if occupied is not None:
-        raise ValueError("Нельзя удалить занятый слот")
-    with conn:
+def delete_schedule_slot(conn: sqlite3.Connection, slot_id: str, *, audit_hook=None) -> bool:
+    """Remove a free chair slot.
+
+    The occupancy check and the DELETE share one BEGIN IMMEDIATE transaction
+    with create/update (WP2.3-A): a booking cannot land in a slot that is
+    being removed. Removing the last slot keeps the existing empty-grid mode.
+    """
+    with transaction(conn):
+        slot = conn.execute(
+            "SELECT * FROM consilium_schedule_slots WHERE id = ?", (slot_id,)
+        ).fetchone()
+        if slot is None:
+            return False
+        occupied = conn.execute(
+            """SELECT 1 FROM oncology_consilium_appointments
+               WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ? AND deleted_at IS NULL""",
+            (slot["scheduled_date"], slot["scheduled_time"], slot["consilium_group"]),
+        ).fetchone()
+        if occupied is not None:
+            raise ValueError("Нельзя удалить занятый слот")
         conn.execute("DELETE FROM consilium_schedule_slots WHERE id = ?", (slot_id,))
+        if audit_hook is not None:
+            audit_hook({"slot_id": slot["id"], "date": slot["scheduled_date"],
+                        "time": slot["scheduled_time"], "group": slot["consilium_group"]})
     return True
 
 
@@ -963,3 +1030,59 @@ def goc_registry_rows(
         params,
     ).fetchall()
     return [_to_dict(row) for row in rows]
+
+
+_CANONICAL_TIME_RE = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
+
+
+def _canonical_date(value) -> bool:
+    try:
+        strict_iso_date(value)
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
+def schedule_diagnostics(conn: sqlite3.Connection) -> dict:
+    """Read-only aggregate check of stored schedule data (WP2.3-A, D2/D1).
+
+    Only counts: no ids, names, diagnoses or dates of particular records.
+    Nothing is corrected; legacy rows are reported for a separate decision.
+    """
+    appointments = conn.execute(
+        """SELECT scheduled_date, scheduled_time, consilium_group
+           FROM oncology_consilium_appointments WHERE deleted_at IS NULL"""
+    ).fetchall()
+    slots = conn.execute(
+        "SELECT scheduled_date, scheduled_time, consilium_group FROM consilium_schedule_slots"
+    ).fetchall()
+    slot_keys = {(r["scheduled_date"], r["scheduled_time"], r["consilium_group"]) for r in slots}
+    real_slots: dict[tuple, int] = {}
+    outside_grid = 0
+    for r in appointments:
+        try:
+            real_date = date_type.fromisoformat(str(r["scheduled_date"]).strip()).isoformat()
+        except ValueError:
+            real_date = str(r["scheduled_date"])
+        key = (real_date, r["scheduled_time"], r["consilium_group"])
+        real_slots[key] = real_slots.get(key, 0) + 1
+        stored = (r["scheduled_date"], r["scheduled_time"], r["consilium_group"])
+        if slots and stored not in slot_keys and not _is_current_week_default_slot(*stored):
+            outside_grid += 1
+    duplicates = [count for count in real_slots.values() if count > 1]
+    return {
+        "appointments": len(appointments),
+        "nonCanonicalAppointmentDates": sum(not _canonical_date(r["scheduled_date"]) for r in appointments),
+        "nonCanonicalAppointmentTimes": sum(
+            not _CANONICAL_TIME_RE.fullmatch(str(r["scheduled_time"])) for r in appointments),
+        "unknownAppointmentGroups": sum(r["consilium_group"] not in GROUP_LABELS for r in appointments),
+        "scheduleSlots": len(slots),
+        "nonCanonicalSlotDates": sum(not _canonical_date(r["scheduled_date"]) for r in slots),
+        "nonCanonicalSlotTimes": sum(not _CANONICAL_TIME_RE.fullmatch(str(r["scheduled_time"])) for r in slots),
+        # Записи, которые при непустой сетке не совпадают ни со слотом
+        # председателя, ни со слотом текущей недели. При пустой сетке — None:
+        # этот режим допускает любые слоты (не меняется в WP2.3-A).
+        "appointmentsOutsideGrid": outside_grid if slots else None,
+        "realSlotsWithSeveralAppointments": len(duplicates),
+        "appointmentsInSharedRealSlots": sum(duplicates),
+    }

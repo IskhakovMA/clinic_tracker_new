@@ -1442,7 +1442,7 @@ def test_deleting_a_returned_record_keeps_its_history(client):
     assert row is not None and row["deleted_at"] and row["deleted_by_user_id"] == doctor
     assert _history(aid) == history
     audit = [r for r in _audit_rows("consilium_appointment_deleted")]
-    assert audit[-1]["detail"] == "mode=soft;history_preserved=true"
+    assert audit[-1]["detail"].startswith("mode=soft;history_preserved=true;")  # WP2.3-A: + id и слот
     assert "Текст первого возврата" not in str(audit)
 
     assert client.get("/api/consilium/appointments").json()["appointments"] == []
@@ -1472,7 +1472,7 @@ def test_record_without_history_is_still_removed(client):
     response = client.delete(f"/api/consilium/appointments/{aid}", headers=client.csrf)
     assert response.status_code == 200 and response.json()["historyPreserved"] is False
     assert _row(aid) is None
-    assert _audit_rows("consilium_appointment_deleted")[-1]["detail"] == "mode=hard"
+    assert _audit_rows("consilium_appointment_deleted")[-1]["detail"].startswith("mode=hard;")  # WP2.3-A: + id и слот
 
 
 def test_soft_deleted_history_still_blocks_destructive_import_and_card_deletion(client):

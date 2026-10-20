@@ -143,6 +143,35 @@ def check_database(db_path: Path) -> dict:
     return report
 
 
+CONSILIUM_SCHEDULE_PROBLEM_KEYS = (
+    "nonCanonicalAppointmentDates", "nonCanonicalAppointmentTimes", "unknownAppointmentGroups",
+    "nonCanonicalSlotDates", "nonCanonicalSlotTimes", "appointmentsOutsideGrid",
+    "realSlotsWithSeveralAppointments",
+)
+
+
+def consilium_schedule_report(db_path: Path) -> dict:
+    """Aggregate check of stored consilium schedule data (WP2.3-A).
+
+    Opens the file read-only (mode=ro): nothing is migrated or corrected.
+    The report holds counts only — no record ids, names or diagnoses."""
+    from .services import consilium
+
+    if not db_path.exists():
+        raise MaintenanceError(f"База не найдена: {db_path}")
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        report = consilium.schedule_diagnostics(conn)
+    except sqlite3.Error as exc:
+        raise MaintenanceError(f"Не удалось прочитать расписание консилиума: {exc.__class__.__name__}") from exc
+    finally:
+        conn.close()
+    report["problems"] = [key for key in CONSILIUM_SCHEDULE_PROBLEM_KEYS if report.get(key)]
+    report["ok"] = not report["problems"]
+    return report
+
+
 # Восстанавливаются только копии проверенных сборок. Номер схемы сборку не
 # определяет (ветка Patient Portal и Max обе называли свою схему v10), поэтому
 # снимок должен точно совпасть по структуре (таблицы и их столбцы) с одной из

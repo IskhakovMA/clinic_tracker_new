@@ -3,6 +3,7 @@
     python -m backend.cli create-developer
     python -m backend.cli import-structure <file.json>
     python -m backend.cli check-db
+    python -m backend.cli consilium-schedule-check
     python -m backend.cli backup [--dest PATH]
     python -m backend.cli backup-inspect <backup-file>
     python -m backend.cli backup-verify <backup-file>
@@ -209,6 +210,35 @@ def cmd_check_db(args: argparse.Namespace) -> int:
                      detail="; ".join(report["problems"])[:200])
     except Exception:
         pass
+    return 1
+
+
+def cmd_consilium_schedule_check(_args: argparse.Namespace) -> int:
+    """Только чтение: агрегированные счётчики, без исправления данных."""
+    try:
+        report = maintenance.consilium_schedule_report(config.DB_PATH)
+    except maintenance.MaintenanceError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    labels = (
+        ("appointments", "Активных записей"),
+        ("nonCanonicalAppointmentDates", "Записей с нестандартной датой"),
+        ("nonCanonicalAppointmentTimes", "Записей с нестандартным временем"),
+        ("unknownAppointmentGroups", "Записей с неизвестной группой"),
+        ("scheduleSlots", "Слотов председателя"),
+        ("nonCanonicalSlotDates", "Слотов с нестандартной датой"),
+        ("nonCanonicalSlotTimes", "Слотов с нестандартным временем"),
+        ("appointmentsOutsideGrid", "Записей вне сетки"),
+        ("realSlotsWithSeveralAppointments", "Реальных слотов с несколькими записями"),
+        ("appointmentsInSharedRealSlots", "Записей в таких слотах"),
+    )
+    for key, label in labels:
+        value = report[key]
+        print(f"{label}: {'не применимо (сетка пуста)' if value is None else value}")
+    if report["ok"]:
+        print("Результат: OK")
+        return 0
+    print("Результат: найдены несоответствия (данные не изменены): " + ", ".join(report["problems"]), file=sys.stderr)
     return 1
 
 
@@ -432,6 +462,11 @@ def main() -> int:
         help="Не применять создание отсутствующих таблиц, проверить файл как есть",
     )
 
+    sub.add_parser(
+        "consilium-schedule-check",
+        help="Проверить данные расписания консилиума (только чтение, агрегированные счётчики)",
+    )
+
     p_backup = sub.add_parser("backup", help="Создать encrypted backup базы")
     p_backup.add_argument("--dest", default=None, help="Путь encrypted backup (по умолчанию data/backups/*.cbk)")
     p_backup.add_argument("--overwrite", action="store_true", help="Отключено: выберите новое имя файла")
@@ -468,6 +503,7 @@ def main() -> int:
         "create-developer": cmd_create_developer,
         "import-structure": cmd_import_structure,
         "check-db": cmd_check_db,
+        "consilium-schedule-check": cmd_consilium_schedule_check,
         "backup": cmd_backup,
         "backup-inspect": cmd_backup_inspect,
         "backup-verify": cmd_backup_verify,
