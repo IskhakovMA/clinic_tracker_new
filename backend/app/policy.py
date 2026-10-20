@@ -225,6 +225,36 @@ def can_decide_consilium(user: CurrentUser) -> bool:
     return user.role_id == ROLE_CONSILIUM_CHAIR
 
 
+# Записи консилиума, которыми сотрудник управляет (WP2.3-B2): правка, перенос,
+# отмена, архив, восстановление, повторная подача, история возвратов.
+# - врач — записи своих пациентов (актуальный лечащий врач), заведующий —
+#   пациентов своих отделений; автор записи значения не имеет;
+# - разработчик — как до B2: только созданные им записи в своей области;
+# - остальные роли (председатель, read-only) — нет: председатель работает с
+#   записями через рассмотрение и подпись.
+_CONSILIUM_RECORD_SCOPE_ROLES = (ROLE_DOCTOR, ROLE_DEPARTMENT_HEAD)
+
+
+def consilium_record_filter(user: CurrentUser) -> tuple[str, list]:
+    """SQL-условие для записей `a` (oncology_consilium_appointments JOIN patients)."""
+    scope, params = patient_scope_filter(user)
+    if user.role_id in _CONSILIUM_RECORD_SCOPE_ROLES:
+        return scope, params
+    if user.role_id == ROLE_DEVELOPER:
+        return f"a.created_by_user_id = ? AND {scope}", [user.id, *params]
+    return "0 = 1", []
+
+
+def reload_current_user(conn: sqlite3.Connection, user: CurrentUser) -> CurrentUser | None:
+    """Полномочия, перечитанные из БД внутри транзакции изменения: роль,
+    статус и отделения могли смениться после загрузки пользователя запросом.
+    None — сотрудник больше не может действовать (заблокирован, роль сменена)."""
+    fresh = load_current_user(conn, user.id)
+    if fresh is None or fresh.status != "active" or fresh.role_id != user.role_id:
+        return None
+    return fresh
+
+
 # Ручная отметка решения ОК — медицинское действие (утверждено владельцем, WP2.2-B):
 # врач, заведующий и председатель консилиума, только для пациентов, которых они
 # могут изменять (объектная проверка can_write_patient — область видимости не

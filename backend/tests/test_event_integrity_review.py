@@ -18,6 +18,8 @@ from .conftest import (
     legacy_export,
     make_patient_payload,
     unsigned_import,
+    LEGACY_CONSILIUM_DATES,
+    consilium_grid,
 )
 from .test_consilium_appointments import appointment_payload
 
@@ -308,6 +310,7 @@ def test_database_trigger_backs_up_the_import_check(auth_client, monkeypatch):
 
 def test_consilium_block_is_kept_and_both_histories_survive(auth_client):
     pid, archived = _archived_patient(auth_client)
+    consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     created = auth_client.post("/api/consilium/appointments", json=appointment_payload(pid), headers=auth_client.csrf)
     assert created.status_code in (200, 201), created.text
     document = _export(auth_client)
@@ -631,6 +634,7 @@ def test_patient_without_archive_is_deleted_as_before_and_consilium_still_blocks
     assert auth_client.delete(f"/api/patients/{plain}", headers=auth_client.csrf).status_code == 200
     assert auth_client.get(f"/api/patients/{plain}").status_code == 404
     booked = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     assert auth_client.post("/api/consilium/appointments", json=appointment_payload(booked),
                             headers=auth_client.csrf).status_code in (200, 201)
     r = auth_client.delete(f"/api/patients/{booked}", headers=auth_client.csrf)

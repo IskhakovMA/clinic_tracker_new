@@ -21,6 +21,8 @@ from .conftest import (
     make_patient_payload,
     preserve_ids_confirmation,
     unsigned_import,
+    LEGACY_CONSILIUM_DATES,
+    consilium_grid,
 )
 
 OTHER_KEY = "b3RoZXItc3ludGhldGljLWV4cG9ydC1rZXktMzJieXQ"   # синтетический, 32 байта
@@ -365,6 +367,7 @@ def test_signed_file_respects_the_consilium_block(client):
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
     pid = _create(client, events=[{"date": "2030-01-10"}])["id"]
+    consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     assert client.post("/api/consilium/appointments", json=appointment_payload(pid),
                        headers=client.csrf).status_code in (200, 201)
     raw = _export(client)

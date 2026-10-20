@@ -8,8 +8,8 @@ import json
 from datetime import date as date_type, datetime, timedelta
 from pathlib import Path
 
-from .. import policy
-from ..db import in_chunks, now_iso, transaction
+from .. import clock, policy
+from ..db import now_iso, transaction
 from ..models import ConsiliumAppointmentIn, ConsiliumAppointmentUpdateIn, strict_iso_date
 
 
@@ -41,6 +41,12 @@ TREATMENT_LABELS = {
 }
 class ConsiliumStateError(ValueError):
     """The requested transition is not allowed from the record's current state."""
+
+
+class ConsiliumAccessLost(Exception):
+    """Inside the write transaction the patient is no longer in the user's
+    scope (treating doctor or departments changed meanwhile). Routes answer as
+    for an invisible record, without revealing anything about it."""
 
 
 VERSION_CONFLICT_CODE = "consilium_version_conflict"
@@ -91,10 +97,16 @@ TREATMENT_SCHEMES = json.loads(
 
 
 def metadata() -> dict:
+    now = clock.now_moscow()
     return {
         "groups": [{"value": value, "label": label} for value, label in GROUPS],
+        # Прежнее поле контракта; клиент не использует его как источник слотов
+        # (WP2.3-B2): свободные слоты — только из расписания председателя.
         "timeSlots": list(TIME_SLOTS),
         "treatmentSchemes": TREATMENT_SCHEMES,
+        "institutionTimezone": clock.INSTITUTION_TIMEZONE,
+        "institutionNow": now.isoformat(timespec="seconds"),
+        "institutionToday": now.date().isoformat(),
     }
 
 
@@ -154,6 +166,9 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         "archivedByUserId": row["archived_by_user_id"],
         "isFavorite": favorite,
         "version": row["version"],
+        # Запись без слота председателя (старые данные): показывается отдельно,
+        # не удаляется и не переносится автоматически (WP2.3-B2).
+        "outsideSchedule": not row["in_schedule"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
@@ -166,7 +181,12 @@ _SELECT = """
     SELECT a.*, patients.name AS patient_name,
            patients.policy_number AS patient_policy_number,
            COALESCE(treating_doctor.full_name, NULLIF(patients.doctor, ''), a.treating_doctor_name)
-               AS current_treating_doctor_name
+               AS current_treating_doctor_name,
+           EXISTS (
+               SELECT 1 FROM consilium_schedule_slots s
+               WHERE s.scheduled_date = a.scheduled_date AND s.scheduled_time = a.scheduled_time
+                 AND s.consilium_group = a.consilium_group
+           ) AS in_schedule
     FROM oncology_consilium_appointments a
     JOIN patients ON patients.id = a.patient_id AND a.deleted_at IS NULL
     LEFT JOIN users treating_doctor ON treating_doctor.id = patients.treating_doctor_user_id
@@ -198,15 +218,16 @@ def list_for_user(
             ).fetchall()
         }
         return [_to_dict(row, favorite=row["patient_id"] in favorite_ids) for row in rows]
-    condition, params = policy.patient_scope_filter(user)
-    # Архив — явное действие автора над подписанной записью, а не сам факт
-    # подписи: подписанная, но не архивированная запись остаётся в работе.
+    # Врач — записи своих пациентов, заведующий — пациентов своих отделений,
+    # кто бы их ни создал (WP2.3-B2). Архив — общее состояние записи: архивная
+    # запись видна в архиве каждому, кто управляет ею, и не видна в работе.
+    condition, params = policy.consilium_record_filter(user)
     visibility_clause = "AND a.archived_at IS NOT NULL " if archived else "AND a.archived_at IS NULL "
     rows = conn.execute(
-        _SELECT + f" WHERE a.created_by_user_id = ? AND {condition} "
+        _SELECT + f" WHERE {condition} "
         + visibility_clause
         + "ORDER BY a.scheduled_date ASC, a.scheduled_time ASC, a.created_at ASC",
-        [user.id, *params],
+        params,
     ).fetchall()
     return [_to_dict(row) for row in rows]
 
@@ -234,17 +255,20 @@ def set_archived(
     *,
     audit_hook=None,
 ) -> dict | None:
-    """Move the author's signed record to their archive, or back.
+    """Move a signed record to the shared archive, or back (WP2.3-B2: any
+    staff member who manages the record — the archive is the record's state).
 
     Only archived_at / archived_by_user_id (and updated_at) change; the signed
     decision itself is protected by trg_consilium_signed_immutable. Who
     archived and restored, and when, stays in the audit log.
     """
     now = now_iso()
-    # Проверка состояния, изменение и обязательный аудит — одна транзакция
-    # BEGIN IMMEDIATE (WP2.3-A): при сбое аудита архивная отметка откатывается.
+    # Проверка прав и состояния, изменение, обязательный аудит и ответ — одна
+    # транзакция BEGIN IMMEDIATE: при сбое аудита архивная отметка откатывается,
+    # а ответ не перечитывается после коммита (WP2.3-B2, B2-01).
     with transaction(conn):
-        existing = get_owned(conn, user, appointment_id)
+        fresh = _locked_user(conn, user)
+        existing = get_manageable(conn, fresh, appointment_id) if fresh else None
         if existing is None:
             return None
         _require_version(existing, expected_version)
@@ -254,23 +278,22 @@ def set_archived(
             cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
                    SET archived_at = ?, archived_by_user_id = ?, updated_at = ?
-                   WHERE id = ? AND created_by_user_id = ? AND status = 'signed' AND archived_at IS NULL
-                     AND version = ?""",
-                (now, user.id, now, appointment_id, user.id, expected_version),
+                   WHERE id = ? AND status = 'signed' AND archived_at IS NULL AND version = ?""",
+                (now, user.id, now, appointment_id, expected_version),
             )
         else:
             cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
                    SET archived_at = NULL, archived_by_user_id = NULL, updated_at = ?
-                   WHERE id = ? AND created_by_user_id = ? AND status = 'signed' AND archived_at IS NOT NULL
-                     AND version = ?""",
-                (now, appointment_id, user.id, expected_version),
+                   WHERE id = ? AND status = 'signed' AND archived_at IS NOT NULL AND version = ?""",
+                (now, appointment_id, expected_version),
             )
         if cursor.rowcount == 0:
             raise ConsiliumStateError("Запись уже в архиве" if archived else "Запись не находится в архиве")
         if audit_hook is not None:
             audit_hook(_slot_facts(existing))
-    return get_owned(conn, user, appointment_id)
+        result = _committed_result(conn, fresh, appointment_id)
+    return result
 
 
 def _slot_facts(item: dict) -> dict:
@@ -286,13 +309,43 @@ def get_for_management(conn: sqlite3.Connection, appointment_id: str) -> dict | 
     return _to_dict(row) if row else None
 
 
-def get_owned(conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str) -> dict | None:
-    condition, params = policy.patient_scope_filter(user)
+def get_manageable(conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str) -> dict | None:
+    """The record if `user` manages it (policy.consilium_record_filter), else None.
+
+    Inside a write transaction pass the user from _locked_user(): the scope
+    is then the one committed at the moment of the change."""
+    condition, params = policy.consilium_record_filter(user)
     row = conn.execute(
-        _SELECT + f" WHERE a.id = ? AND a.created_by_user_id = ? AND {condition}",
-        [appointment_id, user.id, *params],
+        _SELECT + f" WHERE a.id = ? AND {condition}",
+        [appointment_id, *params],
     ).fetchone()
     return _to_dict(row) if row else None
+
+
+def _locked_user(conn: sqlite3.Connection, user: policy.CurrentUser) -> policy.CurrentUser | None:
+    """Permissions re-read inside BEGIN IMMEDIATE (WP2.3-B2): a treating doctor
+    reassignment or a change of the head's departments that committed while
+    the request waited for the lock is taken into account."""
+    return policy.reload_current_user(conn, user)
+
+
+def _manageable_locked(conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str) -> dict | None:
+    fresh = _locked_user(conn, user)
+    return get_manageable(conn, fresh, appointment_id) if fresh else None
+
+
+def _committed_result(conn: sqlite3.Connection, fresh: policy.CurrentUser, appointment_id: str) -> dict:
+    """The response of a change, built inside its BEGIN IMMEDIATE transaction
+    with the permissions checked there (WP2.3-B2, B2-01).
+
+    Reading it again after the commit would apply a newer scope: a treating
+    doctor reassigned in between would turn a committed change into 404 or
+    null. Within the transaction the scope cannot change, so the record is
+    always found; anything else is a defect and aborts the transaction."""
+    result = get_manageable(conn, fresh, appointment_id)
+    if result is None:
+        raise RuntimeError("consilium record left the scope inside its own transaction")
+    return result
 
 
 def delete_owned(
@@ -308,7 +361,7 @@ def delete_owned(
     """
     now = now_iso()
     with transaction(conn):
-        existing = get_owned(conn, user, appointment_id)
+        existing = _manageable_locked(conn, user, appointment_id)
         if existing is None:
             return None
         _require_version(existing, expected_version)
@@ -317,16 +370,14 @@ def delete_owned(
             cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
                    SET deleted_at = ?, deleted_by_user_id = ?, updated_at = ?
-                   WHERE id = ? AND created_by_user_id = ? AND status = 'recorded' AND deleted_at IS NULL
-                     AND version = ?""",
-                (now, user.id, now, appointment_id, user.id, expected_version),
+                   WHERE id = ? AND status = 'recorded' AND deleted_at IS NULL AND version = ?""",
+                (now, user.id, now, appointment_id, expected_version),
             )
         else:
             cursor = conn.execute(
                 "DELETE FROM oncology_consilium_appointments "
-                "WHERE id = ? AND created_by_user_id = ? AND status = 'recorded' AND deleted_at IS NULL "
-                "AND version = ?",
-                (appointment_id, user.id, expected_version),
+                "WHERE id = ? AND status = 'recorded' AND deleted_at IS NULL AND version = ?",
+                (appointment_id, expected_version),
             )
         existing["historyPreserved"] = soft
         if cursor.rowcount == 0:
@@ -353,6 +404,9 @@ def create(
     now = now_iso()
     try:
         with transaction(conn):
+            fresh = _locked_user(conn, user)
+            if fresh is None or not policy.can_write_patient(conn, fresh, body.patientId):
+                raise ConsiliumAccessLost()
             patient = conn.execute(
                 "SELECT policy_number, diagnosis FROM patients WHERE id = ?", (body.patientId,)
             ).fetchone()
@@ -385,9 +439,11 @@ def create(
                     "appointment_id": appointment_id, "patient_id": body.patientId,
                     "date": body.scheduledDate, "time": body.scheduledTime, "group": body.consiliumGroup,
                 })
+            # Ответ — в той же транзакции, с правами, проверенными в ней (B2-01).
+            result = _committed_result(conn, fresh, appointment_id)
     except sqlite3.IntegrityError as exc:
         raise ValueError(_integrity_error_message(exc)) from exc
-    return get_owned(conn, user, appointment_id)
+    return result
 
 
 def _transition(conn: sqlite3.Connection, appointment_id: str, sql: str, params: tuple, refusal: str,
@@ -405,9 +461,12 @@ def _transition(conn: sqlite3.Connection, appointment_id: str, sql: str, params:
         cursor = conn.execute(sql, params)
         if cursor.rowcount == 1 and audit_hook is not None:
             audit_hook(appointment_id)
+        # Ответ — в той же транзакции, что и переход (B2-01): после коммита
+        # запись могли бы изменить или удалить, и успех превратился бы в 404.
+        result = get_for_management(conn, appointment_id) if cursor.rowcount == 1 else None
     if cursor.rowcount == 0:
         raise ConsiliumStateError(refusal)
-    return get_for_management(conn, appointment_id)
+    return result
 
 
 def start_review(conn: sqlite3.Connection, appointment_id: str, *, audit_hook=None) -> dict | None:
@@ -516,9 +575,12 @@ def return_for_revision(
             # Обязательный аудит возврата — в той же транзакции, что и раунд доработки.
             if audit_hook is not None:
                 audit_hook(appointment_id)
+        # Ответ — в той же транзакции (B2-01): возвращенную запись врач может
+        # сразу отменить, и повторное чтение после коммита дало бы 404.
+        result = get_for_management(conn, appointment_id) if cursor.rowcount else None
     if cursor.rowcount == 0:
         raise ConsiliumStateError("Вернуть на доработку можно только запись, рассмотрение которой начато")
-    return get_for_management(conn, appointment_id)
+    return result
 
 
 def resubmit(
@@ -537,7 +599,8 @@ def resubmit(
     transaction. The version grows (trigger)."""
     now = now_iso()
     with transaction(conn):
-        existing = get_owned(conn, user, appointment_id)
+        fresh = _locked_user(conn, user)
+        existing = get_manageable(conn, fresh, appointment_id) if fresh else None
         if existing is None:
             return None
         _require_version(existing, expected_version)
@@ -547,10 +610,10 @@ def resubmit(
         cursor = conn.execute(
             """UPDATE oncology_consilium_appointments
                SET revision_submitted_at = ?, updated_at = ?
-               WHERE id = ? AND created_by_user_id = ? AND status = 'recorded'
+               WHERE id = ? AND status = 'recorded'
                  AND revision_comment IS NOT NULL AND revision_submitted_at IS NULL
                  AND archived_at IS NULL AND deleted_at IS NULL AND version = ?""",
-            (now, now, appointment_id, user.id, expected_version),
+            (now, now, appointment_id, expected_version),
         )
         if cursor.rowcount == 0:
             raise ConsiliumStateError(
@@ -563,7 +626,8 @@ def resubmit(
         )
         if audit_hook is not None:
             audit_hook({**_slot_facts(existing), "round": existing["revisionCount"]})
-    return get_owned(conn, user, appointment_id)
+        result = _committed_result(conn, fresh, appointment_id)  # B2-01: ответ внутри транзакции
+    return result
 
 
 def revision_history(conn: sqlite3.Connection, appointment_id: str) -> list[dict]:
@@ -614,9 +678,21 @@ def analytics_summary(
         if row["status"] == "signed" and row["treatment_type"] == "chemotherapy" and row["treatment_scheme"]:
             key = (row["treatment_scheme_code"] or "", row["treatment_scheme"])
             scheme_counts[key] = scheme_counts.get(key, 0) + 1
-    active_days = len({row["scheduled_date"] for row in rows})
-    capacity = active_days * len(GROUPS) * len(TIME_SLOTS)
-    occupied = len({(row["scheduled_date"], row["scheduled_time"], row["consilium_group"]) for row in rows})
+    # Вместимость — фактические слоты председателя за период (WP2.3-B2), а не
+    # константа времени. Записи вне расписания — отдельной строкой, в
+    # знаменатель не входят. Без слотов — состояние «Нет расписания».
+    slot_keys = {
+        (row["scheduled_date"], row["scheduled_time"], row["consilium_group"])
+        for row in conn.execute(
+            """SELECT scheduled_date, scheduled_time, consilium_group FROM consilium_schedule_slots
+               WHERE (? IS NULL OR scheduled_date >= ?) AND (? IS NULL OR scheduled_date <= ?)""",
+            (date_from, date_from, date_to, date_to),
+        ).fetchall()
+    }
+    appointment_keys = [(row["scheduled_date"], row["scheduled_time"], row["consilium_group"]) for row in rows]
+    occupied = len({key for key in appointment_keys if key in slot_keys})
+    outside = sum(1 for key in appointment_keys if key not in slot_keys)
+    capacity = len(slot_keys)
     return {
         "summary": {
             "total": total,
@@ -637,10 +713,15 @@ def analytics_summary(
             )
         ],
         "schedule": {
-            "activeDays": active_days,
+            "state": "ok" if capacity else "no_schedule",
+            "slots": capacity,
+            "occupied": occupied,
+            "loadPercent": round((occupied / capacity * 100), 1) if capacity else None,
+            "outsideSchedule": outside,
+            "activeDays": len({key[0] for key in slot_keys}),
+            # Прежние имена полей того же смысла (совместимость клиента).
             "occupiedSlots": occupied,
             "capacitySlots": capacity,
-            "loadPercent": round((occupied / capacity * 100), 1) if capacity else 0,
         },
     }
 
@@ -672,11 +753,14 @@ def _update_locked(
     body: ConsiliumAppointmentUpdateIn,
     audit_hook,
 ) -> dict | None:
+    fresh = _locked_user(conn, user)
+    if fresh is None or get_manageable(conn, fresh, appointment_id) is None:
+        return None
     existing = conn.execute(
         """SELECT id, patient_id, status, scheduled_date, scheduled_time, consilium_group, version
            FROM oncology_consilium_appointments
-           WHERE id = ? AND created_by_user_id = ? AND deleted_at IS NULL""",
-        (appointment_id, user.id),
+           WHERE id = ? AND deleted_at IS NULL""",
+        (appointment_id,),
     ).fetchone()
     if existing is None:
         return None
@@ -718,8 +802,7 @@ def _update_locked(
                additional_participant = ?, needs_surgeon = ?,
                needs_radiotherapist = ?, uv_ruv = ?,
                updated_at = ?
-           WHERE id = ? AND created_by_user_id = ? AND status = 'recorded' AND deleted_at IS NULL
-             AND version = ?""",
+           WHERE id = ? AND status = 'recorded' AND deleted_at IS NULL AND version = ?""",
         (
             body.scheduledDate, body.scheduledTime,
             int(body.hasBenefit), _current_treating_doctor_name(conn, existing["patient_id"]),
@@ -730,7 +813,7 @@ def _update_locked(
             # Правка и перенос не означают повторную подачу (v22): статус
             # needs_revision сохраняется до явного resubmit.
             int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv), now,
-            appointment_id, user.id, body.version,
+            appointment_id, body.version,
         ),
     )
     if cursor.rowcount == 0:
@@ -743,7 +826,7 @@ def _update_locked(
             "to_date": body.scheduledDate, "to_time": body.scheduledTime,
             "slot_changed": not same_slot,
         })
-    return get_owned(conn, user, appointment_id)
+    return get_manageable(conn, fresh, appointment_id)
 
 
 def group_for_diagnosis(value: str | None) -> str:
@@ -796,6 +879,11 @@ def _integrity_error_message(exc: sqlite3.IntegrityError) -> str:
     return "Не удалось сохранить запись: нарушено ограничение уникальности"
 
 
+NO_SCHEDULE_MESSAGE = "Расписание председателя не создано: запись недоступна"
+SLOT_NOT_IN_SCHEDULE_MESSAGE = "Выбранный слот отсутствует в расписании председателя"
+SLOT_IN_PAST_MESSAGE = "Выбранный слот уже прошел: запись возможна только на будущее время"
+
+
 def _require_available_slot(
     conn: sqlite3.Connection,
     scheduled_date: str,
@@ -804,17 +892,25 @@ def _require_available_slot(
     *,
     exclude_appointment_id: str | None = None,
 ) -> None:
+    """The slot exists in the chair's schedule, starts strictly after the
+    current Moscow time and is free (WP2.3-B2).
+
+    Called inside the booking transaction, after BEGIN IMMEDIATE: "now" is
+    taken when the lock is held. There is no generated current week and no
+    booking without a schedule any more."""
     if consilium_group not in GROUP_LABELS:
         raise ValueError("Выберите действующую консилиумную группу")
-    configured = conn.execute("SELECT COUNT(*) AS c FROM consilium_schedule_slots").fetchone()["c"]
-    if configured:
-        slot = conn.execute(
-            """SELECT id FROM consilium_schedule_slots
-               WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ?""",
-            (scheduled_date, scheduled_time, consilium_group),
-        ).fetchone()
-        if slot is None and not _is_current_week_default_slot(scheduled_date, scheduled_time, consilium_group):
-            raise ValueError("Выбранный слот отсутствует в расписании председателя")
+    if not conn.execute("SELECT 1 FROM consilium_schedule_slots LIMIT 1").fetchone():
+        raise ValueError(NO_SCHEDULE_MESSAGE)
+    slot = conn.execute(
+        """SELECT id FROM consilium_schedule_slots
+           WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ?""",
+        (scheduled_date, scheduled_time, consilium_group),
+    ).fetchone()
+    if slot is None:
+        raise ValueError(SLOT_NOT_IN_SCHEDULE_MESSAGE)
+    if not clock.is_strictly_future(scheduled_date, scheduled_time, clock.now_moscow()):
+        raise ValueError(SLOT_IN_PAST_MESSAGE)
     occupied = conn.execute(
         """SELECT id FROM oncology_consilium_appointments
            WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ? AND deleted_at IS NULL
@@ -825,46 +921,18 @@ def _require_available_slot(
         raise ValueError("Выбранный слот уже занят")
 
 
-def _current_week_dates() -> list[str]:
-    today = datetime.now().date()
-    monday = today - timedelta(days=today.weekday())
-    return [(monday + timedelta(days=offset)).isoformat() for offset in range(7)]
-
-
-def _is_current_week_default_slot(scheduled_date: str, scheduled_time: str, consilium_group: str) -> bool:
-    if scheduled_date not in _current_week_dates() or consilium_group not in GROUP_LABELS:
-        return False
-    try:
-        parsed = datetime.strptime(scheduled_time, "%H:%M")
-    except ValueError:
-        return False
-    return parsed.hour in range(9, 17) and parsed.minute in (0, 15, 30, 45)
-
-
-def _slot_appointment(row: sqlite3.Row, user: policy.CurrentUser, readable_ids: set[str]) -> dict | None:
+def _slot_appointment(row: sqlite3.Row, user: policy.CurrentUser, manageable_ids: set[str]) -> dict | None:
     """Details of the appointment occupying a slot, or None.
 
-    - the chair and the developer (schedule management) and the author of
-      the record while the patient is in their scope: full slot details;
-    - a department head, for a patient of their department (existing patient
-      scope): only who, when, treating doctor and status — no diagnosis,
-      policy number, patient or record ids, urgency mark;
+    - the chair and the developer (schedule management) and whoever manages
+      the record (doctor — own patients, head — own departments): full details;
+      canManage tells whether this user may change the record;
     - everyone else: None, the slot is reported only as occupied.
     """
-    is_mine = row["created_by_user_id"] == user.id
-    in_scope = row["patient_id"] in readable_ids
-    status = public_status(row)
-    if not (policy.can_manage_consilium(user) or policy.can_decide_consilium(user) or (is_mine and in_scope)):
-        if user.role_id == policy.ROLE_DEPARTMENT_HEAD and in_scope:
-            return {
-                "patientName": row["patient_name"],
-                "treatingDoctorName": row["treating_doctor_name"],
-                "status": status,
-                "statusLabel": STATUS_LABELS.get(status, status),
-                "isMine": False,
-                "view": "department",
-            }
+    can_manage = row["id"] in manageable_ids
+    if not (can_manage or policy.can_manage_consilium(user) or policy.can_decide_consilium(user)):
         return None
+    status = public_status(row)
     return {
         "id": row["id"],
         "patientId": row["patient_id"],
@@ -876,32 +944,32 @@ def _slot_appointment(row: sqlite3.Row, user: policy.CurrentUser, readable_ids: 
         "statusLabel": STATUS_LABELS.get(status, status),
         "uvRuv": bool(row["uv_ruv"]),
         "createdByUserId": row["created_by_user_id"],
-        "isMine": is_mine,
+        "isMine": row["created_by_user_id"] == user.id,
+        "canManage": can_manage,
         "view": "full",
     }
 
 
-def _readable_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, patient_ids: set[str]) -> set[str]:
-    if not patient_ids:
-        return set()
-    condition, params = policy.patient_scope_filter(user)
-    readable: set[str] = set()
-    for chunk in in_chunks(conn, patient_ids, reserve=len(params) + 8):
-        marks = ",".join("?" for _ in chunk)
-        rows = conn.execute(
-            f"SELECT patients.id FROM patients WHERE patients.id IN ({marks}) AND {condition}",  # nosec B608 - only "?" placeholders and the policy scope condition are interpolated; values are bound.
-            [*chunk, *params],
-        ).fetchall()
-        readable.update(row["id"] for row in rows)
-    return readable
+def _manageable_ids(conn: sqlite3.Connection, user: policy.CurrentUser) -> set[str]:
+    condition, params = policy.consilium_record_filter(user)
+    rows = conn.execute(
+        f"""SELECT a.id FROM oncology_consilium_appointments a
+            JOIN patients ON patients.id = a.patient_id AND a.deleted_at IS NULL
+            WHERE {condition}""",  # nosec B608 - condition comes from policy; values are bound.
+        params,
+    ).fetchall()
+    return {row["id"] for row in rows}
 
 
 def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[dict]:
+    """The chair's schedule — the only source of bookable slots (WP2.3-B2).
+
+    isPast / bookable are computed in Moscow time; a slot occupied by any
+    record (signed ones too) stays occupied."""
     slot_rows = conn.execute(
         """SELECT * FROM consilium_schedule_slots
            ORDER BY scheduled_date ASC, scheduled_time ASC, consilium_group ASC"""
     ).fetchall()
-    week_dates = _current_week_dates()
     appointment_rows = conn.execute(
         """SELECT a.id, a.patient_id, a.created_by_user_id, a.scheduled_date, a.scheduled_time,
                   a.consilium_group, a.primary_diagnosis,
@@ -919,58 +987,29 @@ def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[d
         (row["scheduled_date"], row["scheduled_time"], row["consilium_group"]): row
         for row in appointment_rows
     }
-    # Область видимости проверяется для своих записей, а заведующему — для
-    # всех: он видит записи пациентов своего отделения в сокращённом виде.
-    head = user.role_id == policy.ROLE_DEPARTMENT_HEAD
-    readable_ids = _readable_patient_ids(
-        conn, user,
-        {row["patient_id"] for row in appointment_rows if head or row["created_by_user_id"] == user.id},
-    )
-
-    def appointment_for(key: tuple[str, str, str]) -> dict | None:
-        row = appointments.get(key)
-        return _slot_appointment(row, user, readable_ids) if row else None
-
+    manageable = _manageable_ids(conn, user)
+    now = clock.now_moscow()
     slots = []
     for row in slot_rows:
         if row["consilium_group"] not in GROUP_LABELS:
             continue
         key = (row["scheduled_date"], row["scheduled_time"], row["consilium_group"])
+        occupant = appointments.get(key)
+        is_past = not clock.is_strictly_future(row["scheduled_date"], row["scheduled_time"], now)
         slots.append({
             "id": row["id"],
             "scheduledDate": row["scheduled_date"],
             "scheduledTime": row["scheduled_time"],
             "consiliumGroup": row["consilium_group"],
             "consiliumGroupLabel": GROUP_LABELS.get(row["consilium_group"], row["consilium_group"]),
-            "occupied": key in appointments,
-            "appointment": appointment_for(key),
+            "occupied": occupant is not None,
+            "appointment": _slot_appointment(occupant, user, manageable) if occupant else None,
+            "isPast": is_past,
+            "bookable": occupant is None and not is_past,
+            # Прежнее поле контракта: вычисляемой недели больше нет (WP2.3-B2).
             "isDefaultWeek": False,
         })
-    persisted_keys = {
-        (slot["scheduledDate"], slot["scheduledTime"], slot["consiliumGroup"])
-        for slot in slots
-    }
-    for scheduled_date in week_dates:
-        for consilium_group, group_label in GROUPS:
-            for hour in range(9, 17):
-                for minute in (0, 15, 30, 45):
-                    scheduled_time = f"{hour:02d}:{minute:02d}"
-                    key = (scheduled_date, scheduled_time, consilium_group)
-                    if key in persisted_keys:
-                        continue
-                    slots.append({
-                        "id": f"current-week-{scheduled_date}-{scheduled_time}-{consilium_group}",
-                        "scheduledDate": scheduled_date,
-                        "scheduledTime": scheduled_time,
-                        "consiliumGroup": consilium_group,
-                        "consiliumGroupLabel": group_label,
-                        "occupied": key in appointments,
-                        "appointment": appointment_for(key),
-                        "isDefaultWeek": True,
-                    })
-    return sorted(slots, key=lambda slot: (
-        slot["scheduledDate"], slot["scheduledTime"], slot["consiliumGroup"]
-    ))
+    return slots
 
 
 def generate_schedule(
@@ -983,7 +1022,13 @@ def generate_schedule(
     interval_minutes: int,
     *,
     audit_hook=None,
-) -> int:
+) -> dict:
+    """Create the chair's slots of one day and group (Moscow time).
+
+    Only slots strictly in the future are created: for today the times that
+    already passed are skipped and counted in skippedPast; a past date, or a
+    today's interval that is entirely over, creates nothing. Past slots with
+    a reason belong to WP2.3-B3."""
     if consilium_group not in GROUP_LABELS:
         raise ValueError("Unknown consilium group")
     start = datetime.strptime(f"{scheduled_date} {start_time}", "%Y-%m-%d %H:%M")
@@ -992,23 +1037,34 @@ def generate_schedule(
         raise ValueError("Время окончания должно быть позже времени начала")
     if end - start > timedelta(hours=12):
         raise ValueError("Сетка расписания не может быть длиннее 12 часов")
+    times = []
+    moment = start
+    while moment < end:
+        times.append(moment.strftime("%H:%M"))
+        moment += timedelta(minutes=interval_minutes)
     created = 0
-    now = now_iso()
+    created_at = now_iso()
     with transaction(conn):
-        moment = start
-        while moment < end:
+        now = clock.now_moscow()
+        if scheduled_date < now.date().isoformat():
+            raise ValueError("Нельзя создать расписание на прошедшую дату")
+        future = [t for t in times if clock.is_strictly_future(scheduled_date, t, now)]
+        if not future:
+            raise ValueError("Время выбранного интервала уже прошло: расписание не создано")
+        for scheduled_time in future:
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO consilium_schedule_slots
                    (id, scheduled_date, scheduled_time, consilium_group, created_by_user_id, created_at)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (uuid.uuid4().hex, scheduled_date, moment.strftime("%H:%M"), consilium_group, user.id, now),
+                (uuid.uuid4().hex, scheduled_date, scheduled_time, consilium_group, user.id, created_at),
             )
             created += cursor.rowcount
-            moment += timedelta(minutes=interval_minutes)
+        skipped_past = len(times) - len(future)
         if audit_hook is not None:
             audit_hook({"created": created, "date": scheduled_date, "group": consilium_group,
-                        "start": start_time, "end": end_time, "interval": interval_minutes})
-    return created
+                        "start": start_time, "end": end_time, "interval": interval_minutes,
+                        "skipped_past": skipped_past})
+    return {"created": created, "skippedPast": skipped_past}
 
 
 def delete_schedule_slot(conn: sqlite3.Connection, slot_id: str, *, audit_hook=None) -> bool:
@@ -1016,7 +1072,7 @@ def delete_schedule_slot(conn: sqlite3.Connection, slot_id: str, *, audit_hook=N
 
     The occupancy check and the DELETE share one BEGIN IMMEDIATE transaction
     with create/update (WP2.3-A): a booking cannot land in a slot that is
-    being removed. Removing the last slot keeps the existing empty-grid mode.
+    being removed. Without slots booking is impossible (WP2.3-B2).
     """
     with transaction(conn):
         slot = conn.execute(
@@ -1083,7 +1139,8 @@ def set_referral_completed(
                WHERE id = ?""",
             (now if completed else None, user.id if completed else None, now, appointment_id),
         )
-    return get_for_management(conn, appointment_id)
+        result = get_for_management(conn, appointment_id)  # B2-01: ответ внутри транзакции
+    return result
 
 
 def registry_rows(
@@ -1138,7 +1195,7 @@ def _canonical_date(value) -> bool:
 
 
 def schedule_diagnostics(conn: sqlite3.Connection) -> dict:
-    """Read-only aggregate check of stored schedule data (WP2.3-A, D2/D1).
+    """Read-only aggregate check of stored schedule data (WP2.3-A, WP2.3-B2).
 
     Only counts: no ids, names, diagnoses or dates of particular records.
     Nothing is corrected; legacy rows are reported for a separate decision.
@@ -1161,9 +1218,20 @@ def schedule_diagnostics(conn: sqlite3.Connection) -> dict:
         key = (real_date, r["scheduled_time"], r["consilium_group"])
         real_slots[key] = real_slots.get(key, 0) + 1
         stored = (r["scheduled_date"], r["scheduled_time"], r["consilium_group"])
-        if slots and stored not in slot_keys and not _is_current_week_default_slot(*stored):
+        if stored not in slot_keys:
             outside_grid += 1
     duplicates = [count for count in real_slots.values() if count > 1]
+    open_by_patient: dict[str, int] = {}
+    open_in_past = 0
+    now = clock.now_moscow()
+    for r in conn.execute(
+        """SELECT patient_id, scheduled_date, scheduled_time FROM oncology_consilium_appointments
+           WHERE deleted_at IS NULL AND status != 'signed'"""
+    ).fetchall():
+        open_by_patient[r["patient_id"]] = open_by_patient.get(r["patient_id"], 0) + 1
+        moment = clock.slot_moment(str(r["scheduled_date"]), str(r["scheduled_time"]))
+        if moment is not None and moment <= now:  # нестандартные даты не сравниваются
+            open_in_past += 1
     return {
         "appointments": len(appointments),
         "nonCanonicalAppointmentDates": sum(not _canonical_date(r["scheduled_date"]) for r in appointments),
@@ -1173,10 +1241,13 @@ def schedule_diagnostics(conn: sqlite3.Connection) -> dict:
         "scheduleSlots": len(slots),
         "nonCanonicalSlotDates": sum(not _canonical_date(r["scheduled_date"]) for r in slots),
         "nonCanonicalSlotTimes": sum(not _CANONICAL_TIME_RE.fullmatch(str(r["scheduled_time"])) for r in slots),
-        # Записи, которые при непустой сетке не совпадают ни со слотом
-        # председателя, ни со слотом текущей недели. При пустой сетке — None:
-        # этот режим допускает любые слоты (не меняется в WP2.3-A).
-        "appointmentsOutsideGrid": outside_grid if slots else None,
+        # Записи без слота председателя (WP2.3-B2: вычисляемой недели и режима
+        # пустой сетки больше нет). Видны в списках с отметкой «Вне расписания».
+        "appointmentsOutsideGrid": outside_grid,
         "realSlotsWithSeveralAppointments": len(duplicates),
         "appointmentsInSharedRealSlots": sum(duplicates),
+        # Исторические дубли: пациенты с несколькими незавершенными записями (до v17).
+        "patientsWithSeveralOpenRecords": sum(1 for count in open_by_patient.values() if count > 1),
+        # Незавершенные записи, время которых уже прошло (по Москве; справочно).
+        "openRecordsInPastSlots": open_in_past,
     }

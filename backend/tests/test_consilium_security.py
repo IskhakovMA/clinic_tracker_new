@@ -1,8 +1,17 @@
 """Regression tests for the consilium security fixes (integration stage 2)."""
-from datetime import date
+import pytest
 
-from .conftest import DEV_USERNAME, consilium_version, create_account, get_conn, legacy_export, login, stage_body, unsigned_import
+from .conftest import (
+    DEV_USERNAME, LEGACY_CONSILIUM_DATES, SLOT_DAY, consilium_grid, consilium_version, create_account, get_conn,
+    legacy_consilium_schedule, legacy_export, login, stage_body, unsigned_import,
+)
 from .test_consilium_appointments import appointment_payload, create_patient
+
+
+@pytest.fixture(autouse=True)
+def _chair_schedule(request):
+    # WP2.3-B2: запись возможна только в реальные слоты председателя.
+    legacy_consilium_schedule(request)
 
 
 PATIENT_NAME = "Чужаков Скрытый Пациентович"
@@ -22,7 +31,8 @@ def _slot(slots, scheduled_date, scheduled_time, group="thoracic"):
 
 def _book_for_doctor_a(client):
     """Doctor A books their own patient on a chair grid slot and on a
-    default current-week slot. Returns (doctor_a_id, patient, today)."""
+    slot of another day (WP2.3-B2: no generated current week any more).
+    Returns (doctor_a_id, patient, slot_day)."""
     doctor_a = create_account("doctor.a", "doctor", full_name="Врачова Анна Первая")
     create_account("doctor.b", "doctor", full_name="Врачов Борис Второй")
     create_account("chair.schedule", "consilium_chair")
@@ -55,7 +65,7 @@ def _book_for_doctor_a(client):
         headers=client.csrf,
     )
     assert booked.status_code == 201, booked.text
-    today = date.today().isoformat()
+    today = SLOT_DAY
     booked_week = client.post(
         "/api/consilium/appointments",
         json=appointment_payload(second["id"], scheduledDate=today, scheduledTime="09:00"),
@@ -257,6 +267,8 @@ def _make_state(client, state):
     """Return an appointment id in `state`; the session ends logged in as the chair."""
     create_account(DEV_USERNAME)
     create_account("chair.states", "consilium_chair")
+    # WP2.3-B2: помощник используется и вне этого модуля — расписание создает сам.
+    consilium_grid(LEGACY_CONSILIUM_DATES)
     login(client, DEV_USERNAME)
     patient = create_patient(client, name=f"Состояний {state}")
     created = client.post(
@@ -1095,8 +1107,6 @@ def test_developer_without_chair_role_cannot_decide(client):
 
 # --- Задача 1: заведующий в расписании ------------------------------------
 
-HEAD_FIELDS = {"patientName", "treatingDoctorName", "status", "statusLabel", "isMine", "view"}
-
 
 def _department_world(client):
     own = create_department("Отделение заведующего")
@@ -1111,7 +1121,7 @@ def _department_world(client):
                           treatingDoctorUserId=ids["doctor.own"])
     foreign = create_patient(client, name="Пациент Соседнего Отделения", policyNumber="7700000000004402",
                              diagnosis="C34.9", nosology="lung12", treatingDoctorUserId=ids["doctor.other"])
-    today = date.today().isoformat()
+    today = SLOT_DAY
     login(client, "doctor.own")
     own_booking = client.post("/api/consilium/appointments", headers=client.csrf,
                               json=appointment_payload(mine["id"], scheduledDate=today, scheduledTime="09:00"))
@@ -1125,18 +1135,17 @@ def _department_world(client):
     return mine, foreign, today, own_booking.json()["id"], other_booking.json()["id"]
 
 
-def test_head_sees_minimal_details_for_own_department(client):
+def test_head_sees_full_details_and_manages_own_department(client):
+    # WP2.3-B2 (утверждено): заведующий управляет записями пациентов своего
+    # отделения независимо от автора — в сетке он видит их полностью.
     mine, _, today, own_id, _ = _department_world(client)
     response = client.get("/api/consilium/schedule")
     assert response.status_code == 200
     details = _slot(response.json()["slots"], today, "09:00")["appointment"]
-    assert set(details) == HEAD_FIELDS
-    assert details == {
-        "patientName": "Пациент Своего Отделения", "treatingDoctorName": "Своева Врач Отделения",
-        "status": "recorded", "statusLabel": "Записан", "isMine": False, "view": "department",
-    }
-    for secret in ("7700000000004401", "C34.1", mine["id"], own_id):
-        assert secret not in json.dumps(_slot(response.json()["slots"], today, "09:00"), ensure_ascii=False)
+    assert details["view"] == "full" and details["canManage"] is True and details["isMine"] is False
+    assert (details["id"], details["patientId"], details["patientName"], details["primaryDiagnosis"]) == (
+        own_id, mine["id"], "Пациент Своего Отделения", "C34.1")
+    assert details["treatingDoctorName"] == "Своева Врач Отделения"
 
 
 def test_head_gets_only_occupancy_for_other_department(client):
@@ -1155,7 +1164,7 @@ def test_doctor_of_same_department_still_sees_only_occupancy(client):
         get_conn().execute("SELECT id FROM departments WHERE name = 'Отделение заведующего'").fetchone()["id"]])
     login(client, "doctor.colleague")
     response = client.get("/api/consilium/schedule")
-    assert _slot(response.json()["slots"], date.today().isoformat(), "09:00")["appointment"] is None
+    assert _slot(response.json()["slots"], SLOT_DAY, "09:00")["appointment"] is None
     assert "Пациент Своего Отделения" not in response.text
 
 

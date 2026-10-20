@@ -87,7 +87,10 @@ def _require_writable_patient(
 ) -> None:
     if not policy.can_read_patient(conn, user, patient_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
-    if not policy.can_write_patient(conn, user, patient_id):
+    # Одно чтение области: повторный can_write_patient мог бы увидеть уже
+    # закоммиченную смену лечащего врача и ответить 403 вместо 404 (WP2.3-B2).
+    # Окончательная проверка — внутри транзакции записи.
+    if not policy.can_create_patient(user):
         audit.record(
             conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
             detail="action=consilium_appointment_write", **audit.actor_ctx(user),
@@ -208,10 +211,10 @@ def generate_consilium_schedule(
     _require_manage(conn, user)
     hook = _schedule_audit(conn, user, audit.CONSILIUM_SCHEDULE_GENERATED, lambda f: (None, _detail(
         created=f["created"], interval=f["interval"], slot_date=f["date"], group=f["group"],
-        start=f["start"], end=f["end"],
+        start=f["start"], end=f["end"], skipped_past=f["skipped_past"],
     )))
     try:
-        created = consilium.generate_schedule(
+        result = consilium.generate_schedule(
             conn, user, body.scheduledDate, body.consiliumGroup,
             body.startTime, body.endTime, body.intervalMinutes, audit_hook=hook,
         )
@@ -221,7 +224,10 @@ def generate_consilium_schedule(
         _audit_unavailable("Расписание не изменено")
     except sqlite3.OperationalError as exc:
         _database_busy(exc, "Расписание не изменено")
-    return {"created": created, "slots": consilium.schedule_slots(conn, user)}
+    # skippedPast — время сегодняшнего интервала, которое уже прошло по Москве:
+    # такие слоты не создаются (WP2.3-B2).
+    return {"created": result["created"], "skippedPast": result["skippedPast"],
+            "slots": consilium.schedule_slots(conn, user)}
 
 
 @router.delete("/schedule/{slot_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
@@ -310,6 +316,9 @@ def create_consilium_appointment(
     hook = _schedule_audit(conn, user, audit.CONSILIUM_APPOINTMENT_CREATED, _slot_detail)
     try:
         appointment = consilium.create(conn, user, body, audit_hook=hook)
+    except consilium.ConsiliumAccessLost:
+        # Пациент вышел из области сотрудника, пока запрос ждал блокировку.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except audit.AuditWriteFailed:
@@ -327,7 +336,7 @@ def update_consilium_appointment(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_booking(conn, user)
-    existing = consilium.get_owned(conn, user, appointment_id)
+    existing = consilium.get_manageable(conn, user, appointment_id)
     if existing is None:
         _not_found()
     _require_writable_patient(conn, user, body.patientId)
@@ -486,14 +495,15 @@ def consilium_revision_history(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    """Texts of every return round: only for the chair and for the record's
-    author while the patient is in their scope; anyone else gets 404, as for
-    a record they cannot see. Comments are never written to the audit log."""
+    """Texts of every return round: only for the chair and for whoever manages
+    the record (doctor — own patients, head — own departments; WP2.3-B2);
+    anyone else gets 404, as for a record they cannot see. Comments are never
+    written to the audit log."""
     _require_access(conn, user)
     if policy.can_decide_consilium(user):
         if consilium.get_for_management(conn, appointment_id) is None:
             _not_found()
-    elif consilium.get_owned(conn, user, appointment_id) is None:
+    elif consilium.get_manageable(conn, user, appointment_id) is None:
         _not_found()
     return {"revisions": consilium.revision_history(conn, appointment_id)}
 

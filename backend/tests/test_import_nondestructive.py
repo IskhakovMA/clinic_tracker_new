@@ -22,6 +22,8 @@ from .conftest import (
     preserve_ids_confirmation,
     stage_body,
     unsigned_import,
+    LEGACY_CONSILIUM_DATES,
+    consilium_grid,
 )
 
 
@@ -243,6 +245,7 @@ def test_signed_consilium_records_stay_protected(client):
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
     pid = _create(client, events=[{"date": "2030-01-10"}])["id"]
+    consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     assert client.post("/api/consilium/appointments", json=appointment_payload(pid),
                        headers=client.csrf).status_code in (200, 201)
     raw = _export(client)

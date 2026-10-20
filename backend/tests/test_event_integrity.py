@@ -17,6 +17,8 @@ from .conftest import (
     legacy_export,
     make_patient_payload,
     unsigned_import,
+    LEGACY_CONSILIUM_DATES,
+    consilium_grid,
 )
 from .test_consilium_appointments import appointment_payload
 from .test_preprod2_reminders import _event, _queued, _setup
@@ -129,6 +131,7 @@ def test_signed_consilium_decision_is_untouched_by_event_deletion(client):
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
     patient = _create(client, events=[{"date": "2030-01-10", "time": "10:00"}])
+    consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     created = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf).json()
     create_account("chair.events", "consilium_chair")
     login(client, "chair.events")

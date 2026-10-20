@@ -228,13 +228,15 @@ def cmd_consilium_schedule_check(_args: argparse.Namespace) -> int:
         ("scheduleSlots", "Слотов председателя"),
         ("nonCanonicalSlotDates", "Слотов с нестандартной датой"),
         ("nonCanonicalSlotTimes", "Слотов с нестандартным временем"),
-        ("appointmentsOutsideGrid", "Записей вне сетки"),
+        ("appointmentsOutsideGrid", "Записей вне расписания"),
         ("realSlotsWithSeveralAppointments", "Реальных слотов с несколькими записями"),
         ("appointmentsInSharedRealSlots", "Записей в таких слотах"),
+        ("patientsWithSeveralOpenRecords", "Пациентов с несколькими незавершенными записями"),
+        ("openRecordsInPastSlots", "Незавершенных записей с прошедшим временем (справочно)"),
     )
     for key, label in labels:
         value = report[key]
-        print(f"{label}: {'не применимо (сетка пуста)' if value is None else value}")
+        print(f"{label}: {value}")
     if report["ok"]:
         print("Результат: OK")
         return 0

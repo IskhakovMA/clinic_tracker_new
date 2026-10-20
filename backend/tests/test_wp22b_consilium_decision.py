@@ -25,6 +25,8 @@ from .conftest import (
     mark_decision,
     stage_body,
     unsigned_import,
+    LEGACY_CONSILIUM_DATES,
+    consilium_grid,
 )
 from .test_consilium_appointments import appointment_payload
 from .test_consilium_security import DECISION as SIGN_DECISION
@@ -417,6 +419,7 @@ def test_12_13_time_written_without_date_stays(auth_client):
 def test_14_signed_chair_decision_is_untouched_and_not_created(auth_client):
     create_account("chair.wp22b", "consilium_chair", "Председателев Тест")
     p = _ok_patient(auth_client)
+    consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     booked = auth_client.post("/api/consilium/appointments", json=appointment_payload(p["id"]), headers=auth_client.csrf)
     assert booked.status_code == 201, booked.text
     aid = booked.json()["id"]

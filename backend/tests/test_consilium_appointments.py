@@ -1,8 +1,18 @@
 from io import BytesIO
 from zipfile import ZipFile
-from datetime import date, timedelta
 
-from .conftest import DEV_USERNAME, consilium_version, create_account, get_conn, login, make_patient_payload
+import pytest
+
+from .conftest import (
+    DEV_USERNAME, consilium_version, create_account, get_conn, legacy_consilium_schedule, login,
+    make_patient_payload,
+)
+
+
+@pytest.fixture(autouse=True)
+def _chair_schedule(request):
+    # WP2.3-B2: запись возможна только в реальные слоты председателя.
+    legacy_consilium_schedule(request)
 
 
 def appointment_payload(patient_id, **overrides):
@@ -276,8 +286,11 @@ def test_consilium_frontend_has_navigation_form_and_editing_controls():
 
 def test_consilium_chair_sees_all_returns_signs_and_gets_analytics(client):
     create_account(DEV_USERNAME)
+    # WP2.3-B2: уведомление о доработке получает лечащий врач пациента (и
+    # заведующий), а не автор записи; врач управляет записью, созданной другим.
+    treating = create_account("doctor.revision", "doctor", full_name="Лечащева Врач Доработкина")
     login(client, DEV_USERNAME)
-    patient = create_patient(client)
+    patient = create_patient(client, treatingDoctorUserId=treating)
     created = client.post(
         "/api/consilium/appointments",
         json=appointment_payload(patient["id"]),
@@ -313,6 +326,8 @@ def test_consilium_chair_sees_all_returns_signs_and_gets_analytics(client):
     assert returned.json()["status"] == "needs_revision"
 
     login(client, DEV_USERNAME)
+    assert client.get("/api/internal-notifications?type=consilium_revision").json()["items"] == []
+    login(client, "doctor.revision")
     doctor_item = client.get("/api/consilium/appointments").json()["appointments"][0]
     assert doctor_item["revisionComment"] == "Уточните результаты обследования"
     assert doctor_item["statusLabel"] == "На доработке"
@@ -364,6 +379,9 @@ def test_consilium_chair_sees_all_returns_signs_and_gets_analytics(client):
 
 
 def test_chair_schedule_grid_is_used_for_doctor_booking(client):
+    # Тест генератора: начинаем с пустого расписания (без слотов фикстуры).
+    get_conn().execute("DELETE FROM consilium_schedule_slots")
+    get_conn().commit()
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
     patient = create_patient(client, name="Пациент расписания")
@@ -437,18 +455,15 @@ def test_chair_schedule_grid_is_used_for_doctor_booking(client):
     assert client.delete(f"/api/consilium/schedule/{free['id']}", headers=client.csrf).status_code == 200
 
 
-def test_current_week_grid_is_open_on_every_calendar_day(client):
+def test_schedule_has_no_generated_current_week(client):
+    # WP2.3-B2: вычисляемой текущей недели больше нет — только слоты председателя.
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
     slots = client.get("/api/consilium/schedule").json()["slots"]
-    today = date.today()
-    monday = today - timedelta(days=today.weekday())
-    expected_dates = {(monday + timedelta(days=offset)).isoformat() for offset in range(7)}
-    current_week = [slot for slot in slots if slot["scheduledDate"] in expected_dates]
-    assert {slot["scheduledDate"] for slot in current_week} == expected_dates
-    assert len(current_week) == 7 * 8 * 32
-    assert all(slot["isDefaultWeek"] is True for slot in current_week)
-    assert all(slot["appointment"] is None for slot in current_week)
+    stored = get_conn().execute("SELECT COUNT(*) FROM consilium_schedule_slots").fetchone()[0]
+    assert len(slots) == stored
+    assert all(slot["isDefaultWeek"] is False for slot in slots)
+    assert not [slot for slot in slots if slot["id"].startswith("current-week-")]
 
 
 def test_consilium_chemo_scheme_is_required_for_signature(client):

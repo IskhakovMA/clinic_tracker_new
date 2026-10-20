@@ -21,7 +21,9 @@ from datetime import date, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from .conftest import DEV_USERNAME, consilium_version, create_account, create_department, get_conn, login
+from .conftest import (
+    DEV_USERNAME, consilium_grid, consilium_version, create_account, create_department, get_conn, login,
+)
 from .test_consilium_appointments import appointment_payload, create_patient
 
 DECISION = {"treatmentType": "surgery", "treatmentScheme": "", "treatmentSchemeCode": ""}
@@ -82,7 +84,10 @@ def _med_digest(patient_id):
     return {"patient": patient, "history": history, "events": events}
 
 
-def _world(client):
+def _world(client, schedule=True):
+    """schedule — реальное расписание председателя на FUTURE и FUTURE2 (все группы,
+    09:00–16:45 с шагом 15 минут): с WP2.3-B2 запись без слота невозможна.
+    schedule=False — для проверок генератора и пустого расписания."""
     d1 = create_department("Отделение WP23A 1")
     d2 = create_department("Отделение WP23A 2")
     ids = {
@@ -102,6 +107,8 @@ def _world(client):
             client, name=f"Синтетический Пациент {key}", policyNumber=f"77000000000092{i:02d}",
             treatingDoctorUserId=ids[doctor],
         )["id"]
+    if schedule:
+        consilium_grid((FUTURE, FUTURE2))
     return ids, patients
 
 
@@ -432,8 +439,10 @@ def test_cancel_held_then_reoccupation_takes_the_place(client, monkeypatch):
 
 # ------------------------------------------ 7. last slot and the empty-grid mode
 
-def test_deleting_the_last_slot_keeps_the_empty_grid_mode(client):
-    _, pts = _world(client)
+def test_deleting_the_last_slot_disables_booking(client):
+    # WP2.3-B2 (утверждено): режима пустой сетки больше нет — без слотов
+    # председателя запись невозможна (прежде здесь проверялось обратное, D3).
+    _, pts = _world(client, schedule=False)
     login(client, "chair")
     _generate(client, start="10:00", end="10:30")
     login(client, "doc.a")
@@ -445,14 +454,16 @@ def test_deleting_the_last_slot_keeps_the_empty_grid_mode(client):
     assert _delete_slot(client, _slot_id(FUTURE, "10:00")).status_code == 200
     assert _rows("SELECT id FROM consilium_schedule_slots") == []
 
-    # Режим пустой сетки сохранен как был (D3 — для WP2.3-B): слот не обязателен.
     login(client, "doc.a")
-    assert _book(client, pts["pa1"], FUTURE, "15:55").status_code == 201
-    assert _book(client, pts["pa2"], FUTURE, "10:00").status_code == 201
+    for time in ("15:55", "10:00"):
+        refused = _book(client, pts["pa1"], FUTURE, time)
+        assert refused.status_code == 409
+        assert refused.json()["detail"] == "Расписание председателя не создано: запись недоступна"
+    assert _rows("SELECT id FROM oncology_consilium_appointments") == []
 
 
 def test_last_slot_deletion_vs_booking_burst(client):
-    _, pts = _world(client)
+    _, pts = _world(client, schedule=False)
     doctor, chair = _client_for(client, "doc.a"), _client_for(client, "chair")
     login(client, "chair")
     for _ in range(BURST_ROUNDS):
@@ -464,12 +475,12 @@ def test_last_slot_deletion_vs_booking_burst(client):
         res = _parallel(lambda: _delete_slot(chair, slot), lambda: _book(doctor, pts["pa1"], FUTURE, "10:00"))
         codes = (res[0][0].status_code, res[1][0].status_code)
         # Либо слот занят до удаления (удаление 409), либо удален до записи — тогда
-        # сетка пуста и запись идет в прежнем режиме пустой сетки (201).
-        assert codes in ((409, 201), (200, 201)), codes
-        if codes[0] == 409:
-            assert _orphans() == []
-        else:
+        # расписание пусто и запись отклонена (WP2.3-B2: пустой сетки больше нет).
+        assert codes in ((409, 201), (200, 409)), codes
+        assert _orphans() == []
+        if codes[0] == 200:
             assert _rows("SELECT id FROM consilium_schedule_slots") == []
+            assert _rows("SELECT id FROM oncology_consilium_appointments") == []
 
 
 # ------------------------------------------ 8. strict dates
@@ -544,7 +555,7 @@ def _legacy_rows(pts, ids):
 
 
 def test_schedule_diagnostics_reports_counts_only_and_changes_nothing(client):
-    ids, pts = _world(client)
+    ids, pts = _world(client, schedule=False)
     login(client, "chair")
     _generate(client)
     _legacy_rows(pts, ids)
@@ -562,22 +573,30 @@ def test_schedule_diagnostics_reports_counts_only_and_changes_nothing(client):
     # Сетка — только на FUTURE (10:00, 10:30): все три записи 10.01.2030 и FUTURE 15:55 вне ее.
     assert report["appointmentsOutsideGrid"] == 4
     assert report["realSlotsWithSeveralAppointments"] == 1 and report["appointmentsInSharedRealSlots"] == 3
+    # WP2.3-B2: исторические дубли и прошедшие незавершенные записи (все в будущем).
+    assert report["patientsWithSeveralOpenRecords"] == 0 and report["openRecordsInPastSlots"] == 0
     assert report["ok"] is False
     text = repr(report)
     for secret in ("Синтетический", "C34", "legacy", pts["pa1"], "7700000000009"):
         assert secret not in text
 
 
-def test_schedule_diagnostics_empty_grid_and_clean_data(client):
-    _, pts = _world(client)
+def test_schedule_diagnostics_clean_data_and_empty_grid(client):
+    ids, pts = _world(client)
     login(client, "doc.a")
-    _book(client, pts["pa1"], FUTURE, "15:55")
+    assert _book(client, pts["pa1"], FUTURE, "15:45").status_code == 201
     from backend.app import maintenance
     from pathlib import Path
 
     report = maintenance.consilium_schedule_report(Path(_db_path()))
-    assert report["appointmentsOutsideGrid"] is None  # режим пустой сетки — не нарушение
+    assert report["appointmentsOutsideGrid"] == 0
     assert report["ok"] is True and report["problems"] == []
+    # WP2.3-B2: при пустом расписании каждая запись — вне расписания (режима
+    # пустой сетки больше нет), это несоответствие, а не допустимое состояние.
+    get_conn().execute("DELETE FROM consilium_schedule_slots")
+    get_conn().commit()
+    report = maintenance.consilium_schedule_report(Path(_db_path()))
+    assert report["appointmentsOutsideGrid"] == 1 and report["problems"] == ["appointmentsOutsideGrid"]
 
 
 def test_schedule_check_cli_prints_aggregates(client, capsys, monkeypatch):
@@ -729,7 +748,7 @@ def test_chair_decisions_keep_their_fail_closed_audit(client, action):
 # ------------------------------------------ D7: audit detail
 
 def test_schedule_audit_detail_is_technical_and_complete(client):
-    _, pts = _world(client)
+    _, pts = _world(client, schedule=False)
     login(client, "chair")
     _generate(client)
     _generate(client, FUTURE2, start="09:30", end="10:00")
@@ -742,8 +761,8 @@ def test_schedule_audit_detail_is_technical_and_complete(client):
 
     generated = _audit("consilium_schedule_generated")
     assert [r["detail"] for r in generated] == [
-        f"created=2;interval=30;slot_date={FUTURE};group=thoracic;start=10:00;end=11:00",
-        f"created=1;interval=30;slot_date={FUTURE2};group=thoracic;start=09:30;end=10:00",
+        f"created=2;interval=30;slot_date={FUTURE};group=thoracic;start=10:00;end=11:00;skipped_past=0",
+        f"created=1;interval=30;slot_date={FUTURE2};group=thoracic;start=09:30;end=10:00;skipped_past=0",
     ]
     assert all(r["patient_id"] is None for r in generated)
     deleted = _audit("consilium_schedule_slot_deleted")[-1]
@@ -876,7 +895,8 @@ EXPECTED_RIGHTS = {
     "doc.a": dict(view_schedule=200, create_dept1_patient=201, create_dept2_patient=404, reschedule_docA_record=200,
                   reschedule_docB_record=404, cancel_docB_record=404, generate_slots=403, delete_slot=403,
                   start_review=403, sign=403, return_=403),
-    "head.a": dict(view_schedule=200, create_dept1_patient=201, create_dept2_patient=404, reschedule_docA_record=404,
+    # WP2.3-B2: заведующий управляет записями пациентов своего отделения, кто бы их ни создал.
+    "head.a": dict(view_schedule=200, create_dept1_patient=201, create_dept2_patient=404, reschedule_docA_record=200,
                    reschedule_docB_record=404, cancel_docB_record=404, generate_slots=403, delete_slot=403,
                    start_review=403, sign=403, return_=403),
     "chair": dict(view_schedule=200, create_dept1_patient=403, create_dept2_patient=403, reschedule_docA_record=403,
@@ -927,14 +947,16 @@ APPOINTMENT_KEYS = {
     "signedAt", "referralCompleted", "referralCompletedAt", "archived", "archivedAt", "archivedByUserId",
     "isFavorite", "createdAt", "updatedAt",
     "version",  # WP2.3-B1: версия записи для контроля устаревшей формы
+    "outsideSchedule",  # WP2.3-B2: запись без слота председателя
 }
 
 
 def test_current_client_contract_is_unchanged(client):
-    _, pts = _world(client)
+    _, pts = _world(client, schedule=False)
     login(client, "chair")
     generated = _generate(client)
-    assert generated.status_code == 200 and set(generated.json()) == {"created", "slots"}
+    # WP2.3-B2: + skippedPast (прошедшее время сегодняшнего интервала не создается).
+    assert generated.status_code == 200 and set(generated.json()) == {"created", "skippedPast", "slots"}
     assert generated.json()["created"] == 2
     login(client, "doc.a")
     # Тело запроса — как его собирает static/app.js (submitConsilium).
@@ -976,7 +998,8 @@ def test_current_client_contract_is_unchanged(client):
     schedule = client.get("/api/consilium/schedule").json()["slots"]
     assert schedule and set(schedule[0]) == {
         "id", "scheduledDate", "scheduledTime", "consiliumGroup", "consiliumGroupLabel", "occupied",
-        "appointment", "isDefaultWeek"}
+        "appointment", "isDefaultWeek",
+        "isPast", "bookable"}  # WP2.3-B2: прошедшее время и доступность слота — по Москве
 
 
 # ------------------------------------------ review vs reschedule (decisions not weakened)

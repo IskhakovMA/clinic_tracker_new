@@ -146,7 +146,7 @@ def check_database(db_path: Path) -> dict:
 CONSILIUM_SCHEDULE_PROBLEM_KEYS = (
     "nonCanonicalAppointmentDates", "nonCanonicalAppointmentTimes", "unknownAppointmentGroups",
     "nonCanonicalSlotDates", "nonCanonicalSlotTimes", "appointmentsOutsideGrid",
-    "realSlotsWithSeveralAppointments",
+    "realSlotsWithSeveralAppointments", "patientsWithSeveralOpenRecords",
 )
 
 

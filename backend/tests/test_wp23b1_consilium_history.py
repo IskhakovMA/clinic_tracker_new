@@ -630,7 +630,9 @@ def test_resubmission_only_from_needs_revision(client, state):
     assert _row(aid) == before
 
 
-@pytest.mark.parametrize("who, expected", [("doc.b", 404), ("head.a", 404), ("dev", 404), ("chair", 403),
+# WP2.3-B2: заведующий отделения пациента управляет записью (в том числе подает
+# повторно) независимо от автора; его успешный случай — в test_wp23b2_*.
+@pytest.mark.parametrize("who, expected", [("doc.b", 404), ("dev", 404), ("chair", 403),
                                            ("deputy", 403), ("caop", 403)])
 def test_resubmission_rights_follow_the_existing_rules(client, who, expected):
     _, pts = _world(client)

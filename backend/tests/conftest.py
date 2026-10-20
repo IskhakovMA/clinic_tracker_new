@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 TEST_PASSWORD = "correct-horse-battery"
+# Момент «сейчас» часов учреждения в тестах (Europe/Moscow, UTC+3).
+TEST_MOSCOW_NOW = datetime.fromisoformat("2026-10-01T09:00:00+03:00")
 TEST_EXPORT_SIGNING_KEY = "dGVzdC1vbmx5LWV4cG9ydC1zaWduaW5nLWtleS0zMmI"  # synthetic, 32 bytes base64url
 TEST_EXPORT_SIGNING_KEY_ID = "test-export-key"
 
@@ -32,7 +35,12 @@ def client(tmp_path, monkeypatch):
 
     from fastapi.testclient import TestClient
     from backend.app.main import app
-    from backend.app import config, security
+    from backend.app import clock, config, security
+
+    # Часы учреждения (WP2.3-B2) по умолчанию зафиксированы до всех дат тестовых
+    # записей: проверка «строго в будущем» не зависит от дня запуска. Тесты
+    # времени задают свой момент через set_moscow_now.
+    monkeypatch.setattr(clock, "now_moscow", lambda: TEST_MOSCOW_NOW)
 
     with security._rate_limit_lock:
         security._failed_attempts.clear()
@@ -256,3 +264,63 @@ def consilium_version(appointment_id: str) -> int:
         "SELECT version FROM oncology_consilium_appointments WHERE id = ?", (appointment_id,)
     ).fetchone()
     return row["version"] if row else 1
+
+
+def set_moscow_now(monkeypatch, value: str):
+    """Зафиксировать «сейчас» часов учреждения (ISO с поясом, например
+    '2026-11-12T12:03:00+03:00')."""
+    from backend.app import clock
+    moment = datetime.fromisoformat(value).astimezone(clock.institution_tz())
+    monkeypatch.setattr(clock, "now_moscow", lambda: moment)
+    return moment
+
+
+CONSILIUM_GROUP_VALUES = ("general", "thoracic", "abdominal", "colorectal", "breast", "urology",
+                          "gynecology", "head_neck")
+QUARTER_HOURS = tuple(f"{h:02d}:{m:02d}" for h in range(9, 17) for m in (0, 15, 30, 45))
+
+
+def consilium_grid(dates, times=QUARTER_HOURS, groups=CONSILIUM_GROUP_VALUES) -> int:
+    """Реальное расписание председателя для теста (WP2.3-B2): слоты в таблице
+    consilium_schedule_slots, как после генерации председателем. Без слотов
+    запись невозможна. Возвращает число добавленных слотов."""
+    import uuid
+    conn = get_conn()
+    owner = conn.execute(
+        "SELECT id FROM users ORDER BY CASE role_id WHEN 'consilium_chair' THEN 0 ELSE 1 END, created_at LIMIT 1"
+    ).fetchone()["id"]
+    rows = [(uuid.uuid4().hex, d, t, g, owner, "2026-01-01T00:00:00+00:00")
+            for d in dates for t in times for g in groups]
+    before = conn.total_changes
+    conn.executemany(
+        "INSERT OR IGNORE INTO consilium_schedule_slots "
+        "(id, scheduled_date, scheduled_time, consilium_group, created_by_user_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)", rows)
+    conn.commit()
+    return conn.total_changes - before
+
+
+# Даты записей старых тестов консилиума (до WP2.3-B2 они опирались на вычисляемую
+# неделю и режим пустой сетки). 2026-11-20 заменяет прежнее «сегодня».
+LEGACY_CONSILIUM_DATES = ("2026-11-12", "2026-11-13", "2026-11-20")
+SLOT_DAY = "2026-11-20"
+
+
+def legacy_consilium_schedule(request) -> None:
+    """Для теста с клиентом — председатель и реальное расписание на даты
+    LEGACY_CONSILIUM_DATES (все группы, 09:00–16:45 с шагом 15 минут)."""
+    if not {"client", "auth_client"} & set(request.fixturenames):
+        return
+    # Фикстуры, объявленные тестом до client (например, лимиты через окружение),
+    # должны сработать до запуска приложения — разрешаем их первыми.
+    import inspect
+    for name in inspect.signature(request.function).parameters:
+        if name in ("client", "auth_client"):
+            break
+        try:
+            request.getfixturevalue(name)
+        except pytest.FixtureLookupError:
+            pass  # параметр parametrize, а не фикстура
+    request.getfixturevalue("client")
+    create_account("schedule.fixture", "consilium_chair", "Расписаниев Председатель Фикстурович")
+    consilium_grid(LEGACY_CONSILIUM_DATES)
