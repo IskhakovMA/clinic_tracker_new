@@ -217,10 +217,12 @@ def event_add_body(client, patient_id: str, occ: int = 0, purpose: str = "add") 
     return {"expectedEventIds": [e["id"] for e in events], "purpose": purpose}
 
 
-def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, historical_decisions: int | None = None):
+def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, historical_decisions: int | None = None,
+                    repeat: bool = False):
     """Импорт файла без подписи системы так, как его делает интерфейс:
     preview → явное подтверждение именно этого файла и режима → commit.
-    historical_decisions — отдельное подтверждение переноса этого числа решений ОК (WP2.2-B)."""
+    historical_decisions — отдельное подтверждение переноса этого числа решений ОК (WP2.2-B).
+    repeat — осознанный повтор файла, который этот сотрудник уже импортировал (WP2.4-B, U4)."""
     import hashlib
     sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     body = {"raw": raw, "mode": mode}
@@ -231,6 +233,9 @@ def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, histor
             "confirmed": True, "fileSha256": sha, "mode": mode,
             "action": "import_historical_consilium_decisions", "decisions": historical_decisions,
         }
+    if repeat:
+        body["repeatImportConfirmation"] = {"confirmed": True, "fileSha256": sha, "mode": mode,
+                                            "action": "repeat_processed_file"}
     return client.post("/api/import/commit", json=body, headers=client.csrf)
 
 

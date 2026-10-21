@@ -142,8 +142,10 @@ def test_identical_update_is_a_no_op_and_new_events_are_appended(auth_client):
     events = _events(auth_client, pid)
     assert [e["date"] for e in events] == ["2030-01-10", "2030-03-01"]
     assert events[0]["id"] == before["events"][0][0]                   # прежнее событие не пересоздано
-    # Повтор того же файла — карточка уже совпадает, дубликата нет.
-    assert unsigned_import(auth_client, raw, "update").json()["unchanged"] == 1
+    # Повтор того же файла — карточка уже совпадает, дубликата нет. WP2.4-B (U4): повтор
+    # своего обработанного файла выполняется только с отдельным подтверждением.
+    assert unsigned_import(auth_client, raw, "update").status_code == 428
+    assert unsigned_import(auth_client, raw, "update", repeat=True).json()["unchanged"] == 1
     assert len(_events(auth_client, pid)) == 2
 
 

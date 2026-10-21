@@ -2,7 +2,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from .. import audit, config, policy, security, users
+from .. import audit, config, idempotency, policy, security, users
 from ..deps import get_db, require_csrf, require_user
 from ..models import ChangePasswordIn, LoginIn
 
@@ -87,6 +87,7 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     security.reset_attempts(rate_key)
     security.release_login_attempt(client_host)
     security.purge_expired_sessions(conn)
+    idempotency.purge_expired(conn)   # WP2.4-B: только истекшие ключи
     try:
         session_token, csrf_token, _expires = security.create_session(
             conn, row["id"], verified_password_hash=row["password_hash"]

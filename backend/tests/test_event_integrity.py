@@ -398,6 +398,9 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
             conn.execute(f"ALTER TABLE events DROP COLUMN {column}")
         _strip_v22_consilium(conn)
         _strip_v23_patients(conn)
+        # WP2.4-B (v24): таблицы ключей идемпотентности и истории файлов — вычитаются целиком.
+        conn.execute("DROP TABLE idempotency_keys")
+        conn.execute("DROP TABLE import_files_processed")
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
     conn.close()

@@ -26,6 +26,11 @@ event (WP2.1) and, since WP2.2-A, stage transitions (with the OK decision of
 the legacy contract), event field edits, adding an event, stage notes and
 checklists, and the consilium review start, signature and return for revision.
 
+Replays of an Idempotency-Key (patient_create_replayed, import_replayed,
+migration_replayed) and a confirmed repeat of a processed import file
+(import_repeat_confirmed) are fail-closed too (WP2.4-B): no replay result is
+returned without its audit row. Keys themselves are never written to audit.
+
 Creating a patient card is fail-closed since WP2.4-A: services.patient_create
 writes exactly one `patient_created` row (current actor, patient id,
 treating doctor id — no names, policy number or medical fields) inside the
@@ -53,6 +58,8 @@ LOGIN_RATE_LIMITED = "login_rate_limited"
 LOGOUT = "logout"
 PASSWORD_CHANGED = "password_changed"
 PATIENT_CREATED = "patient_created"
+# WP2.4-B: повтор создания с тем же Idempotency-Key — обязательная запись (fail-closed).
+PATIENT_CREATE_REPLAYED = "patient_create_replayed"
 PATIENT_UPDATED = "patient_updated"
 PATIENT_DIAGNOSIS_CHANGED = "patient_diagnosis_changed"
 CONSILIUM_CODE_CHANGED = "consilium_code_changed"
@@ -69,6 +76,11 @@ IMPORT_COMMITTED = "import_committed"
 IMPORT_IDS_PRESERVED = "import_internal_ids_preserved"
 EXPORT = "export"
 MIGRATION_COMMITTED = "migration_committed"
+# WP2.4-B: повтор импорта или переноса по ключу и осознанный повтор ранее
+# обработанного файла — обязательные записи (fail-closed), без ключей и данных пациентов.
+IMPORT_REPLAYED = "import_replayed"
+MIGRATION_REPLAYED = "migration_replayed"
+IMPORT_REPEAT_CONFIRMED = "import_repeat_confirmed"
 BACKUP_CREATED = "backup_created"
 RESTORE_PERFORMED = "restore_performed"
 DB_INTEGRITY_FAILED = "db_integrity_failed"

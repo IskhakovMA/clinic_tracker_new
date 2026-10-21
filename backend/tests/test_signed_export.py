@@ -431,8 +431,9 @@ def test_import_is_not_saved_without_its_audit_row(auth_client):
 
 def test_failure_during_signed_import_rolls_back(auth_client, monkeypatch):
     from backend.app import importexport
-    _create(auth_client, name="Первый", events=[{"date": "2030-01-10"}])
-    _create(auth_client, name="Второй", events=[{"date": "2030-02-10"}])
+    # WP2.4-B (U9): разные синтетические полисы — файл с одинаковыми полисами отклоняется до записи.
+    _create(auth_client, name="Первый", policyNumber="7700000000024101", events=[{"date": "2030-01-10"}])
+    _create(auth_client, name="Второй", policyNumber="7700000000024102", events=[{"date": "2030-02-10"}])
     raw = _export(auth_client)
     original, calls = importexport._insert_full_patient, []
 

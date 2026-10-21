@@ -383,6 +383,50 @@ CREATE TABLE IF NOT EXISTS consilium_resubmissions (
     UNIQUE (appointment_id, round)
 );
 
+-- WP2.4-B (v24). Ключи идемпотентности: только хеши ключа и запроса, без тел
+-- запросов и данных пациентов. Одна строка на ключ в области (сотрудник,
+-- операция); результат однозначен: у создания — ID карточки, у импорта и
+-- переноса — ID выполненного импорта и сохраненный обезличенный итог.
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+    actor_user_id TEXT NOT NULL REFERENCES users(id),
+    operation TEXT NOT NULL CHECK (operation IN ('patient.create', 'import.commit', 'migration.commit')),
+    key_hash TEXT NOT NULL CHECK (length(key_hash) = 64),
+    request_hash TEXT NOT NULL CHECK (length(request_hash) = 64),
+    state TEXT NOT NULL CHECK (state IN ('completed', 'refused')),
+    status_code INTEGER NOT NULL CHECK (status_code BETWEEN 200 AND 499),
+    result_patient_id TEXT,
+    result_import_id TEXT,
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL CHECK (expires_at > created_at),
+    PRIMARY KEY (actor_user_id, operation, key_hash),
+    CHECK (
+        (state = 'refused' AND result_patient_id IS NULL AND result_import_id IS NULL AND result_json IS NULL)
+        OR (state = 'completed' AND operation = 'patient.create' AND status_code = 201
+            AND result_patient_id IS NOT NULL AND result_import_id IS NULL AND result_json IS NULL)
+        OR (state = 'completed' AND operation IN ('import.commit', 'migration.commit') AND status_code = 200
+            AND result_patient_id IS NULL AND result_import_id IS NOT NULL AND result_json IS NOT NULL)
+    )
+);
+
+-- WP2.4-B (v24). Техническая история обработанных файлов импорта и переноса:
+-- исполнитель, SHA-256 файла, режим, ID импорта, время и счетчики. Ни
+-- содержимого файла, ни значений полей пациентов. Срок ключей ее не удаляет.
+CREATE TABLE IF NOT EXISTS import_files_processed (
+    import_id TEXT PRIMARY KEY,
+    actor_user_id TEXT NOT NULL REFERENCES users(id),
+    operation TEXT NOT NULL CHECK (operation IN ('import', 'migration')),
+    file_sha256 TEXT NOT NULL CHECK (length(file_sha256) = 64),
+    mode TEXT NOT NULL CHECK (mode IN ('add', 'update', 'replace')),
+    processed_at TEXT NOT NULL,
+    added INTEGER NOT NULL CHECK (added >= 0),
+    updated INTEGER NOT NULL CHECK (updated >= 0),
+    skipped INTEGER NOT NULL CHECK (skipped >= 0),
+    unchanged INTEGER NOT NULL CHECK (unchanged >= 0),
+    appended_events INTEGER NOT NULL CHECK (appended_events >= 0),
+    repeat_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (repeat_confirmed IN (0, 1))
+);
+
 """
 
 # Индексы создаются после миграции: часть из них ссылается на колонки,
@@ -492,6 +536,8 @@ REQUIRED_TABLES = (
     "consilium_schedule_slots",
     "consilium_backdating_reasons",
     "consilium_resubmissions",
+    "idempotency_keys",
+    "import_files_processed",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -1520,6 +1566,50 @@ def migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
         _ensure_trigger(conn, name, sql)
 
 
+# WP2.4-B (v24): завершенный ключ идемпотентности не меняется (его результат —
+# единственный ответ на повтор); отказ (refused, для WP2.4-C) может завершиться.
+# История обработанных файлов только дополняется.
+IDEMPOTENCY_TRIGGERS = (
+    ("trg_idempotency_completed_immutable", """
+        CREATE TRIGGER IF NOT EXISTS trg_idempotency_completed_immutable
+        BEFORE UPDATE ON idempotency_keys
+        WHEN OLD.state = 'completed'
+        BEGIN
+            SELECT RAISE(ABORT, 'idempotency_result_immutable');
+        END"""),
+    ("trg_import_files_processed_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_import_files_processed_no_update
+        BEFORE UPDATE ON import_files_processed
+        BEGIN
+            SELECT RAISE(ABORT, 'import_file_history_immutable');
+        END"""),
+)
+
+IDEMPOTENCY_INDEX_SQL = (
+    # Одна карточка и один импорт — результат не более чем одного ключа.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_idempotency_result_patient "
+    "ON idempotency_keys(result_patient_id) WHERE result_patient_id IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_idempotency_result_import "
+    "ON idempotency_keys(result_import_id) WHERE result_import_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_idempotency_expires ON idempotency_keys(expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_import_files_actor_sha ON import_files_processed(actor_user_id, file_sha256)",
+)
+
+
+def migrate_v23_to_v24(conn: sqlite3.Connection) -> None:
+    """v23 → v24: idempotency of creation and import (WP2.4-B).
+
+    Only adds: the two tables are created by SCHEMA_SQL (IF NOT EXISTS);
+    here — their indexes and triggers. No existing row is touched; repeated
+    runs change nothing."""
+    if not _table_columns(conn, "idempotency_keys") or not _table_columns(conn, "import_files_processed"):
+        return
+    for sql in IDEMPOTENCY_INDEX_SQL:
+        conn.execute(sql)
+    for name, sql in IDEMPOTENCY_TRIGGERS:
+        _ensure_trigger(conn, name, sql)
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
@@ -1605,6 +1695,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v20_to_v21(conn)         # separate manual OK decision: author, time, source
         migrate_v21_to_v22(conn)         # repeated consiliums, record version, resubmissions
         migrate_v22_to_v23(conn)         # provenance of patient cards: author and source
+        migrate_v23_to_v24(conn)         # idempotency keys, history of processed import files
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть

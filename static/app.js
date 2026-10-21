@@ -135,6 +135,48 @@ const apiPatch = (path, body) => apiFetch(path, { method: 'PATCH', body: JSON.st
 const apiPut = (path, body) => apiFetch(path, { method: 'PUT', body: JSON.stringify(body === undefined ? {} : body) });
 const apiDelete = (path) => apiFetch(path, { method: 'DELETE' });
 
+/* WP2.4-B: ключ идемпотентности (UUID v4) для операций, которые нельзя выполнить
+   дважды: создание пациента, импорт и перенос данных. Ключ передается только в
+   заголовке Idempotency-Key — не в адресе, не в журналах и не в текстах ошибок. */
+function newIdempotencyKey() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+const IDEMPOTENT_TIMEOUT_MS = 30000;
+const NETWORK_FAILURE_MESSAGE = 'Нет ответа от сервера. Повторите отправку: повтор с теми же данными безопасен и не создаст копию.';
+
+// POST с ключом идемпотентности. Если ответ не получен (сеть, таймаут), запрос
+// один раз повторяется с тем же ключом: сервер вернет результат первого
+// выполнения, а не выполнит операцию снова. Ответ сервера с ошибкой не повторяется.
+async function apiPostIdempotent(path, body, key) {
+    const text = JSON.stringify(body === undefined ? {} : body);
+    let lastError = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), IDEMPOTENT_TIMEOUT_MS);
+        try {
+            return await apiFetch(path, { method: 'POST', body: text, signal: controller.signal,
+                headers: { 'Idempotency-Key': key } });
+        } catch (err) {
+            if (err && err.status) throw err;          // сервер ответил: повтор не нужен
+            lastError = err;
+            if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1000));
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+    const failure = new Error(NETWORK_FAILURE_MESSAGE);
+    failure.network = true;
+    failure.cause = lastError;
+    throw failure;
+}
+
 /* --------------------------------------------------------------------------
    Модальные окна, подтверждения, уведомления
    -------------------------------------------------------------------------- */
@@ -2057,6 +2099,8 @@ const app = {
     async runLegacyMigration() {
         const raw = localStorage.getItem('patients');
         if (!raw) return;
+        // Стадия 1 — проверка и подготовка переноса. Ошибка здесь: перенос не выполнялся.
+        let body;
         try {
             const preview = await apiPost('/api/migrate/localstorage/preview', { raw });
             if (!preview.valid) {
@@ -2070,7 +2114,7 @@ const app = {
                 danger: false,
             });
             if (!proceed) return;
-            const body = { raw, mode: 'add' };
+            body = { raw, mode: 'add' };
             const historical = preview.historicalDecisions;
             if (historical && historical.required) {
                 // Решения ОК в локальных данных — только с отдельным подтверждением переноса.
@@ -2086,24 +2130,68 @@ const app = {
                     action: 'import_historical_consilium_decisions', decisions: historical.decisions,
                 };
             }
+        } catch (e) {
+            ui.toast('Перенос не выполнен: ' + e.message, 'danger');
+            return;
+        }
 
-            await apiPost('/api/migrate/localstorage/commit', body);
+        // Стадия 2 — отправка. WP2.4-B: ключ этой операции; потерянный ответ безопасно
+        // повторяется с ним же. Без подтвержденного ответа ключ сохраняется.
+        const bodyText = JSON.stringify(body);
+        if (!this.migrationKey || this.migrationSentBody !== bodyText) this.migrationKey = newIdempotencyKey();
+        this.migrationSentBody = bodyText;
+        if (this.migrationPending) return;
+        this.migrationPending = true;
+        try {
+            await apiPostIdempotent('/api/migrate/localstorage/commit', body, this.migrationKey);
+        } catch (e) {
+            ui.toast('Перенос не выполнен: ' + e.message, 'danger');
+            return;
+        } finally {
+            this.migrationPending = false;
+        }
+
+        // Стадия 3 — сервер подтвердил перенос: операция закрыта. Дальше ни обновление
+        // экрана, ни диалог, ни хранилище браузера не выдаются за ошибку переноса и
+        // не ведут к повторному переносу (B-02, B-03).
+        this.migrationKey = null;
+        this.migrationSentBody = null;
+        ui.toast('Данные перенесены на сервер.', 'good');
+        await this.refreshAfterSavedOperation('Перенос сохранен', async () => {
             await this.loadPatients();
             await this.loadActivity();
+        });
+        await this.removeLegacyLocalCopy();
+        await this.refreshAfterSavedOperation('Перенос сохранен', async () => this.renderMigrationPanel());
+    },
 
+    // B-03: необязательное удаление локальной копии после подтвержденного переноса —
+    // только с отдельного согласия пользователя; сбой диалога или хранилища браузера
+    // сообщается как невыполненное удаление, перенос остается сохраненным.
+    async removeLegacyLocalCopy() {
+        try {
             const removeLocal = await ui.confirm({
                 title: 'Удалить локальную копию?',
                 text: 'Перенос завершён. Удалить исходные данные из хранилища этого браузера? Их можно оставить как резервную копию.',
                 okLabel: 'Удалить копию',
             });
-            if (removeLocal) {
-                localStorage.removeItem('patients');
-                localStorage.removeItem('user');
-            }
-            this.renderMigrationPanel();
-            ui.toast('Данные перенесены на сервер.', 'good');
+            if (!removeLocal) return;
+            localStorage.removeItem('patients');
+            localStorage.removeItem('user');
         } catch (e) {
-            ui.toast('Перенос не выполнен: ' + e.message, 'danger');
+            ui.toast('Перенос сохранён, но не удалось удалить локальную копию. Повторять перенос не нужно.', 'warning');
+        }
+    },
+
+    // B-02: обновление экрана после операции, которую сервер уже подтвердил.
+    // Его сбой сообщается отдельно и не предлагает выполнить операцию заново.
+    async refreshAfterSavedOperation(savedLabel, refresh) {
+        try {
+            await refresh();
+            return true;
+        } catch (e) {
+            ui.toast(`${savedLabel}, но не удалось обновить отображение. Обновите страницу; повторять операцию не нужно.`, 'warning');
+            return false;
         }
     },
 
@@ -6275,6 +6363,9 @@ const app = {
     /* ================================================== НОВЫЙ ПАЦИЕНТ (МОДАЛКА) */
 
     openAddModal() {
+        // WP2.4-B: новый ключ для новой формы; повтор той же отправки — с тем же ключом.
+        this.addPatientKey = newIdempotencyKey();
+        this.addPatientSentBody = null;
         $('addForm').reset();
         $('addFormError').classList.add('is-hidden');
         this.clearPgiResultDateError();
@@ -6511,10 +6602,16 @@ const app = {
             events: this.buildEventsFromForm(stage),
         };
 
+        // Изменились отправляемые данные — это новая операция и новый ключ.
+        const payloadText = JSON.stringify(payload);
+        if (!this.addPatientKey || (this.addPatientSentBody !== null && this.addPatientSentBody !== payloadText)) {
+            this.addPatientKey = newIdempotencyKey();
+        }
+        this.addPatientSentBody = payloadText;
         this.setAddPatientPending(true);
         let created;
         try {
-            created = await apiPost('/api/patients', payload);
+            created = await apiPostIdempotent('/api/patients', payload, this.addPatientKey);
         } catch (e) {
             // Введенные данные остаются в форме, кнопка снова доступна.
             this.setAddPatientPending(false);
@@ -6522,6 +6619,8 @@ const app = {
             return;
         }
         this.setAddPatientPending(false);
+        this.addPatientKey = null;
+        this.addPatientSentBody = null;
         this.replacePatientInCache(created);
         ui.closeModal('addModal');
         ui.toast('Пациент добавлен.', 'good');
@@ -8927,6 +9026,7 @@ const app = {
         $('importUnsignedConfirm').checked = false;
         $('importPreserveIdsConfirm').checked = false;
         $('importHistoricalDecisionsConfirm').checked = false;
+        $('importRepeatConfirm').checked = false;
         $('importPreserveIdsField').classList.add('is-hidden');
         confirmField.classList.add('is-hidden');
         if (!provenance) {
@@ -9040,13 +9140,21 @@ const app = {
         const historical = (this.importReport && this.importReport.historicalDecisions || {})[mode];
         const historicalRequired = Boolean(historical && historical.required);
         $('importHistoricalDecisionsField').classList.toggle('is-hidden', !historicalRequired);
+        // WP2.4-B (U4): вы уже импортировали этот файл — повтор только с отдельной отметкой.
+        const previous = this.importReport && this.importReport.previouslyImported;
+        const repeatRequired = Boolean(previous);
+        $('importRepeatField').classList.toggle('is-hidden', !repeatRequired);
+        // WP2.4-B (U9): повторяющиеся номера полисов в записях файла — режим, создающий карточки, недоступен.
+        const policyDuplicates = (this.importReport && this.importReport.filePolicyDuplicates || {})[mode];
+        const policyDuplicatesBlocked = Boolean(policyDuplicates && policyDuplicates.blocked);
         const provenance = this.importReport && this.importReport.provenance;
         // Неподписанный файл: без отдельной отметки подтверждения кнопка недоступна.
         const needsConfirmation = (Boolean(provenance && provenance.confirmationRequired) && !$('importUnsignedConfirm').checked)
             || (preserveRequired && !$('importPreserveIdsConfirm').checked)
-            || (historicalRequired && !$('importHistoricalDecisionsConfirm').checked);
+            || (historicalRequired && !$('importHistoricalDecisionsConfirm').checked)
+            || (repeatRequired && !$('importRepeatConfirm').checked);
         const blocked = consiliumBlocked || archiveBlocked || duplicateBlocked || accessBlocked || overwriteBlocked
-            || needsConfirmation;
+            || policyDuplicatesBlocked || needsConfirmation || Boolean(this.importCommitPending);
         $('confirmImportCommitBtn').disabled = blocked;
         const overwriteAlert = overwrite && (overwrite.blocked || mode === 'update')
             ? el('div', { class: `alert ${overwrite.blocked ? 'alert--danger' : 'alert--info'}`, role: overwrite.blocked ? 'alert' : null }, [
@@ -9096,7 +9204,20 @@ const app = {
                 el('p', { text: historical.message }),
             ])
             : null;
-        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, preserveAlert, historicalAlert].filter(Boolean);
+        const repeatAlert = repeatRequired
+            ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: 'Вы уже импортировали этот файл' }),
+                el('p', { text: `Предыдущий импорт: ${this.formatDateTime(previous.importedAt)}; добавлено ${previous.added}, обновлено ${previous.updated}. Повторный импорт выполняется только после отдельной отметки ниже.` }),
+            ])
+            : null;
+        const policyDuplicatesAlert = policyDuplicatesBlocked
+            ? el('div', { class: 'alert alert--danger', role: 'alert' }, [
+                el('strong', { text: 'Этот режим импорта недоступен: повторяющиеся номера полисов в файле' }),
+                el('p', { text: policyDuplicates.reason }),
+            ])
+            : null;
+        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, policyDuplicatesAlert, repeatAlert,
+            preserveAlert, historicalAlert].filter(Boolean);
         if (!impact || !impact.records) {
             box.replaceChildren(...extra);
             return;
@@ -9120,9 +9241,12 @@ const app = {
         ui.closeModal('importReviewModal');
         this.pendingImportRaw = null;
         this.importReport = null;
+        this.importCommitKey = null;
+        this.importCommitSentBody = null;
         $('importUnsignedConfirm').checked = false;
         $('importPreserveIdsConfirm').checked = false;
         $('importHistoricalDecisionsConfirm').checked = false;
+        $('importRepeatConfirm').checked = false;
     },
 
     async confirmImportCommit() {
@@ -9160,17 +9284,43 @@ const app = {
                 action: 'import_historical_consilium_decisions', decisions: historical.decisions,
             };
         }
+        if (this.importReport && this.importReport.previouslyImported) {
+            if (!$('importRepeatConfirm').checked) return;
+            // WP2.4-B (U4): осознанный повтор файла, который вы уже импортировали: этот файл и режим.
+            body.repeatImportConfirmation = {
+                confirmed: true, fileSha256: provenance.fileSha256, mode, action: 'repeat_processed_file',
+            };
+        }
+        // WP2.4-B: ключ этой операции импорта. Те же данные — тот же ключ (безопасный
+        // повтор потерянного ответа); другой режим или подтверждения — новый ключ.
+        const bodyText = JSON.stringify(body);
+        if (!this.importCommitKey || this.importCommitSentBody !== bodyText) this.importCommitKey = newIdempotencyKey();
+        this.importCommitSentBody = bodyText;
+        if (this.importCommitPending) return;
+        this.importCommitPending = true;
+        $('confirmImportCommitBtn').disabled = true;
+        let result = null;
         try {
-            const result = await apiPost('/api/import/commit', body);
-            this.closeImportReviewModal();
+            result = await apiPostIdempotent('/api/import/commit', body, this.importCommitKey);
+        } catch (e) {
+            // Импорт не подтвержден сервером: окно и ключ остаются, повтор тех же
+            // данных безопасен (при уже выполненном импорте сервер вернет его итог).
+            ui.toast('Импорт не выполнен: ' + e.message, 'danger');
+        } finally {
+            this.importCommitPending = false;
+            if (!result && this.importReport) this.renderImportConsiliumImpact($('importModeSelect').value);
+        }
+        if (!result) return;
+        // B-02: сервер подтвердил импорт — операция закрыта (окно и ключ сброшены).
+        // Ошибка обновления экрана дальше не выдается за ошибку импорта.
+        this.closeImportReviewModal();
+        ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`, 'good');
+        await this.refreshAfterSavedOperation('Импорт сохранен', async () => {
             await this.loadPatients();
             await this.loadActivity();
             this.fillStaticSelects();
             this.showView('patients');
-            ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`, 'good');
-        } catch (e) {
-            ui.toast('Импорт не выполнен: ' + e.message, 'danger');
-        }
+        });
     },
     /* =============================================================== ПРИВЯЗКА */
 
@@ -9712,11 +9862,13 @@ const app = {
             $('importUnsignedConfirm').checked = false;
             $('importPreserveIdsConfirm').checked = false;
             $('importHistoricalDecisionsConfirm').checked = false;
+            $('importRepeatConfirm').checked = false;
             this.updateImportModeHint();
         });
         on('importUnsignedConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
         on('importPreserveIdsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
         on('importHistoricalDecisionsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
+        on('importRepeatConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
 
         // Журнал аудита
         on('auditRefreshBtn', 'click', () => this.renderAudit());

@@ -461,7 +461,8 @@ def test_migration_v22_to_v23_keeps_every_clinical_row(client, tmp_path):
     path, conn = _fixture_db(tmp_path)
     before = {t: _clinical(conn, t) for t in CLINICAL_TABLES}
     _init(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 23
+    # WP2.4-B: цепочка доводит v22 до текущей схемы (v24), а не только до v23.
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 24
     for table in CLINICAL_TABLES:
         assert _clinical(conn, table) == before[table], table
     assert [tuple(r) for r in conn.execute("SELECT DISTINCT creation_source, created_by_user_id FROM patients")] == [
@@ -518,7 +519,7 @@ def test_restore_of_a_v22_backup_migrates_and_keeps_history(auth_client, tmp_pat
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
     conn.row_factory = sqlite3.Row
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 23
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 24   # WP2.4-B: текущая схема
     assert [tuple(r) for r in conn.execute("SELECT DISTINCT creation_source, created_by_user_id FROM patients")] == [
         ("legacy", None)]
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1
@@ -633,7 +634,8 @@ def test_static_client_guards_double_submission():
     block = js[js.index("    async addPatient(event) {"):]
     block = block[:block.index("\n    },\n")]
     assert "if (this.addPatientPending) return;" in block
-    assert block.index("this.setAddPatientPending(true)") < block.index("apiPost('/api/patients'")
+    # WP2.4-B: запрос создания отправляется с ключом идемпотентности (apiPostIdempotent).
+    assert block.index("this.setAddPatientPending(true)") < block.index("apiPostIdempotent('/api/patients'")
     # Ошибка: кнопка снова доступна, введенные поля не сбрасываются (форма не закрывается и не очищается).
     error_branch = block[block.index("} catch (e) {"):block.index("return;", block.index("} catch (e) {"))]
     assert "setAddPatientPending(false)" in error_branch and "reset()" not in error_branch
@@ -641,8 +643,9 @@ def test_static_client_guards_double_submission():
     setter = js[js.index("    setAddPatientPending(pending) {"):]
     setter = setter[:setter.index("\n    },\n")]
     assert "button.disabled = pending" in setter and "aria-busy" in setter
-    # Этап A не обещает защиты от сетевых повторов: ключа идемпотентности нет.
-    assert "Idempotency-Key" not in js
+    # WP2.4-B заменил этап A: от сетевых повторов защищает ключ идемпотентности, и он
+    # передается только заголовком (подробные проверки — test_wp24b_idempotency).
+    assert "headers: { 'Idempotency-Key': key }" in js and "console." not in js[js.index("function newIdempotencyKey"):js.index("async function apiPostIdempotent")]
     assert "ё" not in "Добавление…"
 
 

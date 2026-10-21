@@ -7,12 +7,13 @@ import sqlite3
 import uuid
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 
-from .. import audit, config, export_signing, importexport, policy, store
+from .. import audit, config, export_signing, idempotency, importexport, policy, store
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
+from ..services import import_operations
 
 router = APIRouter(prefix="/api", tags=["import-export"])
 
@@ -126,17 +127,34 @@ def import_preview(
     report["idPreservation"] = {mode: _id_preservation(inspection, document, mode) for mode in modes}
     # WP2.2-B: перенос исторических решений ОК — только с отдельным подтверждением.
     report["historicalDecisions"] = {mode: historical_decisions_view(document, mode) for mode in modes}
+    # WP2.4-B (U9): повторяющиеся непустые полисы внутри файла — по самому файлу, без поиска в базе.
+    report["filePolicyDuplicates"] = {mode: importexport.file_policy_duplicates_impact(document, mode)
+                                      for mode in modes}
+    # WP2.4-B (U4): этот же сотрудник уже импортировал этот файл — только его собственная история.
+    report["previouslyImported"] = import_operations.previous_processing(conn, user.id, provenance["fileSha256"])
     return {"valid": True, "errors": [], "provenance": provenance, **report}
 
 
 @router.post("/import/commit", dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("import_commit", 10))])
 def import_commit(
     body: ImportCommitRequest,
+    response: Response,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
+    idempotency_key: str | None = Header(None, alias=idempotency.KEY_HEADER),
 ):
+    """Импорт файла. WP2.4-B: с заголовком Idempotency-Key повтор того же
+    commit возвращает сохраненный итог (200, Idempotent-Replayed: true,
+    тот же Import-Id) без повторного импорта; тот же ключ с другим
+    содержимым — 422. Повтор файла, который сотрудник уже импортировал, —
+    только с подтверждением repeatImportConfirmation (иначе 428)."""
     if not policy.can_import(user, body.mode):
         _deny(conn, user, f"action=import mode={body.mode}")
+    try:
+        key = idempotency.parse_key(idempotency_key)
+    except idempotency.InvalidIdempotencyKey as e:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            content={"detail": str(e), "code": idempotency.INVALID_KEY_CODE})
     ctx = audit.actor_ctx(user)
     try:
         inspection = importexport.inspect_import(body.raw)
@@ -200,9 +218,14 @@ def import_commit(
     import_id = uuid.uuid4().hex
     historical = historical_decisions_request(body, provenance, import_id)
 
+    # B-01: обязательный аудит импорта — от имени сотрудника, перечитанного под
+    # блокировкой записи (import_operations.run передает его в execute).
+    acting = {"ctx": ctx}
+
     def audit_hook(result: dict) -> None:
         # Обязательная запись (fail-closed) в транзакции импорта: без неё
         # импорт не сохраняется. Только счётчики, статус и хеш файла.
+        ctx = acting["ctx"]
         audit.record_required(
             conn, audit.IMPORT_COMMITTED,
             detail=(f"mode={body.mode} added={result['added']} updated={result['updated']} "
@@ -226,10 +249,50 @@ def import_commit(
                     **ctx,
                 )
 
+    def execute(before_write, fresh: policy.CurrentUser) -> dict:
+        acting["ctx"] = audit.actor_ctx(fresh)
+        return importexport.commit_import(
+            conn, document, body.mode, fresh, ids=inspection.ids, audit_hook=audit_hook,
+            preserve_ids_confirmed=preserve_confirmed, historical_decisions=historical,
+            creation_source="import", in_open_transaction=True, before_write=before_write)
+
+    repeat = body.repeatImportConfirmation
+    repeat_confirmed = bool(repeat is not None and repeat.fileSha256 == provenance["fileSha256"]
+                            and repeat.mode == body.mode)
+    # Отпечаток операции: содержимое файла (его SHA-256), режим и все подтверждения.
+    fingerprint = {**body.model_dump(mode="json", exclude={"raw"}), "fileSha256": provenance["fileSha256"]}
     try:
-        result = importexport.commit_import(conn, document, body.mode, user, ids=inspection.ids,
-                                            audit_hook=audit_hook, preserve_ids_confirmed=preserve_confirmed,
-                                            historical_decisions=historical, creation_source="import")
+        outcome = import_operations.run(
+            conn, actor=user, operation="import", mode=body.mode, file_sha256=provenance["fileSha256"],
+            import_id=import_id, key=key, fingerprint=fingerprint, repeat_confirmed=repeat_confirmed,
+            check_file_history=True,
+            execute=execute,
+            respond=lambda result: {**result, "provenance": provenance["status"]},
+        )
+    except idempotency.IdempotencyKeyReused as e:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            content={"detail": str(e), "code": idempotency.REUSED_KEY_CODE})
+    except import_operations.ImportForbidden:
+        _deny(conn, user, f"action=import mode={body.mode} reason=rights_changed")
+    except import_operations.ReplayAuditUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Не удалось подтвердить результат импорта: журнал аудита недоступен. "
+                   "Повторите попытку позже тем же запросом.",
+        )
+    except import_operations.FileAlreadyImported as e:
+        audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
+                     detail=f"mode={body.mode} {file_ref} reason=file_already_imported", **ctx)
+        return JSONResponse(status_code=status.HTTP_428_PRECONDITION_REQUIRED,
+                            content={"detail": str(e), "code": import_operations.FILE_ALREADY_IMPORTED_CODE,
+                                     "previouslyImported": e.previous})
+    except importexport.ImportFilePolicyDuplicateError as e:
+        audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
+                     detail=f"mode={body.mode} {file_ref} duplicate_policy_rows={sum(len(g) for g in e.groups)}",
+                     **ctx)
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            content={"detail": str(e), "code": importexport.FILE_POLICY_DUPLICATES_CODE,
+                                     "rows": [[i + 1 for i in g] for g in e.groups]})
     except importexport.ImportHistoricalDecisionsRequired as e:
         audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
                      detail=f"mode={body.mode} {file_ref} decisions={e.decisions} "
@@ -265,6 +328,10 @@ def import_commit(
         audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
                      detail=f"mode={body.mode} restricted_conflicts={e.records} {file_ref}", **ctx)
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except PermissionError:
+        # B-01: права или область, перечитанные под блокировкой записи, не допускают
+        # закрепление записей файла (например, заведующий утратил отделение).
+        _deny(conn, user, f"action=import mode={body.mode} reason=scope_changed")
     except sqlite3.Error:
         audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_ERROR,
                      detail=f"mode={body.mode} {file_ref} reason=not_saved", **ctx)
@@ -272,7 +339,10 @@ def import_commit(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Импорт не сохранён: не удалось записать данные вместе с журналом аудита. Данные не изменены.",
         )
-    return {**result, "provenance": provenance["status"]}
+    response.headers["Import-Id"] = outcome.import_id
+    if outcome.replayed:
+        response.headers[idempotency.REPLAYED_HEADER] = "true"
+    return outcome.response
 
 
 def _safe_export_filename() -> str:

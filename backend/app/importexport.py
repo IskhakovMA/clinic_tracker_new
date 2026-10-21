@@ -10,6 +10,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from typing import Callable, Optional
 
 from pydantic import ValidationError
@@ -22,6 +23,48 @@ from .models import TERMINAL_STAGES, ImportDocument, ImportHistoryEntry, ImportP
 
 # Источники карточек, создаваемых импортом (WP2.4-A): задаются точкой входа.
 IMPORT_CREATION_SOURCES = ("import", "migration")
+
+
+# WP2.4-B (U9): режимы, создающие новые карточки, — в них одинаковый непустой
+# нормализованный полис в нескольких записях одного файла отклоняет файл.
+CARD_CREATING_MODES = ("add", "replace")
+FILE_POLICY_DUPLICATES_CODE = "FILE_POLICY_DUPLICATES"
+
+
+class ImportFilePolicyDuplicateError(ValueError):
+    """Файл содержит одинаковые непустые номера полисов ОМС в нескольких
+    записях (U9). Сообщаются только номера записей, без значений полисов."""
+
+    def __init__(self, groups: list[list[int]]):
+        self.groups = groups
+        super().__init__(file_policy_duplicates_reason(groups) + " Данные не изменены.")
+
+
+def file_policy_duplicate_groups(document: "ImportDocument") -> list[list[int]]:
+    """Группы записей файла (индексы с 0) с одинаковым непустым номером полиса.
+
+    Номер уже нормализован моделью импорта (удалены пробелы и дефисы);
+    других правил и обращений к базе нет — только содержимое самого файла."""
+    by_policy: dict[str, list[int]] = {}
+    for index, patient in enumerate(document.patients):
+        if patient.policyNumber:
+            by_policy.setdefault(patient.policyNumber, []).append(index)
+    return sorted(rows for rows in by_policy.values() if len(rows) > 1)
+
+
+def file_policy_duplicates_reason(groups: list[list[int]]) -> str:
+    rows = "; ".join(", ".join(str(i + 1) for i in group) for group in groups)
+    return (f"В файле повторяется номер полиса ОМС в записях: {rows} (нумерация записей с 1). "
+            "Такой файл не импортируется: исправьте файл, чтобы каждый номер полиса встречался один раз.")
+
+
+def file_policy_duplicates_impact(document: "ImportDocument", mode: str) -> dict:
+    """Для preview: отклонит ли режим файл из-за повторяющихся полисов (номера записей с 1).
+    update новых карточек не создает и этой проверкой не ограничивается."""
+    groups = file_policy_duplicate_groups(document)
+    blocked = bool(groups) and mode in CARD_CREATING_MODES
+    return {"blocked": blocked, "rows": [[i + 1 for i in g] for g in groups] if blocked else [],
+            "reason": file_policy_duplicates_reason(groups) if blocked else ""}
 
 
 class ImportStructureError(ValueError):
@@ -923,7 +966,8 @@ def commit_import(
     actor: "policy.CurrentUser", *, ids: Optional[FileIds] = None,
     audit_hook: Optional[Callable[[dict], None]] = None, require_empty: bool = False,
     preserve_ids_confirmed: bool = False, historical_decisions: Optional[dict] = None,
-    creation_source: str = "import",
+    creation_source: str = "import", in_open_transaction: bool = False,
+    before_write: Optional[Callable[[], None]] = None,
 ) -> dict:
     """Импорт от имени актора. Права на режим проверяет policy.can_import
     (update/replace — только Разработчик); закрепление каждого пациента за
@@ -931,7 +975,13 @@ def commit_import(
 
     creation_source — источник новых карточек по точке входа операции:
     импорт файла ("import") или перенос локальных данных ("migration").
-    Существующие карточки (update) автора и источника создания не меняют."""
+    Существующие карточки (update) автора и источника создания не меняют.
+
+    in_open_transaction=True — импорт выполняется внутри уже открытой
+    транзакции BEGIN IMMEDIATE владельца операции (WP2.4-B: ключ
+    идемпотентности, история файлов и импорт фиксируются вместе).
+    before_write() вызывается под той же блокировкой после всех проверок,
+    непосредственно перед записью; его исключение отменяет импорт."""
     if mode not in ("add", "update", "replace"):
         raise ValueError("unknown import mode")
     if creation_source not in IMPORT_CREATION_SOURCES:
@@ -956,7 +1006,7 @@ def commit_import(
     # Проверки и запись — одна транзакция под блокировкой записи (BEGIN
     # IMMEDIATE): между проверкой и удалением карточек никто не добавит запись
     # консилиума или удалённое событие. Любой отказ откатывает всё целиком.
-    with transaction(conn):
+    with (_joined_transaction(conn) if in_open_transaction else transaction(conn)):
         if require_empty and conn.execute("SELECT 1 FROM patients LIMIT 1").fetchone():
             raise ImportNotEmptyError("Server already has patient data; use regular import instead of migration.")
         records, signed = consilium_conflicts(conn, document, mode)
@@ -996,6 +1046,16 @@ def commit_import(
                 raise ImportHistoricalDecisionsRequired(decision_count)
             decision_import = {"imported_by": actor.id, "imported_at": now_iso(),
                                "import_id": historical_decisions["import_id"]}
+        # WP2.4-B: проверки, которые действуют только для импорта, дошедшего до записи
+        # (все прежние отказы выше сохраняют приоритет и свои ответы).
+        # U9: режим, создающий карточки, не принимает файл с одинаковыми непустыми
+        # полисами в нескольких записях — проверка по самому файлу, без поиска в базе.
+        if mode in CARD_CREATING_MODES:
+            groups = file_policy_duplicate_groups(document)
+            if groups:
+                raise ImportFilePolicyDuplicateError(groups)
+        if before_write is not None:
+            before_write()   # U4: повтор ранее обработанного файла (services.import_operations)
         imported_decisions: list[dict] = []
 
         def layout_of(index: int):
@@ -1054,6 +1114,14 @@ def commit_import(
                         "decisionEvents": list(imported_decisions)})
 
     return result
+
+
+@contextmanager
+def _joined_transaction(conn: sqlite3.Connection):
+    """Работа внутри транзакции, которую открыл и закроет владелец операции."""
+    if not conn.in_transaction:
+        raise RuntimeError("commit_import(in_open_transaction=True) needs the owner's open transaction")
+    yield conn
 
 
 def document_event_count(document: ImportDocument) -> int:

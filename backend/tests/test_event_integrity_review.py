@@ -264,8 +264,9 @@ def test_mixed_import_is_all_or_nothing(auth_client):
 def test_failure_in_the_middle_of_import_rolls_everything_back(auth_client, monkeypatch):
     from backend.app import importexport, policy
 
-    _create(auth_client, name="Первая", events=[{"date": "2030-03-01"}])
-    _create(auth_client, name="Вторая", events=[{"date": "2030-03-02"}])
+    # WP2.4-B (U9): разные синтетические полисы — файл с одинаковыми полисами отклоняется до записи.
+    _create(auth_client, name="Первая", policyNumber="7700000000024111", events=[{"date": "2030-03-01"}])
+    _create(auth_client, name="Вторая", policyNumber="7700000000024112", events=[{"date": "2030-03-02"}])
     document_json = _export(auth_client)
     document, errors = importexport.validate_import(json.dumps(document_json))
     assert not errors

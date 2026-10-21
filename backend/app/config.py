@@ -73,7 +73,8 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v21: separate manual OK decision — author, time and source; immutable once recorded.
 # v22: repeated consiliums (one unfinished per patient), record version, resubmissions.
 # v23: provenance of patient cards — author and source of creation (WP2.4-A).
-SCHEMA_VERSION = 23
+# v24: idempotency keys of creation and import, history of processed import files (WP2.4-B).
+SCHEMA_VERSION = 24
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
@@ -88,6 +89,10 @@ CONSILIUM_SCHEDULE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_SCHE
 # Счетчик ведется по пользователю, а не по адресу клиента или данным карточки.
 PATIENT_CREATE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_PATIENT_CREATE_RATE_LIMIT", "60")))
 PATIENT_CREATE_RATE_LIMIT_WINDOW_SECONDS = 60
+
+# Ключи идемпотентности (WP2.4-B): срок хранения утвержден владельцем — 7 дней.
+# История обработанных файлов импорта хранится отдельно и этим сроком не удаляется.
+IDEMPOTENCY_TTL_DAYS = 7
 
 INTERNAL_NOTIFICATION_UPCOMING_DAYS = int(os.environ.get("INTERNAL_NOTIFICATION_UPCOMING_DAYS", "3"))
 

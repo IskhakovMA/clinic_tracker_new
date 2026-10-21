@@ -107,8 +107,8 @@ def test_migration_v21_to_v22_keeps_every_clinical_row(client, tmp_path):
 
     _init(conn)
 
-    # WP2.4-A: цепочка доводит v21 до текущей схемы (v23), а не только до v22.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 23
+    # WP2.4-A/B: цепочка доводит v21 до текущей схемы (v24), а не только до v22.
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 24
     for table in tables:
         after = [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
         # Старые столбцы каждой строки — побайтно прежние; новые — только значения по умолчанию.

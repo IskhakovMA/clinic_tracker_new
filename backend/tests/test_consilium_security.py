@@ -1003,7 +1003,9 @@ def test_dangerous_import_stops_before_any_change(client, state, mode):
 def test_safe_imports_still_work_next_to_consilium_records(client):
     aid, patient = _make_state(client, "signed")
     login(client, DEV_USERNAME)
-    other = create_patient(client, name="Пациент Без Консилиума", diagnosis="C50.1", nosology="breast")
+    # WP2.4-B (U9): свой синтетический полис — во внешнем файле add не должно быть одинаковых полисов.
+    other = create_patient(client, name="Пациент Без Консилиума", diagnosis="C50.1", nosology="breast",
+                           policyNumber="7700000000024121")
     document = _export_document(client)
     # Часть выгрузки — уже другой файл: подпись не сохраняется, импорт как прежний формат.
     legacy = legacy_export(document)

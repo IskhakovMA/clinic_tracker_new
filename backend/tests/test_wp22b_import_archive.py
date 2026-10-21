@@ -68,7 +68,11 @@ def _doc(*patients):
 
 
 def _file_patient(name, decisions=("dispensary_observation",)):
-    base = {k: v for k, v in make_patient_payload(name=name, stage="consult").items() if k != "events"}
+    # WP2.4-B (U9): записи одного файла с одинаковым полисом отклоняются — у каждой
+    # синтетической записи свой синтетический номер, производный от ФИО.
+    policy = "77" + str(int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16))[:14]
+    base = {k: v for k, v in make_patient_payload(name=name, stage="consult", policyNumber=policy).items()
+            if k != "events"}
     events = [{"date": f"2026-08-2{i}", **({"consiliumDecision": d} if d else {})} for i, d in enumerate(decisions)]
     return {**base, "history": [{"stage": "consult", "enteredAt": "2026-08-01T00:00:00+00:00", "events": events}]}
 
@@ -219,7 +223,11 @@ def test_i08_repeated_import_is_audited_separately_and_keeps_earlier_data(auth_c
     raw = _doc(_file_patient("Импортов Повтор", decisions=("treatment_strategy_defined",)))
     assert unsigned_import(auth_client, raw, "add", historical_decisions=1).status_code == 200
     first = _patient_events("Импортов Повтор")[0]
-    assert unsigned_import(auth_client, raw, "add", historical_decisions=1).status_code == 200
+    # WP2.4-B (U4): повтор своего уже импортированного файла — только с отдельным подтверждением.
+    again = unsigned_import(auth_client, raw, "add", historical_decisions=1)
+    assert again.status_code == 428 and again.json()["code"] == "FILE_ALREADY_IMPORTED"
+    assert len(_patient_events("Импортов Повтор")) == 1
+    assert unsigned_import(auth_client, raw, "add", historical_decisions=1, repeat=True).status_code == 200
     rows = _patient_events("Импортов Повтор")
     assert len(rows) == 2 and first in rows                                        # прежняя строка не изменена
     assert rows[0]["consilium_decision_import_id"] != rows[1]["consilium_decision_import_id"]

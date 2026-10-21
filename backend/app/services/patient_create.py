@@ -9,18 +9,30 @@
 (AuditWriteFailed) или базы откатывает все целиком; после коммита ничего не
 читается.
 
-Идемпотентность (Idempotency-Key) и обработка возможных дублей сюда не входят
-(этапы WP2.4-B и WP2.4-C).
+WP2.4-B: create_patient_card_idempotent — то же создание с ключом
+Idempotency-Key. Ключ, карточка, маршрут, события, аудит и ответ фиксируются
+одной транзакцией; повтор с тем же ключом и содержимым карточку не создает,
+а возвращает исходную после повторной проверки прав (обязательный аудит
+patient_create_replayed). Обработка возможных дублей — этап WP2.4-C.
 """
 from __future__ import annotations
 
 import sqlite3
 
-from .. import audit, policy, store
+from .. import audit, idempotency, policy, store
 from ..db import transaction
 from ..models import PatientCreateIn
 
 FORM_SOURCE = "form"
+
+
+class PatientReplayNotFound(Exception):
+    """Карточка повторяемого создания больше не видна сотруднику (404, без сведений о ней)."""
+
+
+class ReplayAuditUnavailable(Exception):
+    """Обязательная запись о повторе не записана (503): результат не возвращается.
+    Карточка первого запроса при этом существует — повторять нужно тем же ключом."""
 
 
 class PatientCreateForbidden(Exception):
@@ -35,6 +47,29 @@ class PatientCreateForbidden(Exception):
         super().__init__(message)
 
 
+def _create_locked(conn: sqlite3.Connection, fresh: policy.CurrentUser, body: PatientCreateIn) -> str:
+    """Создание внутри уже открытой транзакции владельца: права по свежим данным,
+    выбор врача, вставки и единственная обязательная запись patient_created."""
+    if not policy.can_create_patient_card(fresh):
+        raise PatientCreateForbidden("action=patient_create")
+    doctor_user_id, error = policy.resolve_create_doctor(conn, fresh, body.treatingDoctorUserId)
+    if error is not None:
+        raise PatientCreateForbidden("action=patient_create_doctor", error)
+    patient_id = store.insert_patient_rows(
+        conn, body, doctor_user_id, created_by_user_id=fresh.id, creation_source=FORM_SOURCE,
+    )
+    audit.record_required_or_fail(conn, audit.PATIENT_CREATED, patient_id=patient_id,
+                                  target_user_id=doctor_user_id, **audit.actor_ctx(fresh))
+    return patient_id
+
+
+def _card(conn: sqlite3.Connection, patient_id: str) -> dict:
+    result = store.patient_to_dict(conn, patient_id)
+    if result is None:
+        raise RuntimeError("patient card is missing inside its own transaction")
+    return result
+
+
 def create_patient_card(conn: sqlite3.Connection, actor: policy.CurrentUser, body: PatientCreateIn) -> dict:
     """Создать карточку от имени actor. Возвращает карточку (patient_to_dict),
     построенную внутри той же транзакции.
@@ -45,17 +80,41 @@ def create_patient_card(conn: sqlite3.Connection, actor: policy.CurrentUser, bod
     audit.AuditWriteFailed после полного отката."""
     with transaction(conn):
         fresh = policy.reload_current_user(conn, actor)
-        if fresh is None or not policy.can_create_patient_card(fresh):
+        if fresh is None:
             raise PatientCreateForbidden("action=patient_create")
-        doctor_user_id, error = policy.resolve_create_doctor(conn, fresh, body.treatingDoctorUserId)
-        if error is not None:
-            raise PatientCreateForbidden("action=patient_create_doctor", error)
-        patient_id = store.insert_patient_rows(
-            conn, body, doctor_user_id, created_by_user_id=fresh.id, creation_source=FORM_SOURCE,
-        )
-        audit.record_required_or_fail(conn, audit.PATIENT_CREATED, patient_id=patient_id,
-                                      target_user_id=doctor_user_id, **audit.actor_ctx(fresh))
-        result = store.patient_to_dict(conn, patient_id)
-        if result is None:
-            raise RuntimeError("created patient card is missing inside its own transaction")
+        patient_id = _create_locked(conn, fresh, body)
+        result = _card(conn, patient_id)
     return result
+
+
+def create_patient_card_idempotent(
+    conn: sqlite3.Connection, actor: policy.CurrentUser, body: PatientCreateIn, key: str,
+) -> tuple[dict, bool]:
+    """Создание с ключом Idempotency-Key. Возвращает (карточка, повтор ли это).
+
+    Одна транзакция BEGIN IMMEDIATE: свежие права; поиск ключа в области
+    (сотрудник, patient.create) — другой отпечаток дает IdempotencyKeyReused;
+    завершенный ключ — повтор: карточка видна сотруднику по текущей области,
+    обязательный аудит patient_create_replayed, ответ из текущего состояния;
+    иначе обычное создание и запись результата ключа вместе с ним."""
+    claim = idempotency.claim(actor.id, idempotency.OP_PATIENT_CREATE, key, body.model_dump(mode="json"))
+    with transaction(conn):
+        fresh = policy.reload_current_user(conn, actor)
+        if fresh is None:
+            raise PatientCreateForbidden("action=patient_create")
+        row = idempotency.lookup(conn, claim)
+        if row is not None:
+            patient_id = row["result_patient_id"]
+            if not policy.can_read_patient(conn, fresh, patient_id):
+                raise PatientReplayNotFound()
+            try:
+                audit.record_required_or_fail(conn, audit.PATIENT_CREATE_REPLAYED, patient_id=patient_id,
+                                              **audit.actor_ctx(fresh))
+            except audit.AuditWriteFailed as exc:
+                raise ReplayAuditUnavailable() from exc
+            result, replayed = _card(conn, patient_id), True
+        else:
+            patient_id = _create_locked(conn, fresh, body)
+            idempotency.complete_patient_create(conn, claim, patient_id)
+            result, replayed = _card(conn, patient_id), False
+    return result, replayed

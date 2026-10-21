@@ -6,10 +6,10 @@ import sqlite3
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 
-from .. import audit, config, policy, store
+from .. import audit, config, idempotency, policy, store
 from ..deps import get_db, require_active_password, require_csrf, user_rate_limit
 from ..models import (
     ChecklistItemIn,
@@ -114,18 +114,47 @@ def _database_busy(exc: sqlite3.OperationalError) -> None:
 @router.post("", dependencies=[Depends(require_csrf), _CREATE_LIMIT], status_code=status.HTTP_201_CREATED)
 def create_patient(
     body: PatientCreateIn,
+    response: Response,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
+    idempotency_key: str | None = Header(None, alias=idempotency.KEY_HEADER),
 ):
     """Создание карточки (WP2.4-A): права, выбор врача, карточка, маршрут,
     события, обязательный аудит и ответ — одна транзакция BEGIN IMMEDIATE
-    в services.patient_create. Автора и источник (form) записывает сервер."""
+    в services.patient_create. Автора и источник (form) записывает сервер.
+
+    WP2.4-B: с заголовком Idempotency-Key (UUID v4) повтор того же запроса
+    возвращает исходную карточку (201, Idempotent-Replayed: true) без нового
+    создания; тот же ключ с другими данными — 422 IDEMPOTENCY_KEY_REUSED.
+    Без заголовка — прежние правила WP2.4-A (совместимость внешних клиентов,
+    решение U5): гарантии идемпотентности нет."""
     # Быстрый отказ до блокировки записи; окончательная проверка — в транзакции.
     if not policy.can_create_patient_card(user):
         _forbidden(conn, user, "action=patient_create")
+    try:
+        key = idempotency.parse_key(idempotency_key)
+    except idempotency.InvalidIdempotencyKey as e:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            content={"detail": str(e), "code": idempotency.INVALID_KEY_CODE})
 
     try:
-        return patient_create.create_patient_card(conn, user, body)
+        if key is None:
+            return patient_create.create_patient_card(conn, user, body)
+        card, replayed = patient_create.create_patient_card_idempotent(conn, user, body, key)
+        if replayed:
+            response.headers[idempotency.REPLAYED_HEADER] = "true"
+        return card
+    except idempotency.IdempotencyKeyReused as e:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            content={"detail": str(e), "code": idempotency.REUSED_KEY_CODE})
+    except patient_create.PatientReplayNotFound:
+        _not_found()
+    except patient_create.ReplayAuditUnavailable:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Не удалось подтвердить результат запроса: журнал аудита недоступен. "
+                   "Повторите попытку позже тем же запросом",
+        )
     except patient_create.PatientCreateForbidden as e:
         audit.record(conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
                      detail=e.detail, **audit.actor_ctx(user))

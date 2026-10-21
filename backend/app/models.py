@@ -889,12 +889,29 @@ class HistoricalDecisionsConfirmation(StrictRequestModel):
         return v
 
 
+class RepeatImportConfirmation(StrictRequestModel):
+    """Осознанный повтор файла, который этот же сотрудник уже успешно
+    импортировал (WP2.4-B, U4). Относится к одному файлу (SHA-256) и режиму."""
+    confirmed: StrictBool
+    fileSha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    mode: ImportMode
+    action: Literal["repeat_processed_file"]
+
+    @field_validator("confirmed")
+    @classmethod
+    def _must_be_true(cls, v):
+        if v is not True:
+            raise ValueError("confirmed must be true")
+        return v
+
+
 class ImportCommitRequest(StrictRequestModel):
     raw: str = Field(..., max_length=6_000_000)
     mode: ImportMode
     unsignedConfirmation: Optional[UnsignedImportConfirmation] = None
     preserveIdsConfirmation: Optional[PreserveIdsConfirmation] = None
     historicalDecisionsConfirmation: Optional[HistoricalDecisionsConfirmation] = None
+    repeatImportConfirmation: Optional[RepeatImportConfirmation] = None
 
 
 # --- Notifications ------------------------------------------------------
