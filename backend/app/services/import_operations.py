@@ -22,7 +22,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Callable
 
-from .. import audit, idempotency, policy
+from .. import audit, idempotency, importexport, policy
 from ..db import now_iso, transaction
 
 OPERATIONS = {"import": idempotency.OP_IMPORT_COMMIT, "migration": idempotency.OP_MIGRATION_COMMIT}
@@ -120,6 +120,7 @@ def run(
     if operation not in OPERATIONS:
         raise ValueError("unknown import operation")
     claim = idempotency.claim(actor.id, OPERATIONS[operation], key, fingerprint) if key else None
+    refusal = None
     with transaction(conn):
         fresh = policy.reload_current_user(conn, actor)
         if fresh is None or not policy.can_import(fresh, mode):
@@ -146,15 +147,29 @@ def run(
                     raise FileAlreadyImported(previous)
                 repeat["confirmed"] = True
 
-        result = execute(before_write, fresh)
-        if repeat["confirmed"]:
-            audit.record_required(
-                conn, audit.IMPORT_REPEAT_CONFIRMED,
-                detail=f"import_id={import_id} mode={mode} file_sha256={file_sha256}",
-                **audit.actor_ctx(fresh))
-        _record_file(conn, import_id=import_id, actor_user_id=fresh.id, operation=operation,
-                     file_sha256=file_sha256, mode=mode, result=result, repeat_confirmed=repeat["confirmed"])
-        response = respond(result)
-        if claim is not None:
-            idempotency.complete_import(conn, claim, import_id, response)
+        # WP2.4-C: отказ «возможные дубли» фиксируется как refused этого ключа —
+        # точка сохранения откатывает попытку целиком, отказ сохраняется.
+        conn.execute("SAVEPOINT import_attempt")
+        try:
+            result = execute(before_write, fresh)
+        except importexport.ImportPossibleDuplicates as dup:
+            conn.execute("ROLLBACK TO import_attempt")
+            conn.execute("RELEASE import_attempt")
+            if claim is not None:
+                idempotency.refuse(conn, claim, 409)
+            refusal = dup
+        else:
+            conn.execute("RELEASE import_attempt")
+            if repeat["confirmed"]:
+                audit.record_required(
+                    conn, audit.IMPORT_REPEAT_CONFIRMED,
+                    detail=f"import_id={import_id} mode={mode} file_sha256={file_sha256}",
+                    **audit.actor_ctx(fresh))
+            _record_file(conn, import_id=import_id, actor_user_id=fresh.id, operation=operation,
+                         file_sha256=file_sha256, mode=mode, result=result, repeat_confirmed=repeat["confirmed"])
+            response = respond(result)
+            if claim is not None:
+                idempotency.complete_import(conn, claim, import_id, response)
+    if refusal is not None:
+        raise refusal
     return Outcome(response, import_id, False)

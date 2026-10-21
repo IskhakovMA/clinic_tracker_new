@@ -15,7 +15,7 @@ from typing import Callable, Optional
 
 from pydantic import ValidationError
 
-from . import config, export_signing, policy, store, users
+from . import config, export_signing, identity, policy, store, users
 from .db import now_iso, transaction
 from .localization_catalog import validate_new_combination
 from .models import TERMINAL_STAGES, ImportDocument, ImportHistoryEntry, ImportPatientIn
@@ -38,6 +38,70 @@ class ImportFilePolicyDuplicateError(ValueError):
     def __init__(self, groups: list[list[int]]):
         self.groups = groups
         super().__init__(file_policy_duplicates_reason(groups) + " Данные не изменены.")
+
+
+class ImportPossibleDuplicates(Exception):
+    """WP2.4-C: записи файла совпадают по полису с карточками ОБЛАСТИ ДОСТУПА
+    сотрудника, а подтверждения нет или оно не совпадает с актуальным набором (409).
+    rows — [(индекс записи, видимые совпадения)]."""
+
+    def __init__(self, rows: list[tuple[int, list[dict]]]):
+        self.rows = rows
+        super().__init__("possible duplicates")
+
+    @property
+    def matched_ids(self) -> list[str]:
+        return sorted({m["id"] for _, matches in self.rows for m in matches})
+
+
+class ImportDuplicateLimitExceeded(ImportPossibleDuplicates):
+    """C-01: совпадений больше лимита — по полису записи или в сумме по файлу
+    (подтверждение принимает не более MATCH_LIMIT ID). Импорт в режимах,
+    создающих карточки, невозможен с любым подтверждением; нужен ручной разбор.
+    limit_rows — индексы записей (с 0), списков карточек нет."""
+
+    def __init__(self, limit_rows: list[int]):
+        super().__init__([])
+        self.limit_rows = limit_rows
+
+
+def possible_duplicate_rows(conn: sqlite3.Connection, document: "ImportDocument",
+                            actor: "policy.CurrentUser") -> list[tuple[int, list[dict]]]:
+    """Записи файла, номер полиса которых совпадает с карточками области actor
+    (один запрос с условием области; карточки вне области не ищутся).
+
+    ImportDuplicateLimitExceeded — у какого-либо номера совпадений больше лимита
+    или всех совпадений файла больше лимита: неполный список не возвращается."""
+    found = identity.policy_matches_many(conn, actor, [p.policyNumber for p in document.patients])
+    rows, over = [], []
+    for index, patient in enumerate(document.patients):
+        canon = identity.canonical_policy(patient.policyNumber)
+        if canon in found and found[canon] is None:
+            over.append(index)
+            continue
+        matches = found.get(canon) or []
+        if matches:
+            rows.append((index, matches))
+    if over:
+        raise ImportDuplicateLimitExceeded(over)
+    if len({m["id"] for _, ms in rows for m in ms}) > identity.MATCH_LIMIT:
+        raise ImportDuplicateLimitExceeded([i for i, _ in rows])
+    return rows
+
+
+def possible_duplicates_impact(conn: sqlite3.Connection, document: "ImportDocument", mode: str,
+                               actor: "policy.CurrentUser") -> dict:
+    """Для preview: совпадения записей файла с карточками области сотрудника
+    (номера записей с 1). update новых карточек не создает и не проверяется.
+    limitExceeded — совпадений больше лимита: режим недоступен, списков нет."""
+    try:
+        rows = possible_duplicate_rows(conn, document, actor) if mode in CARD_CREATING_MODES else []
+    except ImportDuplicateLimitExceeded as e:
+        return {"rows": [], "matchedPatientIds": [], "limitExceeded": True,
+                "limitExceededRows": [i + 1 for i in e.limit_rows]}
+    return {"rows": [{"row": i + 1, "matches": m} for i, m in rows],
+            "matchedPatientIds": sorted({x["id"] for _, m in rows for x in m}),
+            "limitExceeded": False, "limitExceededRows": []}
 
 
 def file_policy_duplicate_groups(document: "ImportDocument") -> list[list[int]]:
@@ -968,6 +1032,7 @@ def commit_import(
     preserve_ids_confirmed: bool = False, historical_decisions: Optional[dict] = None,
     creation_source: str = "import", in_open_transaction: bool = False,
     before_write: Optional[Callable[[], None]] = None,
+    duplicate_confirmation=None, import_id: Optional[str] = None,
 ) -> dict:
     """Импорт от имени актора. Права на режим проверяет policy.can_import
     (update/replace — только Разработчик); закрепление каждого пациента за
@@ -980,8 +1045,8 @@ def commit_import(
     in_open_transaction=True — импорт выполняется внутри уже открытой
     транзакции BEGIN IMMEDIATE владельца операции (WP2.4-B: ключ
     идемпотентности, история файлов и импорт фиксируются вместе).
-    before_write() вызывается под той же блокировкой после всех проверок,
-    непосредственно перед записью; его исключение отменяет импорт."""
+    before_write() вызывается под той же блокировкой после всех проверок файла
+    и до проверки возможных дублей (WP2.4-C) и записи; его исключение отменяет импорт."""
     if mode not in ("add", "update", "replace"):
         raise ValueError("unknown import mode")
     if creation_source not in IMPORT_CREATION_SOURCES:
@@ -1050,12 +1115,25 @@ def commit_import(
         # (все прежние отказы выше сохраняют приоритет и свои ответы).
         # U9: режим, создающий карточки, не принимает файл с одинаковыми непустыми
         # полисами в нескольких записях — проверка по самому файлу, без поиска в базе.
+        duplicate_rows: dict[int, list[dict]] = {}
         if mode in CARD_CREATING_MODES:
             groups = file_policy_duplicate_groups(document)
             if groups:
                 raise ImportFilePolicyDuplicateError(groups)
         if before_write is not None:
             before_write()   # U4: повтор ранее обработанного файла (services.import_operations)
+        if mode in CARD_CREATING_MODES:
+            # WP2.4-C: совпадения с карточками ОБЛАСТИ сотрудника (перечитанного под
+            # блокировкой) — только с подтверждением всего актуального набора. После
+            # U4: о повторе своего файла сотрудник узнает раньше, чем о его копиях.
+            rows = possible_duplicate_rows(conn, document, actor)
+            if rows:
+                matched = {m["id"] for _, ms in rows for m in ms}
+                if duplicate_confirmation is None or set(duplicate_confirmation.matchedPatientIds) != matched:
+                    raise ImportPossibleDuplicates(rows)
+                if not import_id:
+                    raise RuntimeError("import_id is required to record confirmed duplicates")
+                duplicate_rows = dict(rows)
         imported_decisions: list[dict] = []
 
         def layout_of(index: int):
@@ -1073,6 +1151,7 @@ def commit_import(
                     created_id = new_patient_id(p)
                     _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index),
                                          decision_import, imported_decisions, creation_source=creation_source)
+                    _record_duplicate(conn, actor, duplicate_rows, index, created_id, duplicate_confirmation, import_id)
                     created_ids.append(created_id)
                     added += 1
             elif mode == "update":
@@ -1094,6 +1173,7 @@ def commit_import(
                     created_id = new_patient_id(p)
                     _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index),
                                          decision_import, imported_decisions, creation_source=creation_source)
+                    _record_duplicate(conn, actor, duplicate_rows, index, created_id, duplicate_confirmation, import_id)
                     created_ids.append(created_id)
                     added += 1
         except sqlite3.IntegrityError as exc:
@@ -1114,6 +1194,17 @@ def commit_import(
                         "decisionEvents": list(imported_decisions)})
 
     return result
+
+
+def _record_duplicate(conn, actor, duplicate_rows: dict, index: int, created_id: str, confirmation,
+                      import_id: Optional[str]) -> None:
+    """WP2.4-C: подтвержденный возможный дубль — запись и обязательный аудит для созданной карточки."""
+    if index not in duplicate_rows:
+        return
+    from .services import patient_duplicates   # локально: сервис зависит от audit и identity
+    patient_duplicates.record_confirmation(conn, actor, operation="import", patient_id=created_id,
+                                           matches=duplicate_rows[index], reason=confirmation.reason,
+                                           import_id=import_id)
 
 
 @contextmanager

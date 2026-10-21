@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
 
-from .. import policy
+from .. import identity, policy
 from ..db import in_chunks
 from ..models import STAGES, TERMINAL_STAGES
 from ..phone import normalize_phone as _normalize_phone
@@ -157,7 +157,11 @@ def _safe_date(value: str | None) -> date | None:
         return None
 
 
-def _normalize_name(value: str) -> str:
+def _normalize_name(value: str, *, identity_signals: bool = False) -> str:
+    if identity_signals:
+        # WP2.4-C: та же каноническая форма ФИО, что и при поиске возможных дублей
+        # (регистр, «ё», визуально одинаковые латинские буквы, пробелы).
+        return identity.canonical_name(value)
     return " ".join((value or "").strip().lower().replace("ё", "е").split())
 
 
@@ -486,11 +490,20 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
     return issues
 
 
-def _duplicate_groups(patients: list[PatientRecord]) -> list[dict]:
+def _duplicate_groups(patients: list[PatientRecord], *, identity_signals: bool = False) -> list[dict]:
+    """Группы возможных дублей среди уже отобранных карточек области сотрудника.
+
+    identity_signals (WP2.4-C) — только для раздела «Качество данных»: добавляет
+    совпадение канонического полиса ОМС и сводит визуально одинаковые латинские и
+    кириллические буквы в ФИО. Аналитика, внутренние уведомления и AI-инструменты
+    вызывают evaluate без этого режима: их показатели не меняются до этапа WP2.4-D."""
     buckets: dict[tuple[str, str], list[PatientRecord]] = defaultdict(list)
     for p in patients:
         phone = _normalize_phone(p.phone)
-        name = _normalize_name(p.name)
+        name = _normalize_name(p.name, identity_signals=identity_signals)
+        policy_number = identity.canonical_policy(p.policy_number) if identity_signals else ""
+        if policy_number:
+            buckets[("policy", policy_number)].append(p)
         diagnosis = " ".join(p.diagnosis.strip().lower().split())
         nosology = p.nosology.strip().lower()
         if phone and len(phone) >= 10:
@@ -503,12 +516,13 @@ def _duplicate_groups(patients: list[PatientRecord]) -> list[dict]:
             buckets[("name_nosology", f"{name}|{nosology}")].append(p)
 
     reason_labels = {
+        "policy": "Совпадает номер полиса ОМС",
         "phone": "Совпадает телефон",
         "name_age": "Совпадают ФИО и возраст",
         "name_diagnosis": "Совпадают ФИО и диагноз",
         "name_nosology": "Совпадают ФИО и локализация/клиентский путь",
     }
-    reason_order = ("phone", "name_age", "name_diagnosis", "name_nosology")
+    reason_order = ("policy", "phone", "name_age", "name_diagnosis", "name_nosology")
     groups_by_ids: dict[tuple[str, ...], dict[str, Any]] = {}
     for (kind, _key), members in buckets.items():
         unique = {p.id: p for p in members}
@@ -542,7 +556,8 @@ def _duplicate_groups(patients: list[PatientRecord]) -> list[dict]:
     return groups
 
 
-def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date | None = None) -> dict:
+def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date | None = None,
+             identity_signals: bool = False) -> dict:
     today = today or _today()
     patients = _load_scoped_patients(conn, user)
     can_write = _can_write_visible_patients(user)
@@ -560,7 +575,7 @@ def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date 
             can_change_doctor=can_change_doctor,
         ))
 
-    duplicate_groups = _duplicate_groups(patients)
+    duplicate_groups = _duplicate_groups(patients, identity_signals=identity_signals)
     duplicate_by_patient: dict[str, list[dict]] = defaultdict(list)
     for group in duplicate_groups:
         for patient_id in group["patient_ids"]:

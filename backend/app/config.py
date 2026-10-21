@@ -74,7 +74,8 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v22: repeated consiliums (one unfinished per patient), record version, resubmissions.
 # v23: provenance of patient cards — author and source of creation (WP2.4-A).
 # v24: idempotency keys of creation and import, history of processed import files (WP2.4-B).
-SCHEMA_VERSION = 24
+# v25: confirmations of possible duplicates (WP2.4-C).
+SCHEMA_VERSION = 25
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 

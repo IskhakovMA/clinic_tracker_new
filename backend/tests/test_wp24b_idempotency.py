@@ -16,7 +16,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from .conftest import DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload, synthetic_policy_for_key
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _in_thread, _parallel, _rows
 from .test_wp24a_patient_create import EVENTS, _counts, _db_path, _patient, _world
@@ -36,6 +36,10 @@ def _headers(client, key):
 
 
 def _create(client, key, **kw):
+    # WP2.4-C: у каждой синтетической анкеты свой полис (conftest); повтор с тем же
+    # ключом — то же тело, поэтому номер закреплен за ключом.
+    if key is not None and "policyNumber" not in kw:
+        kw["policyNumber"] = synthetic_policy_for_key(key)
     return client.post("/api/patients", json=make_patient_payload(**kw), headers=_headers(client, key))
 
 
@@ -65,8 +69,11 @@ def _sha(raw):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _import(client, raw, mode="add", key=None, *, repeat=False, repeat_sha=None, repeat_mode=None, url="/api/import/commit"):
+def _import(client, raw, mode="add", key=None, *, repeat=False, repeat_sha=None, repeat_mode=None, url="/api/import/commit",
+            duplicates=None):
     body = {"raw": raw, "mode": mode}
+    if duplicates is not None:   # WP2.4-C: подтверждение возможных дублей (ID из ответа 409)
+        body["duplicateConfirmation"] = {"reason": "Синтетическая причина", "matchedPatientIds": list(duplicates)}
     if url == "/api/import/commit":
         body["unsignedConfirmation"] = {"confirmed": True, "fileSha256": _sha(raw), "mode": mode}
     if repeat:
@@ -337,8 +344,15 @@ def test_expired_key_is_a_new_operation_and_purge_removes_only_expired_keys(clie
     assert len(_keys()) == 2 and _rows("SELECT * FROM import_files_processed") == history_before
     assert _counts()["patients"] == 3
     # Истекший ключ — новая операция (документированное ограничение срока 7 дней).
+    # WP2.4-C: та же анкета совпадает по полису с уже созданной карточкой — без
+    # подтверждения копия не создается; с подтверждением — обычное новое создание.
     again = _create(client, old, name="Синтетик Старый")
-    assert again.status_code == 201 and REPLAYED not in again.headers and _counts()["patients"] == 4
+    assert again.status_code == 409 and again.json()["code"] == "POSSIBLE_DUPLICATE" and _counts()["patients"] == 3
+    body = make_patient_payload(name="Синтетик Старый", policyNumber=synthetic_policy_for_key(old),
+                                duplicateConfirmation={"reason": "Синтетическая причина",
+                                                       "matchedPatientIds": [m["id"] for m in again.json()["matches"]]})
+    confirmed = client.post("/api/patients", json=body, headers=_headers(client, _key()))
+    assert confirmed.status_code == 201 and REPLAYED not in confirmed.headers and _counts()["patients"] == 4
 
 
 def test_expired_row_with_the_same_key_is_replaced_inside_the_transaction(client):
@@ -347,7 +361,8 @@ def test_expired_row_with_the_same_key_is_replaced_inside_the_transaction(client
     key = _key()
     _create(client, key)
     _age_keys()
-    assert _create(client, key, name="Новый Синтетик").status_code == 201      # другой отпечаток не мешает
+    # Другой отпечаток не мешает (WP2.4-C: свой полис, чтобы не совпасть с первой карточкой).
+    assert _create(client, key, name="Новый Синтетик", policyNumber="7700000000024901").status_code == 201
     assert len(_keys()) == 1 and _keys()[0]["expires_at"] > "2026"
 
 
@@ -505,7 +520,10 @@ def test_confirmed_repeat_is_bound_to_file_and_mode_and_audited(client):
     wrong_file = _import(client, raw, key=_key(), repeat=True, repeat_sha="0" * 64)
     wrong_mode = _import(client, raw, key=_key(), repeat=True, repeat_mode="update")
     assert wrong_file.status_code == wrong_mode.status_code == 428
-    ok = _import(client, raw, key=_key(), repeat=True)
+    # WP2.4-C: повтор создает копию карточки (тот же полис) — отдельное подтверждение возможного дубля.
+    duplicate = _import(client, raw, key=_key(), repeat=True)
+    assert duplicate.status_code == 409 and duplicate.json()["code"] == "POSSIBLE_DUPLICATE"
+    ok = _import(client, raw, key=_key(), repeat=True, duplicates=duplicate.json()["matchedPatientIds"])
     assert ok.status_code == 200 and ok.json()["added"] == 1
     confirmed = _audit("import_repeat_confirmed")
     assert len(confirmed) == 1 and f"import_id={ok.headers['Import-Id']}" in confirmed[0]["detail"]
@@ -597,7 +615,8 @@ def test_migration_v23_to_v24_keeps_every_clinical_row_and_is_idempotent(client,
     path, conn = _fixture_db(tmp_path)
     before = {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY rowid")] for t in CLINICAL}  # nosec
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 24
+    # WP2.4-C: цепочка доводит v23 до текущей схемы (v25), а не только до v24.
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 25
     for table in CLINICAL:
         assert [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] == before[table], table  # nosec
     assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 0
@@ -621,7 +640,7 @@ def test_restore_of_a_v23_backup_migrates_to_v24(auth_client, tmp_path, backup_k
     maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 24
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 25   # WP2.4-C: текущая схема
     assert sorted(r[0] for r in conn.execute("SELECT creation_source FROM patients")) == (
         ["form", "import"] + ["legacy"] * 7 + ["migration"])
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1
@@ -848,6 +867,8 @@ def _run_client_scenario(scenario: dict) -> dict:
              "async refreshAfterSavedOperation"]
     # B-03: отдельная стадия удаления локальной копии (если она есть в этой версии app.js).
     names += [n for n in ("async removeLegacyLocalCopy",) if f"    {n}(" in js]
+    # WP2.4-C: распознавание ответа «возможный дубль» в обработке ошибок импорта.
+    names += [n for n in ("isPossibleDuplicate", "isDuplicateLimitExceeded") if f"    {n}(" in js]
     methods = "\n".join(method(n) for n in names)
     harness = r"""
 const scenario = SCENARIO;

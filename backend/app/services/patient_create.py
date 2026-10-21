@@ -20,6 +20,7 @@ from __future__ import annotations
 import sqlite3
 
 from .. import audit, idempotency, policy, store
+from . import patient_duplicates
 from ..db import transaction
 from ..models import PatientCreateIn
 
@@ -55,11 +56,17 @@ def _create_locked(conn: sqlite3.Connection, fresh: policy.CurrentUser, body: Pa
     doctor_user_id, error = policy.resolve_create_doctor(conn, fresh, body.treatingDoctorUserId)
     if error is not None:
         raise PatientCreateForbidden("action=patient_create_doctor", error)
+    # WP2.4-C: совпадение полиса в области сотрудника (по свежим правам, под
+    # блокировкой) — только с подтверждением, точно совпадающим с этим списком.
+    confirmed = patient_duplicates.check_policy(conn, fresh, body.policyNumber, body.duplicateConfirmation)
     patient_id = store.insert_patient_rows(
         conn, body, doctor_user_id, created_by_user_id=fresh.id, creation_source=FORM_SOURCE,
     )
     audit.record_required_or_fail(conn, audit.PATIENT_CREATED, patient_id=patient_id,
                                   target_user_id=doctor_user_id, **audit.actor_ctx(fresh))
+    if confirmed:
+        patient_duplicates.record_confirmation(conn, fresh, operation="create", patient_id=patient_id,
+                                               matches=confirmed, reason=body.duplicateConfirmation.reason)
     return patient_id
 
 
@@ -98,6 +105,7 @@ def create_patient_card_idempotent(
     обязательный аудит patient_create_replayed, ответ из текущего состояния;
     иначе обычное создание и запись результата ключа вместе с ним."""
     claim = idempotency.claim(actor.id, idempotency.OP_PATIENT_CREATE, key, body.model_dump(mode="json"))
+    refusal = None
     with transaction(conn):
         fresh = policy.reload_current_user(conn, actor)
         if fresh is None:
@@ -114,7 +122,21 @@ def create_patient_card_idempotent(
                 raise ReplayAuditUnavailable() from exc
             result, replayed = _card(conn, patient_id), True
         else:
-            patient_id = _create_locked(conn, fresh, body)
-            idempotency.complete_patient_create(conn, claim, patient_id)
-            result, replayed = _card(conn, patient_id), False
+            # WP2.4-C: отказ «возможный дубль» фиксируется как refused этого ключа:
+            # точка сохранения откатывает попытку, отказ сохраняется (повтор того же
+            # тела оценивается заново, другое тело с этим ключом — 422).
+            conn.execute("SAVEPOINT patient_create_attempt")
+            try:
+                patient_id = _create_locked(conn, fresh, body)
+            except patient_duplicates.PossibleDuplicate as dup:
+                conn.execute("ROLLBACK TO patient_create_attempt")
+                conn.execute("RELEASE patient_create_attempt")
+                idempotency.refuse(conn, claim, 409)
+                refusal = dup
+            else:
+                conn.execute("RELEASE patient_create_attempt")
+                idempotency.complete_patient_create(conn, claim, patient_id)
+                result, replayed = _card(conn, patient_id), False
+    if refusal is not None:
+        raise refusal
     return result, replayed

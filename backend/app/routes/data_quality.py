@@ -36,7 +36,7 @@ def summary(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    return data_quality.evaluate(conn, user)["summary"]
+    return data_quality.evaluate(conn, user, identity_signals=True)["summary"]
 
 
 @router.get("/issues", dependencies=[Depends(abuse_rate_limit("data_quality_issues", 60))])
@@ -54,7 +54,7 @@ def issues(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    result = data_quality.evaluate(conn, user)
+    result = data_quality.evaluate(conn, user, identity_signals=True)
     if patient_id and not policy.can_read_patient(conn, user, patient_id):
         # Same contract as /api/patients/{id}: outside scope is indistinguishable
         # from absent, and filters cannot reveal hidden patient ids.
@@ -90,7 +90,7 @@ def patient_quality(
 ):
     if not policy.can_read_patient(conn, user, patient_id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
-    result = data_quality.evaluate(conn, user)
+    result = data_quality.evaluate(conn, user, identity_signals=True)
     patient = next((p for p in result["patients"] if p["patient_id"] == patient_id), None)
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")

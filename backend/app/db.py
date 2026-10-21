@@ -427,6 +427,26 @@ CREATE TABLE IF NOT EXISTS import_files_processed (
     repeat_confirmed INTEGER NOT NULL DEFAULT 0 CHECK (repeat_confirmed IN (0, 1))
 );
 
+-- WP2.4-C (v25). Осознанное подтверждение возможного дубля: новая или
+-- измененная карточка, подтвержденные совпадения (JSON-массив ID видимых
+-- сотруднику карточек), причина, автор и серверное время. Только добавление.
+-- patient_id без внешнего ключа (как в audit_events): запись остается следом
+-- решения и не мешает существующему удалению карточки.
+CREATE TABLE IF NOT EXISTS patient_duplicate_confirmations (
+    id TEXT PRIMARY KEY,
+    operation TEXT NOT NULL CHECK (operation IN ('create', 'policy_update', 'import')),
+    patient_id TEXT NOT NULL CHECK (length(patient_id) BETWEEN 1 AND 64),
+    matched_patient_ids TEXT NOT NULL CHECK (
+        json_valid(matched_patient_ids) AND json_type(matched_patient_ids) = 'array'
+        AND json_array_length(matched_patient_ids) BETWEEN 1 AND 50
+    ),
+    reason TEXT NOT NULL CHECK (length(trim(reason)) >= 1 AND length(reason) <= 2000),
+    created_by_user_id TEXT NOT NULL REFERENCES users(id),
+    created_at TEXT NOT NULL,
+    import_id TEXT,
+    CHECK ((operation = 'import') = (import_id IS NOT NULL))
+);
+
 """
 
 # Индексы создаются после миграции: часть из них ссылается на колонки,
@@ -538,6 +558,7 @@ REQUIRED_TABLES = (
     "consilium_resubmissions",
     "idempotency_keys",
     "import_files_processed",
+    "patient_duplicate_confirmations",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -1610,6 +1631,37 @@ def migrate_v23_to_v24(conn: sqlite3.Connection) -> None:
         _ensure_trigger(conn, name, sql)
 
 
+# WP2.4-C (v25): подтверждения возможных дублей только добавляются.
+DUPLICATE_CONFIRMATION_TRIGGERS = (
+    ("trg_duplicate_confirmations_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_confirmations_no_update
+        BEFORE UPDATE ON patient_duplicate_confirmations
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_confirmation_immutable');
+        END"""),
+    ("trg_duplicate_confirmations_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_confirmations_no_delete
+        BEFORE DELETE ON patient_duplicate_confirmations
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_confirmation_immutable');
+        END"""),
+)
+
+
+def migrate_v24_to_v25(conn: sqlite3.Connection) -> None:
+    """v24 → v25: confirmations of possible duplicates (WP2.4-C).
+
+    Only adds: the table is created by SCHEMA_SQL (IF NOT EXISTS); here — its
+    indexes and append-only triggers. No existing row is touched; repeated runs
+    change nothing."""
+    if not _table_columns(conn, "patient_duplicate_confirmations"):
+        return
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_duplicate_confirmations_patient "
+                 "ON patient_duplicate_confirmations(patient_id)")
+    for name, sql in DUPLICATE_CONFIRMATION_TRIGGERS:
+        _ensure_trigger(conn, name, sql)
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
@@ -1696,6 +1748,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v21_to_v22(conn)         # repeated consiliums, record version, resubmissions
         migrate_v22_to_v23(conn)         # provenance of patient cards: author and source
         migrate_v23_to_v24(conn)         # idempotency keys, history of processed import files
+        migrate_v24_to_v25(conn)         # confirmations of possible duplicates
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть

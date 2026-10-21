@@ -6141,14 +6141,98 @@ const app = {
     /* ================================================================ МУТАЦИИ */
 
     async updatePatientField(patientId, fieldName, value) {
-        try {
-            const updated = await apiPatch(`/api/patients/${patientId}`, { field: fieldName, value });
-            this.replacePatientInCache(updated);
-            this.refreshCurrent();
-        } catch (e) {
-            ui.toast('Не удалось сохранить: ' + e.message, 'danger');
-            this.refreshCurrent();
+        const body = { field: fieldName, value };
+        for (;;) {
+            try {
+                const updated = await apiPatch(`/api/patients/${patientId}`, body);
+                this.replacePatientInCache(updated);
+                this.refreshCurrent();
+                return;
+            } catch (e) {
+                // WP2.4-C: другой карточке вашей области принадлежит тот же номер полиса.
+                if (fieldName === 'policyNumber' && this.isDuplicateLimitExceeded(e)) {
+                    ui.toast(e.data.detail || 'Номер полиса не изменен.', 'danger');
+                } else if (fieldName === 'policyNumber' && this.isPossibleDuplicate(e)) {
+                    const answer = await this.askDuplicateConfirmation(e.data, {
+                        title: 'Номер полиса уже есть у другой карточки', confirmLabel: 'Сохранить номер',
+                        reasonLabel: 'Причина, по которой номер нужно сохранить',
+                    });
+                    if (answer) {
+                        body.duplicateConfirmation = {
+                            reason: answer.reason, matchedPatientIds: (e.data.matches || []).map(m => m.id),
+                        };
+                        continue;
+                    }
+                    ui.toast('Номер полиса не изменен.', 'warning');
+                } else {
+                    ui.toast('Не удалось сохранить: ' + e.message, 'danger');
+                }
+                this.refreshCurrent();
+                return;
+            }
         }
+    },
+
+    // WP2.4-C: ответ 409 POSSIBLE_DUPLICATE — совпадение полиса с карточками вашей области.
+    isPossibleDuplicate(error) {
+        return Boolean(error && error.status === 409 && error.data && error.data.code === 'POSSIBLE_DUPLICATE');
+    },
+
+    // C-01: совпадений больше лимита — подтверждать неполный список нельзя, только ручной разбор.
+    isDuplicateLimitExceeded(error) {
+        return Boolean(error && error.status === 409 && error.data
+            && error.data.code === 'DUPLICATE_MATCH_LIMIT_EXCEEDED');
+    },
+
+    // Окно подтверждения возможного дубля: только карточки, доступные сотруднику,
+    // все сведения выводятся как текст. Возвращает { reason } или null.
+    askDuplicateConfirmation(data, { title, confirmLabel, reasonLabel }) {
+        return new Promise((resolve) => {
+            let done = false;
+            const finish = (reason, openId) => {
+                if (done) return;
+                done = true;
+                $('duplicateForm').removeEventListener('submit', onSubmit);
+                $('cancelDuplicateBtn').removeEventListener('click', onCancel);
+                $('closeDuplicateIconBtn').removeEventListener('click', onCancel);
+                document.removeEventListener('keydown', onKey, true);
+                ui.closeModal('duplicateModal');
+                if (openId) {
+                    ui.closeModal('addModal');
+                    this.openPatient(openId);
+                }
+                resolve(reason ? { reason } : null);
+            };
+            const onSubmit = (event) => {
+                event.preventDefault();
+                const reason = $('duplicateReason').value.trim();
+                if (!reason) {
+                    $('duplicateError').textContent = 'Укажите причину.';
+                    $('duplicateError').classList.remove('is-hidden');
+                    return;
+                }
+                finish(reason);
+            };
+            const onCancel = () => finish(null);
+            const onKey = (event) => { if (event.key === 'Escape') finish(null); };
+            $('duplicateModalTitle').textContent = title;
+            $('duplicateText').textContent = data.detail || '';
+            $('duplicateReason').value = '';
+            $('duplicateError').classList.add('is-hidden');
+            $('confirmDuplicateBtn').textContent = confirmLabel;
+            $('duplicateReasonLabel').textContent = reasonLabel;
+            $('duplicateMatches').replaceChildren(...(data.matches || []).map(m => el('li', { class: 'list-row' }, [
+                el('span', { text: [m.name, m.age ? `${m.age} лет` : '', m.treatingDoctorName ? `лечащий врач: ${m.treatingDoctorName}` : '']
+                    .filter(Boolean).join(' · ') }),
+                el('button', { type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть карточку',
+                    on: { click: () => finish(null, m.id) } }),
+            ])));
+            $('duplicateForm').addEventListener('submit', onSubmit);
+            $('cancelDuplicateBtn').addEventListener('click', onCancel);
+            $('closeDuplicateIconBtn').addEventListener('click', onCancel);
+            document.addEventListener('keydown', onKey, true);
+            ui.openModal('duplicateModal');
+        });
     },
 
     async deletePatient(patientId) {
@@ -6366,6 +6450,7 @@ const app = {
         // WP2.4-B: новый ключ для новой формы; повтор той же отправки — с тем же ключом.
         this.addPatientKey = newIdempotencyKey();
         this.addPatientSentBody = null;
+        this.addPatientDuplicateConfirmation = null;   // WP2.4-C: подтверждение дубля — только для этой формы
         $('addForm').reset();
         $('addFormError').classList.add('is-hidden');
         this.clearPgiResultDateError();
@@ -6601,26 +6686,54 @@ const app = {
             complaint: $('complaint').value,
             events: this.buildEventsFromForm(stage),
         };
+        // WP2.4-C: уже данное в этой форме подтверждение возможного дубля отправляется
+        // снова — повтор после потерянного ответа идет тем же телом и тем же ключом
+        // (сервер вернет уже созданную карточку). Сервер сверяет его с актуальным списком.
+        if (this.addPatientDuplicateConfirmation) payload.duplicateConfirmation = this.addPatientDuplicateConfirmation;
 
-        // Изменились отправляемые данные — это новая операция и новый ключ.
-        const payloadText = JSON.stringify(payload);
-        if (!this.addPatientKey || (this.addPatientSentBody !== null && this.addPatientSentBody !== payloadText)) {
-            this.addPatientKey = newIdempotencyKey();
-        }
-        this.addPatientSentBody = payloadText;
-        this.setAddPatientPending(true);
         let created;
-        try {
-            created = await apiPostIdempotent('/api/patients', payload, this.addPatientKey);
-        } catch (e) {
-            // Введенные данные остаются в форме, кнопка снова доступна.
-            this.setAddPatientPending(false);
-            this.showFormError('Не удалось создать пациента: ' + e.message);
-            return;
+        for (;;) {
+            // Изменились отправляемые данные — это новая операция и новый ключ
+            // (в том числе после подтверждения возможного дубля, WP2.4-C).
+            const payloadText = JSON.stringify(payload);
+            if (!this.addPatientKey || (this.addPatientSentBody !== null && this.addPatientSentBody !== payloadText)) {
+                this.addPatientKey = newIdempotencyKey();
+            }
+            this.addPatientSentBody = payloadText;
+            this.setAddPatientPending(true);
+            try {
+                created = await apiPostIdempotent('/api/patients', payload, this.addPatientKey);
+                break;
+            } catch (e) {
+                // Введенные данные остаются в форме, кнопка снова доступна.
+                this.setAddPatientPending(false);
+                if (this.isDuplicateLimitExceeded(e)) {
+                    this.showFormError('Карточка не создана. ' + (e.data.detail || ''));
+                    return;
+                }
+                if (this.isPossibleDuplicate(e)) {
+                    const answer = await this.askDuplicateConfirmation(e.data, {
+                        title: 'Возможный дубль пациента', confirmLabel: 'Создать новую карточку',
+                        reasonLabel: 'Причина, по которой нужна отдельная карточка',
+                    });
+                    if (!answer) {
+                        this.showFormError('Карточка не создана: в вашей области уже есть карточка с таким номером полиса ОМС.');
+                        return;
+                    }
+                    this.addPatientDuplicateConfirmation = {
+                        reason: answer.reason, matchedPatientIds: (e.data.matches || []).map(m => m.id),
+                    };
+                    payload.duplicateConfirmation = this.addPatientDuplicateConfirmation;
+                    continue;
+                }
+                this.showFormError('Не удалось создать пациента: ' + e.message);
+                return;
+            }
         }
         this.setAddPatientPending(false);
         this.addPatientKey = null;
         this.addPatientSentBody = null;
+        this.addPatientDuplicateConfirmation = null;
         this.replacePatientInCache(created);
         ui.closeModal('addModal');
         ui.toast('Пациент добавлен.', 'good');
@@ -9027,6 +9140,7 @@ const app = {
         $('importPreserveIdsConfirm').checked = false;
         $('importHistoricalDecisionsConfirm').checked = false;
         $('importRepeatConfirm').checked = false;
+        $('importDuplicateReason').value = '';
         $('importPreserveIdsField').classList.add('is-hidden');
         confirmField.classList.add('is-hidden');
         if (!provenance) {
@@ -9147,14 +9261,21 @@ const app = {
         // WP2.4-B (U9): повторяющиеся номера полисов в записях файла — режим, создающий карточки, недоступен.
         const policyDuplicates = (this.importReport && this.importReport.filePolicyDuplicates || {})[mode];
         const policyDuplicatesBlocked = Boolean(policyDuplicates && policyDuplicates.blocked);
+        // WP2.4-C: записи файла совпадают по полису с карточками вашей области — нужна причина.
+        const possible = (this.importReport && this.importReport.possibleDuplicates || {})[mode];
+        const possibleRows = (possible && possible.rows) || [];
+        // C-01: совпадений больше лимита — режим недоступен, подтверждать неполный список нельзя.
+        const limitExceeded = Boolean(possible && possible.limitExceeded);
+        $('importDuplicateField').classList.toggle('is-hidden', !possibleRows.length || limitExceeded);
         const provenance = this.importReport && this.importReport.provenance;
         // Неподписанный файл: без отдельной отметки подтверждения кнопка недоступна.
         const needsConfirmation = (Boolean(provenance && provenance.confirmationRequired) && !$('importUnsignedConfirm').checked)
             || (preserveRequired && !$('importPreserveIdsConfirm').checked)
             || (historicalRequired && !$('importHistoricalDecisionsConfirm').checked)
-            || (repeatRequired && !$('importRepeatConfirm').checked);
+            || (repeatRequired && !$('importRepeatConfirm').checked)
+            || (possibleRows.length > 0 && !$('importDuplicateReason').value.trim());
         const blocked = consiliumBlocked || archiveBlocked || duplicateBlocked || accessBlocked || overwriteBlocked
-            || policyDuplicatesBlocked || needsConfirmation || Boolean(this.importCommitPending);
+            || policyDuplicatesBlocked || limitExceeded || needsConfirmation || Boolean(this.importCommitPending);
         $('confirmImportCommitBtn').disabled = blocked;
         const overwriteAlert = overwrite && (overwrite.blocked || mode === 'update')
             ? el('div', { class: `alert ${overwrite.blocked ? 'alert--danger' : 'alert--info'}`, role: overwrite.blocked ? 'alert' : null }, [
@@ -9216,8 +9337,25 @@ const app = {
                 el('p', { text: policyDuplicates.reason }),
             ])
             : null;
-        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, policyDuplicatesAlert, repeatAlert,
-            preserveAlert, historicalAlert].filter(Boolean);
+        const limitAlert = limitExceeded
+            ? el('div', { class: 'alert alert--danger', role: 'alert' }, [
+                el('strong', { text: 'Этот режим импорта недоступен: слишком много совпадений номера полиса' }),
+                el('p', { text: `Записи файла: ${(possible.limitExceededRows || []).join(', ')}. В вашей области доступа `
+                    + 'больше 50 карточек с совпадающими номерами полиса ОМС. Подтвердить неполный список нельзя: '
+                    + 'нужен ручной разбор этих карточек или исправление файла.' }),
+            ])
+            : null;
+        const possibleAlert = possibleRows.length && !limitExceeded
+            ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: 'Возможные дубли среди ваших карточек' }),
+                el('ul', { class: 'import-consilium-impact' }, possibleRows.map(r => el('li', {
+                    text: `Запись ${r.row}: тот же номер полиса у ${r.matches.map(m => m.name).join(', ')}`,
+                }))),
+                el('p', { text: 'Совпадение номера полиса не доказывает, что это тот же пациент. Укажите причину импорта ниже.' }),
+            ])
+            : null;
+        const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, policyDuplicatesAlert, limitAlert, possibleAlert,
+            repeatAlert, preserveAlert, historicalAlert].filter(Boolean);
         if (!impact || !impact.records) {
             box.replaceChildren(...extra);
             return;
@@ -9247,6 +9385,7 @@ const app = {
         $('importPreserveIdsConfirm').checked = false;
         $('importHistoricalDecisionsConfirm').checked = false;
         $('importRepeatConfirm').checked = false;
+        $('importDuplicateReason').value = '';
     },
 
     async confirmImportCommit() {
@@ -9291,6 +9430,14 @@ const app = {
                 confirmed: true, fileSha256: provenance.fileSha256, mode, action: 'repeat_processed_file',
             };
         }
+        const possible = (this.importReport && this.importReport.possibleDuplicates || {})[mode];
+        if (possible && possible.limitExceeded) return;   // C-01: подтверждать неполный список нельзя
+        if (possible && possible.rows && possible.rows.length) {
+            const reason = $('importDuplicateReason').value.trim();
+            if (!reason) return;
+            // WP2.4-C: подтверждение всего набора совпадений из проверки файла; сервер сверит его заново.
+            body.duplicateConfirmation = { reason, matchedPatientIds: possible.matchedPatientIds };
+        }
         // WP2.4-B: ключ этой операции импорта. Те же данные — тот же ключ (безопасный
         // повтор потерянного ответа); другой режим или подтверждения — новый ключ.
         const bodyText = JSON.stringify(body);
@@ -9305,7 +9452,27 @@ const app = {
         } catch (e) {
             // Импорт не подтвержден сервером: окно и ключ остаются, повтор тех же
             // данных безопасен (при уже выполненном импорте сервер вернет его итог).
-            ui.toast('Импорт не выполнен: ' + e.message, 'danger');
+            if (this.isDuplicateLimitExceeded(e) && this.importReport) {
+                // C-01: набор вырос сверх лимита — режим блокируется, поле причины скрыто.
+                this.importReport.possibleDuplicates = {
+                    ...(this.importReport.possibleDuplicates || {}),
+                    [mode]: { rows: [], matchedPatientIds: [], limitExceeded: true, limitExceededRows: e.data.rows || [] },
+                };
+                $('importDuplicateReason').value = '';
+                ui.toast('Импорт не выполнен. ' + (e.data.detail || ''), 'danger');
+            } else if (this.isPossibleDuplicate(e) && this.importReport && e.data.rows) {
+                // WP2.4-C: набор совпадений изменился — окно показывает актуальный список
+                // от сервера, причину нужно указать заново для нового набора.
+                this.importReport.possibleDuplicates = {
+                    ...(this.importReport.possibleDuplicates || {}),
+                    [mode]: { rows: e.data.rows, matchedPatientIds: e.data.matchedPatientIds || [] },
+                };
+                $('importDuplicateReason').value = '';
+                ui.toast('Импорт не выполнен: совпадения с вашими карточками изменились после проверки файла. '
+                    + 'Проверьте обновленный список и укажите причину снова.', 'danger');
+            } else {
+                ui.toast('Импорт не выполнен: ' + e.message, 'danger');
+            }
         } finally {
             this.importCommitPending = false;
             if (!result && this.importReport) this.renderImportConsiliumImpact($('importModeSelect').value);
@@ -9869,6 +10036,7 @@ const app = {
         on('importPreserveIdsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
         on('importHistoricalDecisionsConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
         on('importRepeatConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
+        on('importDuplicateReason', 'input', () => this.renderImportConsiliumImpact($('importModeSelect').value));
 
         // Журнал аудита
         on('auditRefreshBtn', 'click', () => this.renderAudit());

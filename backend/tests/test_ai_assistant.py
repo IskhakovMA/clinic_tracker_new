@@ -976,8 +976,9 @@ def test_ai_schema_has_no_ai_tables(auth_client):
     # v21 (WP2.2-B) добавила только колонки и триггеры ручной отметки решения ОК в events;
     # v22 (WP2.3-B1) — только таблицы и колонки консилиума, AI-таблиц нет;
     # v23 (WP2.4-A) — только столбцы и триггеры происхождения карточки пациента;
-    # v24 (WP2.4-B) — только таблицы ключей идемпотентности и истории файлов импорта.
-    assert config.SCHEMA_VERSION == 24
+    # v24 (WP2.4-B) — только таблицы ключей идемпотентности и истории файлов импорта;
+    # v25 (WP2.4-C) — только таблица подтверждений возможных дублей пациентов.
+    assert config.SCHEMA_VERSION == 25
     tables = {
         row["name"]
         for row in get_conn().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()

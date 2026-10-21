@@ -10,10 +10,10 @@ from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 
-from .. import audit, config, export_signing, idempotency, importexport, policy, store
+from .. import audit, config, export_signing, idempotency, identity, importexport, policy, store
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
-from ..services import import_operations
+from ..services import import_operations, patient_duplicates
 
 router = APIRouter(prefix="/api", tags=["import-export"])
 
@@ -130,6 +130,9 @@ def import_preview(
     # WP2.4-B (U9): повторяющиеся непустые полисы внутри файла — по самому файлу, без поиска в базе.
     report["filePolicyDuplicates"] = {mode: importexport.file_policy_duplicates_impact(document, mode)
                                       for mode in modes}
+    # WP2.4-C: совпадения записей файла с карточками ОБЛАСТИ сотрудника (только видимые ему).
+    report["possibleDuplicates"] = {mode: importexport.possible_duplicates_impact(conn, document, mode, user)
+                                    for mode in modes if mode in importexport.CARD_CREATING_MODES}
     # WP2.4-B (U4): этот же сотрудник уже импортировал этот файл — только его собственная история.
     report["previouslyImported"] = import_operations.previous_processing(conn, user.id, provenance["fileSha256"])
     return {"valid": True, "errors": [], "provenance": provenance, **report}
@@ -254,7 +257,8 @@ def import_commit(
         return importexport.commit_import(
             conn, document, body.mode, fresh, ids=inspection.ids, audit_hook=audit_hook,
             preserve_ids_confirmed=preserve_confirmed, historical_decisions=historical,
-            creation_source="import", in_open_transaction=True, before_write=before_write)
+            creation_source="import", in_open_transaction=True, before_write=before_write,
+            duplicate_confirmation=body.duplicateConfirmation, import_id=import_id)
 
     repeat = body.repeatImportConfirmation
     repeat_confirmed = bool(repeat is not None and repeat.fileSha256 == provenance["fileSha256"]
@@ -286,6 +290,19 @@ def import_commit(
         return JSONResponse(status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                             content={"detail": str(e), "code": import_operations.FILE_ALREADY_IMPORTED_CODE,
                                      "previouslyImported": e.previous})
+    except importexport.ImportPossibleDuplicates as e:
+        if isinstance(e, importexport.ImportDuplicateLimitExceeded):
+            reason = f"reason=duplicate_match_limit_exceeded rows={len(e.limit_rows)}"
+        else:
+            reason = f"reason=possible_duplicates rows={len(e.rows)}"
+        audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
+                     detail=f"mode={body.mode} {file_ref} {reason}", **ctx)
+        return _import_possible_duplicates(e)
+    except audit.AuditWriteFailed:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Импорт не сохранён: не удалось записать данные вместе с журналом аудита. Данные не изменены.",
+        )
     except importexport.ImportFilePolicyDuplicateError as e:
         audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
                      detail=f"mode={body.mode} {file_ref} duplicate_policy_rows={sum(len(g) for g in e.groups)}",
@@ -343,6 +360,24 @@ def import_commit(
     if outcome.replayed:
         response.headers[idempotency.REPLAYED_HEADER] = "true"
     return outcome.response
+
+
+def _import_possible_duplicates(e) -> JSONResponse:
+    """409 POSSIBLE_DUPLICATE импорта (WP2.4-C): номера записей файла и видимые
+    сотруднику карточки — без полисов и медицинских данных.
+
+    C-01: совпадений больше лимита — 409 DUPLICATE_MATCH_LIMIT_EXCEEDED: только
+    номера записей файла, без списков карточек (подтверждать неполный список нельзя)."""
+    if isinstance(e, importexport.ImportDuplicateLimitExceeded):
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={
+            "detail": patient_duplicates.IMPORT_LIMIT_EXCEEDED_MESSAGE,
+            "code": patient_duplicates.LIMIT_EXCEEDED_CODE,
+            "rows": [i + 1 for i in e.limit_rows], "limit": identity.MATCH_LIMIT,
+        })
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={
+        "detail": patient_duplicates.IMPORT_MESSAGE, "code": patient_duplicates.POSSIBLE_DUPLICATE_CODE,
+        "rows": [{"row": i + 1, "matches": m} for i, m in e.rows], "matchedPatientIds": e.matched_ids,
+    })
 
 
 def _safe_export_filename() -> str:

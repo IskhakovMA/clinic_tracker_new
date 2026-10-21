@@ -300,7 +300,11 @@ def test_export_keeps_format_and_import_does_not_revive_deleted_events(auth_clie
     document = legacy_export(export.json())
     for p in document["patients"]:
         p.pop("id", None)
-    r = unsigned_import(auth_client, json.dumps(document), "add")
+    # WP2.4-C: копия своей карточки (тот же полис) — только после подтверждения возможного дубля.
+    from .conftest import possible_duplicate_ids
+    ids = possible_duplicate_ids(unsigned_import(auth_client, json.dumps(document), "add"))
+    assert get_conn().execute("SELECT COUNT(*) FROM patients").fetchone()[0] == before
+    r = unsigned_import(auth_client, json.dumps(document), "add", duplicates=ids)
     assert r.status_code == 200, r.text
     copies = [p for p in auth_client.get("/api/patients").json() if p["name"] == "Экспорт События" and p["id"] != pid]
     assert len(copies) == 1
@@ -401,6 +405,8 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
         # WP2.4-B (v24): таблицы ключей идемпотентности и истории файлов — вычитаются целиком.
         conn.execute("DROP TABLE idempotency_keys")
         conn.execute("DROP TABLE import_files_processed")
+        # WP2.4-C (v25): таблица подтверждений возможных дублей — вычитается целиком.
+        conn.execute("DROP TABLE patient_duplicate_confirmations")
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
     conn.close()

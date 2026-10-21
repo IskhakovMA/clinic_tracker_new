@@ -12,7 +12,8 @@ from .. import audit, idempotency, importexport, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
 from ..services import import_operations
-from .importexport import decision_audit, historical_decisions_request, historical_decisions_view
+from .importexport import (_import_possible_duplicates, decision_audit, historical_decisions_request,
+                           historical_decisions_view)
 
 router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"])
 
@@ -121,7 +122,7 @@ def migrate_commit(
         return importexport.commit_import(
             conn, document, "add", fresh, audit_hook=audit_hook, require_empty=True,
             historical_decisions=historical, creation_source="migration", in_open_transaction=True,
-            before_write=before_write)
+            before_write=before_write, duplicate_confirmation=body.duplicateConfirmation, import_id=import_id)
 
     sha = inspection.provenance["fileSha256"]
     fingerprint = {**body.model_dump(mode="json", exclude={"raw"}), "fileSha256": sha}
@@ -144,6 +145,11 @@ def migrate_commit(
             detail="Не удалось подтвердить результат переноса: журнал аудита недоступен. "
                    "Повторите попытку позже тем же запросом.",
         )
+    except importexport.ImportPossibleDuplicates as e:
+        return _import_possible_duplicates(e)
+    except audit.AuditWriteFailed:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                            detail="Перенос не сохранён: не удалось записать данные вместе с журналом аудита.")
     except importexport.ImportFilePolicyDuplicateError as e:
         return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             content={"detail": str(e), "code": importexport.FILE_POLICY_DUPLICATES_CODE,

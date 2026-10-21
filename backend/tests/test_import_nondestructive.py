@@ -439,12 +439,18 @@ def test_unsigned_add_with_unknown_patient_id_or_without_ids_still_imports(auth_
     _, raw = _legacy_reimport_file(auth_client)
     document = json.loads(raw)
     document["patients"][0]["id"] = "9" * 32                                  # несуществующий id
-    r = unsigned_import(auth_client, json.dumps(document, ensure_ascii=False), "add")
+    # WP2.4-C: та же карточка по полису — возможный дубль, импорт только после подтверждения.
+    from .conftest import possible_duplicate_ids
+    ids = possible_duplicate_ids(unsigned_import(auth_client, json.dumps(document, ensure_ascii=False), "add"))
+    r = unsigned_import(auth_client, json.dumps(document, ensure_ascii=False), "add", duplicates=ids)
     assert r.status_code == 200 and r.json()["added"] == 1
     # Неподписанный id не сохраняется и ни с чем не сопоставляется.
     assert get_conn().execute("SELECT COUNT(*) FROM patients WHERE id = ?", ("9" * 32,)).fetchone()[0] == 0
     document["patients"][0].pop("id")                                         # внешний файл без id
-    r = unsigned_import(auth_client, json.dumps(document, ensure_ascii=False), "add")
+    # Совпадений теперь два (исходная карточка и копия) — подтверждается актуальный набор.
+    ids = possible_duplicate_ids(unsigned_import(auth_client, json.dumps(document, ensure_ascii=False), "add"))
+    assert len(ids) == 2
+    r = unsigned_import(auth_client, json.dumps(document, ensure_ascii=False), "add", duplicates=ids)
     assert r.status_code == 200 and r.json()["added"] == 1
 
 

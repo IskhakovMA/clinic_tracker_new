@@ -283,10 +283,18 @@ def test_failure_in_the_middle_of_import_rolls_everything_back(auth_client, monk
     conn = get_conn()
     actor = policy.load_current_user(conn, _dev_id())
     before = _snapshot()
+    # WP2.4-C: копии своих карточек (те же полисы) — с подтверждением всего набора
+    # возможных дублей; сбой на второй записи откатывает и записи подтверждений.
+    from backend.app.models import DuplicateConfirmation
+    impact = importexport.possible_duplicates_impact(conn, document, "add", actor)
+    confirmation = DuplicateConfirmation(reason="Синтетическая причина",
+                                         matchedPatientIds=impact["matchedPatientIds"])
     with pytest.raises(RuntimeError):
-        importexport.commit_import(conn, document, "add", actor)
+        importexport.commit_import(conn, document, "add", actor, duplicate_confirmation=confirmation,
+                                   import_id="synthetic-import")
     assert not conn.in_transaction
     assert _snapshot() == before
+    assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 0
 
 
 def test_database_trigger_backs_up_the_import_check(auth_client, monkeypatch):

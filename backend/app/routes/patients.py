@@ -9,7 +9,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from fastapi.responses import JSONResponse
 
-from .. import audit, config, idempotency, policy, store
+from .. import audit, config, idempotency, identity, policy, store
 from ..deps import get_db, require_active_password, require_csrf, user_rate_limit
 from ..models import (
     ChecklistItemIn,
@@ -25,7 +25,7 @@ from ..models import (
     StageChangeIn,
     TreatingDoctorIn,
 )
-from ..services import patient_attention, patient_create
+from ..services import patient_attention, patient_create, patient_duplicates, patient_policy
 
 router = APIRouter(prefix="/api/patients", tags=["patients"])
 
@@ -99,15 +99,34 @@ def list_unresolved(
     return {"patients": store.unresolved_patients(conn)}
 
 
-def _database_busy(exc: sqlite3.OperationalError) -> None:
+def _possible_duplicate(e) -> JSONResponse:
+    """409 POSSIBLE_DUPLICATE (WP2.4-C): только карточки, которые сотрудник и так
+    вправе читать (ID, ФИО, возраст, лечащий врач) — без полиса и медицинских данных.
+
+    C-01: совпадений больше лимита — 409 DUPLICATE_MATCH_LIMIT_EXCEEDED без списка
+    карточек: подтверждать неполный список нельзя, нужен ручной разбор."""
+    if isinstance(e, patient_duplicates.DuplicateMatchLimitExceeded):
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                            content={"detail": str(e), "code": patient_duplicates.LIMIT_EXCEEDED_CODE,
+                                     "limit": identity.MATCH_LIMIT})
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                        content={"detail": str(e), "code": patient_duplicates.POSSIBLE_DUPLICATE_CODE,
+                                 "matches": e.matches})
+
+
+def _card_write_busy(exc: sqlite3.OperationalError, what: str = "Пациент не создан") -> None:
     """503 только для ожидаемой блокировки SQLite (SQLITE_BUSY/SQLITE_LOCKED):
-    транзакция уже откатана, запрос можно повторить. Иная ошибка SQL — дефект (500)."""
+    транзакция уже откатана, запрос можно повторить. Иная ошибка SQL — дефект (500).
+
+    WP2.4-C: отдельное имя. Прежнее имя _database_busy перекрывалось одноименной
+    функцией ниже в модуле (события маршрута), и любая OperationalError при
+    создании карточки превращалась в 503 с текстом исключения."""
     code = getattr(exc, "sqlite_errorcode", None)
     if code is None or (code & 0xFF) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
         raise exc
     raise HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="База данных временно занята. Пациент не создан, повторите попытку",
+        detail=f"База данных временно занята. {what}, повторите попытку",
     ) from exc
 
 
@@ -147,6 +166,8 @@ def create_patient(
     except idempotency.IdempotencyKeyReused as e:
         return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                             content={"detail": str(e), "code": idempotency.REUSED_KEY_CODE})
+    except patient_duplicates.PossibleDuplicate as e:
+        return _possible_duplicate(e)
     except patient_create.PatientReplayNotFound:
         _not_found()
     except patient_create.ReplayAuditUnavailable:
@@ -168,7 +189,7 @@ def create_patient(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except sqlite3.OperationalError as e:
-        _database_busy(e)
+        _card_write_busy(e)
 
 
 @router.get("/{patient_id}")
@@ -245,6 +266,32 @@ def update_patient_field(
         # Legacy-текст врача участвует в отображении ответственных; менять его
         # (как и само закрепление) может только Разработчик.
         _forbidden(conn, user, "action=patient_doctor_text")
+    if body.duplicateConfirmation is not None and body.field != "policyNumber":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="duplicateConfirmation относится только к номеру полиса ОМС")
+    if body.field == "policyNumber":
+        # WP2.4-C: полис — в транзакции с проверкой возможных дублей в области сотрудника.
+        try:
+            result = patient_policy.update_policy_number(conn, user, patient_id, body.value,
+                                                         body.duplicateConfirmation)
+        except ValueError as e:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+        except patient_duplicates.PossibleDuplicate as e:
+            return _possible_duplicate(e)
+        except patient_policy.PolicyUpdateNotFound:
+            _not_found()
+        except patient_policy.PolicyUpdateForbidden:
+            _forbidden(conn, user, "action=patient_write")
+        except audit.AuditWriteFailed:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Не удалось сохранить изменение вместе с записью журнала аудита. Номер полиса не изменен",
+            )
+        except sqlite3.OperationalError as e:
+            _card_write_busy(e, "Номер полиса не изменен")
+        audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+                     detail="field=policyNumber", **audit.actor_ctx(user))
+        return result
     try:
         ok = store.update_patient_field_with_actor(conn, patient_id, body.field, body.value, actor_user_id=user.id)
     except ValueError as e:

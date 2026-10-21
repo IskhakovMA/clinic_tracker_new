@@ -31,6 +31,10 @@ migration_replayed) and a confirmed repeat of a processed import file
 (import_repeat_confirmed) are fail-closed too (WP2.4-B): no replay result is
 returned without its audit row. Keys themselves are never written to audit.
 
+A confirmed possible duplicate (patient_duplicate_confirmed, WP2.4-C) is
+written fail-closed in the transaction of the confirmed operation; the reason
+itself is kept in patient_duplicate_confirmations and never in this log.
+
 Creating a patient card is fail-closed since WP2.4-A: services.patient_create
 writes exactly one `patient_created` row (current actor, patient id,
 treating doctor id — no names, policy number or medical fields) inside the
@@ -60,6 +64,9 @@ PASSWORD_CHANGED = "password_changed"
 PATIENT_CREATED = "patient_created"
 # WP2.4-B: повтор создания с тем же Idempotency-Key — обязательная запись (fail-closed).
 PATIENT_CREATE_REPLAYED = "patient_create_replayed"
+# WP2.4-C: осознанно подтвержденный возможный дубль — обязательная запись в транзакции
+# операции (операция и число совпадений; причина хранится отдельно и сюда не пишется).
+PATIENT_DUPLICATE_CONFIRMED = "patient_duplicate_confirmed"
 PATIENT_UPDATED = "patient_updated"
 PATIENT_DIAGNOSIS_CHANGED = "patient_diagnosis_changed"
 CONSILIUM_CODE_CHANGED = "consilium_code_changed"

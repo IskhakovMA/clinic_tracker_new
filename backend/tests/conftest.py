@@ -1,3 +1,4 @@
+import itertools
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +23,7 @@ DEV_FULL_NAME = "Разработчиков Тест Системович"
 def client(tmp_path, monkeypatch):
     """TestClient with an isolated temp database per test."""
     monkeypatch.setenv("CLINIC_DATA_DIR", str(tmp_path))
+    reset_synthetic_policy_numbers()
     monkeypatch.setenv("CLINIC_AI_MODE", "disabled")
     # Синтетический ключ подписи выгрузок — только для тестов, не для установок.
     monkeypatch.setenv("CLINIC_EXPORT_SIGNING_KEY", TEST_EXPORT_SIGNING_KEY)
@@ -114,12 +116,38 @@ def auth_client(client):
     return client
 
 
+# WP2.4-C: совпадение полиса в области сотрудника — возможный дубль (409). Поэтому у
+# разных синтетических пациентов теста — разные синтетические номера: первый в тесте —
+# прежний 7700000000000000, далее 7700000000000001… Счетчик и таблица номеров
+# ключей сбрасываются для каждого теста фикстурой client. Одинаковый полис тест
+# задает явно.
+_POLICY_SEQUENCE = itertools.count()
+_POLICY_BY_KEY: dict[str, str] = {}
+
+
+def reset_synthetic_policy_numbers() -> None:
+    global _POLICY_SEQUENCE
+    _POLICY_SEQUENCE = itertools.count()
+    _POLICY_BY_KEY.clear()
+
+
+def next_synthetic_policy() -> str:
+    return f"77{next(_POLICY_SEQUENCE):014d}"
+
+
+def synthetic_policy_for_key(key: str) -> str:
+    """Один номер на ключ идемпотентности (без учета регистра): повтор запроса
+    с тем же ключом отправляет то же тело, как это делает клиент."""
+    if key.lower() not in _POLICY_BY_KEY:
+        _POLICY_BY_KEY[key.lower()] = next_synthetic_policy()
+    return _POLICY_BY_KEY[key.lower()]
+
+
 def make_patient_payload(**overrides):
     payload = {
         "name": "Тестов Тест Тестович",
         "age": 50,
         "phone": "+7 (999) 000-00-00",
-        "policyNumber": "7700000000000000",
         "priority": "normal",
         "stage": "exam",
         "diagnosis": "C34.1",
@@ -130,6 +158,14 @@ def make_patient_payload(**overrides):
         "events": [],
     }
     payload.update(overrides)
+    if "policyNumber" not in overrides:
+        number = next_synthetic_policy()
+        ordered = {}
+        for k, v in payload.items():
+            ordered[k] = v
+            if k == "phone":
+                ordered["policyNumber"] = number
+        payload = ordered if "policyNumber" in ordered else {**ordered, "policyNumber": number}
     return payload
 
 
@@ -217,12 +253,27 @@ def event_add_body(client, patient_id: str, occ: int = 0, purpose: str = "add") 
     return {"expectedEventIds": [e["id"] for e in events], "purpose": purpose}
 
 
+SYNTHETIC_DUPLICATE_REASON = "Синтетическая проверка: совпадение полиса ожидается тестом"
+
+
+def possible_duplicate_ids(response) -> list[str]:
+    """ID видимых совпадений из ответа 409 POSSIBLE_DUPLICATE (WP2.4-C)."""
+    body = response.json()
+    assert response.status_code == 409 and body["code"] == "POSSIBLE_DUPLICATE", response.text
+    return body.get("matchedPatientIds") or [m["id"] for m in body["matches"]]
+
+
+def duplicate_confirmation(ids) -> dict:
+    return {"reason": SYNTHETIC_DUPLICATE_REASON, "matchedPatientIds": list(ids)}
+
+
 def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, historical_decisions: int | None = None,
-                    repeat: bool = False):
+                    repeat: bool = False, duplicates=None):
     """Импорт файла без подписи системы так, как его делает интерфейс:
     preview → явное подтверждение именно этого файла и режима → commit.
     historical_decisions — отдельное подтверждение переноса этого числа решений ОК (WP2.2-B).
-    repeat — осознанный повтор файла, который этот сотрудник уже импортировал (WP2.4-B, U4)."""
+    repeat — осознанный повтор файла, который этот сотрудник уже импортировал (WP2.4-B, U4).
+    duplicates — подтверждение возможных дублей: ID совпадений из ответа 409 (WP2.4-C)."""
     import hashlib
     sha = hashlib.sha256(raw.encode("utf-8")).hexdigest()
     body = {"raw": raw, "mode": mode}
@@ -236,6 +287,8 @@ def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, histor
     if repeat:
         body["repeatImportConfirmation"] = {"confirmed": True, "fileSha256": sha, "mode": mode,
                                             "action": "repeat_processed_file"}
+    if duplicates is not None:
+        body["duplicateConfirmation"] = duplicate_confirmation(duplicates)
     return client.post("/api/import/commit", json=body, headers=client.csrf)
 
 

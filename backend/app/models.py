@@ -239,6 +239,41 @@ class EventVersionIn(StrictRequestModel):
     version: int = Field(..., ge=1, le=2**63 - 1)
 
 
+DUPLICATE_REASON_MAX = 2000
+DUPLICATE_MATCHES_MAX = 50
+
+
+class DuplicateConfirmation(StrictRequestModel):
+    """Осознанное подтверждение возможного дубля (WP2.4-C).
+
+    reason — обязательная причина; matchedPatientIds — ID совпавших карточек из
+    ответа 409. Сервер не доверяет списку: в транзакции он заново вычисляет
+    совпадения в области сотрудника, и список должен точно совпасть с ними."""
+    reason: str = Field(..., min_length=1, max_length=4 * DUPLICATE_REASON_MAX)
+    matchedPatientIds: list[str] = Field(..., min_length=1, max_length=DUPLICATE_MATCHES_MAX)
+
+    @field_validator("reason")
+    @classmethod
+    def _valid_reason(cls, v):
+        value = _normalize_multiline(v) or ""
+        if not value:
+            raise ValueError("reason is required")
+        if any(ord(ch) < 32 and ch != "\n" or ord(ch) == 127 for ch in value):
+            raise ValueError("reason contains control characters")
+        if len(value) > DUPLICATE_REASON_MAX:
+            raise ValueError(f"reason must be at most {DUPLICATE_REASON_MAX} characters")
+        return value
+
+    @field_validator("matchedPatientIds")
+    @classmethod
+    def _valid_ids(cls, v):
+        if any(not isinstance(i, str) or not i or len(i) > 64 for i in v):
+            raise ValueError("invalid patient id")
+        if len(set(v)) != len(v):
+            raise ValueError("patient ids must be unique")
+        return v
+
+
 class PatientFieldUpdateIn(StrictRequestModel):
     field: Literal[
         "name",
@@ -255,6 +290,8 @@ class PatientFieldUpdateIn(StrictRequestModel):
         "complaint",
     ]
     value: str | int | dict[str, str]
+    # WP2.4-C: подтверждение возможного дубля — только для field=policyNumber.
+    duplicateConfirmation: Optional[DuplicateConfirmation] = None
 
 
 class PatientCreateIn(StrictRequestModel):
@@ -289,6 +326,8 @@ class PatientCreateIn(StrictRequestModel):
     # Стабильная связь с учётной записью врача; правила назначения — в policy.py
     # (врач — только себя, заведующий — врача своего отделения, Разработчик — любого).
     treatingDoctorUserId: Optional[str] = Field(None, max_length=100)
+    # WP2.4-C: подтверждение возможного дубля (совпадение полиса в области сотрудника).
+    duplicateConfirmation: Optional[DuplicateConfirmation] = None
 
     @field_validator("name", "doctor", "head", "consiliumCode", "pgiCode")
     @classmethod
@@ -912,6 +951,8 @@ class ImportCommitRequest(StrictRequestModel):
     preserveIdsConfirmation: Optional[PreserveIdsConfirmation] = None
     historicalDecisionsConfirmation: Optional[HistoricalDecisionsConfirmation] = None
     repeatImportConfirmation: Optional[RepeatImportConfirmation] = None
+    # WP2.4-C: подтверждение возможных дублей среди карточек области сотрудника.
+    duplicateConfirmation: Optional[DuplicateConfirmation] = None
 
 
 # --- Notifications ------------------------------------------------------

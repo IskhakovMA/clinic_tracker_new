@@ -356,8 +356,12 @@ def test_file_without_ids_is_new_data_after_confirmation(auth_client):
     for record in legacy["patients"]:
         record.pop("id")
     raw = json.dumps(legacy, ensure_ascii=False)
-    r = unsigned_import(auth_client, raw, "add")
-    # Ограничение HMAC: файл без признаков подписи и id неотличим от новых данных.
+    # Ограничение HMAC: файл без признаков подписи и id неотличим от новых данных;
+    # WP2.4-C: совпадение полиса в области сотрудника все же требует подтверждения.
+    from .conftest import possible_duplicate_ids
+    ids = possible_duplicate_ids(unsigned_import(auth_client, raw, "add"))
+    assert len(auth_client.get("/api/patients").json()) == 1
+    r = unsigned_import(auth_client, raw, "add", duplicates=ids)
     assert r.status_code == 200 and r.json()["added"] == 1
     assert len(auth_client.get("/api/patients").json()) == 2
 

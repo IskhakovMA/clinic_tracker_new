@@ -975,11 +975,11 @@ def _export_document(client):
     return response.json()
 
 
-def _import(client, document, mode):
+def _import(client, document, mode, duplicates=None):
     raw = json.dumps(document, ensure_ascii=False)
     if "signature" in document:
         return client.post("/api/import/commit", json={"raw": raw, "mode": mode}, headers=client.csrf)
-    return unsigned_import(client, raw, mode)
+    return unsigned_import(client, raw, mode, duplicates=duplicates)
 
 
 @pytest.mark.parametrize("state", ["signed", "recorded"])
@@ -1018,7 +1018,10 @@ def test_safe_imports_still_work_next_to_consilium_records(client):
     # Старая выгрузка с существующими patient.id — повторный импорт (F10): 409.
     assert _import(client, legacy, "add").status_code == 409
     external = {**legacy, "patients": [{k: v for k, v in p.items() if k != "id"} for p in legacy["patients"]]}
-    added = _import(client, external, "add")
+    # WP2.4-C: копии своих карточек (те же полисы) — только после подтверждения возможных дублей.
+    from .conftest import possible_duplicate_ids
+    ids = possible_duplicate_ids(_import(client, external, "add"))
+    added = _import(client, external, "add", duplicates=ids)
     assert added.status_code == 200, added.text
     assert _row(aid)["status"] == "signed"
 
@@ -1376,7 +1379,11 @@ def test_add_import_keeps_consilium_records_and_routes(client):
     assert _import(client, legacy_export(document), "add").status_code == 409   # F10
     legacy = legacy_export(document)
     external = {**legacy, "patients": [{k: v for k, v in p.items() if k != "id"} for p in legacy["patients"]]}
-    added = _import(client, external, "add")
+    # WP2.4-C: копии своих карточек (те же полисы) — только после подтверждения возможных дублей.
+    from .conftest import possible_duplicate_ids
+    refused = _import(client, external, "add")
+    assert _row(aid) == row_before
+    added = _import(client, external, "add", duplicates=possible_duplicate_ids(refused))
     assert added.status_code == 200 and added.json()["added"] == len(document["patients"])
     assert _row(aid) == row_before
     assert client.get(f"/api/patients/{patient['id']}").json()["history"] == history_before
