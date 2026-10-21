@@ -9,8 +9,8 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
-from .. import audit, policy, store
-from ..deps import get_db, require_active_password, require_csrf
+from .. import audit, config, policy, store
+from ..deps import get_db, require_active_password, require_csrf, user_rate_limit
 from ..models import (
     ChecklistItemIn,
     ConsiliumDecisionMarkIn,
@@ -25,9 +25,16 @@ from ..models import (
     StageChangeIn,
     TreatingDoctorIn,
 )
-from ..services import patient_attention
+from ..services import patient_attention, patient_create
 
 router = APIRouter(prefix="/api/patients", tags=["patients"])
+
+# WP2.4-A: не больше config.PATIENT_CREATE_RATE_LIMIT созданий в минуту на пользователя.
+_CREATE_LIMIT = Depends(user_rate_limit(
+    "patient_create",
+    lambda: config.PATIENT_CREATE_RATE_LIMIT,
+    lambda: config.PATIENT_CREATE_RATE_LIMIT_WINDOW_SECONDS,
+))
 
 
 def _not_found():
@@ -92,26 +99,47 @@ def list_unresolved(
     return {"patients": store.unresolved_patients(conn)}
 
 
-@router.post("", dependencies=[Depends(require_csrf)], status_code=status.HTTP_201_CREATED)
+def _database_busy(exc: sqlite3.OperationalError) -> None:
+    """503 только для ожидаемой блокировки SQLite (SQLITE_BUSY/SQLITE_LOCKED):
+    транзакция уже откатана, запрос можно повторить. Иная ошибка SQL — дефект (500)."""
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is None or (code & 0xFF) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+        raise exc
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="База данных временно занята. Пациент не создан, повторите попытку",
+    ) from exc
+
+
+@router.post("", dependencies=[Depends(require_csrf), _CREATE_LIMIT], status_code=status.HTTP_201_CREATED)
 def create_patient(
     body: PatientCreateIn,
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    if not policy.can_create_patient(user):
+    """Создание карточки (WP2.4-A): права, выбор врача, карточка, маршрут,
+    события, обязательный аудит и ответ — одна транзакция BEGIN IMMEDIATE
+    в services.patient_create. Автора и источник (form) записывает сервер."""
+    # Быстрый отказ до блокировки записи; окончательная проверка — в транзакции.
+    if not policy.can_create_patient_card(user):
         _forbidden(conn, user, "action=patient_create")
-    doctor_user_id, error = policy.resolve_create_doctor(conn, user, body.treatingDoctorUserId)
-    if error is not None:
-        audit.record(conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
-                     detail="action=patient_create_doctor", **audit.actor_ctx(user))
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error)
+
     try:
-        pid = store.create_patient(conn, body, doctor_user_id)
+        return patient_create.create_patient_card(conn, user, body)
+    except patient_create.PatientCreateForbidden as e:
+        audit.record(conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
+                     detail=e.detail, **audit.actor_ctx(user))
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=e.message)
+    except audit.AuditWriteFailed:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Не удалось сохранить пациента вместе с записью журнала аудита. "
+                   "Пациент не создан, повторите попытку позже",
+        )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    audit.record(conn, audit.PATIENT_CREATED, patient_id=pid,
-                 target_user_id=doctor_user_id, **audit.actor_ctx(user))
-    return store.patient_to_dict(conn, pid)
+    except sqlite3.OperationalError as e:
+        _database_busy(e)
 
 
 @router.get("/{patient_id}")

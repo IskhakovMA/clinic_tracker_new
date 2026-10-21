@@ -125,8 +125,18 @@ def can_write_patient(conn: sqlite3.Connection, user: CurrentUser, patient_id: s
     return _writes_allowed(user) and can_read_patient(conn, user, patient_id)
 
 
-def can_create_patient(user: CurrentUser) -> bool:
+def can_write_patient_data(user: CurrentUser) -> bool:
+    """Роль может изменять медицинские данные в своей области (объектную
+    проверку делает can_write_patient). Прежний общий признак записи: им же
+    проверяется право записи в карточку при работе с консилиумом."""
     return _writes_allowed(user)
+
+
+def can_create_patient_card(user: CurrentUser) -> bool:
+    """Создание новой карточки пациента (WP2.4-A, R6). Председатель консилиума
+    новые карточки не создает; его права на уже существующие карточки, где он
+    лечащий врач, и права в консилиуме не меняются (can_write_patient_data)."""
+    return _writes_allowed(user) and user.role_id != ROLE_CONSILIUM_CHAIR
 
 
 def can_delete_patient(conn: sqlite3.Connection, user: CurrentUser, patient_id: str) -> bool:
@@ -141,6 +151,8 @@ def resolve_create_doctor(
     Возвращает (doctor_user_id | None, error | None). None без ошибки —
     пациент создаётся несопоставленным (доступно только Разработчику).
     """
+    if not can_create_patient_card(user):
+        return None, "Ваша роль не позволяет создавать пациентов."
     if user.scope_strategy == SCOPE_BY_TREATING_DOCTOR:
         # Врач всегда закрепляет пациента за собой и не может выбрать коллегу.
         if requested_doctor_user_id and requested_doctor_user_id != user.id:
@@ -327,7 +339,7 @@ def permissions_payload(user: CurrentUser) -> dict:
     проверяет каждое действие заново."""
     return {
         "readOnly": is_read_only(user),
-        "createPatients": can_create_patient(user),
+        "createPatients": can_create_patient_card(user),
         "editPatients": _writes_allowed(user),
         "deletePatients": _writes_allowed(user),
         "changeTreatingDoctor": can_change_treating_doctor(user),

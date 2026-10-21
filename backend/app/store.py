@@ -302,9 +302,29 @@ def list_patients(
     return patients
 
 
-def create_patient(
-    conn: sqlite3.Connection, data: PatientCreateIn, treating_doctor_user_id: Optional[str] = None
+# Источники карточки для новых производственных операций (WP2.4-A). 'legacy' —
+# только для карточек до v23 и явно разрешенных исторических тестовых фикстур.
+CREATION_SOURCES = ("form", "import", "migration")
+LEGACY_CREATION_SOURCE = "legacy"
+
+
+def insert_patient_rows(
+    conn: sqlite3.Connection,
+    data: PatientCreateIn,
+    treating_doctor_user_id: Optional[str],
+    *,
+    created_by_user_id: Optional[str],
+    creation_source: str,
 ) -> str:
+    """SQL-вставка карточки, первой записи маршрута и событий формы.
+
+    Транзакцией НЕ управляет: ее открывает, фиксирует или откатывает вызывающий
+    (единственный владелец транзакции). Проверки данных выполняются до первой
+    вставки. Автор и источник задает только сервер."""
+    if creation_source not in (*CREATION_SOURCES, LEGACY_CREATION_SOURCE):
+        raise RuntimeError("unknown creation source")
+    if creation_source != LEGACY_CREATION_SOURCE and not created_by_user_id:
+        raise RuntimeError("creation author is required for a new card")
     pid = new_id()
     now = now_iso()
     # Отображаемый текст врача следует за учётной записью; свободный текст
@@ -315,45 +335,59 @@ def create_patient(
         raise ValueError(DECISION_SEPARATE_OPERATION_MESSAGE)
     nosology = validate_new_combination(data.nosology, data.diagnosis)
     pgi_result_date = normalize_pgi_result_date(data.pgiResult, data.pgiResultDate)
-    with conn:
-        conn.execute(
-            """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
-                                      consilium_code, pgi_code, pgi_malignancy_confirmed, pgi_result_date, nosology, disease_stage,
-                                      arrival, doctor, head, created_at, updated_at, treating_doctor_user_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                pid,
-                data.name,
-                data.age,
-                data.priority,
-                data.stage,
-                data.phone,
-                data.policyNumber,
-                data.complaint,
-                data.diagnosis,
-                data.consiliumCode,
-                data.pgiCode,
-                pgi_result_to_db(data.pgiResult),
-                pgi_result_date,
-                nosology,
-                "",
-                now,
-                doctor_text,
-                data.head,
-                now,
-                now,
-                treating_doctor_user_id,
-            ),
-        )
-        entry_id = new_id()
-        conn.execute(
-            "INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note) "
-            "VALUES (?, ?, 0, ?, ?, NULL, '')",
-            (entry_id, pid, data.stage, now),
-        )
-        for seq, ev in enumerate(data.events):
-            insert_event(conn, entry_id, seq, ev)
+    conn.execute(
+        """INSERT INTO patients (id, name, age, priority, stage, phone, policy_number, complaint, diagnosis,
+                                  consilium_code, pgi_code, pgi_malignancy_confirmed, pgi_result_date, nosology, disease_stage,
+                                  arrival, doctor, head, created_at, updated_at, treating_doctor_user_id,
+                                  created_by_user_id, creation_source)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            pid,
+            data.name,
+            data.age,
+            data.priority,
+            data.stage,
+            data.phone,
+            data.policyNumber,
+            data.complaint,
+            data.diagnosis,
+            data.consiliumCode,
+            data.pgiCode,
+            pgi_result_to_db(data.pgiResult),
+            pgi_result_date,
+            nosology,
+            "",
+            now,
+            doctor_text,
+            data.head,
+            now,
+            now,
+            treating_doctor_user_id,
+            created_by_user_id,
+            creation_source,
+        ),
+    )
+    entry_id = new_id()
+    conn.execute(
+        "INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note) "
+        "VALUES (?, ?, 0, ?, ?, NULL, '')",
+        (entry_id, pid, data.stage, now),
+    )
+    for seq, ev in enumerate(data.events):
+        insert_event(conn, entry_id, seq, ev)
     return pid
+
+
+def create_patient(
+    conn: sqlite3.Connection, data: PatientCreateIn, treating_doctor_user_id: Optional[str] = None
+) -> str:
+    """Историческая вставка карточки для тестовых фикстур (источник 'legacy',
+    автор неизвестен). Производственный код ее не вызывает: форма создает
+    карточку через services.patient_create.create_patient_card, импорт и миграция —
+    через importexport с источником точки входа (проверяется тестом)."""
+    with conn:
+        return insert_patient_rows(conn, data, treating_doctor_user_id,
+                                   created_by_user_id=None, creation_source=LEGACY_CREATION_SOURCE)
 
 
 def set_treating_doctor(

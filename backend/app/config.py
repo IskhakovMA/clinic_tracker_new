@@ -72,7 +72,8 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v20: soft deletion and row version of patient events.
 # v21: separate manual OK decision — author, time and source; immutable once recorded.
 # v22: repeated consiliums (one unfinished per patient), record version, resubmissions.
-SCHEMA_VERSION = 22
+# v23: provenance of patient cards — author and source of creation (WP2.4-A).
+SCHEMA_VERSION = 23
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
@@ -82,6 +83,11 @@ CONSILIUM_RATE_LIMIT_WINDOW_SECONDS = max(1, int(os.environ.get("CLINIC_CONSILIU
 CONSILIUM_WRITE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_WRITE_RATE_LIMIT", "60")))
 CONSILIUM_EXPORT_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_EXPORT_RATE_LIMIT", "20")))
 CONSILIUM_SCHEDULE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_CONSILIUM_SCHEDULE_RATE_LIMIT", "20")))
+
+# Создание карточек пациентов (WP2.4-A): не больше N созданий в минуту на пользователя.
+# Счетчик ведется по пользователю, а не по адресу клиента или данным карточки.
+PATIENT_CREATE_RATE_LIMIT = max(1, int(os.environ.get("CLINIC_PATIENT_CREATE_RATE_LIMIT", "60")))
+PATIENT_CREATE_RATE_LIMIT_WINDOW_SECONDS = 60
 
 INTERNAL_NOTIFICATION_UPCOMING_DAYS = int(os.environ.get("INTERNAL_NOTIFICATION_UPCOMING_DAYS", "3"))
 

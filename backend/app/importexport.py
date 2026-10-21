@@ -20,6 +20,10 @@ from .localization_catalog import validate_new_combination
 from .models import TERMINAL_STAGES, ImportDocument, ImportHistoryEntry, ImportPatientIn
 
 
+# Источники карточек, создаваемых импортом (WP2.4-A): задаются точкой входа.
+IMPORT_CREATION_SOURCES = ("import", "migration")
+
+
 class ImportStructureError(ValueError):
     """Raised for problems with the overall document shape (not yet a
     per-record validation error)."""
@@ -863,13 +867,22 @@ def _insert_full_patient(
     layout: Optional[list[tuple[str, list[str]]]] = None,
     decision_import: Optional[dict] = None,
     imported_decisions: Optional[list] = None,
+    *,
+    creation_source: str,
 ) -> None:
+    """Новая карточка из файла. Автор создания — исполнитель импорта (actor),
+    источник — точка входа операции (import или migration); из файла эти
+    значения не берутся."""
+    if creation_source not in IMPORT_CREATION_SOURCES:
+        raise RuntimeError("unknown import creation source")
+    if actor is None:
+        raise RuntimeError("import actor is required to create a card")
     now = now_iso()
     columns = _patient_columns(conn, p, treating_doctor_user_id, now)
-    names = ["id", *columns, "created_at", "updated_at"]
+    names = ["id", *columns, "created_at", "updated_at", "created_by_user_id", "creation_source"]
     conn.execute(
         f"INSERT INTO patients ({', '.join(names)}) VALUES ({', '.join('?' * len(names))})",  # nosec B608 - fixed names
-        (patient_id, *columns.values(), now, p.updatedAt or now),
+        (patient_id, *columns.values(), now, p.updatedAt or now, actor.id, creation_source),
     )
     history = _file_history(p, columns["arrival"])
     for seq, h in enumerate(history):
@@ -910,12 +923,19 @@ def commit_import(
     actor: "policy.CurrentUser", *, ids: Optional[FileIds] = None,
     audit_hook: Optional[Callable[[dict], None]] = None, require_empty: bool = False,
     preserve_ids_confirmed: bool = False, historical_decisions: Optional[dict] = None,
+    creation_source: str = "import",
 ) -> dict:
     """Импорт от имени актора. Права на режим проверяет policy.can_import
     (update/replace — только Разработчик); закрепление каждого пациента за
-    врачом проходит resolve_import_doctor и не может выйти за scope актора."""
+    врачом проходит resolve_import_doctor и не может выйти за scope актора.
+
+    creation_source — источник новых карточек по точке входа операции:
+    импорт файла ("import") или перенос локальных данных ("migration").
+    Существующие карточки (update) автора и источника создания не меняют."""
     if mode not in ("add", "update", "replace"):
         raise ValueError("unknown import mode")
+    if creation_source not in IMPORT_CREATION_SOURCES:
+        raise ValueError("unknown import creation source")
     if not policy.can_import(actor, mode):
         raise PermissionError("import mode not allowed for this role")
     if ids is not None and ids.internal_ids and not internal_ids_allowed(actor):
@@ -992,7 +1012,7 @@ def commit_import(
                 for index, (p, doctor_id) in enumerate(zip(document.patients, resolved)):
                     created_id = new_patient_id(p)
                     _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index),
-                                         decision_import, imported_decisions)
+                                         decision_import, imported_decisions, creation_source=creation_source)
                     created_ids.append(created_id)
                     added += 1
             elif mode == "update":
@@ -1013,7 +1033,7 @@ def commit_import(
                 for index, (p, doctor_id) in enumerate(zip(document.patients, resolved)):
                     created_id = new_patient_id(p)
                     _insert_full_patient(conn, p, created_id, doctor_id, actor, layout_of(index),
-                                         decision_import, imported_decisions)
+                                         decision_import, imported_decisions, creation_source=creation_source)
                     created_ids.append(created_id)
                     added += 1
         except sqlite3.IntegrityError as exc:

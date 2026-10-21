@@ -95,7 +95,8 @@ def migrate_commit(
     try:
         # Пустота базы проверяется повторно под блокировкой записи.
         result = importexport.commit_import(conn, document, "add", user, audit_hook=audit_hook,
-                                            require_empty=True, historical_decisions=historical)
+                                            require_empty=True, historical_decisions=historical,
+                                            creation_source="migration")
     except importexport.ImportHistoricalDecisionsRequired as e:
         return JSONResponse(status_code=status.HTTP_428_PRECONDITION_REQUIRED,
                             content={"detail": str(e), "code": e.code, "decisions": e.decisions})

@@ -98,7 +98,10 @@ CREATE TABLE IF NOT EXISTS patients (
     head TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT,
-    treating_doctor_user_id TEXT REFERENCES users(id)
+    treating_doctor_user_id TEXT REFERENCES users(id),
+    created_by_user_id TEXT REFERENCES users(id),
+    creation_source TEXT NOT NULL DEFAULT 'legacy'
+        CHECK (creation_source IN ('form', 'import', 'migration', 'legacy'))
 );
 
 CREATE TABLE IF NOT EXISTS history_entries (
@@ -1475,6 +1478,48 @@ def migrate_v21_to_v22(conn: sqlite3.Connection) -> None:
     )
 
 
+# WP2.4-A (v23): происхождение карточки пациента. Источник и автор задаются
+# сервером при создании и больше не меняются; 'legacy' — карточки, созданные до
+# v23 (автор неизвестен и не придумывается), и явно разрешенные исторические
+# тестовые фикстуры. Новая карточка с источником form/import/migration без
+# автора отклоняется базой.
+PATIENT_PROVENANCE_TRIGGERS = (
+    ("trg_patients_provenance_immutable", """
+        CREATE TRIGGER IF NOT EXISTS trg_patients_provenance_immutable
+        BEFORE UPDATE OF created_by_user_id, creation_source ON patients
+        WHEN NEW.created_by_user_id IS NOT OLD.created_by_user_id
+          OR NEW.creation_source IS NOT OLD.creation_source
+        BEGIN
+            SELECT RAISE(ABORT, 'patient_provenance_immutable');
+        END"""),
+    ("trg_patients_creation_author_required", """
+        CREATE TRIGGER IF NOT EXISTS trg_patients_creation_author_required
+        BEFORE INSERT ON patients
+        WHEN NEW.creation_source <> 'legacy' AND NEW.created_by_user_id IS NULL
+        BEGIN
+            SELECT RAISE(ABORT, 'patient_creation_author_required');
+        END"""),
+)
+
+
+def migrate_v22_to_v23(conn: sqlite3.Connection) -> None:
+    """v22 → v23: author and source of creation of patient cards (WP2.4-A).
+
+    Only adds: two columns and two triggers. Existing cards get
+    creation_source = 'legacy' through the column default and
+    created_by_user_id = NULL — no author is guessed, no clinical row is
+    rewritten. Repeated runs change nothing."""
+    if not _table_columns(conn, "patients"):
+        return
+    _add_column_if_missing(conn, "patients", "created_by_user_id",
+                           "created_by_user_id TEXT REFERENCES users(id)")
+    _add_column_if_missing(conn, "patients", "creation_source",
+                           "creation_source TEXT NOT NULL DEFAULT 'legacy' "
+                           "CHECK (creation_source IN ('form', 'import', 'migration', 'legacy'))")
+    for name, sql in PATIENT_PROVENANCE_TRIGGERS:
+        _ensure_trigger(conn, name, sql)
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
@@ -1559,6 +1604,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v19_to_v20(conn)         # soft deletion and version of patient events
         migrate_v20_to_v21(conn)         # separate manual OK decision: author, time, source
         migrate_v21_to_v22(conn)         # repeated consiliums, record version, resubmissions
+        migrate_v22_to_v23(conn)         # provenance of patient cards: author and source
         _ensure_notification_schema(conn)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть

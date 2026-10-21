@@ -345,6 +345,32 @@ def _strip_v22_consilium(conn):
         conn.execute(sql)
 
 
+_V23_PATIENT_DDL = (
+    ",\n    created_by_user_id TEXT REFERENCES users(id),\n"
+    "    creation_source TEXT NOT NULL DEFAULT 'legacy'\n"
+    "        CHECK (creation_source IN ('form', 'import', 'migration', 'legacy'))"
+)
+
+
+def _strip_v23_patients(conn):
+    """Убрать из свежей базы объекты v23 (WP2.4-A, происхождение карточки).
+
+    created_by_user_id — внешний ключ, DROP COLUMN к нему не применим, поэтому
+    таблица patients пересобирается по ее же DDL без столбцов v23, строки сохраняются."""
+    for name in ("trg_patients_provenance_immutable", "trg_patients_creation_author_required"):
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+    sql = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'patients'").fetchone()[0]
+    stripped = sql.replace(_V23_PATIENT_DDL, "")
+    assert "created_by_user_id" not in stripped and "creation_source" not in stripped
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(patients)") if r[1] not in (
+        "created_by_user_id", "creation_source")]
+    conn.execute(f"CREATE TEMP TABLE patients_v19 AS SELECT {', '.join(columns)} FROM patients")
+    conn.execute("DROP TABLE patients")
+    conn.execute(stripped)
+    conn.execute(f"INSERT INTO patients ({', '.join(columns)}) SELECT {', '.join(columns)} FROM patients_v19")
+    conn.execute("DROP TABLE patients_v19")
+
+
 def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path):
     from backend.app import config, db
     from backend.app.maintenance import identify_backup_build
@@ -371,6 +397,7 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
                        "version", "deleted_by_user_id", "deleted_at"):
             conn.execute(f"ALTER TABLE events DROP COLUMN {column}")
         _strip_v22_consilium(conn)
+        _strip_v23_patients(conn)
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
     conn.close()

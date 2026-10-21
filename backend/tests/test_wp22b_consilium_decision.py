@@ -308,8 +308,16 @@ def staff(client):
 def _role_case(client, staff, actor, owner):
     """Пациент (лечащий врач owner) на этапе ОК, отметка от имени actor."""
     if owner == "chair":
+        # WP2.4-A (R6): председатель новые карточки не создает. «Свой» пациент
+        # председателя — синтетическая legacy-карточка, созданная до ограничения.
         _as(client, "role.chair")
-        p = _create(client, stage="consult", events=[{"date": "2026-08-20"}])
+        assert client.post("/api/patients", json=make_patient_payload(stage="consult"),
+                           headers=client.csrf).status_code == 403
+        from backend.app import store
+        from backend.app.models import PatientCreateIn
+        pid = store.create_patient(get_conn(), PatientCreateIn(**make_patient_payload(
+            stage="consult", events=[{"date": "2026-08-20"}])), staff["chair"])
+        p = {"id": pid}
     else:
         _as(client, DEV_USERNAME)
         p = _create(client, stage="consult", events=[{"date": "2026-08-20"}], treatingDoctorUserId=staff[owner])

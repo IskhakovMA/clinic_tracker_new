@@ -188,14 +188,26 @@ def test_audit_failure_is_fail_open(auth_client):
 
     The audit table is dropped out from under the app, so the INSERT raises
     for real rather than through a patched stand-in.
+
+    WP2.4-A: creating a card is no longer fail-open — its audit row is part of
+    the creation transaction (approved requirement, test_wp24a). Operations
+    with fail-open audit keep working; creation is refused with 503 and
+    leaves no card.
     """
     from backend.app import audit, db
+    created = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf)
+    assert created.status_code == 201
     conn = db.get_connection()
     with conn:
         conn.execute("DROP TABLE audit_events")
 
+    r = auth_client.patch(f"/api/patients/{created.json()['id']}", json={"field": "doctor", "value": "Др. Новый"},
+                          headers=auth_client.csrf)
+    assert r.status_code == 200, "a fail-open clinical operation must survive an audit write failure"
+    before = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     r = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf)
-    assert r.status_code == 201, "patient creation must survive an audit write failure"
+    assert r.status_code == 503, "WP2.4-A: creation requires its audit row"
+    assert conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0] == before
 
     # And the helper itself swallows the failure instead of propagating it.
     audit.record(conn, audit.PATIENT_CREATED, patient_id="whatever")

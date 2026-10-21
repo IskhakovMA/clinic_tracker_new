@@ -229,7 +229,7 @@ def import_commit(
     try:
         result = importexport.commit_import(conn, document, body.mode, user, ids=inspection.ids,
                                             audit_hook=audit_hook, preserve_ids_confirmed=preserve_confirmed,
-                                            historical_decisions=historical)
+                                            historical_decisions=historical, creation_source="import")
     except importexport.ImportHistoricalDecisionsRequired as e:
         audit.record(conn, audit.IMPORT_COMMITTED, result=audit.RESULT_DENIED,
                      detail=f"mode={body.mode} {file_ref} decisions={e.decisions} "

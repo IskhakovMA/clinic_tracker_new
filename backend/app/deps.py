@@ -1,7 +1,7 @@
 """Shared FastAPI dependencies: DB connection, session auth, CSRF, current user."""
 import secrets
 import sqlite3
-
+from typing import Callable
 from urllib.parse import unquote
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -91,6 +91,22 @@ def abuse_rate_limit(name: str, max_requests: int, window_seconds: int = 60):
         client_host = request.client.host if request.client else "unknown"
         key = f"{name}:{user.id}:{client_host}"
         wait = security.check_request_rate_limit(key, max_requests, window_seconds)
+        if wait > 0:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many requests. Please wait before trying again.",
+                headers={"Retry-After": str(int(wait) + 1)},
+            )
+    return dependency
+
+
+def user_rate_limit(name: str, limit: Callable[[], int], window_seconds: Callable[[], int]):
+    """Лимит частоты на пользователя (WP2.4-A): ключ — только операция и ID
+    пользователя, без адреса клиента и без данных запроса (ФИО, полис), поэтому
+    смена адреса или содержимого счетчик не обходит. Порог читается при каждом
+    запросе. После превышения — 429 до выполнения операции."""
+    def dependency(user: policy.CurrentUser = Depends(require_active_password)) -> None:
+        wait = security.check_request_rate_limit(f"{name}:{user.id}", limit(), window_seconds())
         if wait > 0:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

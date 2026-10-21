@@ -92,7 +92,7 @@ def _require_writable_patient(
     # Одно чтение области: повторный can_write_patient мог бы увидеть уже
     # закоммиченную смену лечащего врача и ответить 403 вместо 404 (WP2.3-B2).
     # Окончательная проверка — внутри транзакции записи.
-    if not policy.can_create_patient(user):
+    if not policy.can_write_patient_data(user):
         audit.record(
             conn, audit.ACCESS_DENIED, result=audit.RESULT_DENIED,
             detail="action=consilium_appointment_write", **audit.actor_ctx(user),

@@ -25,6 +25,13 @@ not kept without its audit row. This covers deleting and restoring a patient
 event (WP2.1) and, since WP2.2-A, stage transitions (with the OK decision of
 the legacy contract), event field edits, adding an event, stage notes and
 checklists, and the consilium review start, signature and return for revision.
+
+Creating a patient card is fail-closed since WP2.4-A: services.patient_create
+writes exactly one `patient_created` row (current actor, patient id,
+treating doctor id — no names, policy number or medical fields) inside the
+creation transaction; if the row cannot be written, the card, its route and
+its events are rolled back and the request gets 503. Other operations keep
+their own policy above; record() itself stays fail-open.
 """
 from __future__ import annotations
 
@@ -189,6 +196,7 @@ def record_required(
     actor_user_id: str | None = None,
     actor_role: str | None = None,
     actor_department_id: str | None = None,
+    target_user_id: str | None = None,
 ) -> None:
     """Fail-closed audit row inside the caller's open transaction.
 
@@ -203,9 +211,9 @@ def record_required(
         """INSERT INTO audit_events (created_at, event_type, actor, patient_id, result,
                                      request_id, detail, actor_user_id, actor_role,
                                      actor_department_id, target_user_id, target_department_id)
-           VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, NULL, NULL)""",
+           VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)""",
         (now_iso(), event_type, patient_id, RESULT_OK, detail,
-         actor_user_id, actor_role, actor_department_id),
+         actor_user_id, actor_role, actor_department_id, target_user_id),
     )
 
 

@@ -6455,8 +6455,21 @@ const app = {
         input.focus();
     },
 
+    // WP2.4-A: пока запрос создания не завершен, повторное нажатие кнопки и
+    // Enter второй запрос не отправляют. Это защита от двойной отправки формы,
+    // а не от сетевых повторов (ключ идемпотентности — этап WP2.4-B).
+    setAddPatientPending(pending) {
+        this.addPatientPending = pending;
+        const button = $('submitAddBtn');
+        if (!button) return;
+        button.disabled = pending;
+        button.setAttribute('aria-busy', pending ? 'true' : 'false');
+        button.textContent = pending ? 'Добавление…' : 'Добавить пациента';
+    },
+
     async addPatient(event) {
         event.preventDefault();
+        if (this.addPatientPending) return;
         const fio = $('fio').value.trim();
         const stage = $('stage').value;
         const head = $('head').value;
@@ -6498,17 +6511,25 @@ const app = {
             events: this.buildEventsFromForm(stage),
         };
 
+        this.setAddPatientPending(true);
+        let created;
         try {
-            const created = await apiPost('/api/patients', payload);
-            this.replacePatientInCache(created);
+            created = await apiPost('/api/patients', payload);
+        } catch (e) {
+            // Введенные данные остаются в форме, кнопка снова доступна.
+            this.setAddPatientPending(false);
+            this.showFormError('Не удалось создать пациента: ' + e.message);
+            return;
+        }
+        this.setAddPatientPending(false);
+        this.replacePatientInCache(created);
+        ui.closeModal('addModal');
+        ui.toast('Пациент добавлен.', 'good');
+        try {
             await this.loadActivity();
             this.fillStaticSelects();
-            ui.closeModal('addModal');
-            ui.toast('Пациент добавлен.', 'good');
-            this.openPatient(created.id);
-        } catch (e) {
-            this.showFormError('Не удалось создать пациента: ' + e.message);
-        }
+        } catch (e) { /* карточка уже создана; обновление сводок не критично */ }
+        this.openPatient(created.id);
     },
 
     /* ========================================= ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ */

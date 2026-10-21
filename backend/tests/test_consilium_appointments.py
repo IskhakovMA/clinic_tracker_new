@@ -306,7 +306,17 @@ def test_consilium_chair_sees_all_returns_signs_and_gets_analytics(client):
     assert me["roleId"] == "consilium_chair"
     assert me["permissions"]["consiliumChair"] is True
     assert me["permissions"]["importData"] is False
-    tracked = create_patient(client, name="Пациент председателя для наблюдения")
+    # WP2.4-A (R6): председатель новые карточки не создает; его карточка, созданная
+    # до ограничения (legacy), остается за ним.
+    assert me["permissions"]["createPatients"] is False
+    denied = client.post("/api/patients", json=make_patient_payload(name="Пациент председателя для наблюдения"),
+                         headers=client.csrf)
+    assert denied.status_code == 403
+    from backend.app import store
+    from backend.app.models import PatientCreateIn
+    tracked_id = store.create_patient(
+        get_conn(), PatientCreateIn(**make_patient_payload(name="Пациент председателя для наблюдения")), chair_id)
+    tracked = client.get(f"/api/patients/{tracked_id}").json()
     assert tracked["treatingDoctorUserId"] == chair_id
 
     listed = client.get("/api/consilium/appointments").json()["appointments"]
