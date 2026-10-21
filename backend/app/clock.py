@@ -53,3 +53,10 @@ def is_strictly_future(scheduled_date: str, scheduled_time: str, now: datetime |
     slot 12:30 is in the future, 12:00 and 12:03 are not."""
     moment = slot_moment(scheduled_date, scheduled_time)
     return moment is not None and moment > (now or now_moscow())
+
+
+def is_strictly_past(scheduled_date: str, scheduled_time: str, now: datetime | None = None) -> bool:
+    """True when the slot started strictly before `now` (Moscow). At 12:00 the
+    slot 11:59 is in the past, 12:00 is not (WP2.3-B3, B3-04)."""
+    moment = slot_moment(scheduled_date, scheduled_time)
+    return moment is not None and moment < (now or now_moscow())

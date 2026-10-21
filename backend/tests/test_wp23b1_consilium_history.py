@@ -692,7 +692,10 @@ def test_record_without_history_is_still_hard_deleted(client):
     assert _row(aid) is None
 
 
-# ================================================================ 6. B3 is prepared but inactive
+# ================================================================ 6. B3 fields only through the backdating API
+# WP2.3-B3 включил структуры задним числом — только через отдельные операции
+# (test_wp23b3_backdating.py). Обычная запись, правка и генерация по-прежнему
+# не принимают и не создают их.
 
 def test_backdating_fields_are_not_writable_through_the_api(client):
     _, pts = _world(client)
@@ -710,10 +713,7 @@ def test_backdating_fields_are_not_writable_through_the_api(client):
     assert generated.status_code == 422
     assert _rows("SELECT COUNT(*) AS c FROM consilium_backdating_reasons")[0]["c"] == 0
     assert _rows("SELECT COUNT(*) AS c FROM oncology_consilium_appointments WHERE backdated = 1")[0]["c"] == 0
-    from backend.app.routes import consilium as routes
-    from pathlib import Path
-    source = Path(routes.__file__).read_text(encoding="utf-8") + Path(_consilium().__file__).read_text(encoding="utf-8")
-    assert "consilium_backdating_reasons" not in source and "backdated" not in source
+    assert _rows("SELECT COUNT(*) AS c FROM consilium_schedule_slots WHERE backdated = 1")[0]["c"] == 0
 
 
 def test_backdating_columns_require_a_reason(client):

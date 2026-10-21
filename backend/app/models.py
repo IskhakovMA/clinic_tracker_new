@@ -527,6 +527,63 @@ class ConsiliumVersionIn(StrictRequestModel):
     version: int = Field(..., ge=1, le=2**63 - 1)
 
 
+_BACKDATING_REASON_MAX = 2000
+
+
+def _backdating_reason(v: str) -> str:
+    """Причина оформления задним числом (WP2.3-B3): обязательный пользовательский
+    текст. Пробелы нормализуются, управляющие символы (кроме перевода строки)
+    отклоняются; длина — как CHECK в consilium_backdating_reasons."""
+    value = _normalize_multiline(v) or ""
+    if not value:
+        raise ValueError("reason is required")
+    if any(ord(ch) < 32 and ch != "\n" or ord(ch) == 127 for ch in value):
+        raise ValueError("reason contains control characters")
+    if len(value) > _BACKDATING_REASON_MAX:
+        raise ValueError(f"reason must be at most {_BACKDATING_REASON_MAX} characters")
+    return value
+
+
+class ConsiliumBackdatedSlotIn(StrictRequestModel):
+    """Исторический слот председателя (WP2.3-B3): прошедшие дата и время по Москве
+    и обязательная причина позднего создания."""
+    scheduledDate: str = Field(..., min_length=10, max_length=10)
+    scheduledTime: str = Field(..., min_length=5, max_length=5)
+    consiliumGroup: str = Field(..., min_length=1, max_length=200)
+    reason: str = Field(..., min_length=1, max_length=4000)
+
+    @field_validator("scheduledDate")
+    @classmethod
+    def _valid_backdated_slot_date(cls, v):
+        try:
+            return strict_iso_date(v)
+        except ValueError:
+            raise ValueError("scheduledDate must be YYYY-MM-DD")
+
+    @field_validator("scheduledTime")
+    @classmethod
+    def _valid_backdated_slot_time(cls, v):
+        if not _EVENT_TIME_RE.fullmatch(v):
+            raise ValueError("scheduledTime must be HH:MM")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def _valid_backdated_slot_reason(cls, v):
+        return _backdating_reason(v)
+
+
+class ConsiliumBackdatedAppointmentIn(ConsiliumAppointmentIn):
+    """Запись заведующего задним числом в исторический слот председателя
+    (WP2.3-B3): поля обычной записи и обязательная причина позднего оформления."""
+    reason: str = Field(..., min_length=1, max_length=4000)
+
+    @field_validator("reason")
+    @classmethod
+    def _valid_backdated_appointment_reason(cls, v):
+        return _backdating_reason(v)
+
+
 class ConsiliumDecisionIn(StrictRequestModel):
     treatmentType: ConsiliumTreatmentType
     treatmentScheme: str = Field("", max_length=1000)

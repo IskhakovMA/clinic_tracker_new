@@ -512,25 +512,46 @@ def test_non_canonical_dates_are_rejected_everywhere(client, value):
     assert _schedule_state() == before
 
 
+def _month_bounds(iso_day):
+    """First and last day of the month of a canonical date."""
+    first = date.fromisoformat(iso_day).replace(day=1)
+    following = (first + timedelta(days=32)).replace(day=1)
+    return first.isoformat(), (following - timedelta(days=1)).isoformat()
+
+
+def _non_canonical_forms(iso_day):
+    """ISO-week and «basic» spellings of the same day as a real slot date."""
+    day = date.fromisoformat(iso_day)
+    year, week, weekday = day.isocalendar()
+    week_form = f"{year}-W{week:02d}-{weekday}"
+    basic_form = day.strftime("%Y%m%d") + "  "
+    assert date.fromisocalendar(year, week, weekday) == day and basic_form.strip() == iso_day.replace("-", "")
+    return week_form, basic_form
+
+
+# Даты — от FUTURE/FUTURE2 (реальные слоты из _world), а не постоянные строки:
+# иначе тесты зависят от дня запуска (TODAY = date.today()).
 def test_canonical_dates_still_work(client):
     _, pts = _world(client)
     login(client, "doc.a")
-    assert _book(client, pts["pa1"], "2026-11-19", "10:00").status_code == 201
+    assert _book(client, pts["pa1"], FUTURE, "10:00").status_code == 201
     login(client, "chair")
-    assert _generate(client, "2026-11-20").status_code == 200
-    assert client.get("/api/consilium/analytics?date_from=2026-11-01&date_to=2026-11-30").status_code == 200
-    assert client.get("/api/consilium/registries?date=2026-11-19").status_code == 200
+    assert _generate(client, FUTURE2).status_code == 200
+    month_from, month_to = _month_bounds(FUTURE)
+    assert client.get(f"/api/consilium/analytics?date_from={month_from}&date_to={month_to}").status_code == 200
+    assert client.get(f"/api/consilium/registries?date={FUTURE}").status_code == 200
 
 
 def test_week_and_basic_forms_no_longer_double_book_a_real_slot(client):
     _, pts = _world(client)
+    week_form, basic_form = _non_canonical_forms(FUTURE)
     login(client, "doc.a")
-    assert _book(client, pts["pa1"], "2026-11-19", "10:00").status_code == 201
+    assert _book(client, pts["pa1"], FUTURE, "10:00").status_code == 201
     login(client, "doc.b")
-    assert _book(client, pts["pb1"], "2026-W47-4", "10:00").status_code == 422
+    assert _book(client, pts["pb1"], week_form, "10:00").status_code == 422
     login(client, "doc.a")
-    assert _book(client, pts["pa2"], "20261119  ", "10:00").status_code == 422
-    assert _rows("SELECT scheduled_date FROM oncology_consilium_appointments") == [{"scheduled_date": "2026-11-19"}]
+    assert _book(client, pts["pa2"], basic_form, "10:00").status_code == 422
+    assert _rows("SELECT scheduled_date FROM oncology_consilium_appointments") == [{"scheduled_date": FUTURE}]
 
 
 # ------------------------------------------ diagnostics (read-only, aggregates)
@@ -948,6 +969,7 @@ APPOINTMENT_KEYS = {
     "isFavorite", "createdAt", "updatedAt",
     "version",  # WP2.3-B1: версия записи для контроля устаревшей формы
     "outsideSchedule",  # WP2.3-B2: запись без слота председателя
+    "backdated",  # WP2.3-B3: отметка «Оформлено задним числом» (без текста причины)
 }
 
 
@@ -999,7 +1021,8 @@ def test_current_client_contract_is_unchanged(client):
     assert schedule and set(schedule[0]) == {
         "id", "scheduledDate", "scheduledTime", "consiliumGroup", "consiliumGroupLabel", "occupied",
         "appointment", "isDefaultWeek",
-        "isPast", "bookable"}  # WP2.3-B2: прошедшее время и доступность слота — по Москве
+        "isPast", "bookable",  # WP2.3-B2: прошедшее время и доступность слота — по Москве
+        "backdated"}  # WP2.3-B3: исторический слот председателя
 
 
 # ------------------------------------------ review vs reschedule (decisions not weakened)

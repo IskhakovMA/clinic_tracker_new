@@ -245,6 +245,25 @@ def consilium_record_filter(user: CurrentUser) -> tuple[str, list]:
     return "0 = 1", []
 
 
+def can_create_backdated_slot(user: CurrentUser) -> bool:
+    """Исторический слот на прошедшее время (WP2.3-B3) — только председатель."""
+    return user.role_id == ROLE_CONSILIUM_CHAIR
+
+
+def can_backdate_consilium(user: CurrentUser) -> bool:
+    """Запись задним числом в исторический слот (WP2.3-B3) — только заведующий
+    отделением и только для пациентов своих отделений (объектная проверка в
+    транзакции). Врач, разработчик и председатель — нет."""
+    return user.role_id == ROLE_DEPARTMENT_HEAD
+
+
+def can_read_backdating_reasons(user: CurrentUser) -> bool:
+    """Текст причин (WP2.3-B3): председатель — любые; заведующий — записей
+    своих отделений (объектная проверка). Врач видит только отметку, остальные
+    роли — ничего."""
+    return user.role_id in (ROLE_CONSILIUM_CHAIR, ROLE_DEPARTMENT_HEAD)
+
+
 def reload_current_user(conn: sqlite3.Connection, user: CurrentUser) -> CurrentUser | None:
     """Полномочия, перечитанные из БД внутри транзакции изменения: роль,
     статус и отделения могли смениться после загрузки пользователя запросом.

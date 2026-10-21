@@ -11,6 +11,8 @@ from ..deps import abuse_rate_limit, get_db, require_active_password, require_cs
 from ..models import (
     ConsiliumAppointmentIn,
     ConsiliumAppointmentUpdateIn,
+    ConsiliumBackdatedAppointmentIn,
+    ConsiliumBackdatedSlotIn,
     ConsiliumDecisionIn,
     ConsiliumRegistryCompletionIn,
     ConsiliumRevisionIn,
@@ -230,6 +232,55 @@ def generate_consilium_schedule(
             "slots": consilium.schedule_slots(conn, user)}
 
 
+@router.post("/schedule/backdated", dependencies=[Depends(require_csrf), _SCHEDULE_LIMIT],
+             status_code=status.HTTP_201_CREATED)
+def create_backdated_consilium_slot(
+    body: ConsiliumBackdatedSlotIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """«Создать слот задним числом» (WP2.3-B3): только председатель, прошедшие
+    дата и время по Москве, обязательная причина. Текст причины — в отдельной
+    таблице, в аудите только reason_id."""
+    _require(conn, user, policy.can_create_backdated_slot(user), "consilium_backdated_slot")
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_BACKDATED_SLOT_CREATED, lambda f: (None, _detail(
+        slot_id=f["slot_id"], slot_date=f["date"], slot_time=f["time"], group=f["group"], reason_id=f["reason_id"],
+    )))
+    try:
+        slot = consilium.create_backdated_slot(
+            conn, user, body.scheduledDate, body.scheduledTime, body.consiliumGroup, body.reason, audit_hook=hook)
+    except consilium.ConsiliumAccessLost:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Слот не создан")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Слот не создан")
+    return slot
+
+
+@router.get("/schedule/{slot_id}/backdating")
+def read_backdated_slot_reason(
+    slot_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Причина исторического слота — только председатель; чтение в аудите."""
+    _require(conn, user, user.role_id == policy.ROLE_CONSILIUM_CHAIR, "consilium_backdating_reason")
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_BACKDATING_REASON_VIEWED,
+                           lambda f: (None, _detail(slot_id=f["slot_id"])))
+    try:
+        result = consilium.backdating_reason_for_slot(conn, user, slot_id, audit_hook=hook)
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Причина не показана")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Причина не показана")
+    if result is None:
+        _not_found()
+    return result
+
+
 @router.delete("/schedule/{slot_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])
 def delete_consilium_schedule_slot(
     slot_id: str,
@@ -326,6 +377,60 @@ def create_consilium_appointment(
     except sqlite3.OperationalError as exc:
         _database_busy(exc, "Запись на консилиум не создана")
     return appointment
+
+
+@router.post(
+    "/appointments/backdated",
+    dependencies=[Depends(require_csrf), _WRITE_LIMIT],
+    status_code=status.HTTP_201_CREATED,
+)
+def create_backdated_consilium_appointment(
+    body: ConsiliumBackdatedAppointmentIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """«Оформить консилиум задним числом» (WP2.3-B3): только заведующий, пациент
+    своего отделения, исторический слот председателя, обязательная причина."""
+    _require(conn, user, policy.can_backdate_consilium(user), "consilium_backdated_appointment")
+    _require_writable_patient(conn, user, body.patientId)
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_BACKDATED_APPOINTMENT_CREATED, lambda f: (f["patient_id"], _detail(
+        appointment_id=f["appointment_id"], slot_id=f["slot_id"], slot_date=f["date"], slot_time=f["time"],
+        group=f["group"], reason_id=f["reason_id"],
+    )))
+    try:
+        appointment = consilium.create_backdated(conn, user, body, audit_hook=hook)
+    except consilium.ConsiliumAccessLost:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Patient not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Запись на консилиум не создана")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Запись на консилиум не создана")
+    return appointment
+
+
+@router.get("/appointments/{appointment_id}/backdating")
+def read_backdating_reasons(
+    appointment_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Причины записи задним числом и ее исторического слота: председатель —
+    любая запись, заведующий — записи своих отделений. Врач видит только отметку
+    в записи (403), остальные роли — 403. Чужая или обычная запись — 404."""
+    _require(conn, user, policy.can_read_backdating_reasons(user), "consilium_backdating_reason")
+    hook = _schedule_audit(conn, user, audit.CONSILIUM_BACKDATING_REASON_VIEWED,
+                           lambda f: (f["patient_id"], _detail(appointment_id=f["appointment_id"])))
+    try:
+        result = consilium.backdating_reasons_for_appointment(conn, user, appointment_id, audit_hook=hook)
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Причина не показана")
+    except sqlite3.OperationalError as exc:
+        _database_busy(exc, "Причина не показана")
+    if result is None:
+        _not_found()
+    return result
 
 
 @router.put("/appointments/{appointment_id}", dependencies=[Depends(require_csrf), _WRITE_LIMIT])

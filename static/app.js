@@ -1812,6 +1812,10 @@ const app = {
         $('consiliumScheduleManagement').classList.toggle('is-hidden', !chair);
         $('consiliumChairScheduleToolbar').classList.toggle('is-hidden', !chair);
         $('consiliumDoctorScheduleToolbar').classList.toggle('is-hidden', chair);
+        // WP2.3-B3: задним числом — слот создает только председатель, запись
+        // оформляет только заведующий отделением (сервер проверяет то же).
+        $('consiliumBackdatedSlotBtn').classList.toggle('is-hidden', u.roleId !== 'consilium_chair');
+        $('consiliumBackdatedApptBtn').classList.toggle('is-hidden', u.roleId !== 'department_head');
         $('consiliumChairScheduleWrap').classList.toggle('is-hidden', !chair);
         $('consiliumDoctorScheduleWrap').classList.toggle('is-hidden', chair);
         $('consiliumCalendarLabel').textContent = 'День и консилиумная группа';
@@ -6539,6 +6543,32 @@ const app = {
         }
     },
 
+    // WP2.3-B3 (B3-03): полные дата и время по Europe/Moscow для консилиума,
+    // оформленного задним числом, и его причин — независимо от пояса компьютера
+    // и давности. Общий formatDateTime() не меняется: он скрывает часы у старых
+    // меток и показывает время в поясе браузера. Без базы поясов — UTC+3.
+    formatMoscowDateTime(iso) {
+        if (!iso) return '—';
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return '—';
+        const pad = value => String(value).padStart(2, '0');
+        let parts;
+        try {
+            parts = {};
+            new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit',
+                hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+            }).formatToParts(d).forEach(part => { parts[part.type] = part.value; });
+        } catch (error) {
+            const m = new Date(d.getTime() + 3 * 3600 * 1000);
+            parts = {
+                day: pad(m.getUTCDate()), month: pad(m.getUTCMonth() + 1), year: String(m.getUTCFullYear()),
+                hour: pad(m.getUTCHours()), minute: pad(m.getUTCMinutes()),
+            };
+        }
+        return `${parts.day}.${parts.month}.${parts.year}, ${parts.hour}:${parts.minute} МСК`;
+    },
+
     localDateISO(date) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -6851,6 +6881,7 @@ const app = {
                     el('div', { class: 'person__meta', text: `Полис ОМС: ${item.policyNumber || 'не указан'}` }),
                     item.comment ? el('div', { class: 'consilium-comment', text: item.comment }) : null,
                     item.outsideSchedule ? el('span', { class: 'chip chip--warning', text: 'Вне расписания' }) : null,
+                    item.backdated ? el('span', { class: 'chip chip--neutral', text: 'Оформлено задним числом' }) : null,
                 ]),
                 el('td', { text: item.consiliumGroupLabel }),
                 el('td', { class: 'consilium-diagnosis', text: diagnoses }),
@@ -6969,12 +7000,17 @@ const app = {
                                     appointment.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
                                     appointment.outsideSchedule
                                         ? el('span', { class: 'chip chip--warning', text: 'Вне расписания' }) : null,
+                                    appointment.backdated
+                                        ? el('span', { class: 'chip chip--neutral', text: 'Оформлено задним числом' }) : null,
                                     this.renderConsiliumChairActions(appointment),
                                 ])
-                                : el('button', {
-                                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Удалить',
-                                    on: { click: () => this.deleteConsiliumScheduleSlot(slot.id) },
-                                })),
+                                : el('div', { class: 'consilium-grid-markers' }, [
+                                    slot.backdated ? el('span', { class: 'chip chip--neutral', text: 'Слот задним числом' }) : null,
+                                    el('button', {
+                                        type: 'button', class: 'btn btn--ghost btn--sm', text: 'Удалить',
+                                        on: { click: () => this.deleteConsiliumScheduleSlot(slot.id) },
+                                    }),
+                                ])),
                         ]))),
                     ]),
                 ]) : el('div', {
@@ -7021,6 +7057,7 @@ const app = {
             record.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
             isMine ? el('span', { class: 'chip chip--warning', text: 'Моя запись' }) : null,
             record.outsideSchedule ? el('span', { class: 'chip chip--warning', text: 'Вне расписания' }) : null,
+            record.backdated ? el('span', { class: 'chip chip--neutral', text: 'Оформлено задним числом' }) : null,
             this.consiliumEditable(record)
                 ? el('button', {
                     type: 'button', class: 'btn btn--ghost btn--sm', text: 'Изменить',
@@ -7274,7 +7311,10 @@ const app = {
                     readonlyField('ФИО пациента', item.patientName),
                     readonlyField('Полис ОМС', item.policyNumber),
                     readonlyField('Консилиумная группа', item.consiliumGroupLabel),
-                    readonlyField('Дата и время', this.formatConsiliumDate(item.scheduledDate, item.scheduledTime)),
+                    readonlyField(item.backdated ? 'Дата и время проведения' : 'Дата и время', this.formatConsiliumDate(item.scheduledDate, item.scheduledTime)),
+                    // WP2.3-B3: дата проведения и фактическое время внесения — раздельно.
+                    item.backdated ? readonlyField('Внесено в систему', this.formatMoscowDateTime(item.createdAt)) : null,
+                    item.backdated ? readonlyField('Отметка', 'Оформлено задним числом') : null,
                     readonlyField('Льгота', item.hasBenefit ? 'Да' : 'Нет'),
                     readonlyField('Лечащий врач', item.treatingDoctorName),
                 ]),
@@ -7307,6 +7347,9 @@ const app = {
         toggle.textContent = item.archived ? 'Восстановить из архива' : 'Перенести в архив';
         toggle.disabled = false;
         $('consiliumDetailsConflict').classList.add('is-hidden');
+        const canReadReasons = item.backdated && this.user
+            && ['consilium_chair', 'department_head'].includes(this.user.roleId);
+        $('consiliumBackdatingReasonsBtn').classList.toggle('is-hidden', !canReadReasons);
         this.consilium.detailsItem = item;
         ui.openModal('consiliumDetailsModal');
     },
@@ -7488,6 +7531,19 @@ const app = {
     },
 
     updateConsiliumAvailableSlots(record = null) {
+        // Режим «задним числом» (WP2.3-B3): время — только выбранного исторического
+        // слота председателя; обычные будущие слоты здесь не предлагаются.
+        if (this.consilium.backdatedMode && !record) {
+            const slot = this.consiliumBackdatedSlots().find(item => item.id === $('consiliumBackdatedSlot').value);
+            $('consiliumTime').replaceChildren(slot
+                ? option(slot.scheduledTime, slot.scheduledTime, true)
+                : option('', 'Выберите исторический слот', true));
+            if (slot) {
+                $('consiliumDate').value = slot.scheduledDate;
+                $('consiliumTime').value = slot.scheduledTime;
+            }
+            return;
+        }
         const configured = this.consilium.schedule || [];
         let times = [];
         if (configured.length) {
@@ -7556,7 +7612,7 @@ const app = {
         return patients;
     },
 
-    async openConsiliumModal(appointmentId = null, selectedSlot = null) {
+    async openConsiliumModal(appointmentId = null, selectedSlot = null, options = {}) {
         try {
             if (!this.consilium.meta || !this.consilium.loaded) await this.loadConsilium();
         } catch (error) {
@@ -7568,6 +7624,8 @@ const app = {
             ? this.consilium.appointments.find(item => item.id === appointmentId)
             : null;
         this.consilium.editingVersion = record ? record.version : null;
+        // Режим «задним числом» включается только явным действием (ниже).
+        this.consilium.backdatedMode = false;
         this.resetConsiliumConflict();
         this.renderConsiliumRevisionHistory('consiliumFormRevisions', record);
         $('consiliumGroupOptions').replaceChildren(frag(
@@ -7621,7 +7679,117 @@ const app = {
             $('consiliumPatient').value = patients[0].id;
             this.prefillConsiliumDiagnosisFromPatient();
         }
+        this.setConsiliumBackdatedMode(!record && !!options.backdated);
         ui.openModal('consiliumModal');
+    },
+
+    // Свободные исторические слоты председателя (WP2.3-B3), новые сверху.
+    consiliumBackdatedSlots() {
+        return (this.consilium.schedule || [])
+            .filter(slot => slot.backdated && !slot.occupied)
+            .sort((a, b) => `${b.scheduledDate} ${b.scheduledTime}`.localeCompare(`${a.scheduledDate} ${a.scheduledTime}`));
+    },
+
+    // Режим «Оформить консилиум задним числом»: вместо свободного будущего слота —
+    // исторический слот председателя и обязательная причина. Обычная запись не меняется.
+    setConsiliumBackdatedMode(enabled) {
+        this.consilium.backdatedMode = enabled;
+        $('consiliumBackdatedFieldset').classList.toggle('is-hidden', !enabled);
+        $('consiliumSlotFieldset').classList.toggle('is-hidden', enabled);
+        $('consiliumBackdatedReason').value = '';
+        if (!enabled) return;
+        const slots = this.consiliumBackdatedSlots();
+        $('consiliumBackdatedSlot').replaceChildren(frag([
+            option('', slots.length ? 'Выберите исторический слот' : 'Свободных исторических слотов нет', true),
+            ...slots.map(slot => option(slot.id,
+                `${this.formatConsiliumDate(slot.scheduledDate, slot.scheduledTime)} · ${slot.consiliumGroupLabel}`)),
+        ]));
+        $('consiliumModalTitle').textContent = 'Оформление консилиума задним числом';
+        $('submitConsiliumBtn').textContent = 'Оформить задним числом';
+        this.updateConsiliumAvailableSlots();
+        $('submitConsiliumBtn').disabled = !slots.length;
+    },
+
+    applyConsiliumBackdatedSlot() {
+        const slot = this.consiliumBackdatedSlots().find(item => item.id === $('consiliumBackdatedSlot').value);
+        if (!slot) return;
+        $('consiliumGroup').value = slot.consiliumGroupLabel;
+        this.fillConsiliumPatientsForGroup();
+        this.prefillConsiliumDiagnosisFromPatient();
+        this.updateConsiliumAvailableSlots();
+        $('submitConsiliumBtn').disabled = false;
+    },
+
+    async openConsiliumBackdatedSlotModal() {
+        try {
+            if (!this.consilium.meta || !this.consilium.loaded) await this.loadConsilium();
+        } catch (error) {
+            ui.toast('Не удалось подготовить форму: ' + error.message, 'danger');
+            return;
+        }
+        $('consiliumBackdatedSlotGroup').replaceChildren(frag(
+            (this.consilium.meta.groups || []).map(group => option(group.value, group.label))
+        ));
+        $('consiliumBackdatedSlotDate').max = this.consiliumToday();
+        $('consiliumBackdatedSlotDate').value = '';
+        $('consiliumBackdatedSlotTime').value = '';
+        $('consiliumBackdatedSlotReason').value = '';
+        $('consiliumBackdatedSlotError').classList.add('is-hidden');
+        ui.openModal('consiliumBackdatedSlotModal');
+    },
+
+    async submitConsiliumBackdatedSlot(event) {
+        event.preventDefault();
+        const errorNode = $('consiliumBackdatedSlotError');
+        errorNode.classList.add('is-hidden');
+        const payload = {
+            scheduledDate: $('consiliumBackdatedSlotDate').value,
+            scheduledTime: $('consiliumBackdatedSlotTime').value,
+            consiliumGroup: $('consiliumBackdatedSlotGroup').value,
+            reason: $('consiliumBackdatedSlotReason').value.trim(),
+        };
+        if (!payload.scheduledDate || !payload.scheduledTime || !payload.consiliumGroup || !payload.reason) {
+            errorNode.textContent = 'Заполните дату, время, группу и причину позднего создания слота.';
+            errorNode.classList.remove('is-hidden');
+            return;
+        }
+        const button = $('submitConsiliumBackdatedSlotBtn');
+        button.disabled = true;
+        try {
+            const slot = await apiPost('/api/consilium/schedule/backdated', payload);
+            ui.closeModal('consiliumBackdatedSlotModal');
+            ui.toast(`Слот задним числом создан: ${this.formatConsiliumDate(slot.scheduledDate, slot.scheduledTime)}, ${slot.consiliumGroupLabel}. Заведующий отделением может оформить в него запись.`, 'good');
+            this.consilium.loaded = false;
+            await this.renderConsilium();
+        } catch (error) {
+            errorNode.textContent = 'Не удалось создать слот: ' + error.message;
+            errorNode.classList.remove('is-hidden');
+        } finally {
+            button.disabled = false;
+        }
+    },
+
+    // Тексты причин — только председателю и заведующему; сервер проверяет права и
+    // фиксирует обращение в журнале. Выводится только как текст (textContent).
+    async showConsiliumBackdatingReasons(item) {
+        const box = $('consiliumDetailsBody');
+        const previous = $('consiliumBackdatingReasonsBox');
+        if (previous) previous.remove();
+        try {
+            const data = await apiGetJson(`/api/consilium/appointments/${encodeURIComponent(item.id)}/backdating`);
+            const block = (label, reason) => reason ? el('div', { class: 'field field--wide' }, [
+                el('span', { class: 'field__label', text: label }),
+                el('div', { class: 'consilium-detail-value', text: reason.text }),
+                el('div', { class: 'field__hint', text: [this.formatMoscowDateTime(reason.createdAt), reason.createdByName].filter(Boolean).join(' · ') }),
+            ]) : null;
+            box.append(el('fieldset', { class: 'fieldset', id: 'consiliumBackdatingReasonsBox' }, [
+                el('legend', { class: 'fieldset__legend', text: 'Причины оформления задним числом' }),
+                block('Причина позднего оформления записи', data.appointmentReason),
+                block('Причина позднего создания слота', data.slotReason),
+            ]));
+        } catch (error) {
+            ui.toast('Не удалось показать причины: ' + error.message, 'danger');
+        }
     },
 
     async openConsiliumArchive() {
@@ -7835,15 +8003,26 @@ const app = {
         const button = $('submitConsiliumBtn');
         button.disabled = true;
         try {
+            const backdated = !this.consilium.editingId && this.consilium.backdatedMode;
             if (this.consilium.editingId) {
                 if (!await this.saveConsiliumForm()) return;
+            } else if (backdated) {
+                const payload = this.consiliumFormPayload();
+                if (!payload) return;
+                const reason = $('consiliumBackdatedReason').value.trim();
+                if (!$('consiliumBackdatedSlot').value || !reason) {
+                    this.showConsiliumFormError('Выберите исторический слот и укажите причину позднего оформления.');
+                    return;
+                }
+                await apiPost('/api/consilium/appointments/backdated', { ...payload, reason });
             } else {
                 const payload = this.consiliumFormPayload();
                 if (!payload) return;
                 await apiPost('/api/consilium/appointments', payload);
             }
             ui.closeModal('consiliumModal');
-            ui.toast(this.consilium.editingId ? 'Запись обновлена.' : 'Пациент записан на консилиум.', 'good');
+            ui.toast(this.consilium.editingId ? 'Запись обновлена.'
+                : (backdated ? 'Консилиум оформлен задним числом.' : 'Пациент записан на консилиум.'), 'good');
             this.consilium.editingId = null;
             this.consilium.loaded = false;
             await this.renderConsilium();
@@ -9078,6 +9257,15 @@ const app = {
         on('closeConsiliumBtn', 'click', () => ui.closeModal('consiliumModal'));
         on('closeConsiliumIconBtn', 'click', () => ui.closeModal('consiliumModal'));
         on('resubmitConsiliumBtn', 'click', () => this.resubmitConsiliumAppointment());
+        on('consiliumBackdatedApptBtn', 'click', () => this.openConsiliumModal(null, null, { backdated: true }));
+        on('consiliumBackdatedSlot', 'change', () => this.applyConsiliumBackdatedSlot());
+        on('consiliumBackdatedSlotBtn', 'click', () => this.openConsiliumBackdatedSlotModal());
+        on('closeConsiliumBackdatedSlotBtn', 'click', () => ui.closeModal('consiliumBackdatedSlotModal'));
+        on('closeConsiliumBackdatedSlotIconBtn', 'click', () => ui.closeModal('consiliumBackdatedSlotModal'));
+        $('consiliumBackdatedSlotForm').addEventListener('submit', (event) => this.submitConsiliumBackdatedSlot(event));
+        on('consiliumBackdatingReasonsBtn', 'click', () => {
+            if (this.consilium.detailsItem) this.showConsiliumBackdatingReasons(this.consilium.detailsItem);
+        });
         on('consiliumConflictRefreshBtn', 'click', () => this.refreshConsiliumAfterConflict());
         on('consiliumDetailsConflictRefreshBtn', 'click', () => this.refreshConsiliumDetailsAfterConflict());
         on('deleteConsiliumBtn', 'click', () => {

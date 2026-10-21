@@ -169,6 +169,9 @@ def _to_dict(row: sqlite3.Row, *, favorite: bool = False) -> dict:
         # Запись без слота председателя (старые данные): показывается отдельно,
         # не удаляется и не переносится автоматически (WP2.3-B2).
         "outsideSchedule": not row["in_schedule"],
+        # WP2.3-B3: отметка оформления задним числом (без текста причины).
+        # createdAt — фактическое время внесения, scheduledDate/Time — дата проведения.
+        "backdated": bool(row["backdated"]),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
@@ -356,8 +359,11 @@ def delete_owned(
 
     A record that already went through a return round is only marked
     deleted: its return history (author, time, round, text) stays attached.
-    It leaves every list, frees the slot and allows booking the patient
-    again. A record without history is removed as before.
+    A record made after the fact (backdated = 1, WP2.3-B3) is always only
+    marked deleted: its id, consilium date, author and the link to its
+    backdating reason stay. Either way it leaves every list, frees the slot
+    and allows booking the patient again. Any other record without history
+    is removed as before.
     """
     now = now_iso()
     with transaction(conn):
@@ -365,7 +371,7 @@ def delete_owned(
         if existing is None:
             return None
         _require_version(existing, expected_version)
-        soft = existing["revisionCount"] > 0
+        soft = existing["revisionCount"] > 0 or bool(existing.get("backdated"))
         if soft:
             cursor = conn.execute(
                 """UPDATE oncology_consilium_appointments
@@ -757,7 +763,7 @@ def _update_locked(
     if fresh is None or get_manageable(conn, fresh, appointment_id) is None:
         return None
     existing = conn.execute(
-        """SELECT id, patient_id, status, scheduled_date, scheduled_time, consilium_group, version
+        """SELECT id, patient_id, status, scheduled_date, scheduled_time, consilium_group, version, backdated
            FROM oncology_consilium_appointments
            WHERE id = ? AND deleted_at IS NULL""",
         (appointment_id,),
@@ -788,6 +794,10 @@ def _update_locked(
         and existing["scheduled_time"] == body.scheduledTime
         and existing["consilium_group"] == body.consiliumGroup
     )
+    if not same_slot and existing["backdated"]:
+        # Запись задним числом описывает прошедший консилиум в историческом слоте
+        # председателя (WP2.3-B3): перенос в другой слот исказил бы ее смысл.
+        raise ValueError("Запись, оформленную задним числом, нельзя перенести в другой слот")
     if not same_slot:
         _require_available_slot(
             conn, body.scheduledDate, body.scheduledTime, body.consiliumGroup,
@@ -1006,6 +1016,8 @@ def schedule_slots(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[d
             "appointment": _slot_appointment(occupant, user, manageable) if occupant else None,
             "isPast": is_past,
             "bookable": occupant is None and not is_past,
+            # Исторический слот председателя (WP2.3-B3): только для записи задним числом.
+            "backdated": bool(row["backdated"]),
             # Прежнее поле контракта: вычисляемой недели больше нет (WP2.3-B2).
             "isDefaultWeek": False,
         })
@@ -1065,6 +1077,247 @@ def generate_schedule(
                         "start": start_time, "end": end_time, "interval": interval_minutes,
                         "skipped_past": skipped_past})
     return {"created": created, "skippedPast": skipped_past}
+
+
+BACKDATED_FUTURE_MESSAGE = "Задним числом можно оформить только прошедшие дату и время (по Москве)"
+BACKDATED_SLOT_REQUIRED_MESSAGE = (
+    "Запись задним числом возможна только в исторический слот председателя"
+)
+
+
+def _insert_backdating_reason(
+    conn: sqlite3.Connection, user: policy.CurrentUser, kind: str, reason: str, created_at: str,
+) -> str:
+    reason_id = uuid.uuid4().hex
+    conn.execute(
+        """INSERT INTO consilium_backdating_reasons (id, kind, reason, created_by_user_id, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (reason_id, kind, reason, user.id, created_at),
+    )
+    return reason_id
+
+
+def _slot_dict(conn: sqlite3.Connection, slot_id: str) -> dict:
+    row = conn.execute("SELECT * FROM consilium_schedule_slots WHERE id = ?", (slot_id,)).fetchone()
+    return {
+        "id": row["id"], "scheduledDate": row["scheduled_date"], "scheduledTime": row["scheduled_time"],
+        "consiliumGroup": row["consilium_group"],
+        "consiliumGroupLabel": GROUP_LABELS.get(row["consilium_group"], row["consilium_group"]),
+        "backdated": bool(row["backdated"]), "createdAt": row["created_at"],
+        "occupied": False, "isPast": True, "bookable": False, "isDefaultWeek": False,
+    }
+
+
+def create_backdated_slot(
+    conn: sqlite3.Connection,
+    user: policy.CurrentUser,
+    scheduled_date: str,
+    scheduled_time: str,
+    consilium_group: str,
+    reason: str,
+    *,
+    audit_hook=None,
+) -> dict:
+    """Stage 1 of backdating (WP2.3-B3): the chair creates a historical slot.
+
+    One BEGIN IMMEDIATE transaction: the chair's role re-read, the slot strictly
+    not in the future in Moscow time, the key free, the reason row (separate
+    from the technical audit), the slot with backdated = 1, the required audit
+    row and the response. created_at is the real time of creation."""
+    if consilium_group not in GROUP_LABELS:
+        raise ValueError("Выберите действующую консилиумную группу")
+    slot_id = uuid.uuid4().hex
+    with transaction(conn):
+        fresh = _locked_user(conn, user)
+        if fresh is None or not policy.can_create_backdated_slot(fresh):
+            raise ConsiliumAccessLost()
+        # Только строго прошедший момент: слот «ровно сейчас» еще не прошел (B3-04).
+        if not clock.is_strictly_past(scheduled_date, scheduled_time, clock.now_moscow()):
+            raise ValueError(BACKDATED_FUTURE_MESSAGE)
+        if conn.execute(
+            """SELECT 1 FROM consilium_schedule_slots
+               WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ?""",
+            (scheduled_date, scheduled_time, consilium_group),
+        ).fetchone():
+            raise ValueError("Слот на эти дату, время и группу уже существует")
+        created_at = now_iso()      # после получения блокировки, рядом с записью данных
+        reason_id = _insert_backdating_reason(conn, fresh, "slot", reason, created_at)
+        conn.execute(
+            """INSERT INTO consilium_schedule_slots
+               (id, scheduled_date, scheduled_time, consilium_group, created_by_user_id, created_at,
+                backdated, backdating_reason_id)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+            (slot_id, scheduled_date, scheduled_time, consilium_group, fresh.id, created_at, reason_id),
+        )
+        if audit_hook is not None:
+            audit_hook({"slot_id": slot_id, "date": scheduled_date, "time": scheduled_time,
+                        "group": consilium_group, "reason_id": reason_id})
+        result = _slot_dict(conn, slot_id)
+    return result
+
+
+def _require_backdated_slot(
+    conn: sqlite3.Connection, scheduled_date: str, scheduled_time: str, consilium_group: str,
+) -> str:
+    """The chair's historical slot (backdated = 1 with a slot reason), in the
+    past in Moscow time and free. Returns the slot id. Inside the transaction."""
+    if consilium_group not in GROUP_LABELS:
+        raise ValueError("Выберите действующую консилиумную группу")
+    slot = conn.execute(
+        """SELECT s.id FROM consilium_schedule_slots s
+           JOIN consilium_backdating_reasons r ON r.id = s.backdating_reason_id AND r.kind = 'slot'
+           WHERE s.scheduled_date = ? AND s.scheduled_time = ? AND s.consilium_group = ? AND s.backdated = 1""",
+        (scheduled_date, scheduled_time, consilium_group),
+    ).fetchone()
+    if slot is None:
+        raise ValueError(BACKDATED_SLOT_REQUIRED_MESSAGE)
+    if not clock.is_strictly_past(scheduled_date, scheduled_time, clock.now_moscow()):
+        raise ValueError(BACKDATED_FUTURE_MESSAGE)
+    if conn.execute(
+        """SELECT 1 FROM oncology_consilium_appointments
+           WHERE scheduled_date = ? AND scheduled_time = ? AND consilium_group = ? AND deleted_at IS NULL LIMIT 1""",
+        (scheduled_date, scheduled_time, consilium_group),
+    ).fetchone():
+        raise ValueError("Выбранный слот уже занят")
+    return slot["id"]
+
+
+def create_backdated(
+    conn: sqlite3.Connection, user: policy.CurrentUser, body, *, audit_hook=None
+) -> dict:
+    """Stage 2 of backdating (WP2.3-B3): a department head books a patient of
+    own department into the chair's historical slot, with a reason.
+
+    One BEGIN IMMEDIATE transaction: role and scope re-read, the patient's
+    group and the «one unfinished consilium» rule, the historical slot (past,
+    free, backdated), the reason row, the record (backdated = 1, created_at =
+    the real time taken after the lock), the required audit row and the response (B2-01). Earlier
+    signed consiliums of the patient are not touched: the record is separate
+    and dated by its slot."""
+    appointment_id = uuid.uuid4().hex
+    try:
+        with transaction(conn):
+            fresh = _locked_user(conn, user)
+            if (fresh is None or not policy.can_backdate_consilium(fresh)
+                    or not policy.can_write_patient(conn, fresh, body.patientId)):
+                raise ConsiliumAccessLost()
+            patient = conn.execute(
+                "SELECT policy_number, diagnosis FROM patients WHERE id = ?", (body.patientId,)
+            ).fetchone()
+            if patient is None:
+                raise ConsiliumAccessLost()
+            _require_group_for_patient(patient["diagnosis"], body.consiliumGroup)
+            _require_patient_not_booked(conn, body.patientId)
+            slot_id = _require_backdated_slot(conn, body.scheduledDate, body.scheduledTime, body.consiliumGroup)
+            # Фактическое время внесения — после получения блокировки, одно для
+            # причины и записи: ожидание чужой транзакции его не искажает (B3-02).
+            now = now_iso()
+            reason_id = _insert_backdating_reason(conn, fresh, "appointment", body.reason, now)
+            conn.execute(
+                """INSERT INTO oncology_consilium_appointments (
+                   id, patient_id, created_by_user_id, scheduled_date, scheduled_time,
+                   consilium_group, has_benefit, treating_doctor_name, policy_number, diagnosis_localization,
+                   primary_diagnosis, additional_diagnosis, comment,
+                   additional_participant, needs_surgeon, needs_radiotherapist, uv_ruv,
+                   backdated, backdating_reason_id, created_at, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)""",
+                (
+                    appointment_id, body.patientId, fresh.id, body.scheduledDate,
+                    body.scheduledTime, body.consiliumGroup, int(body.hasBenefit),
+                    _current_treating_doctor_name(conn, body.patientId),
+                    body.policyNumber or patient["policy_number"] or None,
+                    body.diagnosisLocalization or None,
+                    body.primaryDiagnosis, body.additionalDiagnosis or None,
+                    body.comment or None, body.additionalParticipant or None,
+                    int(body.needsSurgeon), int(body.needsRadiotherapist), int(body.uvRuv),
+                    reason_id, now, now,
+                ),
+            )
+            if audit_hook is not None:
+                audit_hook({
+                    "appointment_id": appointment_id, "patient_id": body.patientId,
+                    "date": body.scheduledDate, "time": body.scheduledTime, "group": body.consiliumGroup,
+                    "slot_id": slot_id, "reason_id": reason_id,
+                })
+            result = _committed_result(conn, fresh, appointment_id)
+    except sqlite3.IntegrityError as exc:
+        raise ValueError(_integrity_error_message(exc)) from exc
+    return result
+
+
+def backdating_reasons_for_appointment(
+    conn: sqlite3.Connection, user: policy.CurrentUser, appointment_id: str, *, audit_hook=None
+) -> dict | None:
+    """Reason texts of a backdated record (WP2.3-B3). The chair sees any
+    record; a head — records of own departments (the same scope as managing).
+    None — the record is not visible to the user or not backdated (404: no
+    difference is disclosed). The read is audited fail-closed, without text."""
+    with transaction(conn):
+        fresh = _locked_user(conn, user)
+        if fresh is None or not policy.can_read_backdating_reasons(fresh):
+            return None
+        if fresh.role_id == policy.ROLE_CONSILIUM_CHAIR:
+            record = get_for_management(conn, appointment_id)
+        else:
+            record = get_manageable(conn, fresh, appointment_id)
+        if record is None or not record["backdated"]:
+            return None
+        row = conn.execute(
+            """SELECT a.id, a.patient_id, a.created_at, ar.reason AS appointment_reason,
+                      ar.created_at AS appointment_reason_at, au.full_name AS appointment_reason_by,
+                      sr.reason AS slot_reason, sr.created_at AS slot_reason_at, su.full_name AS slot_reason_by
+               FROM oncology_consilium_appointments a
+               JOIN consilium_backdating_reasons ar ON ar.id = a.backdating_reason_id AND ar.kind = 'appointment'
+               LEFT JOIN users au ON au.id = ar.created_by_user_id
+               LEFT JOIN consilium_schedule_slots s ON s.scheduled_date = a.scheduled_date
+                    AND s.scheduled_time = a.scheduled_time AND s.consilium_group = a.consilium_group
+               LEFT JOIN consilium_backdating_reasons sr ON sr.id = s.backdating_reason_id AND sr.kind = 'slot'
+               LEFT JOIN users su ON su.id = sr.created_by_user_id
+               WHERE a.id = ?""",
+            (appointment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if audit_hook is not None:
+            audit_hook({"appointment_id": appointment_id, "patient_id": row["patient_id"]})
+        return {
+            "appointmentId": appointment_id,
+            "scheduledDate": record["scheduledDate"], "scheduledTime": record["scheduledTime"],
+            "createdAt": row["created_at"],
+            "appointmentReason": {"text": row["appointment_reason"], "createdAt": row["appointment_reason_at"],
+                                  "createdByName": row["appointment_reason_by"] or ""},
+            "slotReason": ({"text": row["slot_reason"], "createdAt": row["slot_reason_at"],
+                            "createdByName": row["slot_reason_by"] or ""} if row["slot_reason"] else None),
+        }
+
+
+def backdating_reason_for_slot(
+    conn: sqlite3.Connection, user: policy.CurrentUser, slot_id: str, *, audit_hook=None
+) -> dict | None:
+    """Reason of a historical slot — the chair only (a head reads it through
+    an accessible record). Audited fail-closed, without text."""
+    with transaction(conn):
+        fresh = _locked_user(conn, user)
+        if fresh is None or fresh.role_id != policy.ROLE_CONSILIUM_CHAIR:
+            return None
+        row = conn.execute(
+            """SELECT s.id, s.scheduled_date, s.scheduled_time, s.consilium_group, s.created_at,
+                      r.reason, r.created_at AS reason_at, u.full_name AS reason_by
+               FROM consilium_schedule_slots s
+               JOIN consilium_backdating_reasons r ON r.id = s.backdating_reason_id AND r.kind = 'slot'
+               LEFT JOIN users u ON u.id = r.created_by_user_id
+               WHERE s.id = ? AND s.backdated = 1""",
+            (slot_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if audit_hook is not None:
+            audit_hook({"slot_id": slot_id, "patient_id": None})
+        return {
+            "slotId": slot_id, "scheduledDate": row["scheduled_date"], "scheduledTime": row["scheduled_time"],
+            "consiliumGroup": row["consilium_group"], "createdAt": row["created_at"],
+            "slotReason": {"text": row["reason"], "createdAt": row["reason_at"], "createdByName": row["reason_by"] or ""},
+        }
 
 
 def delete_schedule_slot(conn: sqlite3.Connection, slot_id: str, *, audit_hook=None) -> bool:
