@@ -20,12 +20,13 @@ from .conftest import (
     login,
     make_patient_payload,
     preserve_ids_confirmation,
+    synthetic_export_key,
     unsigned_import,
     LEGACY_CONSILIUM_DATES,
     consilium_grid,
 )
 
-OTHER_KEY = "b3RoZXItc3ludGhldGljLWV4cG9ydC1rZXktMzJieXQ"   # синтетический, 32 байта
+OTHER_KEY = synthetic_export_key("other-synthetic-export-key-32byt")   # синтетический, 32 байта
 
 
 # --- вспомогательные --------------------------------------------------------

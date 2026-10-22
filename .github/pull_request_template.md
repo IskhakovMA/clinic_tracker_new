@@ -1,3 +1,11 @@
+## Merge gate (required — branch protection is not available on this plan)
+
+- [ ] The `release-gate` check of the **latest** commit of this PR is green (link the run).
+- [ ] Every gate it aggregates ran: backend shards + `backend-tests-verify` (all collected tests ran once and passed), `backend-smoke`, `frontend-security`, `workflow-policy`, `dependency-audit`, `sast-bandit`, `secret-scan`.
+- [ ] An independent reviewer (not the author) approved this exact commit SHA.
+- [ ] No new `.gitleaksignore` / `security-audit/bandit-allowlist.json` entry, or each new entry has a written review reason.
+- [ ] The merge is a normal merge of the reviewed SHA; no force push to the target branch.
+
 ## Checklist
 
 - [ ] Tests were run or the reason they were not run is documented.

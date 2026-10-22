@@ -1,0 +1,15 @@
+# Gitleaks fingerprints of reviewed false positives in Git HISTORY only.
+#
+# Each line is commit:path:rule:line — it suppresses exactly one finding in one
+# historical commit. It does not cover any other commit, file, line, rule or the
+# working tree, so the same value committed again anywhere is reported.
+#
+# 19a22b4 (2026-10-15) committed two synthetic export-signing test keys as
+# string literals. They are base64url of the readable 32-byte labels
+# "test-only-export-signing-key-32b" and "other-synthetic-export-key-32byt",
+# were never used outside tests, and are not credentials of any system.
+# Since WP-A (fix/wp-a-ci-release-gates) the tests compute these values with
+# backend/tests/conftest.py:synthetic_export_key, so the working tree holds no
+# such literal. Reviewed: WP-A / AUD-01.
+19a22b467781ed902042236e7a53ae3fbfe821a7:backend/tests/conftest.py:generic-api-key:10
+19a22b467781ed902042236e7a53ae3fbfe821a7:backend/tests/test_signed_export.py:generic-api-key:26

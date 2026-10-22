@@ -1,13 +1,24 @@
 name: CI
 
+# Release gates (WP-A). Every push to the protected line (main), to integration,
+# fix and feature branches, and every pull request into main or an integration
+# branch runs the full set of gates; workflow_dispatch allows a manual run on any
+# ref. Pull requests use the unprivileged `pull_request` event only: fork code runs
+# without repository secrets and with the read-only token below. The `release-gate` job is the
+# single status that must be green before a merge (see "Merge gate" in
+# .github/pull_request_template.md: branch protection is not available on this plan).
 on:
   pull_request:
     branches:
       - main
+      - "integration/**"
   push:
     branches:
       - main
-      - integration/stable-plus-max
+      - "integration/**"
+      - "fix/**"
+      - "feature/**"
+      - "feat/**"
   workflow_dispatch:
 
 permissions:
@@ -15,15 +26,19 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a work branch supersedes the older run; runs on main always finish.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  # Number of backend test shards; backend-tests matrix below must list 1..BACKEND_TEST_SHARDS.
+  BACKEND_TEST_SHARDS: "4"
 
 jobs:
-  backend-tests:
-    name: backend-tests
+  backend-test-plan:
+    name: backend-test-plan
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
-      CLINIC_DATA_DIR: /tmp/clinic-ci-data-${{ github.run_id }}
       CLINIC_DEBUG: "false"
       NOTIFICATION_PROVIDER: mock
     steps:
@@ -41,8 +56,134 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
 
-      - name: Run backend tests
-        run: python -m pytest backend/tests -q
+      # The full collection is the reference the shards are verified against.
+      - name: Collect every backend test and plan the shards
+        run: python tools/ci/pytest_shards.py collect --out "$RUNNER_TEMP/plan" --shards "$BACKEND_TEST_SHARDS"
+
+      - name: Upload the full collection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-tests-collected
+          path: ${{ runner.temp }}/plan/collected.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  backend-tests:
+    name: backend-tests (${{ matrix.shard }}/4)
+    needs: backend-test-plan
+    runs-on: ubuntu-latest
+    # About 7-8 minutes per shard on a hosted runner (the whole suite took ~30 minutes
+    # in one job and was cancelled at 15); 25 minutes leaves room for a slow runner.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      CLINIC_DATA_DIR: /tmp/clinic-ci-data-${{ github.run_id }}-${{ matrix.shard }}
+      CLINIC_DEBUG: "false"
+      NOTIFICATION_PROVIDER: mock
+      SHARD: ${{ matrix.shard }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      # The suite includes the Staff-UX prototype node tests (test_integration_preaudit);
+      # node is set up explicitly so they run instead of being skipped.
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
+
+      # No -x, -k, --ignore or --deselect: the shard runs every test of its files.
+      - name: Run backend test shard
+        env:
+          PYTEST_OUTCOMES_FILE: ${{ runner.temp }}/backend-tests-shard-${{ matrix.shard }}.json
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(python tools/ci/pytest_shards.py files --shard "$SHARD" --shards "$BACKEND_TEST_SHARDS")
+          # Without paths pytest would run its default test paths — never let an empty plan pass silently.
+          if [ "${#files[@]}" -eq 0 ]; then echo "shard $SHARD has no test files" >&2; exit 1; fi
+          echo "shard $SHARD/$BACKEND_TEST_SHARDS: ${#files[@]} test files"
+          python -m pytest -q -p tools.ci.pytest_outcomes "${files[@]}"
+
+      - name: Upload shard outcomes
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: backend-tests-outcomes-${{ matrix.shard }}
+          path: ${{ runner.temp }}/backend-tests-shard-${{ matrix.shard }}.json
+          if-no-files-found: error
+          retention-days: 7
+
+  backend-tests-verify:
+    name: backend-tests-verify
+    needs: [backend-test-plan, backend-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Download the full collection
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: backend-tests-collected
+          path: ${{ runner.temp }}/plan
+
+      - name: Download shard outcomes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: backend-tests-outcomes-*
+          path: ${{ runner.temp }}/results
+          merge-multiple: true
+
+      # Fails unless the shards together ran every collected test exactly once and all passed.
+      - name: Verify that every collected test ran once and passed
+        run: python tools/ci/pytest_shards.py verify --collected "$RUNNER_TEMP/plan/collected.txt" --results "$RUNNER_TEMP/results"
+
+  backend-smoke:
+    name: backend-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLINIC_DATA_DIR: /tmp/clinic-ci-data-${{ github.run_id }}-smoke
+      CLINIC_DEBUG: "false"
+      NOTIFICATION_PROVIDER: mock
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
 
       - name: Check temporary database
         run: |
@@ -81,6 +222,9 @@ jobs:
 
       - name: Check JavaScript syntax
         run: node --check static/app.js
+
+      - name: Run Staff-UX prototype tests
+        run: node --test prototype/staff-ux/tests/
 
       - name: Setup Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -156,6 +300,11 @@ jobs:
       - name: Install Bandit
         run: python -m pip install --disable-pip-version-check bandit==1.8.6
 
+      # Negative control: with the real Bandit, a reviewed statement that only moved
+      # still passes, while a new injectable query or an edited reviewed one fails.
+      - name: Self-test the Bandit gate
+        run: python security-audit/tests/run_bandit_allowlisted.py --self-test
+
       - name: Run Bandit
         run: python security-audit/tests/run_bandit_allowlisted.py
 
@@ -180,6 +329,11 @@ jobs:
           echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" version
+
+      # Negative control: the repository's own gitleaks configuration must still
+      # report a fresh key in test code and the old synthetic value in a new commit.
+      - name: Verify that planted secrets are detected
+        run: python3 tools/ci/gitleaks_canary.py "$RUNNER_TEMP/gitleaks"
 
       - name: Scan working tree for secrets
         run: '"$RUNNER_TEMP/gitleaks" dir . --redact --no-banner --verbose'
@@ -209,3 +363,36 @@ jobs:
             exit 1
           fi
           grep -Eq ' [1-9][0-9]* commits scanned' "$log"
+
+  # Single required status: green only when every gate above succeeded.
+  release-gate:
+    name: release-gate
+    needs:
+      - backend-test-plan
+      - backend-tests
+      - backend-tests-verify
+      - backend-smoke
+      - frontend-security
+      - workflow-policy
+      - dependency-audit
+      - sast-bandit
+      - secret-scan
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every gate to succeed
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS_JSON"])
+          bad = {name: data["result"] for name, data in needs.items() if data["result"] != "success"}
+          for name, data in sorted(needs.items()):
+              print(f"{name}: {data['result']}")
+          if bad:
+              print(f"release gate closed: {bad}", file=sys.stderr)
+              sys.exit(1)
+          print("release gate open: all gates succeeded")
+          PY

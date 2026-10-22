@@ -1,0 +1,138 @@
+{
+ "_comment": "Reviewed Bandit findings that the gate accepts. Each entry is bound to file + test id + SHA-256 of the whitespace-normalised flagged statement (see run_bandit_allowlisted.py): moving code keeps the entry valid, changing the statement invalidates it. Add an entry only after a review that names why no untrusted input can reach the SQL; never by copying --candidates output unread. Migrated from the line-number list in WP-A.",
+ "entries": [
+  {
+   "file": "backend/app/maintenance.py",
+   "test_id": "B608",
+   "fingerprint": "a63b35a24090abbaab49e33d38ebac2807715fd72441e3117100d79dd64616f5",
+   "statement": "scratch.execute(f'INSERT INTO \"{table}\" ({\", \".join(row)}) VALUES ({\", \".join(\"?\" * len(row))})',",
+   "reason": "Write probe on a scratch in-memory DB: `table` is a key of the module constant _WRITE_PROBES, column names are keys of the constant probe dicts (_PORTAL_BASE and fixed probes); all values bound with ?. Introduced by eb17f05 (strict backup fingerprint). Reviewed WP-A."
+  },
+  {
+   "file": "backend/app/policy.py",
+   "test_id": "B608",
+   "fingerprint": "dac2ef692c87fb67b7cb287c1d2328030502193a287a83fdf1db98c0fe2f63ea",
+   "statement": "f\"SELECT 1 FROM patients WHERE id = ? AND {cond}\", [patient_id, *params]",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. Same can_read_patient query reviewed in SEC-2026-004 (was policy.py:115; moved to :126 by the WP2.4-D ACTIVE_PATIENT_SQL change). Reviewed WP-A."
+  },
+  {
+   "file": "backend/app/routes/staff.py",
+   "test_id": "B608",
+   "fingerprint": "cec0c0d868c02a94e42f03522076f2c71747f3549da302027a37f15f1a4cf314",
+   "statement": "conn.execute(f\"DELETE FROM {other} WHERE user_id = ?\", (user_id,))",
+   "reason": "`other` is the complementary literal table name (department_heads / user_departments); user_id bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/routes/staff.py",
+   "test_id": "B608",
+   "fingerprint": "28c40d85270f29644adc4da1815cca202a022b4090b06742dad495c0399fc8ce",
+   "statement": "conn.execute(f\"DELETE FROM {table} WHERE user_id = ?\", (user_id,))",
+   "reason": "`table` is one of two literal table names chosen by a ternary on role_id (department_heads / user_departments); user_id bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/duplicate_review.py",
+   "test_id": "B608",
+   "fingerprint": "0c6db1d0464e10bfaf2772d0140f1480bb33c502944fa545c4d01411f0612283",
+   "statement": "\"SELECT id, name, age, phone, policy_number, diagnosis, nosology FROM patients \" f\"WHERE {policy.ACTIVE_PATIENT_SQL}\").fetchall()",
+   "reason": "Only interpolation is the constant policy.ACTIVE_PATIENT_SQL (erroneous-card exclusion); no parameters, no user input. WP2.4-D; reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/duplicate_review.py",
+   "test_id": "B608",
+   "fingerprint": "9a6e09309525caa5f1ace5915c5f324fdf4f39089b237774f93cd930ff96561c",
+   "statement": "count = conn.execute(f\"SELECT COUNT(*) FROM patients WHERE {policy.ACTIVE_PATIENT_SQL}\").fetchone()[0]",
+   "reason": "policy.ACTIVE_PATIENT_SQL is a module-level string constant (erroneous-card exclusion subquery) with no parameters or user input. WP2.4-D; reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "d2e3597fd8cf526f01b2ef195e696ebed37ed1901b4f1ba4a072fefdf9e14baa",
+   "statement": "f\"\"\"SELECT COUNT(*) AS c FROM notifications JOIN patients ON patients.id = notifications.patient_id WHERE {cond} AND notifications.status = 'pending' AND substr(notifications.scheduled_at, 1, 10) = ?\"\"\",",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. Date bound as parameter. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "b538abb3f344b37d5d38a3383ec18843aecd8dcc67254ca43dc8a654461a17b0",
+   "statement": "f\"\"\"SELECT COUNT(*) AS c FROM patients LEFT JOIN patient_notification_preferences pref ON pref.patient_id = patients.id WHERE {cond} AND COALESCE(pref.consent_status, 'not_recorded') != 'granted'\"\"\",",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "57c13750da49198a2dd674bddf10dfcdba1e50db51ea01332dd1ac92900d6d4d",
+   "statement": "f\"\"\"SELECT id, code, name, channel, body, enabled, version, created_at, updated_at FROM notification_templates {where} ORDER BY code\"\"\"",
+   "reason": "`where` is one of two literals ('' or 'WHERE enabled = 1') chosen by a boolean argument; no user input. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "2352a6d24bad223b576b8b684ada13f6f13ec7025fd940abaa74f90a375aa31e",
+   "statement": "f\"\"\"SELECT notifications.*, patients.name AS patient_name, patients.phone, patients.doctor, u.full_name AS treating_doctor_name, t.name AS template_name, GROUP_CONCAT(DISTINCT d.name) AS department_names FROM notifications JOIN patients ON patients.id = notifications.patient_id LEFT JOIN users u ON ",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. Notification id bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "c22ce0ec2c145a7d4ff0c207c06cc31b50853ffd864cb1aa653b7a001f2bf3c0",
+   "statement": "f\"\"\"SELECT notifications.status, COUNT(*) AS c FROM notifications JOIN patients ON patients.id = notifications.patient_id WHERE {cond} GROUP BY notifications.status\"\"\",",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "e3c88b669cb1ae95748b1a903ebcea6fe27bf4d388a9db7492fa318b12371f59",
+   "statement": "f\"\"\"SELECT patients.id AS patient_id, patients.stage AS patient_stage, patients.treating_doctor_user_id AS treating_doctor_user_id, events.id AS event_id, events.date, events.time, events.actual_date, events.no_plan FROM events JOIN history_entries h ON h.id = events.history_entry_id JOIN patients O",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/services/notifications.py",
+   "test_id": "B608",
+   "fingerprint": "ed672fc72bbd6e9f02cabf1d98018e559efce3f3cffaa35a4981447c63aa10ce",
+   "statement": "for row in conn.execute(f\"SELECT phone FROM patients WHERE {cond}\", params).fetchall():",
+   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/users.py",
+   "test_id": "B608",
+   "fingerprint": "e1ba65e0d2ceeb2a8bae92a68546471d590eb3e18747a12bcdb379cea7564d16",
+   "statement": "conn.execute(f\"UPDATE departments SET {', '.join(sets)} WHERE id = ?\", params)",
+   "reason": "SET clause built only from the fixed fragments 'name = ?', 'status = ?', 'updated_at = ?'; values validated and bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/users.py",
+   "test_id": "B608",
+   "fingerprint": "6d089e4239f32f4e4e8aa058b010c331287a01720bdbb26452d9bd115d59186f",
+   "statement": "conn.execute(f\"UPDATE users SET {', '.join(sets)} WHERE id = ?\", params)",
+   "reason": "SET clause built only from the fixed fragments 'full_name = ?', 'role_id = ?', 'status = ?', 'updated_at = ?'; values validated and bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/users.py",
+   "test_id": "B608",
+   "fingerprint": "7d48b7be306965f36ee8d316dd60690836d1d2ed9edb82fc2f62a2e60e6df32e",
+   "statement": "f\"\"\"SELECT 1 FROM user_departments ud JOIN departments d ON d.id = ud.department_id AND d.status = 'active' WHERE ud.user_id = ? AND ud.department_id IN ({marks})\"\"\",",
+   "reason": "`marks` is ','.join('?' ...) sized by the id list: placeholders only, user id and department ids bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/users.py",
+   "test_id": "B608",
+   "fingerprint": "bfa3c2f7a39c2f5d0802327df2cc813d95bd4c1371b6b835f4681ba765ebf8bb",
+   "statement": "f\"\"\"SELECT DISTINCT u.id, u.full_name FROM users u JOIN user_departments ud ON ud.user_id = u.id JOIN departments d ON d.id = ud.department_id AND d.status = 'active' WHERE u.role_id = 'doctor' AND u.status = 'active' AND ud.department_id IN ({marks}) ORDER BY u.full_name\"\"\",",
+   "reason": "`marks` is ','.join('?' ...) sized by the id list: placeholders only, every department id bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/users.py",
+   "test_id": "B608",
+   "fingerprint": "5b76db4b40c0be9cf423c97cd3f0d1131cda7543e553505120dbb6150a142e27",
+   "statement": "f\"\"\"SELECT d.id, d.name FROM {table} link JOIN departments d ON d.id = link.department_id AND d.status = 'active' WHERE link.user_id = ? ORDER BY d.name\"\"\",",
+   "reason": "`table` is one of two literal table names chosen by a ternary on role_id; user_id bound. SEC-2026-004, re-reviewed WP-A."
+  },
+  {
+   "file": "backend/app/users.py",
+   "test_id": "B608",
+   "fingerprint": "5dae4522d065c2fed88900c11ea7439b3d72c3c4f339868ca07e69cb84cb7ea9",
+   "statement": "if conn.execute(f\"SELECT 1 FROM {table} WHERE department_id = ?\", (dept_id,)).fetchone():",
+   "reason": "`table` iterates over the literal tuple ('user_departments', 'department_heads'); dept_id bound. SEC-2026-004, re-reviewed WP-A."
+  }
+ ]
+}

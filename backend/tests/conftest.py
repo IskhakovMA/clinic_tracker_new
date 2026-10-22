@@ -1,3 +1,4 @@
+import base64
 import itertools
 import sys
 from datetime import datetime
@@ -11,7 +12,19 @@ sys.path.insert(0, str(PROJECT_ROOT))
 TEST_PASSWORD = "correct-horse-battery"
 # Момент «сейчас» часов учреждения в тестах (Europe/Moscow, UTC+3).
 TEST_MOSCOW_NOW = datetime.fromisoformat("2026-10-01T09:00:00+03:00")
-TEST_EXPORT_SIGNING_KEY = "dGVzdC1vbmx5LWV4cG9ydC1zaWduaW5nLWtleS0zMmI"  # synthetic, 32 bytes base64url
+
+
+def synthetic_export_key(label: str) -> str:
+    """Синтетический ключ подписи выгрузок для тестов: base64url от читаемой метки
+    ровно в 32 байта. Значение вычисляется, а не хранится литералом, поэтому в
+    репозитории нет строк, похожих на ключ, и сканеру секретов не нужны исключения
+    для рабочего дерева. Только для тестов, не для установок."""
+    raw = label.encode("ascii")
+    assert len(raw) == 32, "synthetic export key label must be exactly 32 bytes"
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+TEST_EXPORT_SIGNING_KEY = synthetic_export_key("test-only-export-signing-key-32b")
 TEST_EXPORT_SIGNING_KEY_ID = "test-export-key"
 
 # Вымышленные сотрудники для тестов — реальные ФИО в fixtures не используются.

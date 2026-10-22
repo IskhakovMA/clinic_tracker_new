@@ -197,8 +197,11 @@ def test_same_key_with_other_data_is_422_without_creation_or_disclosure(client, 
     assert _counts() == before
 
 
+# ids: стабильные имена тестов (значения uuid1/uuid4 случайны), иначе идентификатор теста
+# меняется при каждом сборе и CI не может сверить, что запущен каждый собранный тест (WP-A).
 @pytest.mark.parametrize("header", ["", "   ", "not-a-uuid", "00000000-0000-0000-0000-000000000000",
-                                    str(uuid.uuid1()), str(uuid.uuid4()) + "x"])
+                                    str(uuid.uuid1()), str(uuid.uuid4()) + "x"],
+                         ids=["empty", "spaces", "not-a-uuid", "nil-uuid", "uuid1", "uuid4-plus-char"])
 def test_explicit_invalid_key_is_422(client, header):
     _world()
     login(client, "doc.a")
