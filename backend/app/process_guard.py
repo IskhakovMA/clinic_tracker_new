@@ -54,8 +54,9 @@ def acquire() -> int:
     except BlockingIOError as exc:
         os.close(fd)
         raise MultipleProcessesError(
-            f"another backend process already serves {config.DATA_DIR}: the request limiters are "
-            "per process, so only one process may run (no --workers, no second instance)."
+            f"another backend process already serves {config.DATA_DIR}, or a restore/migrate-db "
+            "maintenance holds it: the request limiters are per process, so only one process may run "
+            "(no --workers, no second instance); wait for the maintenance to finish."
         ) from exc
     return fd
 

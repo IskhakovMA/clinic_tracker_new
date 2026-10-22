@@ -9,7 +9,7 @@ import sqlite3
 
 import pytest
 
-from .conftest import PROJECT_ROOT, current_schema_version, make_patient_payload
+from .conftest import app_stopped, PROJECT_ROOT, current_schema_version, make_patient_payload
 
 TEST_BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 V9_FIXTURE = PROJECT_ROOT / "backend" / "tests" / "fixtures" / "stable_v9_synthetic.sql"
@@ -107,7 +107,8 @@ def test_verify_accepts_supported_v9_backup_without_touching_live_db(auth_client
 def test_restore_migrates_v9_backup_and_replaces_live_db(auth_client, tmp_path):
     from backend.app import maintenance
     live = _live(auth_client)
-    result = maintenance.restore_database(_v9_backup(tmp_path), live, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(_v9_backup(tmp_path), live, confirm_offline=True)
     assert result["migrated_from_schema_version"] == 9
     assert result["patient_count"] == 3
 
@@ -157,7 +158,8 @@ def test_refused_old_backup_leaves_live_db_unchanged(auth_client, tmp_path, monk
         expected = "не совпадает"
 
     with pytest.raises(maintenance.MaintenanceError, match=expected):
-        maintenance.restore_database(backup, live, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, live, confirm_offline=True)
     assert _digest(live) == before
     after = sorted(config.BACKUP_DIR.glob("*")) if config.BACKUP_DIR.exists() else []
     assert after == backups_before  # no pre-restore copy for a refused backup
@@ -179,7 +181,8 @@ def test_restore_migrates_verified_max_v17_backup_keeping_signed_decision(auth_c
     backup = _v9_backup(tmp_path, "max-v17.cbk", header=17, fixture=MAX_V17_FIXTURE)
     report = maintenance.validate_backup(backup)
     assert (report["source_build"], report["migrated_from_schema_version"]) == ("clinic_tracker_new_Max", 17)
-    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, live, confirm_offline=True)
     assert result["migrated_from_schema_version"] == 17
 
     conn = sqlite3.connect(str(live))
@@ -229,7 +232,8 @@ def test_unverified_builds_with_plausible_numbers_are_refused(auth_client, tmp_p
         backup = _encrypt(plaintext, tmp_path / "max-v12.cbk", 12)
         plaintext.unlink()
     with pytest.raises(maintenance.MaintenanceError, match="не совпадает ни с одной проверенной сборкой"):
-        maintenance.restore_database(backup, live, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, live, confirm_offline=True)
     assert _digest(live) == before
     assert _plaintext_leftovers(tmp_path) == []
 
@@ -243,7 +247,8 @@ def test_restore_migrates_v18_backup_keeping_decision_history_and_route(auth_cli
     backup = _v9_backup(tmp_path, "integration-v18.cbk", header=18, fixture=V18_FIXTURE)
     report = maintenance.validate_backup(backup)
     assert (report["source_build"], report["migrated_from_schema_version"]) == ("integration-c03f99a", 18)
-    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, live, confirm_offline=True)
     assert result["migrated_from_schema_version"] == 18
     assert maintenance.check_database(live)["ok"]
 

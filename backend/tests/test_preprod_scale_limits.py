@@ -55,8 +55,9 @@ def test_init_db_skips_key_scan_when_nothing_needs_backfill(auth_client, monkeyp
 def test_requests_do_not_rerun_init_db(auth_client, monkeypatch):
     from backend.app import deps
     calls = []
-    real = deps.init_db
-    monkeypatch.setattr(deps, "init_db", lambda conn: (calls.append(1), real(conn)))
+    # WP-B: первая проверка схемы на путь идёт через connect_live (init_db без обновления).
+    real = deps.connect_live
+    monkeypatch.setattr(deps, "connect_live", lambda path: (calls.append(1), real(path))[1])
     for _ in range(3):
         assert auth_client.get("/api/auth/me").status_code == 200
     assert calls == []

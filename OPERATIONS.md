@@ -1,5 +1,91 @@
 # Operations
 
+## Configuration Source (WP-B, AUD-19)
+
+The backend and the CLI read settings **only from the process environment**.
+They never read a `.env` file themselves. Load the file into the environment
+in one of these ways (pick one per installation and document it):
+
+- systemd: `EnvironmentFile=/etc/clinic-tracker/clinic.env` in the unit;
+- uvicorn: `python -m uvicorn backend.app.main:app --env-file backend/.env ...`
+  (applies to the server only — CLI commands still need the variables in
+  their shell);
+- shell: `set -a; . backend/.env; set +a` before the command.
+
+If `backend/.env` or `.env` in the repository root exists and sets a value the
+process does not have (missing or different), the server refuses to start and
+every CLI command exits with code 2. The message names the variables, never
+their values. Fix the loading, correct the difference, or rename the file. The
+file format is `NAME=value` per line, `#` comments, optional `export ` prefix,
+optional surrounding quotes; no inline comments.
+
+The listening address and port are the uvicorn `--host`/`--port` arguments.
+`CLINIC_HOST` is the trusted Host header (and must match `--host`);
+`CLINIC_PORT` is informational. The start-up log line prints the effective
+non-secret settings: `trusted_host`, `https`, `debug`, `env`, `data_dir`.
+
+## Database Operations: Safe Order (WP-B)
+
+Commands and what they may change:
+
+| Command | Changes the DB? | Needs the app stopped? |
+| --- | --- | --- |
+| `check-db` (`--no-migrate` is an accepted no-op) | never | no |
+| `backup`, `backup-verify`, `backup-inspect` | no (`backup` adds an audit event) | no |
+| `migrate-db --confirm-offline` | yes: schema upgrade | **yes** |
+| `restore FILE --confirm-offline` | yes: replaces the file | **yes** |
+| any other CLI command, the server | normal writes | — |
+
+Locks: the server and every DB-using CLI command (including the notification
+worker commands) hold a shared lock on `DATA_DIR/.clinic-db.lock`; the server
+also holds `DATA_DIR/.clinic-app.lock`. `restore` and `migrate-db` need both
+exclusively and keep them until the file is replaced, WAL/SHM are handled and
+all connections are closed. So they refuse immediately, **before any change**,
+while the server, a CLI command or another restore runs, and the server cannot
+start while they run. The locks are released by the kernel if a process dies
+(including `kill -9`). A `BEGIN IMMEDIATE` SQLite transaction is kept only as an
+extra check for processes outside the application (sqlite3 shell, other tools)
+— never open the live DB with such tools during maintenance.
+
+Since WP-B the server and the CLI **do not upgrade an older schema
+implicitly**: they stop with "схема vN … migrate-db" and leave the file
+unchanged. Safe order for every upgrade, restore and rollback:
+
+1. **Stop** the service and every worker/cron command (`systemctl stop …`).
+2. **Backup**: `python -m backend.cli backup` (on an older schema use
+   `migrate-db`, which makes its own copy, see 4).
+3. **Verify**: `python -m backend.cli backup-verify <file>`; keep the file
+   outside the data directory as well.
+4. **Migrate** (only when the build is newer than the DB):
+   `python -m backend.cli migrate-db --confirm-offline`. It refuses a damaged
+   DB, writes an encrypted `backups/pre_migrate_v<N>_*.cbk`, verifies it
+   (decryption, integrity, trial migration of the decrypted copy), migrates the
+   live file in one transaction and runs `check-db`. Any failure leaves the file
+   as it was.
+5. **Restore** (only when data must be returned to a copy):
+   `python -m backend.cli restore <file> --confirm-offline`. It keeps an
+   encrypted, verified `backups/pre_restore_*.cbk` of the current DB first.
+6. **Check**: `python -m backend.cli check-db` must print `Результат: OK`.
+7. **Start** the service.
+8. **Rollback** of a failed upgrade or restore: stop the service and restore
+   the `pre_migrate_*`/`pre_restore_*` copy with the **previous** build
+   (`restore … --confirm-offline`), then `check-db`. Data entered after that
+   copy is lost; take and keep a backup of the current state first.
+
+Forbidden on the only working DB without a verified copy (`backup-verify`
+passed, copy stored off the data directory):
+
+- `migrate-db`, `restore`, `restore --replace-damaged`;
+- starting a different (newer or older) build;
+- any manual file operation: copying over `clinic.db`, deleting or moving
+  `clinic.db-wal`/`clinic.db-shm` (the WAL holds committed data), editing with
+  the `sqlite3` shell, `VACUUM`, changing `schema_version`.
+
+`check-db` is always safe: with the app stopped it checks a private copy of the
+file and its WAL (the live file is not opened); with the app running it reads
+the live file with SQLite `mode=ro` (main file and WAL are not written). A
+missing DB is reported, nothing is created; no audit event is written.
+
 ## Backup And Restore
 
 Backups are encrypted application artifacts. Configure one active key before
@@ -12,7 +98,12 @@ export CLINIC_BACKUP_KEY_FILE=/secure/offline/location/clinic-backup.key
 ```
 
 The command creates a new owner-only key file atomically and does not print the
-key. It refuses existing files and symlinks.
+key. It refuses existing files and symlinks. The `key_id` (given or derived)
+is stored in the key file as a second line `key_id=…` and is used by every
+following backup; `CLINIC_BACKUP_KEY_ID` is not needed with such a file and a
+different value stops backup. An id already used by the active or a
+decrypt-only key is refused. Key files created before WP-B (one line) keep
+working unchanged.
 
 Create and verify:
 
@@ -22,18 +113,20 @@ python -m backend.cli backup-inspect backend/data/backups/clinic_YYYYMMDD_HHMMSS
 python -m backend.cli backup-verify backend/data/backups/clinic_YYYYMMDD_HHMMSS.cbk
 ```
 
-Restore:
+Restore (application stopped):
 
 ```bash
 python -m backend.cli restore backend/data/backups/clinic_YYYYMMDD_HHMMSS.cbk --confirm-offline
 ```
 
 The restore command validates AEAD authentication, SQLite integrity, foreign
-keys, required tables, and schema version before touching the live DB. It also
-requires offline maintenance confirmation and obtains an exclusive SQLite lock;
-if another process holds a write transaction, restore fails closed. It makes an
-encrypted recovery copy of the current DB and then atomically replaces
-`clinic.db`.
+keys, required tables, and schema version before touching the live DB. It
+classifies the current DB on a private copy (`missing`, `empty`, `healthy`,
+`damaged`), makes and verifies an encrypted recovery copy of a healthy DB, and
+atomically replaces `clinic.db`. Leftover WAL/SHM files are moved to
+`DATA_DIR/quarantine/<stamp>/`, never deleted and never applied to the
+restored file. Failures (no space, no permission, a busy file) leave the live
+files and the backup untouched.
 
 Restore runbook:
 
@@ -43,6 +136,28 @@ Restore runbook:
 4. Run restore with `--confirm-offline`.
 5. Run `python -m backend.cli check-db`.
 6. Start the application only after checks pass.
+
+### Аварийное восстановление (повреждённая база)
+
+Состояния и действия (приложение остановлено):
+
+| Состояние `clinic.db` | `check-db` | Действие |
+| --- | --- | --- |
+| нет файла | «База не найдена» | `restore FILE --confirm-offline` |
+| пустой файл (0 байт) | `database file is empty` | `restore FILE --confirm-offline` (пустой файл уходит в `quarantine/`) |
+| не SQLite / повреждённые страницы / повреждённая версия схемы / схема новее сборки | ПРОБЛЕМЫ | `restore FILE --confirm-offline --replace-damaged` |
+| битый `-wal`/`-shm` при целой базе | зависит от SQLite | `restore FILE --confirm-offline` (если отказ — с `--replace-damaged`) |
+
+Без `--replace-damaged` restore повреждённой базы отказывает и ничего не
+меняет. С флагом файл базы и её WAL/SHM **перемещаются** (не удаляются) в
+`DATA_DIR/quarantine/<дата>_<id>/` (права 0700), затем устанавливается
+восстановленная копия. Резервная копия, из которой идёт восстановление, не
+изменяется и не удаляется никогда. Сверка учёток с текущей базой при
+повреждённой базе невозможна: после restore проверьте блокировки и роли
+сотрудников. Каталог `quarantine/` содержит медицинские данные: храните его
+как базу и удаляйте по процедуре инцидента, не раньше проверки восстановленной
+базы. Если restore прерван (питание, `kill -9`), повторите ту же команду: она
+удалит незавершённые временные файлы и продолжит с текущего состояния.
 
 Do not store backup keys in Git, `.env.example`, shell history, backup
 directories, or next to the live database. Keep an offline recovery copy of the
@@ -172,6 +287,11 @@ backup upload are outside the current implementation.
 - Сборка v20 и новее при запуске проверяет версию схемы: база более новой
   или повреждённой версии останавливает запуск с понятной ошибкой до любых
   изменений файла (`SchemaVersionError`), `check-db` возвращает код 1.
+- С WP-B база **более старой** схемы тоже не обновляется при запуске: сервер
+  и CLI останавливаются без изменений файла, обновление выполняет только
+  `migrate-db --confirm-offline` (см. «Database Operations: Safe Order»).
+  Описания миграций ниже («выполняется при первом запуске») относятся к
+  сборкам до WP-B; теперь та же миграция выполняется командой `migrate-db`.
 - **Неизменённая сборка v19 такой проверки не содержит** и на базе v20
   запустится без ошибки. Защитить её кодом v20 нельзя; откат приложения на
   v19 поверх базы v20 запрещён процедурой развёртывания (см. ниже).
@@ -188,11 +308,15 @@ backup upload are outside the current implementation.
 1. Остановить приложение и worker уведомлений.
 2. Сделать и проверить резервную копию (`backup`, `backup-verify`).
 3. Из каталога **запускаемой** сборки выполнить
-   `python -m backend.cli check-db --no-migrate`. Строка «Версия схемы» не
+   `python -m backend.cli check-db` (только чтение; `--no-migrate` больше не
+   нужен — проверка никогда не меняет базу). Строка «Версия схемы» не
    должна быть больше «ожидается». Если версия базы больше — запуск этой
-   сборки запрещён. (Сборка v19 тоже сообщает о несовпадении версий в
-   `check-db`, но сама при запуске не останавливается.)
-4. Запустить приложение и повторить `check-db`.
+   сборки запрещён. Если меньше — выполнить
+   `python -m backend.cli migrate-db --confirm-offline`. (Сборка v19 тоже
+   сообщает о несовпадении версий в `check-db`, но сама при запуске не
+   останавливается; сборки до WP-B выполняли миграцию при запуске и при
+   `check-db` без `--no-migrate`.)
+4. Повторить `check-db`, запустить приложение.
 
 Неудачный релиз v20 — порядок действий:
 

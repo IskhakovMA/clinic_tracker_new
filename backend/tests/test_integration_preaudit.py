@@ -15,7 +15,7 @@ import shutil
 
 import pytest
 
-from .conftest import DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _rows
 from .test_wp24a_patient_create import _world
@@ -113,7 +113,8 @@ def test_backups_of_both_lines_restore_to_v27(auth_client, tmp_path, backup_key,
     live = _live(auth_client)
     backup = _v9_backup(tmp_path, f"{build}.cbk", header=header, fixture=fixture)
     assert maintenance.validate_backup(backup)["source_build"] == build
-    maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27
@@ -138,7 +139,8 @@ def test_current_v27_backup_round_trip(client, tmp_path, backup_key):
     backup = maintenance.backup_database(config.DB_PATH, tmp_path / "v27.cbk")
     assert maintenance.validate_backup(backup)["source_build"] == "current"
     db.reset_singleton_for_tests()
-    maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
     conn = sqlite3.connect(str(config.DB_PATH))
     assert conn.execute("SELECT email_normalized FROM patient_portal_access").fetchall() == [("round.trip@example.test",)]
     conn.close()

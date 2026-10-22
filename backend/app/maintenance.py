@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import tempfile
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from . import config
+from . import config, db_guard
 from . import db as _db
 from .db import REQUIRED_TABLES, connect_readonly_check, init_db
 
@@ -91,68 +92,224 @@ def require_demo_environment() -> Path:
     return config.DB_PATH
 
 
-def check_database(db_path: Path) -> dict:
+def _readonly_uri(path: Path) -> str:
+    return Path(path).resolve().as_uri() + "?mode=ro"
+
+
+def check_database(db_path: Path, *, read_only: bool = False) -> dict:
     """Run integrity_check, foreign_key_check, schema version and table checks.
-    Returns a report dict; never includes row contents."""
+    Returns a report dict; never includes row contents.
+
+    read_only=True opens the file with SQLite `mode=ro`: the main file and the
+    WAL are not written (used on the live file only while another process has
+    it open, see diagnose_database). Otherwise the caller passes a private
+    copy. A file SQLite cannot read is reported as a problem, not raised."""
     if not db_path.exists():
         raise MaintenanceError(f"База не найдена: {db_path}")
 
-    report: dict = {"path": str(db_path), "ok": True, "problems": []}
-    conn = sqlite3.connect(str(db_path))
+    report: dict = {"path": str(db_path), "ok": True, "problems": [], "integrity_check": [],
+                    "foreign_key_violations": 0, "missing_tables": [], "schema_version": None,
+                    "schema_status": None}
+    if not looks_like_sqlite(db_path):
+        report["ok"] = False
+        report["schema_status"] = "unreadable"
+        report["problems"].append("file is not a SQLite database (header)")
+        return report
+    try:
+        if read_only:
+            conn = sqlite3.connect(_readonly_uri(db_path), uri=True)
+        else:
+            conn = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        report["ok"] = False
+        report["schema_status"] = "unreadable"
+        report["problems"].append(f"SQLite cannot open the file: {type(exc).__name__}")
+        return report
     conn.row_factory = sqlite3.Row
     try:
-        integrity = [row[0] for row in conn.execute("PRAGMA integrity_check").fetchall()]
-        report["integrity_check"] = integrity
-        if integrity != ["ok"]:
-            report["ok"] = False
-            report["problems"].append("integrity_check failed")
-
-        fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
-        report["foreign_key_violations"] = len(fk_rows)
-        if fk_rows:
-            report["ok"] = False
-            report["problems"].append(f"{len(fk_rows)} foreign key violation(s)")
-
-        tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        missing = [t for t in REQUIRED_TABLES if t not in tables]
-        report["missing_tables"] = missing
-        if missing:
-            report["ok"] = False
-            report["problems"].append("missing tables: " + ", ".join(missing))
-
-        if "schema_version" in tables:
-            row = conn.execute("SELECT version FROM schema_version").fetchone()
-            version = row["version"] if row else None
-            report["schema_version"] = version
-            if _db.schema_version_problem(conn) == "damaged":
-                report["ok"] = False
-                report["problems"].append("schema version damaged (several rows or not an integer)")
-            elif version != config.SCHEMA_VERSION:
-                report["ok"] = False
-                report["problems"].append(
-                    f"schema version {version} != expected {config.SCHEMA_VERSION}"
-                )
-        else:
-            report["schema_version"] = None
-
-        if report.get("schema_version") == config.SCHEMA_VERSION:
-            # Текущая схема: таблицы со строгой сверкой должны совпадать с эталоном
-            # этой сборки целиком — с правилами CHECK, индексами и триггерами.
-            expected = _current_structure()[1]
-            actual = _strict_structure(conn, STRICT_TABLES)
-            for table in STRICT_TABLES:
-                if actual[table] is None or actual[table] == expected[table]:
-                    continue   # отсутствующую таблицу уже сообщает missing tables
-                differs = sorted(k for k in expected[table] if actual[table].get(k) != expected[table][k])
-                report["ok"] = False
-                report["problems"].append(
-                    f"structure of {table} differs from this build: {', '.join(differs)}")
-
-        if "patients" in tables:
-            report["patient_count"] = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+        _fill_check_report(conn, report)
+    except sqlite3.DatabaseError as exc:
+        report["ok"] = False
+        report["schema_status"] = report["schema_status"] or "unreadable"
+        report["problems"].append(f"SQLite error while checking: {type(exc).__name__}: {exc}"[:300])
     finally:
         conn.close()
+    return report
 
+
+def _fill_check_report(conn: sqlite3.Connection, report: dict) -> None:
+    integrity = [row[0] for row in conn.execute("PRAGMA integrity_check").fetchall()]
+    report["integrity_check"] = integrity
+    if integrity != ["ok"]:
+        report["ok"] = False
+        report["problems"].append("integrity_check failed")
+
+    fk_rows = conn.execute("PRAGMA foreign_key_check").fetchall()
+    report["foreign_key_violations"] = len(fk_rows)
+    if fk_rows:
+        report["ok"] = False
+        report["problems"].append(f"{len(fk_rows)} foreign key violation(s)")
+
+    tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    missing = [t for t in REQUIRED_TABLES if t not in tables]
+    report["missing_tables"] = missing
+    if missing:
+        report["ok"] = False
+        report["problems"].append("missing tables: " + ", ".join(missing))
+
+    if "schema_version" in tables:
+        row = conn.execute("SELECT version FROM schema_version").fetchone()
+        version = row["version"] if row else None
+        report["schema_version"] = version
+        if _db.schema_version_problem(conn) == "damaged":
+            report["ok"] = False
+            report["schema_status"] = "damaged"
+            report["problems"].append("schema version damaged (several rows or not an integer)")
+        elif version != config.SCHEMA_VERSION:
+            report["ok"] = False
+            newer = isinstance(version, int) and version > config.SCHEMA_VERSION
+            report["schema_status"] = "newer" if newer else "older"
+            report["problems"].append(
+                f"schema version {version} != expected {config.SCHEMA_VERSION}"
+                + ("" if newer else " (older schema: explicit migrate-db required, see OPERATIONS.md)")
+            )
+        else:
+            report["schema_status"] = "current"
+    else:
+        report["schema_version"] = None
+        report["schema_status"] = "missing"
+
+    if report.get("schema_version") == config.SCHEMA_VERSION:
+        # Текущая схема: таблицы со строгой сверкой должны совпадать с эталоном
+        # этой сборки целиком — с правилами CHECK, индексами и триггерами.
+        expected = _current_structure()[1]
+        actual = _strict_structure(conn, STRICT_TABLES)
+        for table in STRICT_TABLES:
+            if actual[table] is None or actual[table] == expected[table]:
+                continue   # отсутствующую таблицу уже сообщает missing tables
+            differs = sorted(k for k in expected[table] if actual[table].get(k) != expected[table][k])
+            report["ok"] = False
+            report["problems"].append(
+                f"structure of {table} differs from this build: {', '.join(differs)}")
+
+    if "patients" in tables:
+        report["patient_count"] = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+
+
+def _sidecars(db_path: Path) -> dict[str, Path]:
+    return {suffix: db_path.with_name(db_path.name + suffix) for suffix in ("-wal", "-shm")}
+
+
+def _copy_for_diagnosis(db_path: Path, temp_dir: Path) -> Path:
+    """Raw copy of the main file and its WAL into a private directory.
+
+    Only called while both maintenance locks are held, so no process of the
+    application writes during the copy. The -shm file is not copied: SQLite
+    rebuilds the WAL index from the WAL in the copy, so committed transactions
+    that were not yet checkpointed are part of the check."""
+    copy = temp_dir / "diagnose.sqlite"
+    shutil.copyfile(db_path, copy)
+    wal = _sidecars(db_path)["-wal"]
+    if wal.exists():
+        shutil.copyfile(wal, temp_dir / "diagnose.sqlite-wal")
+    for path in temp_dir.iterdir():
+        _restrict_permissions(path)
+    return copy
+
+
+def _diagnose_copy(db_path: Path) -> dict:
+    """Check a private raw copy; the caller holds the exclusive locks."""
+    with tempfile.TemporaryDirectory(prefix="clinic-check-", dir=str(db_path.parent)) as tmp_name:
+        temp_dir = Path(tmp_name)
+        _ensure_private_dir(temp_dir)
+        copy = _copy_for_diagnosis(db_path, temp_dir)
+        report = check_database(copy)
+    report["method"] = "copy"
+    report["path"] = str(db_path)
+    return report
+
+
+def _file_state(db_path: Path):
+    st = db_path.stat()
+    return (st.st_ino, st.st_size, st.st_mtime_ns, _sidecars(db_path)["-wal"].exists())
+
+
+def _diagnose_idle_copy(db_path: Path, attempts: int = 3) -> dict:
+    """Copy of a file that another process may open meanwhile.
+
+    The copy counts only if the file (inode, size, mtime) did not change and
+    no WAL appeared while it was taken; otherwise it is retried, then refused."""
+    for _ in range(attempts):
+        before = _file_state(db_path)
+        with tempfile.TemporaryDirectory(prefix="clinic-check-", dir=str(db_path.parent)) as tmp_name:
+            temp_dir = Path(tmp_name)
+            _ensure_private_dir(temp_dir)
+            copy = _copy_for_diagnosis(db_path, temp_dir)
+            if _file_state(db_path) != before or before[3]:
+                continue
+            report = check_database(copy)
+        report["method"] = "copy-while-idle"
+        report["path"] = str(db_path)
+        return report
+    raise MaintenanceError(
+        "База менялась во время снятия копии для проверки; повторите check-db позже или после "
+        "остановки приложения. База не изменена."
+    )
+
+
+def diagnose_database(db_path: Path) -> dict:
+    """check-db: diagnosis that never changes the database (AUD-02).
+
+    - No schema creation, no migration, no audit record, no WAL switch.
+    - A missing file or directory is reported; nothing is created.
+    - While nobody uses the database (both maintenance locks are free) the
+      main file and WAL are copied into a private temporary directory and the
+      copy is checked; SQLite never opens the live file, so not even -shm is
+      created. The locks are held during the copy so the application cannot
+      start meanwhile.
+    - While the application or another process has the file open, the live
+      file is opened with SQLite mode=ro under the shared lock: the main file
+      and the WAL are not written; the -shm (shared memory of the running
+      process) already exists then. If it does not exist, the check refuses
+      instead of creating it.
+    """
+    db_path = Path(db_path)
+    if not db_path.parent.is_dir() or not db_path.exists():
+        raise MaintenanceError(f"База не найдена: {db_path}. Ничего не создано.")
+    if db_path.is_symlink() or not db_path.is_file():
+        raise MaintenanceError("Путь базы должен быть обычным файлом (не symlink)")
+    sidecars = _sidecars(db_path)
+    present = {suffix: path.exists() for suffix, path in sidecars.items()}
+    if db_path.stat().st_size == 0:
+        return {"path": str(db_path), "ok": False, "method": "none", "schema_status": "empty",
+                "problems": ["database file is empty (0 bytes)"], "integrity_check": [],
+                "foreign_key_violations": 0, "missing_tables": [], "schema_version": None,
+                "wal_present": present["-wal"], "shm_present": present["-shm"]}
+    try:
+        held = db_guard.try_exclusive_read()
+    except db_guard.DatabaseBusyError as exc:
+        raise MaintenanceError(str(exc)) from exc
+    if held is not None:
+        try:
+            report = _diagnose_copy(db_path)
+        finally:
+            db_guard.release(held[1])
+            db_guard.release(held[0])
+    else:
+        try:
+            with db_guard.shared():
+                if present["-wal"] and present["-shm"]:
+                    report = check_database(db_path, read_only=True)
+                    report["method"] = "live-read-only"
+                else:
+                    # Нет открытых соединений (нет WAL/SHM): mode=ro создал бы их,
+                    # поэтому проверяется копия, снятая, пока файл не менялся.
+                    report = _diagnose_idle_copy(db_path)
+        except db_guard.DatabaseBusyError as exc:
+            raise MaintenanceError(str(exc)) from exc
+    report["path"] = str(db_path)
+    report["wal_present"] = present["-wal"]
+    report["shm_present"] = present["-shm"]
     return report
 
 
@@ -564,9 +721,36 @@ def _safe_key_id(key_id: str | None, key: bytes) -> str:
     return value
 
 
+KEY_FILE_ID_PREFIX = "key_id="
+
+
+def _derived_key_id(key: bytes) -> str:
+    return _safe_key_id(None, key)
+
+
+def _parse_key_file(text: str) -> tuple[str, str | None]:
+    """Key file: first line the key; optional second line `key_id=<id>` (AUD-20).
+
+    Files written before WP-B hold only the key line; their key_id stays as
+    before (CLINIC_BACKUP_KEY_ID or the id derived from the key)."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        raise MaintenanceError("CLINIC_BACKUP_KEY_FILE: ключ резервного копирования пуст")
+    stored_id = None
+    for line in lines[1:]:
+        if not line.startswith(KEY_FILE_ID_PREFIX) or stored_id is not None:
+            raise MaintenanceError("Файл backup-ключа: допускается только строка ключа и одна строка key_id=")
+        stored_id = line[len(KEY_FILE_ID_PREFIX):].strip()
+        if not stored_id:
+            raise MaintenanceError("Файл backup-ключа: key_id не должен быть пустым")
+    return lines[0], stored_id
+
+
 def _load_active_key() -> BackupKey:
     env_key = os.environ.get("CLINIC_BACKUP_KEY")
     key_file = os.environ.get("CLINIC_BACKUP_KEY_FILE")
+    env_id = os.environ.get("CLINIC_BACKUP_KEY_ID")
+    stored_id = None
     if env_key and key_file:
         raise MaintenanceError("Задан только один источник backup-ключа: env или key file")
     if key_file:
@@ -576,15 +760,23 @@ def _load_active_key() -> BackupKey:
             mode = path.stat().st_mode & 0o777
             if mode & 0o077:
                 raise MaintenanceError("Файл backup-ключа должен быть доступен только владельцу")
-            raw = path.read_text(encoding="utf-8").strip()
+            raw = path.read_text(encoding="utf-8")
         except OSError as exc:
             raise MaintenanceError("Файл backup-ключа не прочитан") from exc
-        key = _decode_key(raw, source="CLINIC_BACKUP_KEY_FILE")
+        raw_key, stored_id = _parse_key_file(raw)
+        key = _decode_key(raw_key, source="CLINIC_BACKUP_KEY_FILE")
     elif env_key:
         key = _decode_key(env_key, source="CLINIC_BACKUP_KEY")
     else:
         raise MaintenanceError("Backup-ключ не настроен: задайте CLINIC_BACKUP_KEY или CLINIC_BACKUP_KEY_FILE")
-    return BackupKey(_safe_key_id(os.environ.get("CLINIC_BACKUP_KEY_ID"), key), key)
+    if stored_id is not None:
+        stored_id = _safe_key_id(stored_id, key)
+        if env_id is not None and env_id.strip() != stored_id:
+            raise MaintenanceError(
+                "CLINIC_BACKUP_KEY_ID не совпадает с key_id, записанным в файле ключа; "
+                "уберите переменную или исправьте её (backup не создан)")
+        return BackupKey(stored_id, key)
+    return BackupKey(_safe_key_id(env_id, key), key)
 
 
 def _load_keyring() -> dict[str, bytes]:
@@ -607,7 +799,35 @@ def _load_keyring() -> dict[str, bytes]:
             if existing is not None and not secrets.compare_digest(existing, key):
                 raise MaintenanceError("Backup keyring содержит конфликтующий key_id")
             keys[key_id] = key
+    # Совместимость (AUD-20): до WP-B keygen --key-id не сохранял id, и копии
+    # получали id, вычисленный из ключа. Тот же ключ остаётся доступен и под
+    # этим id, даже если позже id задан явно; чужой id не перекрывается.
+    for key in list(keys.values()):
+        keys.setdefault(_derived_key_id(key), key)
     return keys
+
+
+def _configured_key_ids() -> dict[str, bytes]:
+    """key_id already used by this installation (active key and decrypt-only keys).
+
+    Configuration that cannot be read counts as no keys: keygen must still
+    work on a fresh installation without a key."""
+    try:
+        return _load_keyring()
+    except MaintenanceError:
+        ids: dict[str, bytes] = {}
+        raw = os.environ.get("CLINIC_BACKUP_DECRYPT_KEYS", "").strip()
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                return ids
+            if isinstance(parsed, dict):
+                ids.update({str(k): b"" for k in parsed})
+        env_id = (os.environ.get("CLINIC_BACKUP_KEY_ID") or "").strip()
+        if env_id:
+            ids[env_id] = b""
+        return ids
 
 
 def generate_backup_key() -> str:
@@ -623,6 +843,10 @@ def create_backup_key_file(path: Path, *, key_id: str | None = None) -> dict:
     """Create a new backup key file without returning or printing key material."""
     raw_key = secrets.token_bytes(KEY_BYTES)
     safe_key_id = _safe_key_id(key_id, raw_key)
+    if safe_key_id in _configured_key_ids():
+        raise MaintenanceError(
+            "key_id уже используется ключом этой установки (активным или для расшифровки); "
+            "выберите другой key_id — иначе старые копии стали бы неоднозначными")
     key_path = _prepare_key_file_path(path)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     try:
@@ -633,7 +857,9 @@ def create_backup_key_file(path: Path, *, key_id: str | None = None) -> dict:
         raise MaintenanceError("Файл backup-ключа не создан") from exc
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(_b64encode(raw_key) + "\n")
+            # key_id хранится в самом файле (AUD-20): им подписываются все
+            # следующие копии, и он не зависит от отдельной переменной окружения.
+            f.write(_b64encode(raw_key) + "\n" + KEY_FILE_ID_PREFIX + safe_key_id + "\n")
             f.flush()
             os.fsync(f.fileno())
     except Exception:
@@ -764,7 +990,8 @@ def _sqlite_backup_to_file(db_path: Path, dest: Path) -> None:
     _restrict_permissions(dest)
 
 
-def _build_header(*, key: BackupKey, nonce: bytes, ciphertext_len: int) -> dict:
+def _build_header(*, key: BackupKey, nonce: bytes, ciphertext_len: int,
+                  schema_version: int | None = None) -> dict:
     return {
         "format": "Clinic Backup Format",
         "version": FORMAT_VERSION,
@@ -772,7 +999,7 @@ def _build_header(*, key: BackupKey, nonce: bytes, ciphertext_len: int) -> dict:
         "key_id": key.key_id,
         "nonce": _b64encode(nonce),
         "created_at": _utc_now(),
-        "schema_version": config.SCHEMA_VERSION,
+        "schema_version": config.SCHEMA_VERSION if schema_version is None else schema_version,
         "ciphertext_length": ciphertext_len,
     }
 
@@ -933,7 +1160,33 @@ def _decrypt_to_temp(backup_path: Path, temp_dir: Path) -> tuple[Path, dict]:
 
 # --- backup -------------------------------------------------------------
 
-def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool = False) -> Path:
+def _older_snapshot_problems(snapshot: Path) -> tuple[int | None, list[str]]:
+    """For a snapshot of an older schema: (stored version, problems).
+
+    The snapshot is acceptable as a recovery copy when SQLite integrity and
+    foreign keys are fine and the version is an older one this build can
+    migrate from (header and content then agree on that version)."""
+    try:
+        stored = _stored_schema_version(snapshot)
+        problems = _integrity_problems(snapshot)
+    except MaintenanceError as exc:
+        return None, [str(exc)]
+    except sqlite3.DatabaseError as exc:
+        return None, [f"SQLite error: {type(exc).__name__}"]
+    if stored is None or stored < 1 or stored >= config.SCHEMA_VERSION:
+        problems.append(f"schema version {stored} is not an older supported version")
+    return stored, problems
+
+
+def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool = False,
+                    allow_older_schema: bool = False) -> Path:
+    """Encrypted backup of a consistent snapshot.
+
+    allow_older_schema=True (recovery copies before restore and migrate-db):
+    a snapshot of an older schema is accepted when integrity and foreign keys
+    pass; the header then records the snapshot's real schema version, so the
+    copy can be verified and restored (with migration on a temporary copy)
+    later. The normal backup command still requires the current schema."""
     if not db_path.exists():
         raise MaintenanceError("База не найдена")
 
@@ -952,12 +1205,19 @@ def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool 
         try:
             _sqlite_backup_to_file(db_path, plaintext)
             report = check_database(plaintext)
+            snapshot_version = None
             if not report["ok"]:
-                raise MaintenanceError("Созданная SQLite-копия не прошла проверку")
+                if not (allow_older_schema and report.get("schema_status") == "older"):
+                    raise MaintenanceError(
+                        "Созданная SQLite-копия не прошла проверку: " + "; ".join(report["problems"]))
+                snapshot_version, problems = _older_snapshot_problems(plaintext)
+                if problems:
+                    raise MaintenanceError("Созданная SQLite-копия не прошла проверку: " + "; ".join(problems))
             nonce = secrets.token_bytes(NONCE_BYTES)
             plaintext_bytes = plaintext.read_bytes()
             # AES-GCM appends a 16-byte authentication tag to the ciphertext.
-            header = _build_header(key=key, nonce=nonce, ciphertext_len=len(plaintext_bytes) + 16)
+            header = _build_header(key=key, nonce=nonce, ciphertext_len=len(plaintext_bytes) + 16,
+                                   schema_version=snapshot_version)
             raw_header = _header_bytes(header)
             ciphertext = AESGCM(key.key).encrypt(nonce, plaintext_bytes, _aad(raw_header))
             _write_container(tmp_output, raw_header, ciphertext)
@@ -1009,32 +1269,203 @@ def verify_backup(backup_path: Path) -> dict:
     return validate_backup(backup_path)
 
 
-def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool = False) -> dict:
-    """Validate, snapshot the current DB, then replace it atomically.
+RESTORE_STAGING_SUFFIX = ".restore-tmp"
+QUARANTINE_DIR_NAME = "quarantine"
 
-    The replacement is written to a temp file next to the live database and
-    moved into place with os.replace semantics, so the live path is never
-    left half-written: either the old database or the restored one.
-    """
-    backup_path = _validate_input_path(backup_path)
-    if not confirm_offline:
-        raise MaintenanceError("Restore требует подтверждения offline maintenance mode")
+
+def _check_target_path(db_path: Path) -> Path:
     db_path = Path(db_path).resolve(strict=False)
     if db_path.name != "clinic.db":
         raise MaintenanceError("Restore разрешён только в ожидаемый файл clinic.db")
     if db_path != config.DB_PATH.resolve(strict=False):
         raise MaintenanceError("Restore разрешён только в настроенный путь базы")
-    report: dict
+    return db_path
 
+
+def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool = False,
+                     replace_damaged: bool = False) -> dict:
+    """Validate the backup, keep a recovery copy of the current DB, replace it.
+
+    Safety (AUD-04/AUD-16):
+    - Runs only under db_guard.exclusive_maintenance: the application lock and
+      the database lock are held exclusively from before the first change
+      until the file is replaced, the sidecars are handled and every
+      connection is closed. A running backend, a DB-using CLI command or a
+      second restore makes it fail before anything is changed.
+    - The current DB is classified on a private copy: missing, empty,
+      healthy (integrity and foreign keys pass, supported schema) or damaged.
+      A healthy DB gets an encrypted recovery copy that is verified before
+      the replacement. A damaged or unsupported one is replaced only with
+      replace_damaged=True and is moved, never deleted, into
+      DATA_DIR/quarantine/<stamp>/ together with its WAL/SHM.
+    - The restored file is prepared as a staging file next to the DB and
+      installed with os.replace, so the path holds either the old or the new
+      database. Any failure before that leaves the live files and the backup
+      untouched; staging files are removed.
+    """
+    backup_path = _validate_input_path(backup_path)
+    if not confirm_offline:
+        raise MaintenanceError("Restore требует подтверждения offline maintenance mode")
+    db_path = _check_target_path(db_path)
+    try:
+        with db_guard.exclusive_maintenance("Restore"):
+            return _restore_locked(backup_path, db_path, replace_damaged=replace_damaged)
+    except db_guard.DatabaseBusyError as exc:
+        raise MaintenanceError(str(exc)) from exc
+
+
+def _cleanup_stale_files(db_path: Path) -> int:
+    """Staging and temporary directories of an interrupted restore/migrate.
+
+    They hold decrypted copies; only called under the exclusive locks, so no
+    running operation owns them."""
+    removed = 0
+    for path in db_path.parent.glob(f".{db_path.name}.*{RESTORE_STAGING_SUFFIX}"):
+        if path.is_file() and not path.is_symlink():
+            path.unlink()
+            removed += 1
+    for prefix in ("clinic-restore-", "clinic-migrate-", "clinic-check-", "clinic-backup-"):
+        for path in db_path.parent.glob(prefix + "*"):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+                removed += 1
+    return removed
+
+
+def _live_problems(copy: Path) -> list[str]:
+    """Problems that make a current DB unusable as a recovery source."""
+    if not looks_like_sqlite(copy):
+        return ["file is not a SQLite database"]
+    try:
+        conn = sqlite3.connect(_readonly_uri(copy), uri=True)
+        try:
+            problem = _db.schema_version_problem(conn)
+        finally:
+            conn.close()
+        if problem == "damaged":
+            return ["schema version damaged"]
+        if problem is not None:
+            return [f"schema {problem} is newer than this build (v{config.SCHEMA_VERSION})"]
+        return _integrity_problems(copy)
+    except sqlite3.DatabaseError as exc:
+        return [f"SQLite error: {type(exc).__name__}"]
+
+
+def classify_live_database(db_path: Path, temp_dir: Path) -> tuple[str, list[str]]:
+    """("missing" | "empty" | "healthy" | "damaged", problems) from a raw copy.
+
+    Caller holds the exclusive locks. The live file is not opened by SQLite
+    here, so a damaged file and its WAL stay byte-for-byte as found."""
+    if not db_path.exists():
+        return "missing", []
+    if db_path.is_symlink() or not db_path.is_file():
+        raise MaintenanceError("Путь базы должен быть обычным файлом (не symlink)")
+    if db_path.stat().st_size == 0:
+        return "empty", ["database file is empty (0 bytes)"]
+    try:
+        copy = _copy_for_diagnosis(db_path, temp_dir)
+    except OSError as exc:
+        raise MaintenanceError(f"Текущая база не прочитана: {type(exc).__name__}") from exc
+    try:
+        problems = _live_problems(copy)
+    finally:
+        for path in list(temp_dir.glob("diagnose.sqlite*")):
+            path.unlink(missing_ok=True)
+    return ("damaged" if problems else "healthy"), problems
+
+
+def _open_live_exclusive(db_path: Path) -> sqlite3.Connection:
+    """Additional SQLite-level check for processes outside the locks.
+
+    Checkpoints the WAL into the main file and holds BEGIN IMMEDIATE: no
+    other connection can write until the file is replaced, while this
+    process can still read it for the recovery copy (BEGIN EXCLUSIVE would
+    block that reader on a file in rollback-journal mode, e.g. an old
+    database never opened by a WAL build). This is not the proof that the
+    application is stopped (an idle connection holds no SQLite lock) — that
+    proof is db_guard; this only catches a foreign process in the middle of
+    a transaction."""
+    conn = sqlite3.connect(str(db_path), timeout=SQLITE_EXCLUSIVE_TIMEOUT_MS / 1000)
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_EXCLUSIVE_TIMEOUT_MS}")
+        busy = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if busy is not None and busy[0]:
+            raise MaintenanceError(
+                "Restore отклонён: база занята — WAL не перенесён в базу, файл открыт процессом вне "
+                "приложения (sqlite3, сторонний инструмент). База не изменена.")
+        conn.execute("BEGIN IMMEDIATE")
+        return conn
+    except sqlite3.Error as exc:
+        conn.close()
+        raise MaintenanceError(
+            "Restore отклонён: база занята — файл заблокирован процессом вне приложения (sqlite3, "
+            "сторонний инструмент). База не изменена.") from exc
+    except BaseException:
+        conn.close()
+        raise
+
+
+def _quarantine_dir(db_path: Path) -> Path:
+    base = db_path.parent / QUARANTINE_DIR_NAME
+    _ensure_private_dir(base)
+    target = base / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(4)}"
+    target.mkdir(mode=0o700)
+    return target
+
+
+def _install_staging(staging: Path, db_path: Path, *, move_main: bool) -> Path | None:
+    """Move the old files aside (never delete them) and install the staging file.
+
+    Leftover WAL/SHM always go to quarantine: a WAL of the old file applied
+    to the restored one would corrupt it. If the installation fails, the
+    moved files are put back."""
+    to_move = [path for path in _sidecars(db_path).values() if path.exists()]
+    if move_main and db_path.exists():
+        to_move.insert(0, db_path)
+    quarantine = _quarantine_dir(db_path) if to_move else None
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for path in to_move:
+            target = quarantine / path.name
+            os.rename(path, target)
+            moved.append((path, target))
+        os.replace(staging, db_path)
+    except OSError:
+        for original, target in reversed(moved):
+            try:
+                os.rename(target, original)
+            except OSError:
+                pass
+        raise
+    _fsync_dir(db_path.parent)
+    if quarantine is not None:
+        _fsync_dir(quarantine)
+    return quarantine
+
+
+def _restore_locked(backup_path: Path, db_path: Path, *, replace_damaged: bool) -> dict:
+    try:
+        _ensure_private_dir(db_path.parent)
+        stale = _cleanup_stale_files(db_path)
+    except OSError as exc:
+        raise MaintenanceError(f"Каталог базы недоступен для записи: {type(exc).__name__}. База не изменена.") from exc
+    staging = db_path.with_name(f".{db_path.name}.{secrets.token_hex(8)}{RESTORE_STAGING_SUFFIX}")
     pre_restore_backup = None
-    _ensure_private_dir(db_path.parent)
-    staging = db_path.with_name(f".{db_path.name}.{secrets.token_hex(8)}.restore-tmp")
-
-    lock_conn = _acquire_exclusive_restore_lock(db_path) if db_path.exists() else None
+    lock_conn = None
+    quarantine = None
+    report: dict
     try:
         with tempfile.TemporaryDirectory(prefix="clinic-restore-", dir=str(db_path.parent)) as tmp_name:
             temp_dir = Path(tmp_name)
             _ensure_private_dir(temp_dir)
+            state, live_problems = classify_live_database(db_path, temp_dir)
+            if state == "damaged" and not replace_damaged:
+                raise MaintenanceError(
+                    "Restore отклонён: текущая база повреждена или не поддерживается этой сборкой ("
+                    + "; ".join(live_problems) + "). База не изменена. Аварийная замена: повторите с "
+                    "--replace-damaged — файл базы и WAL/SHM будут перемещены в "
+                    f"{QUARANTINE_DIR_NAME}/, не удалены (см. OPERATIONS.md, «Аварийное восстановление»)."
+                )
             plaintext, metadata = _decrypt_to_temp(backup_path, temp_dir)
             if not looks_like_sqlite(plaintext):
                 raise MaintenanceError("Расшифрованный backup не является базой SQLite")
@@ -1043,40 +1474,47 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
             report = _check_or_migrate_plaintext(plaintext, metadata)
             report.update(metadata)
 
-            if db_path.exists():
+            if state == "healthy":
+                lock_conn = _open_live_exclusive(db_path)
                 stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 pre_restore_backup = backup_database(
-                    db_path, config.BACKUP_DIR / f"pre_restore_{stamp}_{secrets.token_hex(4)}{DEFAULT_BACKUP_SUFFIX}"
+                    db_path,
+                    config.BACKUP_DIR / f"pre_restore_{stamp}_{secrets.token_hex(4)}{DEFAULT_BACKUP_SUFFIX}",
+                    allow_older_schema=True,
                 )
+                # Копия текущей базы должна расшифровываться и проходить проверку
+                # до того, как база будет заменена.
+                _verify_recovery_backup(pre_restore_backup)
 
-            try:
-                _sqlite_backup_to_file(plaintext, staging)
-                _revoke_restored_sessions(staging)
-                if lock_conn is not None:
-                    report["accounts_reconciled"] = _reconcile_account_security(staging, lock_conn)
-                _fsync_file(staging)
-            except OSError as exc:
-                staging.unlink(missing_ok=True)
-                raise MaintenanceError("Не удалось подготовить восстановленную базу") from exc
-            except BaseException:
-                # Любая другая ошибка тоже не оставляет расшифрованную копию.
-                staging.unlink(missing_ok=True)
-                raise
+            _sqlite_backup_to_file(plaintext, staging)
+            _revoke_restored_sessions(staging)
+            if lock_conn is not None:
+                report["accounts_reconciled"] = _reconcile_account_security(staging, lock_conn)
+            _fsync_file(staging)
+        if lock_conn is not None:
+            # Закрыть соединение до замены файла (последнее закрытие переносит
+            # WAL в базу); блокировки db_guard по-прежнему удерживаются.
+            lock_conn.rollback()
+            lock_conn.close()
+            lock_conn = None
+        try:
+            quarantine = _install_staging(staging, db_path, move_main=state in ("damaged", "empty"))
+        except OSError as exc:
+            raise MaintenanceError(
+                f"Не удалось заменить базу: {type(exc).__name__} ({exc.strerror or exc}). Текущая база "
+                "и резервная копия не изменены"
+                + (f"; копия текущей базы: {Path(pre_restore_backup).name}" if pre_restore_backup else "")
+                + ".") from exc
+        _restrict_permissions(db_path)
+    except OSError as exc:
+        raise MaintenanceError(
+            f"Restore не выполнен: {type(exc).__name__} ({exc.strerror or 'ошибка файловой системы'}). "
+            "Текущая база и резервная копия не изменены.") from exc
     finally:
         if lock_conn is not None:
             lock_conn.rollback()
             lock_conn.close()
-
-    try:
-        _remove_sidecars(db_path)
-        os.replace(staging, db_path)
-        _fsync_dir(db_path.parent)
-    except OSError as exc:
         staging.unlink(missing_ok=True)
-        raise MaintenanceError("Не удалось заменить базу") from exc
-
-    _remove_sidecars(db_path)
-    _restrict_permissions(db_path)
 
     return {
         "restored_from": backup_path.name,
@@ -1087,7 +1525,130 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
         "format_version": report.get("version"),
         "key_id": report.get("key_id"),
         "accounts_reconciled": report.get("accounts_reconciled", 0),
+        "previous_state": state,
+        "previous_problems": live_problems,
+        "quarantine": str(quarantine) if quarantine else None,
+        "stale_files_removed": stale,
     }
+
+
+# --- explicit migration ----------------------------------------------------
+
+def migrate_database(db_path: Path, *, confirm_offline: bool = False) -> dict:
+    """migrate-db: the only operation that upgrades the live schema (AUD-02).
+
+    Under the exclusive maintenance locks: classify the DB on a copy (a
+    damaged DB is never migrated), create an encrypted pre-migration backup,
+    verify it (decrypt, integrity, trial migration of the decrypted copy),
+    migrate the live file in one transaction (init_db) and run the full
+    check. A failed migration rolls back and leaves the file as it was; the
+    verified pre-migration backup is the rollback path in every case."""
+    if not confirm_offline:
+        raise MaintenanceError("migrate-db требует --confirm-offline после остановки приложения и worker")
+    db_path = _check_target_path(db_path)
+    try:
+        with db_guard.exclusive_maintenance("migrate-db"):
+            return _migrate_locked(db_path)
+    except db_guard.DatabaseBusyError as exc:
+        raise MaintenanceError(str(exc)) from exc
+
+
+def _migrate_locked(db_path: Path) -> dict:
+    if not db_path.exists():
+        raise MaintenanceError(f"База не найдена: {db_path}. Ничего не создано.")
+    _cleanup_stale_files(db_path)
+    with tempfile.TemporaryDirectory(prefix="clinic-migrate-", dir=str(db_path.parent)) as tmp_name:
+        temp_dir = Path(tmp_name)
+        _ensure_private_dir(temp_dir)
+        state, problems = classify_live_database(db_path, temp_dir)
+        if state != "healthy":
+            raise MaintenanceError(
+                "migrate-db отклонён: база " + ("пуста" if state == "empty" else "повреждена или не поддерживается")
+                + (" (" + "; ".join(problems) + ")" if problems else "")
+                + ". База не изменена; используйте restore из проверенной копии.")
+        copy = _copy_for_diagnosis(db_path, temp_dir)
+        before = check_database(copy)
+        for path in list(temp_dir.glob("diagnose.sqlite*")):
+            path.unlink(missing_ok=True)
+    version = before.get("schema_version")
+    if before.get("schema_status") == "current":
+        return {"status": "current", "schema_version": version, "pre_migration_backup": None,
+                "check": before}
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = backup_database(
+        db_path, config.BACKUP_DIR / f"pre_migrate_v{version}_{stamp}_{secrets.token_hex(4)}{DEFAULT_BACKUP_SUFFIX}",
+        allow_older_schema=True)
+    verified = _verify_pre_migration_backup(backup)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute(f"PRAGMA busy_timeout = {SQLITE_EXCLUSIVE_TIMEOUT_MS}")
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            init_db(conn)
+        except Exception as exc:
+            raise MaintenanceError(
+                f"Миграция v{version} → v{config.SCHEMA_VERSION} не выполнена ({type(exc).__name__}); "
+                f"транзакция откатана, база не изменена. Проверенная копия: {backup.name}") from exc
+    finally:
+        conn.close()
+    after = _diagnose_copy(db_path)
+    if not after["ok"]:
+        raise MaintenanceError(
+            "После миграции проверка базы не пройдена: " + "; ".join(after["problems"])
+            + f". Верните состояние из проверенной копии {backup.name} (restore --confirm-offline).")
+    return {"status": "migrated", "from_schema_version": version, "schema_version": after["schema_version"],
+            "pre_migration_backup": str(backup), "backup_verified": verified, "check": after}
+
+
+def _decrypt_and_check_recovery(backup: Path, temp_dir: Path) -> tuple[Path, dict]:
+    plaintext, metadata = _decrypt_to_temp(backup, temp_dir)
+    problems: list[str] = []
+    try:
+        stored = _stored_schema_version(plaintext)
+        problems = _integrity_problems(plaintext)
+    except (MaintenanceError, sqlite3.DatabaseError) as exc:
+        stored = None
+        problems.append(f"{type(exc).__name__}")
+    if stored != metadata["schema_version"]:
+        problems.append("header schema version differs from the snapshot")
+    if problems:
+        raise MaintenanceError("Резервная копия текущей базы не прошла проверку: " + "; ".join(problems)
+                               + ". База не изменена.")
+    return plaintext, metadata
+
+
+def _verify_recovery_backup(backup: Path) -> dict:
+    """Decrypt a just-written recovery copy and check it (integrity, FK, version)."""
+    with tempfile.TemporaryDirectory(prefix="clinic-restore-", dir=str(config.DB_PATH.resolve().parent)) as tmp_name:
+        temp_dir = Path(tmp_name)
+        _ensure_private_dir(temp_dir)
+        _plaintext, metadata = _decrypt_and_check_recovery(backup, temp_dir)
+        return {"authenticated": True, "key_id": metadata["key_id"], "schema_version": metadata["schema_version"]}
+
+
+def _verify_pre_migration_backup(backup: Path) -> dict:
+    """Decrypt the new backup and run the same migration on the decrypted copy."""
+    verify_parent = config.DB_PATH.resolve().parent
+    with tempfile.TemporaryDirectory(prefix="clinic-migrate-", dir=str(verify_parent)) as tmp_name:
+        temp_dir = Path(tmp_name)
+        _ensure_private_dir(temp_dir)
+        plaintext, metadata = _decrypt_and_check_recovery(backup, temp_dir)
+        stored = metadata["schema_version"]
+        conn = connect_readonly_check(plaintext)
+        try:
+            init_db(conn)
+        except Exception as exc:
+            raise MaintenanceError(
+                f"Пробная миграция копии не выполнена ({type(exc).__name__}); база не изменена") from exc
+        finally:
+            conn.close()
+        report = check_database(plaintext)
+        if not report["ok"]:
+            raise MaintenanceError("Пробная миграция копии не прошла проверку: " + "; ".join(report["problems"])
+                                   + ". База не изменена.")
+        return {"authenticated": True, "key_id": metadata["key_id"], "schema_version": stored,
+                "trial_migration_ok": True}
 
 
 def _revoke_restored_sessions(db_file: Path) -> None:
@@ -1167,26 +1728,3 @@ def _reconcile_account_security(staging: Path, live: sqlite3.Connection) -> int:
     finally:
         conn.close()
     return changed
-
-
-def _acquire_exclusive_restore_lock(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path), timeout=SQLITE_EXCLUSIVE_TIMEOUT_MS / 1000)
-    try:
-        conn.execute(f"PRAGMA busy_timeout = {SQLITE_EXCLUSIVE_TIMEOUT_MS}")
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.execute("BEGIN EXCLUSIVE")
-        return conn
-    except sqlite3.Error as exc:
-        conn.close()
-        raise MaintenanceError("Restore отклонён: база занята или приложение не остановлено") from exc
-
-
-def _remove_sidecars(db_path: Path) -> None:
-    for suffix in ("-wal", "-shm"):
-        sidecar = db_path.with_name(db_path.name + suffix)
-        if sidecar.exists():
-            try:
-                sidecar.unlink()
-            except OSError as exc:
-                raise MaintenanceError("Не удалось удалить stale WAL/SHM после restore") from exc
-    _fsync_dir(db_path.parent)

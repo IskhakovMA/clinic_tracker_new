@@ -1,6 +1,7 @@
 import base64
 import itertools
 import sys
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -64,7 +65,38 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "REQUEST_RATE_LIMIT_MAX_BUCKETS", 1_000)
 
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
-        yield c
+        _running_apps.append(c)
+        try:
+            yield c
+        finally:
+            if c in _running_apps:
+                _running_apps.remove(c)
+
+
+# Приложения тестов, запущенные фикстурой client (lifespan держит блокировки
+# приложения и базы, как настоящий uvicorn).
+_running_apps: list = []
+
+
+@contextmanager
+def app_stopped():
+    """Остановить приложение теста на время restore/migrate-db и запустить снова.
+
+    WP-B (AUD-04): restore и migrate-db отказывают, пока работает приложение,
+    поэтому тест, как и оператор, сначала останавливает его (lifespan снимает
+    блокировки и закрывает соединение), а после операции запускает заново.
+    Cookies и заголовки клиента сохраняются."""
+    from backend.app import db
+    stopped = list(_running_apps)
+    for c in stopped:
+        c.__exit__(None, None, None)
+    db.reset_singleton_for_tests()
+    try:
+        yield
+    finally:
+        db.reset_singleton_for_tests()
+        for c in stopped:
+            c.__enter__()
 
 
 def current_schema_version() -> int:

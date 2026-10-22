@@ -7,20 +7,22 @@ from urllib.parse import unquote
 from fastapi import Depends, Header, HTTPException, Request, status
 
 from . import audit, config, policy, security
-from .db import _connect, init_db
+from .db import _connect, connect_live
 
 
 _initialized_db_paths: set[str] = set()
 
 
 def get_db():
-    conn = _connect(config.DB_PATH)
-    # Схема и сиды применяются один раз на путь в процессе (lifespan тоже
+    # Схема и сиды проверяются один раз на путь в процессе (lifespan тоже
     # вызывает init_db), а не отдельной пишущей транзакцией на каждый запрос.
+    # Старая схема не обновляется неявно (connect_live, AUD-02).
     key = str(config.DB_PATH)
     if key not in _initialized_db_paths:
-        init_db(conn)
+        conn = connect_live(config.DB_PATH)
         _initialized_db_paths.add(key)
+    else:
+        conn = _connect(config.DB_PATH)
     try:
         yield conn
     finally:

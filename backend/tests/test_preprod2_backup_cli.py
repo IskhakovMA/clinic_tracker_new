@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from .conftest import make_patient_payload
+from .conftest import app_stopped, make_patient_payload
 
 KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 ESC = chr(27)
@@ -112,5 +112,6 @@ def test_failed_restore_leaves_no_plaintext_staging_copy(auth_client, tmp_path, 
     monkeypatch.setattr(maintenance, "_reconcile_account_security", boom)
     db.reset_singleton_for_tests()
     with pytest.raises(Exception):
-        maintenance.restore_database(good, tmp_path / "clinic.db", confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(good, tmp_path / "clinic.db", confirm_offline=True)
     assert not [p.name for p in tmp_path.iterdir() if p.name.endswith(".restore-tmp")]

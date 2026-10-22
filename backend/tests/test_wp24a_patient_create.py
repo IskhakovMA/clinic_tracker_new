@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from .conftest import (DEV_USERNAME, PROJECT_ROOT, create_account, create_department, get_conn, legacy_export,
+from .conftest import (app_stopped, DEV_USERNAME, PROJECT_ROOT, create_account, create_department, get_conn, legacy_export,
                        login, make_patient_payload, unsigned_import)
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _in_thread, _parallel, _rows
@@ -514,7 +514,8 @@ def test_restore_of_a_v22_backup_migrates_and_keeps_history(auth_client, tmp_pat
     backup = _v9_backup(tmp_path, "wp23b3-v22.cbk", header=22, fixture=V22_FIXTURE)
     report = maintenance.validate_backup(backup)
     assert (report["source_build"], report["migrated_from_schema_version"]) == ("wp23b3-bd75612", 22)
-    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, live, confirm_offline=True)
     assert result["migrated_from_schema_version"] == 22
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
@@ -536,7 +537,8 @@ def test_backup_and_restore_of_the_current_build_keep_provenance(auth_client, tm
     get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
     backup = maintenance.backup_database(config.DB_PATH, tmp_path / "current.cbk")
     db.reset_singleton_for_tests()
-    result = maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
     assert maintenance.validate_backup(backup)["source_build"] == "current"
     assert result.get("migrated_from_schema_version") in (None, 23)
     conn = sqlite3.connect(str(config.DB_PATH))

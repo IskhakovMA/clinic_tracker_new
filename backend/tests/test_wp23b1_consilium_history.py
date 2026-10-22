@@ -11,7 +11,7 @@ import threading
 
 import pytest
 
-from .conftest import DEV_USERNAME, PROJECT_ROOT, consilium_version, get_conn, login
+from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, consilium_version, get_conn, login
 from .test_consilium_appointments import appointment_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import (  # noqa: F401 — _high_limits is autouse here too
@@ -179,7 +179,8 @@ def test_restore_of_a_v21_backup_migrates_and_keeps_the_history(auth_client, tmp
     backup = _v9_backup(tmp_path, "wp23a-v21.cbk", header=21, fixture=V21_FIXTURE)
     report = maintenance.validate_backup(backup)
     assert (report["source_build"], report["migrated_from_schema_version"]) == ("wp23a-efe7168", 21)
-    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, live, confirm_offline=True)
     assert result["migrated_from_schema_version"] == 21
     assert maintenance.check_database(live)["ok"]
 

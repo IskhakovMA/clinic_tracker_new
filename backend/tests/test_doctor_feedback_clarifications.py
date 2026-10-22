@@ -3,7 +3,7 @@ from backend.app import config
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, create_account, create_department, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, current_schema_version, stage_body, unsigned_import
+from .conftest import app_stopped, DEV_USERNAME, create_account, create_department, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, current_schema_version, stage_body, unsigned_import
 
 
 def _create_patient(client, **overrides):
@@ -386,7 +386,8 @@ def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_at
         get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
     assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
 
-    restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
+    with app_stopped():
+        restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert restore["schema_version"] == config.SCHEMA_VERSION
     # Restore revokes every session from the snapshot; sign in again.
     assert login(auth_client, DEV_USERNAME).status_code == 200

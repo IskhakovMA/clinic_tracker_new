@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import (
+from .conftest import (app_stopped, 
     DECISION_DOCTOR_USERNAME,
     DEV_USERNAME,
     PROJECT_ROOT,
@@ -558,7 +558,8 @@ def test_16_19_v20_backup_is_recognised_restored_and_keeps_legacy_decisions(auth
     backup = _v9_backup(tmp_path, "wp22a-v20.cbk", header=20, fixture=V20_FIXTURE)
     report = maintenance.validate_backup(backup)
     assert (report["source_build"], report["migrated_from_schema_version"]) == ("wp22a-de128d4", 20)
-    result = maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, live, confirm_offline=True)
     assert result["migrated_from_schema_version"] == 20
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
@@ -592,7 +593,8 @@ def test_19_current_backup_keeps_manual_author_and_time(auth_client, tmp_path, m
     backup = maintenance.backup_database(config.DB_PATH, tmp_path / "current.cbk")
     assert maintenance.validate_backup(backup)["source_build"] == "current"
     db.reset_singleton_for_tests()
-    maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
     db.reset_singleton_for_tests()
     assert {c: _row(ev_id)[c] for c in DECISION_COLUMNS} == decided
 

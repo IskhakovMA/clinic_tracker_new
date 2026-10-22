@@ -2,18 +2,25 @@
 
     python -m backend.cli create-developer
     python -m backend.cli import-structure <file.json>
-    python -m backend.cli check-db
+    python -m backend.cli check-db                       # только чтение, никогда не меняет базу
+    python -m backend.cli migrate-db --confirm-offline   # явное обновление схемы (backup → verify → migrate)
     python -m backend.cli consilium-schedule-check
     python -m backend.cli backup [--dest PATH]
     python -m backend.cli backup-inspect <backup-file>
     python -m backend.cli backup-verify <backup-file>
-    python -m backend.cli restore <backup-file> [--yes]
+    python -m backend.cli restore <backup-file> --confirm-offline [--yes] [--replace-damaged]
+    python -m backend.cli backup-keygen <key-file> [--key-id ID]
     python -m backend.cli audit-tail [--limit N]
     python -m backend.cli audit-prune [--days N]
     python -m backend.cli purge-sessions
     python -m backend.cli notifications-generate
     python -m backend.cli notifications-run-once
     python -m backend.cli notifications-drain [--limit N]
+
+Настройки — только из окружения процесса; файл .env, значения которого процесс
+не получил, останавливает команду (см. config.check_env_files).
+Команды, работающие с базой, держат разделяемую блокировку db_guard; restore и
+migrate-db — исключительную и выполняются только при остановленном приложении.
 
 Nothing here prints patient data, passwords or session tokens.
 Пароли запрашиваются только скрытым вводом (getpass) — никогда аргументом
@@ -26,7 +33,7 @@ import json
 import sys
 from pathlib import Path
 
-from .app import audit, config, db, maintenance, security, users
+from .app import audit, config, db, db_guard, maintenance, security, users
 from .app.services import notifications
 
 
@@ -173,27 +180,25 @@ def cmd_import_structure(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_check_db(args: argparse.Namespace) -> int:
-    if not args.no_migrate:
-        # Apply the same idempotent schema creation the app runs at startup, so a
-        # database from an older version is brought up to date before being judged
-        # against the current schema. --no-migrate inspects the file as-is.
-        try:
-            db.get_connection()
-        except db.SchemaVersionError as e:
-            print(str(e), file=sys.stderr)
-            return 1
-        finally:
-            db.reset_singleton_for_tests()
-
+def cmd_check_db(_args: argparse.Namespace) -> int:
+    """Диагностика без изменений (AUD-02): ни миграций, ни создания таблиц, ни
+    записи в журнал аудита. --no-migrate оставлен для совместимости и ничего не
+    меняет — проверка всегда только читает."""
     try:
-        report = maintenance.check_database(config.DB_PATH)
+        report = maintenance.diagnose_database(config.DB_PATH)
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
 
+    method = {"copy": "копия файла (приложение остановлено, база не открывалась)",
+              "live-read-only": "рабочий файл, SQLite mode=ro (приложение запущено)",
+              "copy-while-idle": "копия файла, снятая без изменений файла (приложение запущено)",
+              "none": "файл не открывался"}.get(report.get("method"), report.get("method"))
     print(f"База:               {report['path']}")
-    print(f"integrity_check:    {', '.join(report['integrity_check'])}")
+    print(f"Способ проверки:    {method}")
+    print(f"WAL / SHM:          {'есть' if report.get('wal_present') else 'нет'} / "
+          f"{'есть' if report.get('shm_present') else 'нет'}")
+    print(f"integrity_check:    {', '.join(report['integrity_check']) or '-'}")
     print(f"foreign_key_check:  {report['foreign_key_violations']} нарушений")
     print(f"Версия схемы:       {report['schema_version']} (ожидается {config.SCHEMA_VERSION})")
     print(f"Отсутствуют таблицы: {', '.join(report['missing_tables']) or 'нет'}")
@@ -205,12 +210,45 @@ def cmd_check_db(args: argparse.Namespace) -> int:
         return 0
 
     print("Результат: ПРОБЛЕМЫ — " + "; ".join(report["problems"]), file=sys.stderr)
-    try:
-        audit.record(db.get_connection(), audit.DB_INTEGRITY_FAILED, result=audit.RESULT_ERROR,
-                     detail="; ".join(report["problems"])[:200])
-    except Exception:
-        pass
+    if report.get("schema_status") == "older":
+        print("Схема старше этой сборки. База не изменена. Обновление — отдельной командой после "
+              "остановки приложения: backup → backup-verify → migrate-db --confirm-offline → check-db.",
+              file=sys.stderr)
+    elif report.get("schema_status") == "newer":
+        print(f"Схема v{report['schema_version']} новее этой сборки (v{config.SCHEMA_VERSION}): запуск этой "
+              "сборки на этой базе запрещён, откат схемы не поддерживается. База не изменена. "
+              "Запустите сборку, которая поддерживает эту схему.", file=sys.stderr)
+    elif report.get("schema_status") in ("unreadable", "damaged", "empty") or report["integrity_check"] not in ([], ["ok"]):
+        print("База не изменена. Аварийное восстановление: OPERATIONS.md, раздел «Аварийное восстановление».",
+              file=sys.stderr)
     return 1
+
+
+def cmd_migrate_db(args: argparse.Namespace) -> int:
+    if not args.confirm_offline:
+        print("migrate-db требует --confirm-offline после остановки приложения и worker. База не изменена.",
+              file=sys.stderr)
+        return 1
+    try:
+        result = maintenance.migrate_database(config.DB_PATH, confirm_offline=True)
+    except maintenance.MaintenanceError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if result["status"] == "current":
+        print(f"Схема уже текущая (v{result['schema_version']}). База не изменена.")
+        return 0
+    print(f"Миграция выполнена: v{result['from_schema_version']} → v{result['schema_version']}.")
+    print(f"  копия до миграции (проверена): {Path(result['pre_migration_backup']).name}")
+    print("  check-db после миграции: OK")
+    try:
+        with db_guard.shared():
+            audit.record(db.get_connection(), audit.SCHEMA_MIGRATED,
+                         detail=f"via=cli from=v{result['from_schema_version']} to=v{result['schema_version']}")
+    except Exception as e:  # журнал не отменяет выполненную миграцию, но оператор должен знать
+        print(f"Предупреждение: событие аудита не записано ({type(e).__name__}).", file=sys.stderr)
+    finally:
+        db.reset_singleton_for_tests()
+    return 0
 
 
 def cmd_consilium_schedule_check(_args: argparse.Namespace) -> int:
@@ -331,25 +369,36 @@ def cmd_restore(args: argparse.Namespace) -> int:
             print("Отменено, база не изменена.")
             return 1
 
-    db.reset_singleton_for_tests()  # release the app's handle before swapping the file
+    db.reset_singleton_for_tests()  # release this process's handle before swapping the file
     try:
-        result = maintenance.restore_database(args.backup_file, config.DB_PATH, confirm_offline=True)
+        result = maintenance.restore_database(args.backup_file, config.DB_PATH, confirm_offline=True,
+                                              replace_damaged=args.replace_damaged)
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
 
-    audit.record(
-        db.get_connection(),
-        audit.RESTORE_PERFORMED,
-        detail=(
-            f"via=cli format=v{result['format_version']} key_id={result['key_id']} "
-            f"accounts_reconciled={result['accounts_reconciled']} "
-            f"migrated_from={result['migrated_from_schema_version'] or '-'}"
-        ),
-    )
+    try:
+        with db_guard.shared():
+            audit.record(
+                db.get_connection(),
+                audit.RESTORE_PERFORMED,
+                detail=(
+                    f"via=cli format=v{result['format_version']} key_id={result['key_id']} "
+                    f"accounts_reconciled={result['accounts_reconciled']} "
+                    f"migrated_from={result['migrated_from_schema_version'] or '-'} "
+                    f"previous={result['previous_state']}"
+                ),
+            )
+    except Exception as e:  # restore уже выполнен; оператор должен знать, что события нет
+        print(f"Предупреждение: событие аудита не записано ({type(e).__name__}).", file=sys.stderr)
+    finally:
+        db.reset_singleton_for_tests()
     print("Восстановление завершено.")
     print(f"  backup filename:             {result['restored_from']}")
+    print(f"  прежняя база:                {result['previous_state']}")
     print(f"  recovery copy:               {Path(result['pre_restore_backup']).name if result['pre_restore_backup'] else '-'}")
+    if result["quarantine"]:
+        print(f"  перемещено в карантин:       {result['quarantine']} (файлы не удалены)")
     print(f"  записей пациентов:           {result['patient_count']}")
     print(f"  учёток с текущим состоянием: {result['accounts_reconciled']}")
     print("Все прежние сессии недействительны — войдите заново.")
@@ -364,9 +413,10 @@ def cmd_backup_keygen(args: argparse.Namespace) -> int:
         print(str(e), file=sys.stderr)
         return 1
     print("Backup key file created.")
-    print(f"  key_id:      {result['key_id']}")
+    print(f"  key_id:      {result['key_id']} (записан в файл ключа и используется для следующих backup)")
     print(f"  fingerprint: {result['fingerprint']}")
     print(f"  filename:    {result['filename']}")
+    print("Do not set CLINIC_BACKUP_KEY_ID to a different value: a mismatch stops backup.")
     print("Store this file separately from DB and backups; the key is not recoverable if lost.")
     return 0
 
@@ -451,6 +501,12 @@ def cmd_notifications_drain(args: argparse.Namespace) -> int:
     return 0
 
 
+# Команды, которые сами берут нужные блокировки или не открывают рабочую базу.
+SELF_LOCKING_COMMANDS = frozenset({
+    "check-db", "migrate-db", "restore", "backup-inspect", "backup-verify", "backup-keygen",
+})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m backend.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -458,11 +514,15 @@ def main() -> int:
     sub.add_parser("create-developer", help="Создать учётную запись Разработчика (bootstrap)")
     p_structure = sub.add_parser("import-structure", help="Локальный импорт оргструктуры из JSON (файл не хранится в Git)")
     p_structure.add_argument("file", help="Путь к JSON-файлу структуры")
-    p_check = sub.add_parser("check-db", help="Проверить целостность базы и версию схемы")
+    p_check = sub.add_parser("check-db", help="Проверить целостность базы и версию схемы (только чтение)")
     p_check.add_argument(
         "--no-migrate", action="store_true",
-        help="Не применять создание отсутствующих таблиц, проверить файл как есть",
+        help="Совместимость: check-db и без флага никогда не меняет базу",
     )
+    p_migrate = sub.add_parser(
+        "migrate-db", help="Обновить схему: проверенная копия, затем миграция и check-db (приложение остановлено)")
+    p_migrate.add_argument("--confirm-offline", action="store_true",
+                           help="Подтвердить, что приложение и worker остановлены")
 
     sub.add_parser(
         "consilium-schedule-check",
@@ -487,6 +547,9 @@ def main() -> int:
     p_restore.add_argument("backup_file", help="Путь к файлу резервной копии")
     p_restore.add_argument("--yes", action="store_true", help="Не спрашивать подтверждение")
     p_restore.add_argument("--confirm-offline", action="store_true", help="Подтвердить, что приложение и worker остановлены")
+    p_restore.add_argument(
+        "--replace-damaged", action="store_true",
+        help="Аварийно: заменить повреждённую текущую базу; её файлы перемещаются в quarantine/, не удаляются")
 
     p_tail = sub.add_parser("audit-tail", help="Показать последние события аудита")
     p_tail.add_argument("--limit", type=int, default=50, help="Сколько событий показать (максимум 200)")
@@ -501,10 +564,16 @@ def main() -> int:
     p_notifications_drain.add_argument("--limit", type=int, default=100, help="Сколько записей обработать (максимум 200)")
 
     args = parser.parse_args()
+    try:
+        config.check_env_files()
+    except config.ConfigError as e:
+        print(str(e), file=sys.stderr)
+        return 2
     handlers = {
         "create-developer": cmd_create_developer,
         "import-structure": cmd_import_structure,
         "check-db": cmd_check_db,
+        "migrate-db": cmd_migrate_db,
         "consilium-schedule-check": cmd_consilium_schedule_check,
         "backup": cmd_backup,
         "backup-inspect": cmd_backup_inspect,
@@ -518,7 +587,20 @@ def main() -> int:
         "notifications-run-once": cmd_notifications_run_once,
         "notifications-drain": cmd_notifications_drain,
     }
-    return handlers[args.command](args)
+    handler = handlers[args.command]
+    if args.command in SELF_LOCKING_COMMANDS:
+        return handler(args)
+    # Остальные команды работают с рабочей базой: разделяемая блокировка не
+    # даёт restore/migrate-db заменить файл под ними (AUD-04).
+    try:
+        with db_guard.shared():
+            return handler(args)
+    except db_guard.DatabaseBusyError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    except db.SchemaVersionError as e:
+        print(str(e), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

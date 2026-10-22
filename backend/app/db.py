@@ -751,7 +751,7 @@ def _harden_permissions(db_path: Path) -> None:
     _hardened_paths.add(key)
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+def _connect(db_path: Path, *, enable_wal: bool = True) -> sqlite3.Connection:
     _harden_permissions(db_path)
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -759,7 +759,24 @@ def _connect(db_path: Path) -> sqlite3.Connection:
     # Wait instead of failing immediately when another writer (a CLI backup,
     # a second uvicorn worker) briefly holds the write lock.
     conn.execute(f"PRAGMA busy_timeout = {config.BUSY_TIMEOUT_MS}")
-    _enable_wal(conn)
+    if enable_wal:
+        _enable_wal(conn)
+    return conn
+
+
+def connect_live(db_path: Path) -> sqlite3.Connection:
+    """Connection to the live DB that never upgrades it implicitly (AUD-02).
+
+    The schema is checked first (init_db with allow_upgrade=False) and only
+    then the file is switched to WAL: a refused older file must stay byte for
+    byte as it was, and switching the journal mode rewrites its header."""
+    conn = _connect(db_path, enable_wal=False)
+    try:
+        init_db(conn, allow_upgrade=False)
+        _enable_wal(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -2035,12 +2052,45 @@ class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
 
+class SchemaUpgradeRequiredError(SchemaVersionError):
+    """The file has an older schema and the caller did not ask for a migration.
+
+    Raised before any DDL; the file is not changed. The upgrade is a separate,
+    explicit operation: `python -m backend.cli migrate-db --confirm-offline`
+    (verified backup first, then the migration, then check_database)."""
+
+
 class MigrationConflictError(SchemaVersionError):
     """Data in the file contradicts a constraint the migration has to add.
 
     Raised before anything is dropped or rewritten; init_db rolls the whole
     transaction back, so the file stays exactly as it was. The message carries
     counts only — never the conflicting values (they are patient addresses)."""
+
+
+def _require_no_upgrade(conn: sqlite3.Connection) -> None:
+    """Refuse an existing database whose schema is older than this build.
+
+    A file without any table is a new installation and is created as usual.
+    A file with tables but without a version row is an old (v0/v1) database."""
+    has_tables = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1"
+    ).fetchone()
+    if not has_tables:
+        return
+    has_version = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'"
+    ).fetchone()
+    row = conn.execute("SELECT version FROM schema_version").fetchone() if has_version else None
+    version = row[0] if row else None
+    if version == config.SCHEMA_VERSION:
+        return
+    raise SchemaUpgradeRequiredError(
+        f"База данных имеет схему v{version if version is not None else '0'}, эта сборка работает "
+        f"со схемой v{config.SCHEMA_VERSION}. Автоматическое обновление при запуске отключено; "
+        "база не изменена. Порядок: остановить сервис → backup → backup-verify → "
+        "python -m backend.cli migrate-db --confirm-offline → check-db → запуск."
+    )
 
 
 def _check_schema_version(conn: sqlite3.Connection) -> None:
@@ -2054,7 +2104,7 @@ def _check_schema_version(conn: sqlite3.Connection) -> None:
     if problem == "damaged":
         raise SchemaVersionError(
             "Версия схемы базы данных повреждена или не распознана. Запуск остановлен, "
-            "база не изменена; проверьте файл командой check-db --no-migrate."
+            "база не изменена; проверьте файл командой check-db (только чтение)."
         )
     if problem is not None:
         raise SchemaVersionError(
@@ -2208,7 +2258,7 @@ def migrate_v26_to_v27(conn: sqlite3.Connection) -> None:
         _ensure_trigger(conn, *MOBILE_ACCESS_MARK_TRIGGER)
 
 
-def init_db(conn: sqlite3.Connection) -> None:
+def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
 
@@ -2221,12 +2271,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     once; each migration step checks the schema and then changes it, so
     the write lock is taken before the first check and held to the end. A
     concurrent run waits (busy_timeout) and then finds the work done, and a
-    failed migration leaves the file exactly as it was."""
+    failed migration leaves the file exactly as it was.
+
+    allow_upgrade=False (the application and the CLI commands that use the
+    live database) refuses an existing older schema with
+    SchemaUpgradeRequiredError before any change; only migrate-db and the
+    throw-away copies inside backup verification/restore migrate."""
     if conn.in_transaction:
         raise RuntimeError("init_db must not run inside an open transaction")
     conn.execute("BEGIN IMMEDIATE")
     try:
         _check_schema_version(conn)        # новая или повреждённая схема — отказ до любых изменений
+        if not allow_upgrade:
+            _require_no_upgrade(conn)      # старая схема — только явный migrate-db
         _execute_script(conn, SCHEMA_SQL)  # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
@@ -2359,15 +2416,10 @@ def get_connection() -> sqlite3.Connection:
     Tests should build their own via `_connect` + `init_db` against a temp path."""
     global _singleton_conn
     if _singleton_conn is None:
-        conn = _connect(config.DB_PATH)
-        try:
-            init_db(conn)
-        except BaseException:
-            # Не оставлять неинициализированное соединение (например, к базе
-            # более новой схемы) для следующих вызовов.
-            conn.close()
-            raise
-        _singleton_conn = conn
+        # Рабочая база никогда не обновляется неявно (AUD-02): старая схема —
+        # отказ без изменений, обновление только командой migrate-db. При отказе
+        # соединение закрывается и не остаётся для следующих вызовов.
+        _singleton_conn = connect_live(config.DB_PATH)
     return _singleton_conn
 
 

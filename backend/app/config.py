@@ -1,8 +1,73 @@
-"""Environment-driven configuration. Local-first, safe defaults."""
+"""Environment-driven configuration. Local-first, safe defaults.
+
+Единственный источник настроек — окружение процесса (AUD-19). Приложение и
+CLI сами не читают файлы .env: значения из файла попадают в окружение только
+через systemd `EnvironmentFile=`, `uvicorn --env-file` или `set -a; . файл;
+set +a` в shell. Чтобы администратор не считал применённым то, что процесс
+не видит, backend и CLI отказываются запускаться, если файл `.env` рядом с
+кодом (backend/.env или .env в корне репозитория) задаёт значение, которого
+нет в окружении процесса или которое отличается (см. check_env_files).
+"""
 import os
+import re
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+ENV_FILE_CANDIDATES = (BACKEND_DIR / ".env", BACKEND_DIR.parent / ".env")
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class ConfigError(RuntimeError):
+    """Configuration that the process would silently ignore — refuse to start."""
+
+
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """KEY=VALUE lines as systemd EnvironmentFile / `set -a; .` read them.
+
+    Blank lines and lines starting with # are skipped, an optional `export `
+    prefix is allowed, one pair of matching surrounding quotes is removed.
+    Anything else is an error (by line number; values are never printed)."""
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ConfigError(f"Файл окружения {path} не прочитан: {type(exc).__name__}") from exc
+    for number, line in enumerate(lines, start=1):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        if text.startswith("export "):
+            text = text[len("export "):].lstrip()
+        name, sep, value = text.partition("=")
+        name = name.strip()
+        if not sep or not _ENV_NAME.fullmatch(name):
+            raise ConfigError(f"Файл окружения {path}: строка {number} не разобрана (ожидается ИМЯ=значение)")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        values[name] = value
+    return values
+
+
+def check_env_files(candidates=None, environ=None) -> None:
+    """Refuse a .env file whose values the process does not actually have.
+
+    Names of the differing variables are reported, values never are (the
+    file can hold keys)."""
+    environ = os.environ if environ is None else environ
+    for path in (ENV_FILE_CANDIDATES if candidates is None else candidates):
+        if not path.is_file():
+            continue
+        differing = sorted(name for name, value in _parse_env_file(path).items()
+                           if environ.get(name) != value)
+        if differing:
+            raise ConfigError(
+                f"Файл {path} задаёт настройки, которых нет в окружении процесса: "
+                f"{', '.join(differing)}. Приложение и CLI не читают .env сами. Загрузите файл "
+                "(systemd EnvironmentFile=, uvicorn --env-file или `set -a; . файл; set +a`), "
+                "исправьте расхождение или удалите/переименуйте файл. Запуск остановлен."
+            )
+
 DATA_DIR = Path(os.environ.get("CLINIC_DATA_DIR", BACKEND_DIR / "data")).resolve()
 DB_PATH = DATA_DIR / "clinic.db"
 BACKUP_DIR = DATA_DIR / "backups"

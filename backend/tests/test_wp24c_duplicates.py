@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from .conftest import DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _parallel, _rows
 from .test_wp24a_patient_create import _db_path, _while_locked, _world
@@ -787,7 +787,8 @@ def test_restore_of_a_v24_backup_migrates_to_v25(auth_client, tmp_path, backup_k
     live = _live(auth_client)
     backup = _v9_backup(tmp_path, "wp24b-v24.cbk", header=24, fixture=V24_FIXTURE)
     assert maintenance.validate_backup(backup)["source_build"] == "wp24b-5f2c9c8"
-    maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27   # combined-preaudit (v27); WP2.4-D: текущая схема
@@ -804,7 +805,8 @@ def test_backup_and_restore_of_v25_keep_confirmations(auth_client, tmp_path, bac
     get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
     current = maintenance.backup_database(config.DB_PATH, tmp_path / "v25.cbk")
     db.reset_singleton_for_tests()
-    maintenance.restore_database(current, config.DB_PATH, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(current, config.DB_PATH, confirm_offline=True)
     assert maintenance.validate_backup(current)["source_build"] == "current"
     conn = sqlite3.connect(str(config.DB_PATH))
     assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 1

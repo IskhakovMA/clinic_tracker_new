@@ -110,6 +110,8 @@ IMPORT_REPEAT_CONFIRMED = "import_repeat_confirmed"
 BACKUP_CREATED = "backup_created"
 RESTORE_PERFORMED = "restore_performed"
 DB_INTEGRITY_FAILED = "db_integrity_failed"
+# WP-B: явное обновление схемы командой migrate-db (check-db в журнал не пишет — он только читает).
+SCHEMA_MIGRATED = "schema_migrated"
 
 # RBAC / администрирование
 USER_CREATED = "user_created"

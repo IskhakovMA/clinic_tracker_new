@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from .conftest import PROJECT_ROOT, get_conn, make_patient_payload
+from .conftest import app_stopped, PROJECT_ROOT, get_conn, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _rows
 from .test_wp24a_patient_create import _world
@@ -139,7 +139,8 @@ def test_restore_refuses_a_modified_v10_before_touching_the_live_database(auth_c
     live = _live(auth_client)
     digest = _sha(live)
     with pytest.raises(maintenance.MaintenanceError):
-        maintenance.restore_database(backup, live, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, live, confirm_offline=True)
     assert _sha(live) == digest                                         # live database not replaced
     assert maintenance.check_database(live)["ok"]
 
@@ -150,7 +151,8 @@ def test_reviewer_scenario_invalid_status_never_reaches_a_restored_database(auth
     fixture = _sql_fixture(tmp_path, "nochk", lambda c: _replace_portal_table(c, VARIANTS["no_checks_at_all"]))
     live = _live(auth_client)
     with pytest.raises(maintenance.MaintenanceError, match="не совпадает ни с одной"):
-        maintenance.restore_database(_v9_backup(tmp_path, "nochk.cbk", header=10, fixture=fixture), live, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(_v9_backup(tmp_path, "nochk.cbk", header=10, fixture=fixture), live, confirm_offline=True)
     conn = sqlite3.connect(str(live))
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute("INSERT INTO patient_portal_access (patient_id, email_normalized, status, linked_at, updated_at) "
@@ -203,7 +205,8 @@ def test_current_version_backup_with_a_modified_portal_table_is_refused(auth_cli
     with pytest.raises(maintenance.MaintenanceError):
         maintenance.validate_backup(backup)
     with pytest.raises(maintenance.MaintenanceError):
-        maintenance.restore_database(backup, live, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, live, confirm_offline=True)
     assert _sha(live) == digest
 
 

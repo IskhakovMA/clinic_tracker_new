@@ -8,7 +8,16 @@ This runbook is for a limited controlled pilot of "Система планиро
 2. Confirm `CLINIC_DEBUG=false`.
 3. Confirm `CLINIC_DATA_DIR` points to the intended application data directory.
 4. Confirm HTTPS termination is active before setting `CLINIC_HTTPS=true`.
-5. Start the FastAPI app by the approved local service manager or command:
+   Settings come only from the process environment (systemd `EnvironmentFile=`,
+   `uvicorn --env-file`, or `set -a; . backend/.env; set +a`); the app does not
+   read `.env` itself and refuses to start if `backend/.env` holds values the
+   process did not receive. After start, check the log line
+   `clinic-tracker backend starting: … https=… debug=… env=… data_dir=…`.
+5. Run `python -m backend.cli check-db` (read-only). If it reports an older
+   schema, follow OPERATIONS.md «Database Operations: Safe Order»
+   (backup → backup-verify → `migrate-db --confirm-offline`); the app does not
+   upgrade the schema by itself and refuses to start on an older one.
+6. Start the FastAPI app by the approved local service manager or command:
 
 ```bash
 source .venv/bin/activate
@@ -90,6 +99,9 @@ drops later audit events.
 2. Stop the FastAPI process.
 3. Stop any notification worker process.
 4. Confirm no process is writing to the SQLite DB before restore or filesystem maintenance.
+   `restore` and `migrate-db` check this themselves (inter-process locks) and refuse while the
+   app, a CLI command or the worker runs; tools outside the app (sqlite3 shell, file sync,
+   editors) are not covered — close them.
 
 ## Health Check
 
@@ -102,7 +114,12 @@ Expected:
 
 - `integrity_check: ok`
 - `foreign_key_check: 0`
-- schema version `6`
+- schema version equal to the expected value printed next to it
+- `Результат: OK`
+
+`check-db` never changes the database (no migration, no audit event, nothing is created
+for a missing file). With the app stopped it checks a private copy; with the app running it
+reads the live file read-only.
 - result `OK`
 
 Application health smoke:
@@ -180,8 +197,11 @@ Generate a key file outside Git, outside the data directory, and outside backup 
 
 ```bash
 source .venv/bin/activate
-python -m backend.cli backup-keygen /secure/offline/location/clinic-backup.key
+python -m backend.cli backup-keygen /secure/offline/location/clinic-backup.key --key-id clinic-pilot-2026
 ```
+
+The `key_id` is stored in the key file and used by every backup; do not set
+`CLINIC_BACKUP_KEY_ID` to a different value.
 
 Configure only at runtime:
 
@@ -223,7 +243,11 @@ python -m backend.cli restore backend/data/backups/<backup>.cbk --confirm-offlin
 python -m backend.cli check-db
 ```
 
-The restore command creates a recovery copy of the previous DB when possible.
+Restore refuses while the app, the worker or a CLI command runs, before any change. It creates
+and verifies an encrypted recovery copy of a healthy current DB (`backups/pre_restore_*.cbk`).
+A damaged current DB is replaced only with `--replace-damaged`; its files are moved to
+`DATA_DIR/quarantine/`, never deleted. Without a verified copy of the only working DB, do not
+run `restore`, `migrate-db` or manual file operations on `clinic.db`/WAL/SHM (OPERATIONS.md).
 
 ## AI Start/Stop
 

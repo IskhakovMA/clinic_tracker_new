@@ -4,7 +4,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from .conftest import DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
+from .conftest import app_stopped, DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -578,7 +578,8 @@ def test_schema_v10_encrypted_backup_restore_preserves_doctor_feedback_fields(au
     with get_conn():
         get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
     assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
-    restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
+    with app_stopped():
+        restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert restore["schema_version"] == current_schema_version()
     # Restore revokes every session from the snapshot; sign in again.
     assert login(auth_client, DEV_USERNAME).status_code == 200

@@ -9,7 +9,7 @@ import sys
 
 import pytest
 
-from .conftest import PROJECT_ROOT, make_patient_payload, current_schema_version
+from .conftest import app_stopped, PROJECT_ROOT, make_patient_payload, current_schema_version
 
 TEST_BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 32 zero bytes, base64url without padding.
 
@@ -95,7 +95,8 @@ def test_restore_round_trip_preserves_data(auth_client, tmp_path):
     assert len(auth_client.get("/api/patients").json()) == 2
 
     db.reset_singleton_for_tests()
-    result = maintenance.restore_database(backup, db_path, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert result["patient_count"] == 1
     assert result["pre_restore_backup"] is not None
 
@@ -110,7 +111,8 @@ def test_restore_rejects_non_sqlite_file(auth_client, tmp_path):
     bad = tmp_path / "notadb.db"
     bad.write_text("plain text, definitely not sqlite")
     with pytest.raises(maintenance.MaintenanceError, match="encrypted backup"):
-        maintenance.restore_database(bad, tmp_path / "clinic.db", confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(bad, tmp_path / "clinic.db", confirm_offline=True)
 
 
 def test_restore_rejects_incompatible_schema_version(auth_client, tmp_path):
@@ -124,7 +126,8 @@ def test_restore_rejects_incompatible_schema_version(auth_client, tmp_path):
     backup = _encrypt_plaintext_for_test(maintenance, plaintext, tmp_path / "oldversion.cbk")
 
     with pytest.raises(maintenance.MaintenanceError, match="отклонена"):
-        maintenance.restore_database(backup, tmp_path / "clinic.db", confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, tmp_path / "clinic.db", confirm_offline=True)
 
 
 def test_rejected_restore_leaves_live_db_untouched(auth_client, tmp_path):
@@ -135,7 +138,8 @@ def test_rejected_restore_leaves_live_db_untouched(auth_client, tmp_path):
     bad = tmp_path / "corrupt.db"
     bad.write_text("garbage")
     with pytest.raises(maintenance.MaintenanceError):
-        maintenance.restore_database(bad, db_path, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(bad, db_path, confirm_offline=True)
 
     conn = sqlite3.connect(str(db_path))
     names = [row[0] for row in conn.execute("SELECT name FROM patients").fetchall()]
@@ -252,7 +256,9 @@ def test_backup_keygen_creates_key_file_without_printing_key(tmp_path):
         cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
     )
     assert run.returncode == 0, run.stderr
-    raw_key = key_file.read_text(encoding="utf-8").strip()
+    # WP-B (AUD-20): первая строка — ключ, вторая — сохранённый key_id.
+    raw_key, id_line = key_file.read_text(encoding="utf-8").splitlines()
+    assert id_line == "key_id=generated-key"
     assert len(base64.urlsafe_b64decode(raw_key + "=" * (-len(raw_key) % 4))) == 32
     assert raw_key not in run.stdout
     assert raw_key not in run.stderr
@@ -378,7 +384,8 @@ def test_failed_restore_cleans_temp_and_preserves_original(auth_client, tmp_path
     backup = maintenance.backup_database(db_path, tmp_path / "snapshot.cbk")
     _replace_header(backup, lambda h: h.__setitem__("schema_version", 99))
     with pytest.raises(maintenance.MaintenanceError):
-        maintenance.restore_database(backup, db_path, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, db_path, confirm_offline=True)
     assert maintenance.check_database(db_path)["ok"] is True
     assert not list(tmp_path.glob("clinic-restore-*"))
     assert not list(tmp_path.glob("*.restore-tmp"))
@@ -388,7 +395,8 @@ def test_restore_rejects_without_offline_confirmation(auth_client, tmp_path):
     from backend.app import maintenance
     backup = maintenance.backup_database(tmp_path / "clinic.db", tmp_path / "offline-required.cbk")
     with pytest.raises(maintenance.MaintenanceError, match="offline"):
-        maintenance.restore_database(backup, tmp_path / "clinic.db")
+        with app_stopped():
+            maintenance.restore_database(backup, tmp_path / "clinic.db")
 
 
 def test_restore_rejects_active_database_lock_and_preserves_live_db(auth_client, tmp_path):
@@ -398,15 +406,17 @@ def test_restore_rejects_active_database_lock_and_preserves_live_db(auth_client,
     backup = maintenance.backup_database(db_path, tmp_path / "before-lock.cbk")
     db.reset_singleton_for_tests()
 
-    blocker = sqlite3.connect(str(db_path), timeout=0.1)
-    blocker.execute("BEGIN IMMEDIATE")
-    blocker.execute("UPDATE schema_version SET version = version")
-    try:
-        with pytest.raises(maintenance.MaintenanceError, match="занята|остановлено"):
-            maintenance.restore_database(backup, db_path, confirm_offline=True)
-    finally:
-        blocker.rollback()
-        blocker.close()
+    # Процесс вне приложения (sqlite3 shell) держит запись; приложение остановлено.
+    with app_stopped():
+        blocker = sqlite3.connect(str(db_path), timeout=0.1)
+        blocker.execute("BEGIN IMMEDIATE")
+        blocker.execute("UPDATE schema_version SET version = version")
+        try:
+            with pytest.raises(maintenance.MaintenanceError, match="занята|остановлено"):
+                maintenance.restore_database(backup, db_path, confirm_offline=True)
+        finally:
+            blocker.rollback()
+            blocker.close()
 
     report = maintenance.check_database(db_path)
     assert report["ok"] is True
@@ -458,11 +468,13 @@ def test_successful_restore_creates_encrypted_recovery_and_removes_wal_shm(auth_
     backup = maintenance.backup_database(db_path, tmp_path / "snapshot.cbk")
     auth_client.post("/api/patients", json=make_patient_payload(name="После"), headers=auth_client.csrf)
     db.reset_singleton_for_tests()
-    result = maintenance.restore_database(backup, db_path, confirm_offline=True)
+    with app_stopped():
+        result = maintenance.restore_database(backup, db_path, confirm_offline=True)
+        # Сразу после restore (до нового запуска приложения) прежних WAL/SHM нет.
+        assert not (tmp_path / "clinic.db-wal").exists()
+        assert not (tmp_path / "clinic.db-shm").exists()
     assert result["pre_restore_backup"].endswith(".cbk")
     assert maintenance.looks_like_encrypted_backup(result["pre_restore_backup"])
-    assert not (tmp_path / "clinic.db-wal").exists()
-    assert not (tmp_path / "clinic.db-shm").exists()
     assert maintenance.verify_backup(result["pre_restore_backup"])["authenticated"] is True
 
 
@@ -477,9 +489,11 @@ def test_restore_handles_wal_shm_without_applying_stale_pages(auth_client, tmp_p
     assert (tmp_path / "clinic.db-wal").exists()
     db.reset_singleton_for_tests()
 
-    maintenance.restore_database(backup, db_path, confirm_offline=True)
-    assert not (tmp_path / "clinic.db-wal").exists()
-    assert not (tmp_path / "clinic.db-shm").exists()
+    with app_stopped():
+        maintenance.restore_database(backup, db_path, confirm_offline=True)
+        # Сразу после restore (до нового запуска приложения) прежних WAL/SHM нет.
+        assert not (tmp_path / "clinic.db-wal").exists()
+        assert not (tmp_path / "clinic.db-shm").exists()
     restored = sqlite3.connect(str(db_path))
     names = [row[0] for row in restored.execute("SELECT name FROM patients ORDER BY name").fetchall()]
     assert names == ["Снимок"]
@@ -501,7 +515,8 @@ def test_failed_final_replace_keeps_live_db_and_verified_recovery(auth_client, t
 
     monkeypatch.setattr(maintenance.os, "replace", fail_replace)
     with pytest.raises(maintenance.MaintenanceError, match="заменить"):
-        maintenance.restore_database(backup, db_path, confirm_offline=True)
+        with app_stopped():
+            maintenance.restore_database(backup, db_path, confirm_offline=True)
 
     recovery_files = list((tmp_path / "backups").glob("pre_restore_*.cbk"))
     assert len(recovery_files) == 1
@@ -591,6 +606,14 @@ def test_cli_create_inspect_verify_and_restore(tmp_path):
         "CLINIC_BACKUP_KEY_ID": "cli-key",
         "PYTHONPATH": str(PROJECT_ROOT),
     }
+    # WP-B: check-db только читает и для отсутствующей базы ничего не создаёт.
+    missing = subprocess.run(
+        [sys.executable, "-m", "backend.cli", "check-db"],
+        cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
+    )
+    assert missing.returncode == 1 and not (tmp_path / "clinic.db").exists()
+    subprocess.run([sys.executable, "-m", "backend.cli", "purge-sessions"],
+                   cwd=PROJECT_ROOT, env=env, text=True, capture_output=True, check=True)
     check = subprocess.run(
         [sys.executable, "-m", "backend.cli", "check-db"],
         cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,

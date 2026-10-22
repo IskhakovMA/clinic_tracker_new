@@ -16,7 +16,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from .conftest import DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload, synthetic_policy_for_key
+from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload, synthetic_policy_for_key
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _in_thread, _parallel, _rows
 from .test_wp24a_patient_create import EVENTS, _counts, _db_path, _patient, _world
@@ -640,7 +640,8 @@ def test_restore_of_a_v23_backup_migrates_to_v24(auth_client, tmp_path, backup_k
     backup = _v9_backup(tmp_path, "wp24a-v23.cbk", header=23, fixture=V23_FIXTURE)
     report = maintenance.validate_backup(backup)
     assert (report["source_build"], report["migrated_from_schema_version"]) == ("wp24a-e53f42d", 23)
-    maintenance.restore_database(backup, live, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27   # combined-preaudit (v27); WP2.4-C/D: текущая схема
@@ -660,7 +661,8 @@ def test_backup_and_restore_of_v24_keep_keys_and_history(auth_client, tmp_path, 
     get_conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
     backup = maintenance.backup_database(config.DB_PATH, tmp_path / "v24.cbk")
     db.reset_singleton_for_tests()
-    maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, config.DB_PATH, confirm_offline=True)
     assert maintenance.validate_backup(backup)["source_build"] == "current"
     conn = sqlite3.connect(str(config.DB_PATH))
     assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 2

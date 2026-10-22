@@ -68,16 +68,26 @@ def build_v1_db(path: Path) -> None:
 
 @pytest.fixture()
 def migrated(tmp_path, monkeypatch):
-    """v1-база, прошедшая init_db (миграцию) при старте приложения."""
+    """v1-база, обновлённая явной командой migrate-db, затем запуск приложения.
+
+    С WP-B приложение не обновляет схему при запуске (AUD-02): сначала
+    migrate_database (проверенная копия до миграции, миграция, check-db)."""
     import sys
     build_v1_db(tmp_path / "clinic.db")
     monkeypatch.setenv("CLINIC_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("CLINIC_BACKUP_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")  # synthetic test key
+    monkeypatch.setenv("CLINIC_BACKUP_KEY_ID", "test-key")
+    monkeypatch.delenv("CLINIC_BACKUP_KEY_FILE", raising=False)
+    monkeypatch.delenv("CLINIC_BACKUP_DECRYPT_KEYS", raising=False)
     for mod in list(sys.modules):
         if mod.startswith("backend."):
             del sys.modules[mod]
     from fastapi.testclient import TestClient
     from backend.app.main import app
-    from backend.app import security
+    from backend.app import config as app_config, maintenance, security
+    result = maintenance.migrate_database(app_config.DB_PATH, confirm_offline=True)
+    assert result["status"] == "migrated" and result["from_schema_version"] == 1
+    assert maintenance.inspect_backup(Path(result["pre_migration_backup"]))["schema_version"] == 1
     security._failed_attempts.clear()
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
         yield c, tmp_path

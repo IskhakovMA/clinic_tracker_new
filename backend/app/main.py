@@ -15,8 +15,9 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import config, idempotency, process_guard, security
-from .db import SchemaVersionError, get_connection, init_db
+from . import config, db_guard, idempotency, process_guard, security
+from .db import SchemaVersionError, get_connection
+from .db import reset_singleton_for_tests as reset_singleton
 from .routes import ai, analytics, audit_log, auth, consilium, data_quality, duplicate_review, importexport, internal_notifications, migrate, notifications, patients, staff, structure
 
 logging.basicConfig(
@@ -68,29 +69,50 @@ async def lifespan(_app: FastAPI):
     # Лимитеры запросов и входа хранят счётчики в памяти процесса: второй
     # процесс на тех же данных молча удвоил бы лимиты, поэтому он не стартует.
     try:
+        config.check_env_files()   # AUD-19: .env, который процесс не применил, — отказ
+    except config.ConfigError as exc:
+        logger.critical("refusing to start: %s", exc)
+        raise
+    try:
         guard = process_guard.acquire()
     except process_guard.MultipleProcessesError as exc:
         logger.critical("refusing to start: %s", exc)
         raise
+    db_lock = None
     try:
+        # Разделяемая блокировка базы (AUD-04): пока сервер работает, restore и
+        # migrate-db отказывают; пока они идут, сервер не стартует.
         try:
-            conn = get_connection()
-            init_db(conn)
+            db_lock = db_guard.acquire_shared()
+        except db_guard.DatabaseBusyError as exc:
+            logger.critical("refusing to start: %s", exc)
+            raise
+        try:
+            conn = get_connection()   # init_db(allow_upgrade=False): старая схема — отказ
         except SchemaVersionError as exc:
             logger.critical("refusing to start: %s", exc)
             raise
         security.purge_expired_sessions(conn)
         idempotency.purge_expired(conn)   # WP2.4-B: только истекшие ключи, история файлов остается
         logger.info(
-            "clinic-tracker backend starting on %s:%s (https=%s debug=%s)",
+            # Адрес и порт прослушивания задают аргументы uvicorn --host/--port;
+            # CLINIC_HOST — доверенный Host (TrustedHostMiddleware), CLINIC_PORT справочный.
+            "clinic-tracker backend starting: trusted_host=%s clinic_port=%s https=%s debug=%s env=%s "
+            "data_dir=%s config_source=process-environment (listen address: uvicorn --host/--port)",
             config.HOST,
             config.PORT,
             config.HTTPS,
             config.DEBUG,
+            config.APP_ENV,
+            config.DATA_DIR,
         )
         yield
     finally:
-        process_guard.release(guard)
+        try:
+            reset_singleton()   # соединение закрывается до снятия блокировок
+        finally:
+            db_guard.release(db_lock)
+            process_guard.release(guard)
 
 
 app = FastAPI(

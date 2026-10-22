@@ -6,7 +6,7 @@ department changes made after the snapshot.
 """
 import pytest
 
-from .conftest import TEST_PASSWORD, create_account, create_department, get_conn, login
+from .conftest import app_stopped, TEST_PASSWORD, create_account, create_department, get_conn, login
 
 KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 NEW_PW = "rotated-strong-passphrase"
@@ -23,7 +23,8 @@ def backup_key(monkeypatch):
 def _restore(tmp_path, backup):
     from backend.app import db, maintenance
     db.reset_singleton_for_tests()
-    return maintenance.restore_database(backup, tmp_path / "clinic.db", confirm_offline=True)
+    with app_stopped():
+        return maintenance.restore_database(backup, tmp_path / "clinic.db", confirm_offline=True)
 
 
 def test_block_and_password_reset_survive_restore(auth_client, tmp_path):

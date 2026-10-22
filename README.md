@@ -135,6 +135,18 @@ uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 Приложение доступно на http://127.0.0.1:8420. По умолчанию слушает **только localhost**
 и не открыто во внешнюю сеть.
 
+**Настройки** приложение и CLI берут только из окружения процесса; файл `.env` сами не
+читают. Загрузите его явно: `uvicorn ... --env-file backend/.env`, systemd
+`EnvironmentFile=` или `set -a; . backend/.env; set +a`. Если `backend/.env` (или `.env`
+в корне) задаёт значение, которого процесс не получил, сервер не стартует, а CLI завершается
+с кодом 2 — с именами расхождений, без значений. Адрес и порт прослушивания задают
+`--host`/`--port` uvicorn (`CLINIC_HOST` — доверенный Host, должен совпадать с `--host`).
+
+**Схема базы при запуске не обновляется.** Если база старше сборки, сервер останавливается
+без изменений файла; обновление — только явной командой после резервной копии:
+остановить сервис → `backup` → `backup-verify` → `migrate-db --confirm-offline` →
+`check-db` → запуск (подробно — `OPERATIONS.md`, «Database Operations: Safe Order»).
+
 При первом входе, если в браузере остались данные пациентов из старой localStorage-версии,
 приложение предложит перенести их на сервер (однократно, только по явному подтверждению).
 
@@ -143,13 +155,15 @@ uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
 ```bash
 python -m backend.cli create-developer    # создать учётную запись Разработчика (bootstrap)
 python -m backend.cli import-structure f  # локальный импорт оргструктуры из JSON (файл вне Git)
-python -m backend.cli check-db            # integrity_check, foreign_key_check, версия схемы, таблицы
+python -m backend.cli check-db            # только чтение: integrity_check, FK, версия схемы, таблицы; базу не меняет
+python -m backend.cli migrate-db --confirm-offline  # обновить схему: проверенная копия → миграция → check-db (приложение остановлено)
 python -m backend.cli consilium-schedule-check  # только чтение: счётчики нестандартных дат и записей вне сетки консилиума
-python -m backend.cli backup-keygen f     # создать protected key file для encrypted backups
+python -m backend.cli backup-keygen f --key-id ID  # protected key file; key_id сохраняется в файле
 python -m backend.cli backup              # encrypted backup через SQLite backup API + AES-GCM
 python -m backend.cli backup-inspect f    # безопасные metadata encrypted backup без расшифровки
 python -m backend.cli backup-verify f     # AEAD, integrity_check, FK и schema проверки
-python -m backend.cli restore <file> --confirm-offline  # restore при остановленном приложении
+python -m backend.cli restore <file> --confirm-offline  # restore только при остановленном приложении (иначе отказ)
+python -m backend.cli restore <file> --confirm-offline --replace-damaged  # аварийно: повреждённая база уходит в quarantine/
 python -m backend.cli audit-tail          # последние события аудита
 python -m backend.cli audit-prune         # удалить события старше срока хранения
 python -m backend.cli purge-sessions      # удалить истёкшие сессии
@@ -283,10 +297,13 @@ API key задаётся только на backend через `CLINIC_AI_API_KEY
   ```bash
   python -m backend.cli restore backend/data/backups/clinic_20260730_120000.cbk --confirm-offline
   ```
-  До restore остановите приложение и notification worker. Команда проверит формат, key_id,
-  AEAD tag, SQLite integrity, FK и ожидаемую версию схемы, попытается получить exclusive SQLite
-  lock, сделает encrypted recovery copy текущей базы, спросит подтверждение и заменит базу
-  атомарно.
+  До restore остановите приложение и notification worker: пока работает сервер, CLI-команда
+  с базой или другой restore, команда отказывает до любых изменений (межпроцессные блокировки
+  `CLINIC_DATA_DIR/.clinic-app.lock` и `.clinic-db.lock`). Команда проверит формат, key_id,
+  AEAD tag, SQLite integrity, FK и ожидаемую версию схемы, сделает и проверит encrypted
+  recovery copy текущей базы, спросит подтверждение и заменит базу атомарно. Повреждённую
+  текущую базу заменяет только с `--replace-damaged`, перемещая её файлы в `quarantine/`
+  (не удаляя).
   Повреждённая, изменённая, усечённая, plaintext или несовместимая копия отклоняется, текущая
   база при этом не меняется. После restore обязательно выполните `python -m backend.cli check-db`;
   только затем запускайте приложение снова. После восстановления все прежние сессии
@@ -326,7 +343,9 @@ API key задаётся только на backend через `CLINIC_AI_API_KEY
 Локальный HTTP-режим предназначен только для работы на одной машине. Для доступа по сети:
 
 1. Поставьте перед приложением HTTPS reverse proxy (nginx/caddy) с TLS-терминацией.
-2. Установите `CLINIC_HTTPS=true` — включит `Secure` на cookie и HSTS.
+2. Установите `CLINIC_HTTPS=true` в окружении процесса (systemd `EnvironmentFile=` или
+   `--env-file`) — включит `Secure` на cookie и HSTS. Проверьте строку запуска в журнале:
+   `https=True`.
 3. Оставьте uvicorn слушать 127.0.0.1; наружу смотрит только proxy.
 4. Выполните требования к proxy из PILOT_RUNBOOK.md («Reverse proxy
    requirements»): перезапись `X-Forwarded-For`, `X-Forwarded-Proto`,

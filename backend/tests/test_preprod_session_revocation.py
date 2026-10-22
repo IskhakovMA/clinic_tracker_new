@@ -7,7 +7,7 @@ snapshot was taken).
 """
 from fastapi.testclient import TestClient
 
-from .conftest import TEST_PASSWORD, create_account, login
+from .conftest import app_stopped, TEST_PASSWORD, create_account, login
 
 NEW_PASSWORD = "brand-new-strong-passphrase"
 
@@ -88,7 +88,8 @@ def test_restore_invalidates_sessions_revoked_after_snapshot(auth_client, tmp_pa
     assert auth_client.post("/api/auth/logout", headers=auth_client.csrf).status_code == 200
 
     db.reset_singleton_for_tests()
-    maintenance.restore_database(backup, db_path, confirm_offline=True)
+    with app_stopped():
+        maintenance.restore_database(backup, db_path, confirm_offline=True)
 
     auth_client.cookies.set("clinic_session", session_cookie)
     assert auth_client.get("/api/patients").status_code == 401
