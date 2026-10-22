@@ -41,6 +41,9 @@ jobs:
     env:
       CLINIC_DEBUG: "false"
       NOTIFICATION_PROVIDER: mock
+    outputs:
+      count: ${{ steps.collect.outputs.count }}
+      digest: ${{ steps.collect.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -56,17 +59,12 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
 
-      # The full collection is the reference the shards are verified against.
+      # Collects twice (deterministic node ids), checks that the shard plan partitions
+      # every test file, and exports the collection's count and SHA-256 as job outputs.
+      # No artifact storage is used: the gate must not depend on the account's quota.
       - name: Collect every backend test and plan the shards
-        run: python tools/ci/pytest_shards.py collect --out "$RUNNER_TEMP/plan" --shards "$BACKEND_TEST_SHARDS"
-
-      - name: Upload the full collection
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: backend-tests-collected
-          path: ${{ runner.temp }}/plan/collected.txt
-          if-no-files-found: error
-          retention-days: 7
+        id: collect
+        run: python tools/ci/pytest_shards.py collect --shards "$BACKEND_TEST_SHARDS"
 
   backend-tests:
     name: backend-tests (${{ matrix.shard }}/4)
@@ -84,6 +82,8 @@ jobs:
       CLINIC_DEBUG: "false"
       NOTIFICATION_PROVIDER: mock
       SHARD: ${{ matrix.shard }}
+      EXPECTED_COUNT: ${{ needs.backend-test-plan.outputs.count }}
+      EXPECTED_DIGEST: ${{ needs.backend-test-plan.outputs.digest }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -107,60 +107,45 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
 
       # No -x, -k, --ignore or --deselect: the shard runs every test of its files.
+      # The shard re-collects and requires the plan job's count and digest (identical
+      # collection), then proves it ran exactly its planned tests once each, all passed.
       - name: Run backend test shard
-        env:
-          PYTEST_OUTCOMES_FILE: ${{ runner.temp }}/backend-tests-shard-${{ matrix.shard }}.json
         run: |
           set -euo pipefail
-          mapfile -t files < <(python tools/ci/pytest_shards.py files --shard "$SHARD" --shards "$BACKEND_TEST_SHARDS")
+          planned="$RUNNER_TEMP/planned.txt"
+          outcomes="$RUNNER_TEMP/outcomes.json"
+          mapfile -t files < <(python tools/ci/pytest_shards.py files --shard "$SHARD" --shards "$BACKEND_TEST_SHARDS" \
+            --expect-count "$EXPECTED_COUNT" --expect-digest "$EXPECTED_DIGEST" --planned-out "$planned")
           # Without paths pytest would run its default test paths — never let an empty plan pass silently.
           if [ "${#files[@]}" -eq 0 ]; then echo "shard $SHARD has no test files" >&2; exit 1; fi
-          echo "shard $SHARD/$BACKEND_TEST_SHARDS: ${#files[@]} test files"
-          python -m pytest -q -p tools.ci.pytest_outcomes "${files[@]}"
-
-      - name: Upload shard outcomes
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: backend-tests-outcomes-${{ matrix.shard }}
-          path: ${{ runner.temp }}/backend-tests-shard-${{ matrix.shard }}.json
-          if-no-files-found: error
-          retention-days: 7
+          echo "shard $SHARD/$BACKEND_TEST_SHARDS: ${#files[@]} test files, $(wc -l < "$planned") planned tests"
+          status=0
+          PYTEST_OUTCOMES_FILE="$outcomes" python -m pytest -q -p tools.ci.pytest_outcomes "${files[@]}" || status=$?
+          python tools/ci/pytest_shards.py verify-shard --planned "$planned" --outcomes "$outcomes"
+          exit "$status"
 
   backend-tests-verify:
     name: backend-tests-verify
     needs: [backend-test-plan, backend-tests]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-
-      - name: Setup Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.13"
-
-      - name: Download the full collection
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: backend-tests-collected
-          path: ${{ runner.temp }}/plan
-
-      - name: Download shard outcomes
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          pattern: backend-tests-outcomes-*
-          path: ${{ runner.temp }}/results
-          merge-multiple: true
-
-      # Fails unless the shards together ran every collected test exactly once and all passed.
-      - name: Verify that every collected test ran once and passed
-        run: python tools/ci/pytest_shards.py verify --collected "$RUNNER_TEMP/plan/collected.txt" --results "$RUNNER_TEMP/results"
+      # The plan job proved the shards partition the collection; every shard proved it ran
+      # its planned tests on the identical collection, once each and all passed. Requiring
+      # all of them to succeed therefore proves that every collected test ran once and passed.
+      - name: Require the plan and every shard to have succeeded
+        env:
+          PLAN_RESULT: ${{ needs.backend-test-plan.result }}
+          SHARDS_RESULT: ${{ needs.backend-tests.result }}
+          COUNT: ${{ needs.backend-test-plan.outputs.count }}
+        run: |
+          echo "plan: $PLAN_RESULT; shards: $SHARDS_RESULT; collected tests: ${COUNT:-unknown}"
+          if [ "$PLAN_RESULT" != "success" ] || [ "$SHARDS_RESULT" != "success" ] || [ -z "$COUNT" ]; then
+            echo "backend test verification failed" >&2
+            exit 1
+          fi
+          echo "OK: all $COUNT collected backend tests ran exactly once and passed"
 
   backend-smoke:
     name: backend-smoke
@@ -224,7 +209,8 @@ jobs:
         run: node --check static/app.js
 
       - name: Run Staff-UX prototype tests
-        run: node --test prototype/staff-ux/tests/
+        # Explicit files: Node 22 does not accept a directory argument for --test.
+        run: node --test prototype/staff-ux/tests/*.test.mjs
 
       - name: Setup Python
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5

@@ -64,14 +64,27 @@ def test_backend_shards_cover_the_declared_count_and_are_verified():
     data = _ci()
     count = int(data["env"]["BACKEND_TEST_SHARDS"])
     jobs = data["jobs"]
-    assert [int(x) for x in jobs["backend-tests"]["strategy"]["matrix"]["shard"]] == list(range(1, count + 1))
-    assert jobs["backend-tests"]["strategy"]["fail-fast"] == "false"
-    verify = jobs["backend-tests-verify"]
-    assert set(verify["needs"]) == {"backend-test-plan", "backend-tests"} and verify["if"] == "always()"
-    assert any("pytest_shards.py verify" in run for run in _run_steps(verify))
-    assert any("pytest_shards.py collect" in run for run in _run_steps(jobs["backend-test-plan"]))
-    shard_run = "\n".join(_run_steps(jobs["backend-tests"]))
+    shard_job = jobs["backend-tests"]
+    assert [int(x) for x in shard_job["strategy"]["matrix"]["shard"]] == list(range(1, count + 1))
+    assert shard_job["strategy"]["fail-fast"] == "false"
+    plan_job = jobs["backend-test-plan"]
+    assert any("pytest_shards.py collect" in run for run in _run_steps(plan_job))
+    assert set(plan_job["outputs"]) == {"count", "digest"}
+    shard_run = "\n".join(_run_steps(shard_job))
+    assert "--expect-count" in shard_run and "--expect-digest" in shard_run and "--planned-out" in shard_run
+    assert "pytest_shards.py verify-shard" in shard_run
     assert 'if [ "${#files[@]}" -eq 0 ]' in shard_run and "exit 1" in shard_run, "empty shard must fail"
+    verify_job = jobs["backend-tests-verify"]
+    assert set(verify_job["needs"]) == {"backend-test-plan", "backend-tests"} and verify_job["if"] == "always()"
+    verify_run = "\n".join(_run_steps(verify_job))
+    assert '"$PLAN_RESULT" != "success"' in verify_run and '"$SHARDS_RESULT" != "success"' in verify_run
+
+
+def test_gates_do_not_depend_on_artifact_storage():
+    # The account's artifact quota was exhausted on the first GitHub run; a release gate
+    # must not be blocked (or bypassed) by storage outside the repository's control.
+    text = CI.read_text(encoding="utf-8")
+    assert "upload-artifact" not in text and "download-artifact" not in text
 
 
 def test_no_job_narrows_or_short_circuits_the_backend_suite():
@@ -132,6 +145,40 @@ def test_verify_accepts_complete_passing_shards():
 def test_verify_rejects_incomplete_or_unclean_runs(label, results, needle):
     ids = _ids({"test_a.py": 3, "test_b.py": 2})
     problems = shards.verify(ids, results(ids))
+    assert any(needle in p for p in problems), (label, problems)
+
+
+def test_partition_check_rejects_missing_duplicate_and_empty_shards():
+    ids = _ids({"test_a.py": 3, "test_b.py": 2, "test_c.py": 1})
+    assert shards.check_partition(ids, shards.plan(ids, 3)) == []
+    a, b, c = "backend/tests/test_a.py", "backend/tests/test_b.py", "backend/tests/test_c.py"
+    assert any("cover exactly" in p for p in shards.check_partition(ids, [[a], [b]]))
+    assert any("more than one shard" in p for p in shards.check_partition(ids, [[a, b], [b, c]]))
+    assert any("no test files" in p for p in shards.check_partition(ids, [[a, b, c], []]))
+
+
+def test_digest_is_order_independent_and_content_sensitive():
+    ids = _ids({"test_a.py": 3})
+    assert shards.digest(ids) == shards.digest(list(reversed(ids)))
+    assert shards.digest(ids) != shards.digest(ids[:-1])
+
+
+def test_verify_shard_accepts_exactly_the_planned_passing_tests():
+    planned = _ids({"test_a.py": 3})
+    assert shards.verify_shard(planned, _result(planned)) == []
+
+
+@pytest.mark.parametrize("label,result,needle", [
+    ("missing", lambda ids: _result(ids[:2]), "not collected by the shard"),
+    ("extra", lambda ids: _result(ids + ["backend/tests/test_z.py::test_0"]), "not planned for it"),
+    ("not executed", lambda ids: {"collected": ids, "outcomes": dict.fromkeys(ids[:2], "passed"), "exitstatus": 0}, "no outcome"),
+    ("skipped", lambda ids: _result(ids, "skipped"), "'skipped'"),
+    ("error", lambda ids: _result(ids, "error", 1), "'error'"),
+    ("exit status", lambda ids: _result(ids, "passed", 5), "exit status 5"),
+])
+def test_verify_shard_rejects_incomplete_or_unclean_shards(label, result, needle):
+    planned = _ids({"test_a.py": 3})
+    problems = shards.verify_shard(planned, result(planned))
     assert any(needle in p for p in problems), (label, problems)
 
 
