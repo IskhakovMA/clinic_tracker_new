@@ -1,5 +1,6 @@
 """Notifications MVP: consent, queue, worker, RBAC scope and PHI-safe audit."""
 from __future__ import annotations
+from backend.app import config
 
 import json
 import inspect

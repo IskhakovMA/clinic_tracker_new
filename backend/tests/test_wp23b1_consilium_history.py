@@ -108,7 +108,7 @@ def test_migration_v21_to_v22_keeps_every_clinical_row(client, tmp_path):
     _init(conn)
 
     # WP2.4-A/B/C/D: цепочка доводит v21 до текущей схемы (v26), а не только до v22.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 26
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27   # combined-preaudit: v27 — мобильный доступ пациента
     for table in tables:
         after = [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")]
         # Старые столбцы каждой строки — побайтно прежние; новые — только значения по умолчанию.

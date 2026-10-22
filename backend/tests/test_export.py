@@ -1,4 +1,5 @@
 import json
+from backend.app import config
 
 from .conftest import make_patient_payload, current_schema_version
 

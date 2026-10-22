@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from fastapi.responses import JSONResponse
 
 from .. import audit, config, idempotency, identity, policy, store
-from ..deps import get_db, require_active_password, require_csrf, user_rate_limit
+from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf, user_rate_limit
 from ..models import (
     ChecklistItemIn,
     ConsiliumDecisionMarkIn,
@@ -22,10 +22,11 @@ from ..models import (
     NoteIn,
     PatientCreateIn,
     PatientFieldUpdateIn,
+    PortalAccessLinkIn,
     StageChangeIn,
     TreatingDoctorIn,
 )
-from ..services import patient_attention, patient_create, patient_duplicates, patient_policy
+from ..services import patient_attention, patient_create, patient_duplicates, patient_policy, portal_access
 
 router = APIRouter(prefix="/api/patients", tags=["patients"])
 
@@ -252,6 +253,80 @@ def close_attention_issue(
     if issue is None:
         _not_found()
     return {"issue": issue, "attention": patient_attention.list_for_patient(conn, user, patient_id)}
+
+
+@router.get("/{patient_id}/portal-access")
+def get_portal_access(
+    patient_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Состояние мобильного доступа. Видно всем, кто видит карточку, включая
+    read-only роли: охват доступа — управленческая информация."""
+    _require_readable(conn, user, patient_id)
+    return {
+        "access": portal_access.get_state(conn, patient_id),
+        "canManage": policy.can_manage_portal_access(conn, user, patient_id),
+        "canRevoke": policy.can_revoke_portal_access(conn, user, patient_id),
+    }
+
+
+# Лимит частоты обязателен именно здесь: ответ отличает занятый адрес от
+# свободного, то есть без него операция работает как безлимитный оракул
+# «есть ли такой пациент в клинике».
+@router.put(
+    "/{patient_id}/portal-access",
+    dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("portal_access_link", 10))],
+)
+def link_portal_access(
+    patient_id: str,
+    body: PortalAccessLinkIn,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Привязать или сменить адрес мобильного доступа."""
+    _require_readable(conn, user, patient_id)
+    if not policy.can_manage_portal_access(conn, user, patient_id):
+        _forbidden(conn, user, "action=portal_access_manage")
+    try:
+        access = portal_access.link_email(conn, user, patient_id, body)
+    except portal_access.EmailAlreadyLinked:
+        # Ответ не подтверждает, какой именно карточке принадлежит адрес.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Этот адрес уже используется для мобильного доступа другого пациента",
+        ) from None
+    return {
+        "access": access,
+        "canManage": True,
+        "canRevoke": policy.can_revoke_portal_access(conn, user, patient_id),
+    }
+
+
+@router.delete(
+    "/{patient_id}/portal-access",
+    dependencies=[Depends(require_csrf), Depends(abuse_rate_limit("portal_access_revoke", 20))],
+)
+def revoke_portal_access(
+    patient_id: str,
+    conn: sqlite3.Connection = Depends(get_db),
+    user: policy.CurrentUser = Depends(require_active_password),
+):
+    """Отключить мобильный доступ — защитное действие, доступное и лечащему врачу."""
+    _require_readable(conn, user, patient_id)
+    if not policy.can_revoke_portal_access(conn, user, patient_id):
+        _forbidden(conn, user, "action=portal_access_revoke")
+    access = portal_access.revoke(conn, user, patient_id)
+    if access is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Мобильный доступ не настроен",
+        )
+    return {
+        "access": access,
+        "canManage": policy.can_manage_portal_access(conn, user, patient_id),
+        "canRevoke": True,
+    }
 
 
 @router.patch("/{patient_id}", dependencies=[Depends(require_csrf)])

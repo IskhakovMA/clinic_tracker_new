@@ -76,7 +76,10 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v24: idempotency keys of creation and import, history of processed import files (WP2.4-B).
 # v25: confirmations of possible duplicates (WP2.4-C).
 # v26: registry of possible duplicates, erroneous marks of patient cards (WP2.4-D).
-SCHEMA_VERSION = 26
+# v27: patient_portal_access — managed mobile access for an existing patient card
+#      (Patient Portal stage 1; built as v9→v10 on the earlier line, carried here as an
+#      additive migration after v26 — see db.migrate_v26_to_v27).
+SCHEMA_VERSION = 27
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 

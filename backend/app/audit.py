@@ -143,6 +143,16 @@ NOTIFICATION_TEMPLATE_UPDATED = "notification_template_updated"
 # Analytics
 ANALYTICS_REPORT_EXPORTED = "analytics_report_exported"
 
+# Мобильный доступ пациента (Patient Portal identity).
+# Детали событий содержат только статус и признак наличия адреса —
+# сам адрес, телефон, ФИО и медицинские данные в журнал не попадают.
+PORTAL_ACCESS_LINKED = "portal_access_linked"
+PORTAL_ACCESS_EMAIL_CHANGED = "portal_access_email_changed"
+PORTAL_ACCESS_REVOKED = "portal_access_revoked"
+# Неудачная привязка: адрес уже занят другой карточкой. Пишется, чтобы
+# перебор адресов не оставался невидимым; значение адреса не попадает.
+PORTAL_ACCESS_CONFLICT = "portal_access_conflict"
+
 # Internal employee notification center
 INTERNAL_NOTIFICATION_READ = "internal_notification_read"
 INTERNAL_NOTIFICATION_READ_ALL = "internal_notification_read_all"

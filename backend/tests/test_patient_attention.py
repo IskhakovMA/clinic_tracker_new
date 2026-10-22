@@ -1,4 +1,5 @@
 import json
+from backend.app import config
 
 from .conftest import TEST_PASSWORD, create_account, create_department, get_conn, login, make_patient_payload, current_schema_version
 

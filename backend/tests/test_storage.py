@@ -1,4 +1,5 @@
 import sqlite3
+from backend.app import config
 
 from .conftest import make_patient_payload, current_schema_version, event_add_body, unsigned_import
 

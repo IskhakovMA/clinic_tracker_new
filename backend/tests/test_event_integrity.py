@@ -415,6 +415,8 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
         for table in ("patient_erroneous_state", "patient_erroneous_marks", "patient_duplicate_reviews",
                       "patient_duplicate_candidates", "patient_duplicate_scans"):
             conn.execute(f"DROP TABLE {table}")
+        # combined-preaudit (v27): таблица мобильного доступа пациента — вычитается целиком.
+        conn.execute("DROP TABLE patient_portal_access")
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
     conn.close()

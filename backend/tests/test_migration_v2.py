@@ -5,6 +5,7 @@ nullable-связи, повторный запуск, backup/restore и check-db
 совместимость старого JSON-формата импорта.
 """
 import json
+from backend.app import config
 import sqlite3
 from pathlib import Path
 

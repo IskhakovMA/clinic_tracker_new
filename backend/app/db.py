@@ -538,6 +538,25 @@ CREATE TABLE IF NOT EXISTS patient_erroneous_state (
     marked_at TEXT NOT NULL
 );
 
+-- Patient Portal, этап 1 (v27; на прежней линии — v9→v10): управляемый мобильный
+-- доступ существующей карточки. Одна строка на карточку; email_normalized —
+-- UNIQUE COLLATE NOCASE («один адрес — одна карточка» даже при ненормализующей записи).
+CREATE TABLE IF NOT EXISTS patient_portal_access (
+    patient_id TEXT PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+    email_normalized TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    status TEXT NOT NULL CHECK (status IN ('linked', 'active', 'revoked')),
+    linked_at TEXT NOT NULL,
+    linked_by_user_id TEXT REFERENCES users(id),
+    activated_at TEXT,
+    enrollment_state TEXT NOT NULL DEFAULT 'none'
+        CHECK (enrollment_state IN ('none', 'totp_enrolled')),
+    last_login_at TEXT,
+    revoked_at TEXT,
+    revoked_by_user_id TEXT REFERENCES users(id),
+    updated_at TEXT NOT NULL,
+    CHECK (status <> 'revoked' OR revoked_at IS NOT NULL)
+);
+
 """
 
 # Индексы создаются после миграции: часть из них ссылается на колонки,
@@ -606,6 +625,8 @@ CREATE INDEX IF NOT EXISTS idx_consilium_patient_open
 CREATE UNIQUE INDEX IF NOT EXISTS uq_consilium_appointment_slot
     ON oncology_consilium_appointments(scheduled_date, scheduled_time, consilium_group)
     WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_portal_access_status
+    ON patient_portal_access(status);
 """
 
 # Роли — справочник, а не бизнес-конфигурация: наполняется всегда.
@@ -655,6 +676,7 @@ REQUIRED_TABLES = (
     "patient_duplicate_reviews",
     "patient_erroneous_marks",
     "patient_erroneous_state",
+    "patient_portal_access",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -2051,6 +2073,72 @@ def schema_version_problem(conn: sqlite3.Connection) -> str | None:
     return None
 
 
+def _rebuild_portal_access_nocase(conn: sqlite3.Connection) -> None:
+    """Добавить COLLATE NOCASE в уже созданную таблицу доступа.
+
+    SQLite не умеет менять коллацию колонки через ALTER, поэтому таблица
+    пересобирается — тем же приёмом, что и internal_notification_state в v6.
+    Нужно только для баз, созданных ранней сборкой v10 (до релиза); на свежей
+    базе SCHEMA_SQL уже создаёт таблицу правильно и функция ничего не делает.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'patient_portal_access'"
+    ).fetchone()
+    if row is None or "COLLATE NOCASE" in (row["sql"] or "").upper():
+        return
+    _execute_script(
+        conn,
+        """
+        CREATE TABLE IF NOT EXISTS patient_portal_access_nocase (
+            patient_id TEXT PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
+            email_normalized TEXT NOT NULL UNIQUE COLLATE NOCASE,
+            status TEXT NOT NULL CHECK (status IN ('linked', 'active', 'revoked')),
+            linked_at TEXT NOT NULL,
+            linked_by_user_id TEXT REFERENCES users(id),
+            activated_at TEXT,
+            enrollment_state TEXT NOT NULL DEFAULT 'none'
+                CHECK (enrollment_state IN ('none', 'totp_enrolled')),
+            last_login_at TEXT,
+            revoked_at TEXT,
+            revoked_by_user_id TEXT REFERENCES users(id),
+            updated_at TEXT NOT NULL,
+            CHECK (status <> 'revoked' OR revoked_at IS NOT NULL)
+        );
+        INSERT OR IGNORE INTO patient_portal_access_nocase
+            (patient_id, email_normalized, status, linked_at, linked_by_user_id,
+             activated_at, enrollment_state, last_login_at, revoked_at, revoked_by_user_id, updated_at)
+        SELECT patient_id, email_normalized, status, linked_at, linked_by_user_id,
+               activated_at, enrollment_state, last_login_at, revoked_at, revoked_by_user_id, updated_at
+        FROM patient_portal_access;
+        DROP TABLE patient_portal_access;
+        ALTER TABLE patient_portal_access_nocase RENAME TO patient_portal_access;
+        """
+    )
+
+
+def migrate_v26_to_v27(conn: sqlite3.Connection) -> None:
+    """v26 → v27: managed mobile access for an existing patient record (Patient Portal, stage 1).
+
+    The feature was built as v9 → v10 on the earlier feat/executive-dashboard-redesign
+    line; there v10 meant this table, here v10…v26 are the consilium, medical
+    integrity and duplicate-registry migrations. It is carried as an additive step
+    after v26: the table comes from SCHEMA_SQL (IF NOT EXISTS), nothing else is
+    touched, a patient without a row simply has no mobile access.
+
+    A database written by that earlier build (schema_version = 10 with this table)
+    is migrated like any older base: every step checks the structure, so the
+    consilium and integrity migrations are applied and the existing access rows
+    are kept as they are.
+
+    `email_normalized` is UNIQUE COLLATE NOCASE: the application normalises the
+    address before writing, and the collation keeps «один email — одна карточка»
+    true even for a writer that forgets to — the same belt-and-braces as
+    `users.username`.
+    """
+    _execute_script(conn, SCHEMA_SQL)
+    _rebuild_portal_access_nocase(conn)
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -2095,6 +2183,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v24_to_v25(conn)         # confirmations of possible duplicates
         _ensure_notification_schema(conn)
         migrate_v25_to_v26(conn)         # duplicate registry, erroneous marks (after notification rebuilds)
+        migrate_v26_to_v27(conn)         # patient mobile access (Patient Portal stage 1)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -2128,9 +2217,14 @@ def init_db(conn: sqlite3.Connection) -> None:
         elif row["version"] == 7:
             migrate_v7_to_v8(conn)
             migrate_v8_to_v9(conn)
+            migrate_v9_to_v10(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 8:
             migrate_v8_to_v9(conn)
+            migrate_v9_to_v10(conn)
+            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
+        elif row["version"] == 9:
+            migrate_v9_to_v10(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 9:
             migrate_v9_to_v10(conn)

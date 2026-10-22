@@ -1,4 +1,5 @@
 import json
+from backend.app import config
 import sqlite3
 from pathlib import Path
 

@@ -203,13 +203,18 @@ def test_current_and_stable_backups_report_their_build(auth_client, tmp_path):
     assert maintenance.validate_backup(current)["source_build"] == "current"
 
 
-@pytest.mark.parametrize("case", ["portal_v10", "max_v17_plus_portal", "v9_with_consilium", "max_v12_unverified"])
+# Интеграция combined-preaudit: сборка Patient Portal a3fbe00 (v10 = v9 + patient_portal_access)
+# стала проверенной (restore_builds.json, «portal-a3fbe00»; восстановление ее копии —
+# test_integration_preaudit). Отклоняется по-прежнему все, что лишь похоже на нее:
+# v10 с измененной таблицей портала.
+@pytest.mark.parametrize("case", ["portal_v10_modified", "max_v17_plus_portal", "v9_with_consilium", "max_v12_unverified"])
 def test_unverified_builds_with_plausible_numbers_are_refused(auth_client, tmp_path, case):
     from backend.app import maintenance
     live = _live(auth_client)
     before = _digest(live)
-    if case == "portal_v10":
+    if case == "portal_v10_modified":
         backup = _v9_backup(tmp_path, edit=lambda c: (c.execute(PORTAL_TABLE),
+                            c.execute("ALTER TABLE patient_portal_access ADD COLUMN unverified_note TEXT"),
                             c.execute("UPDATE schema_version SET version = 10")), header=10)
     elif case == "max_v17_plus_portal":
         backup = _v9_backup(tmp_path, edit=lambda c: c.execute(PORTAL_TABLE), header=17, fixture=MAX_V17_FIXTURE)

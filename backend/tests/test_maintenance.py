@@ -1,4 +1,5 @@
 import base64
+from backend.app import config
 import json
 import os
 import sqlite3
