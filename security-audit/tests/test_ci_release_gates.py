@@ -125,7 +125,8 @@ def test_shard_plan_is_a_deterministic_partition_of_files():
 
 
 def _result(ids, outcome="passed", exitstatus=0):
-    return {"collected": list(ids), "outcomes": {i: outcome for i in ids}, "exitstatus": exitstatus}
+    return {"collected": list(ids), "outcomes": {i: outcome for i in ids}, "runs": {i: 1 for i in ids},
+            "exitstatus": exitstatus}
 
 
 def test_verify_accepts_complete_passing_shards():
@@ -171,7 +172,15 @@ def test_verify_shard_accepts_exactly_the_planned_passing_tests():
 @pytest.mark.parametrize("label,result,needle", [
     ("missing", lambda ids: _result(ids[:2]), "not collected by the shard"),
     ("extra", lambda ids: _result(ids + ["backend/tests/test_z.py::test_0"]), "not planned for it"),
-    ("not executed", lambda ids: {"collected": ids, "outcomes": dict.fromkeys(ids[:2], "passed"), "exitstatus": 0}, "no outcome"),
+    ("not executed", lambda ids: {**_result(ids), "outcomes": dict.fromkeys(ids[:2], "passed")}, "no outcome"),
+    # Review of 356f587: these were accepted before the strict set checks.
+    ("foreign passing outcome", lambda ids: {**_result(ids), "outcomes": {**dict.fromkeys(ids, "passed"),
+                                             "backend/tests/test_x.py::test_ghost": "passed"}}, "not planned for this shard"),
+    ("duplicate collection", lambda ids: {**_result(ids), "collected": ids + ids[:1]}, "collected more than once"),
+    ("executed twice", lambda ids: {**_result(ids), "runs": {**dict.fromkeys(ids, 1), ids[0]: 2}}, "not executed exactly once"),
+    ("execution count missing", lambda ids: {**_result(ids), "runs": dict.fromkeys(ids[:2], 1)}, "execution counts do not match"),
+    ("no execution counts", lambda ids: {k: v for k, v in _result(ids).items() if k != "runs"}, "no execution counts"),
+    ("exit status missing", lambda ids: {**_result(ids), "exitstatus": None}, "expected 0"),
     ("skipped", lambda ids: _result(ids, "skipped"), "'skipped'"),
     ("error", lambda ids: _result(ids, "error", 1), "'error'"),
     ("exit status", lambda ids: _result(ids, "passed", 5), "exit status 5"),
@@ -180,6 +189,38 @@ def test_verify_shard_rejects_incomplete_or_unclean_shards(label, result, needle
     planned = _ids({"test_a.py": 3})
     problems = shards.verify_shard(planned, result(planned))
     assert any(needle in p for p in problems), (label, problems)
+
+
+def test_verify_shard_rejects_duplicate_ids_in_the_plan():
+    planned = _ids({"test_a.py": 2})
+    assert any("duplicate id" in p for p in shards.verify_shard(planned + planned[:1], _result(planned)))
+
+
+def test_whole_suite_verify_rejects_foreign_outcomes_and_repeated_execution():
+    ids = _ids({"test_a.py": 3})
+    ghost = {**_result(ids), "outcomes": {**dict.fromkeys(ids, "passed"), "backend/tests/test_x.py::test_ghost": "passed"}}
+    assert any("absent from the full collection" in p for p in shards.verify(ids, {"s1": ghost}))
+    twice = {**_result(ids), "runs": {**dict.fromkeys(ids, 1), ids[0]: 2}}
+    assert any("not executed exactly once" in p for p in shards.verify(ids, {"s1": twice}))
+
+
+def test_outcome_plugin_counts_every_real_execution(tmp_path):
+    """Real pytest: the same file passed twice (--keep-duplicates) runs its test twice;
+    the plugin must report 2 executions, so verify-shard rejects it."""
+    import os
+    import subprocess
+    (tmp_path / "test_dup.py").write_text("def test_once():\n    assert True\n", encoding="utf-8")
+    out = tmp_path / "outcomes.json"
+    env = dict(os.environ, PYTHONPATH=str(ROOT), PYTEST_OUTCOMES_FILE=str(out), PYTHONDONTWRITEBYTECODE="1")
+    proc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "tools.ci.pytest_outcomes",
+                           "--keep-duplicates", "test_dup.py", "test_dup.py"], cwd=tmp_path, env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    result = json.loads(out.read_text(encoding="utf-8"))
+    assert result["runs"] == {"test_dup.py::test_once": 2}
+    problems = shards.verify_shard(["test_dup.py::test_once"], result)
+    assert any("not executed exactly once" in p for p in problems)
+    assert any("collected more than once" in p for p in problems)
 
 
 def test_verify_checks_the_expected_total():

@@ -85,27 +85,49 @@ def check_partition(node_ids: list[str], shards: list[list[str]]) -> list[str]:
     return problems
 
 
+def _dups(ids) -> list[str]:
+    return sorted(n for n, c in Counter(ids).items() if c > 1)
+
+
 def verify_shard(planned: list[str], result: dict) -> list[str]:
-    """One shard: collected exactly its planned tests; each has one outcome, passed."""
+    """One shard, strict set equality: planned == collected == outcome keys == run keys;
+    no duplicates; every test executed exactly once with outcome `passed`; exit status 0."""
     problems = []
-    collected = result.get("collected", [])
+    collected = list(result.get("collected", []))
     outcomes = result.get("outcomes", {})
-    if len(collected) != len(set(collected)):
-        problems.append("shard collected duplicate node ids")
-    if missing := sorted(set(planned) - set(collected)):
+    runs = result.get("runs")
+    if not planned:
+        problems.append("shard has no planned tests")
+    if dup := _dups(planned):
+        problems.append(f"{len(dup)} duplicate id(s) in the shard plan, e.g. {dup[:5]}")
+    if dup := _dups(collected):
+        problems.append(f"{len(dup)} test(s) collected more than once by the shard, e.g. {dup[:5]}")
+    plan_set, coll_set, out_set = set(planned), set(collected), set(outcomes)
+    if missing := sorted(plan_set - coll_set):
         problems.append(f"{len(missing)} planned test(s) not collected by the shard, e.g. {missing[:5]}")
-    if extra := sorted(set(collected) - set(planned)):
+    if extra := sorted(coll_set - plan_set):
         problems.append(f"{len(extra)} test(s) collected by the shard but not planned for it, e.g. {extra[:5]}")
-    if not_run := sorted(set(planned) - set(outcomes)):
+    if not_run := sorted(plan_set - out_set):
         problems.append(f"{len(not_run)} planned test(s) have no outcome (not executed), e.g. {not_run[:5]}")
+    if foreign := sorted(out_set - plan_set):
+        problems.append(f"{len(foreign)} outcome(s) for tests that are not planned for this shard, e.g. {foreign[:5]}")
+    if runs is None:
+        problems.append("outcome file has no execution counts ('runs'): outdated plugin")
+    else:
+        if set(runs) != plan_set:
+            problems.append(f"execution counts do not match the plan: missing {sorted(plan_set - set(runs))[:5]}, "
+                            f"foreign {sorted(set(runs) - plan_set)[:5]}")
+        if repeated := sorted(n for n, c in runs.items() if c != 1):
+            problems.append(f"{len(repeated)} test(s) not executed exactly once, e.g. "
+                            f"{[(n, runs[n]) for n in repeated[:5]]}")
     bad: dict[str, list[str]] = {}
     for node_id, outcome in outcomes.items():
         if outcome != "passed":
             bad.setdefault(outcome, []).append(node_id)
     for outcome, ids in sorted(bad.items()):
         problems.append(f"{len(ids)} test(s) with outcome {outcome!r}, e.g. {ids[:5]}")
-    if result.get("exitstatus") != 0:
-        problems.append(f"pytest exit status {result.get('exitstatus')}")
+    if result.get("exitstatus") != 0 or isinstance(result.get("exitstatus"), bool):
+        problems.append(f"pytest exit status {result.get('exitstatus')!r}, expected 0")
     return problems
 
 
@@ -141,6 +163,17 @@ def verify(collected: list[str], shard_results: dict[str, dict], expected_count:
         problems.append(f"{len(not_run)} collected test(s) have no outcome (not executed), e.g. {not_run[:5]}")
     if twice := sorted(n for n, v in outcomes.items() if len(v) > 1):
         problems.append(f"{len(twice)} test(s) executed by more than one shard, e.g. {twice[:5]}")
+    if foreign := sorted(set(outcomes) - full):
+        problems.append(f"{len(foreign)} outcome(s) for tests absent from the full collection, e.g. {foreign[:5]}")
+    run_counts: Counter = Counter()
+    for shard, data in shard_results.items():
+        if "runs" not in data:
+            problems.append(f"{shard}: outcome file has no execution counts ('runs')")
+        run_counts.update(data.get("runs", {}))
+    if repeated := sorted(n for n, c in run_counts.items() if c != 1):
+        problems.append(f"{len(repeated)} test(s) not executed exactly once, e.g. {[(n, run_counts[n]) for n in repeated[:5]]}")
+    if never := sorted(full - set(run_counts)):
+        problems.append(f"{len(never)} collected test(s) without an execution count, e.g. {never[:5]}")
     bad = Counter()
     examples: dict[str, list[str]] = {}
     for node_id, results in outcomes.items():
