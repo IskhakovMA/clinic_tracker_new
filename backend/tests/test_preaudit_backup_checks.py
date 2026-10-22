@@ -10,6 +10,7 @@ Synthetic data only.
 """
 import hashlib
 import sqlite3
+import uuid
 
 import pytest
 
@@ -58,22 +59,35 @@ VARIANTS = {
     "revoked_rule_weakened": _variant("revoked_at IS NOT NULL)", "revoked_at IS NOT NULL OR revoked_by_user_id IS NULL)"),
     "foreign_extra_check": _variant(REVOKED_CHECK, REVOKED_CHECK + ",\n    CHECK (length(email_normalized) > 0)"),
     "check_hidden_in_comment": _variant(STATUS_CHECK, " /* CHECK (status IN ('linked', 'active', 'revoked')) */"),
+    # Третье ревью: COLLATE столбца меняет смысл CHECK и сравнений, не отражаясь в индексах.
+    "enrollment_collate_nocase": _variant("DEFAULT 'none'\n", "DEFAULT 'none' COLLATE NOCASE\n"),
+    "status_collate_nocase": _variant("status TEXT NOT NULL CHECK", "status TEXT NOT NULL COLLATE NOCASE CHECK"),
+    "revoked_at_collate_nocase": _variant("revoked_at TEXT,", "revoked_at TEXT COLLATE NOCASE,"),
+    "linked_at_collate_rtrim": _variant("linked_at TEXT NOT NULL,", "linked_at TEXT NOT NULL COLLATE RTRIM,"),
+    "updated_at_collate_nocase": _variant("updated_at TEXT NOT NULL,", "updated_at TEXT NOT NULL COLLATE NOCASE,"),
+    "email_column_collate_binary": _variant("UNIQUE COLLATE NOCASE", "UNIQUE COLLATE BINARY"),
+    "patient_id_collate_nocase": _variant("patient_id TEXT PRIMARY KEY", "patient_id TEXT COLLATE NOCASE PRIMARY KEY"),
 }
 FOREIGN_TRIGGER = """CREATE TRIGGER portal_rewrite AFTER INSERT ON patient_portal_access
     BEGIN UPDATE patient_portal_access SET status = 'active' WHERE patient_id = NEW.patient_id; END"""
 
 
 def _replace_portal_table(conn, ddl):
-    """Rebuild patient_portal_access with `ddl`, keeping every row."""
+    """Rebuild patient_portal_access with `ddl`, keeping every row, its index and
+    every trigger on or referring to it: the only difference is the DDL itself."""
     conn.execute("PRAGMA foreign_keys = OFF")
-    conn.execute("DROP TRIGGER IF EXISTS trg_erroneous_mark_requires_no_mobile_access")
+    triggers = conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+                            "AND sql LIKE '%patient_portal_access%'").fetchall()
+    for name, _ in triggers:
+        conn.execute(f'DROP TRIGGER "{name}"')
     conn.execute(ddl.replace("CREATE TABLE patient_portal_access (", "CREATE TABLE portal_tmp (", 1))
     conn.execute(f"INSERT INTO portal_tmp ({COLUMNS}) SELECT {COLUMNS} FROM patient_portal_access")  # nosec - test
     conn.execute("DROP TABLE patient_portal_access")
     conn.execute("ALTER TABLE portal_tmp RENAME TO patient_portal_access")
-    # Индекс пропал вместе с таблицей: возвращается тем же определением, чтобы
-    # отличие было ровно в проверяемом правиле.
+    # Индекс пропал вместе с таблицей: возвращается тем же определением.
     conn.execute("CREATE INDEX idx_portal_access_status\n    ON patient_portal_access(status)")
+    for _, sql in triggers:
+        conn.execute(sql)
 
 
 def _sha(path):
@@ -114,7 +128,8 @@ def test_modified_portal_table_is_not_the_verified_build(client, tmp_path, name)
         maintenance.identify_backup_build(path, 10)
 
 
-@pytest.mark.parametrize("name", ["no_checks_at_all", "status_allows_invalid", "revoked_rule_changed", "foreign_extra_check"])
+@pytest.mark.parametrize("name", ["no_checks_at_all", "status_allows_invalid", "revoked_rule_changed", "foreign_extra_check",
+                                  "enrollment_collate_nocase", "status_collate_nocase", "linked_at_collate_rtrim"])
 def test_restore_refuses_a_modified_v10_before_touching_the_live_database(auth_client, tmp_path, backup_key, name):
     from backend.app import maintenance
     fixture = _sql_fixture(tmp_path, name, lambda c: _replace_portal_table(c, VARIANTS[name]))
@@ -176,7 +191,8 @@ def test_check_database_does_not_pass_a_v27_portal_table_without_its_rules(clien
     assert "example.test" not in str(report)
 
 
-@pytest.mark.parametrize("name", ["no_checks_at_all", "status_allows_invalid"])
+@pytest.mark.parametrize("name", ["no_checks_at_all", "status_allows_invalid", "enrollment_collate_nocase",
+                                  "status_collate_nocase"])
 def test_current_version_backup_with_a_modified_portal_table_is_refused(auth_client, tmp_path, backup_key, name):
     from backend.app import maintenance
     from .test_restore_migration import _encrypt
@@ -208,6 +224,115 @@ def test_verified_and_migrated_databases_still_pass(client, tmp_path):
         conn.close()
         report = maintenance.check_database(path)
         assert report["ok"], report["problems"]
+
+
+PORTAL_COLUMN_NAMES = [c.strip() for c in COLUMNS.split(",")]
+
+
+@pytest.mark.parametrize("column", PORTAL_COLUMN_NAMES)
+def test_collate_change_of_any_column_is_detected(client, tmp_path, column):
+    """Не только enrollment_state: COLLATE любого столбца — другая структура."""
+    from backend.app import maintenance
+    import re
+    ddl, n = re.subn(rf"(?m)^(    {column} TEXT)", r"\1 COLLATE RTRIM", REFERENCE_DDL)
+    assert n == 1
+    path = _sqlite_from_fixture(tmp_path / f"{column}.sqlite", fixture=PORTAL_V10,
+                                edit=lambda c: _replace_portal_table(c, ddl))
+    with pytest.raises(maintenance.MaintenanceError, match="не совпадает ни с одной"):
+        maintenance.identify_backup_build(path, 10)
+    report = maintenance.check_database(_v27(tmp_path, f"{column}-v27", lambda c: _replace_portal_table(c, ddl)))
+    assert report["ok"] is False and any("patient_portal_access" in p for p in report["problems"])
+
+
+# ================================================================ 1b. CHECK rules by actual writes
+
+# Значения, отличающиеся от допустимых только регистром, и другие нарушения правил.
+# Эталонная таблица отклоняет каждое; допустимое значение принимается.
+CASE_PROBES = {
+    "status LINKED": {"status": "LINKED"},
+    "status Active": {"status": "Active"},
+    "status REVOKED with revoked_at": {"status": "REVOKED", "revoked_at": "2026-10-01"},
+    "status INVALID": {"status": "INVALID"},
+    "revoked without revoked_at": {"status": "revoked"},
+    "enrollment TOTP_ENROLLED": {"enrollment_state": "TOTP_ENROLLED"},
+    "enrollment Totp_Enrolled": {"enrollment_state": "Totp_Enrolled"},
+    "enrollment NONE": {"enrollment_state": "NONE"},
+}
+
+
+def _probe_row(pid, **cols):
+    values = {"patient_id": pid, "email_normalized": f"probe.{uuid.uuid4().hex[:8]}@example.test", "status": "linked",
+              "linked_at": "2026-10-01", "enrollment_state": "none", "updated_at": "2026-10-01", **cols}
+    return values
+
+
+def _try_insert(conn, values):
+    conn.execute("SAVEPOINT probe")
+    try:
+        conn.execute(f"INSERT INTO patient_portal_access ({', '.join(values)}) VALUES ({', '.join('?' * len(values))})",  # nosec
+                     tuple(values.values()))
+        return True
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.execute("ROLLBACK TO probe")
+        conn.execute("RELEASE probe")
+
+
+def _free_patient(conn):
+    return conn.execute("SELECT id FROM patients WHERE id NOT IN (SELECT patient_id FROM patient_portal_access) "
+                        "ORDER BY id LIMIT 1").fetchone()[0]
+
+
+def _assert_rules_enforced(conn):
+    pid = _free_patient(conn)
+    assert _try_insert(conn, _probe_row(pid)), "a valid row must be accepted"
+    assert _try_insert(conn, _probe_row(pid, status="revoked", revoked_at="2026-10-01", enrollment_state="totp_enrolled"))
+    accepted = [name for name, cols in CASE_PROBES.items() if _try_insert(conn, _probe_row(pid, **cols))]
+    assert accepted == []
+    taken = conn.execute("SELECT email_normalized FROM patient_portal_access LIMIT 1").fetchone()
+    if taken:                                                           # one address — one card, any case
+        assert not _try_insert(conn, _probe_row(pid, email_normalized=taken[0].upper()))
+
+
+def _with_patient(conn):
+    conn.execute("INSERT INTO patients (id, name, age, priority, stage, arrival, created_at) VALUES "
+                 "('probe-patient', 'Синтетик Пробный', 50, 'normal', 'exam', '2026-01-01', '2026-01-01T00:00:00+00:00')")
+
+
+def test_reference_and_current_tables_reject_case_variants_by_actual_writes(client, tmp_path):
+    from backend.app import db
+    # Проверенная portal-a3fbe00 как есть (v10) и после миграции до v27.
+    conn = sqlite3.connect(str(_sqlite_from_fixture(tmp_path / "a3f.sqlite", fixture=PORTAL_V10)))
+    _assert_rules_enforced(conn)
+    conn.close()
+    for name, edit in (("a3f-migrated", None), ("early-migrated", lambda c: _replace_portal_table(
+            c, REFERENCE_DDL.replace("UNIQUE COLLATE NOCASE", "UNIQUE")))):
+        path = _sqlite_from_fixture(tmp_path / f"{name}.sqlite", fixture=PORTAL_V10, edit=edit)
+        conn = db._connect(path)
+        db.init_db(conn)
+        _assert_rules_enforced(conn)
+        conn.close()
+    # Свежая v27.
+    conn = db._connect(_v27(tmp_path, "fresh-probe", _with_patient))
+    _assert_rules_enforced(conn)
+    conn.close()
+
+
+@pytest.mark.parametrize("name,probe", [("enrollment_collate_nocase", "enrollment TOTP_ENROLLED"),
+                                        ("status_collate_nocase", "status LINKED")])
+def test_collate_change_really_weakens_check_and_is_refused(client, tmp_path, name, probe):
+    """Почему COLLATE важен: измененная таблица принимает значение другого регистра."""
+    from backend.app import maintenance
+    path = _sqlite_from_fixture(tmp_path / f"{name}.sqlite", fixture=PORTAL_V10,
+                                edit=lambda c: _replace_portal_table(c, VARIANTS[name]))
+    conn = sqlite3.connect(str(path))
+    assert _try_insert(conn, _probe_row(_free_patient(conn), **CASE_PROBES[probe]))
+    conn.close()
+    with pytest.raises(maintenance.MaintenanceError, match="не совпадает ни с одной"):
+        maintenance.identify_backup_build(path, 10)
+    report = maintenance.check_database(_v27(tmp_path, f"{name}-v27", lambda c: _replace_portal_table(c, VARIANTS[name])))
+    assert report["ok"] is False and any("patient_portal_access" in p for p in report["problems"])
 
 
 # ================================================================ 2. fail-closed audit of a write-time UNIQUE conflict

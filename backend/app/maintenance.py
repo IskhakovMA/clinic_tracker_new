@@ -207,6 +207,8 @@ def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
 # (тип, NOT NULL, значение по умолчанию, первичный ключ, скрытые/вычисляемые),
 # уникальные индексы с коллацией, внешние ключи, каждое правило CHECK (текст
 # выражения после разбора на токены, с владельцем — столбцом или таблицей),
+# каждое определение столбца целиком (COLLATE, DEFAULT, GENERATED и прочее),
+# весь CREATE TABLE после разбора на токены, результат пробных записей,
 # параметры таблицы (WITHOUT ROWID, STRICT), явные индексы и все триггеры,
 # которые срабатывают на таблице или ссылаются на нее. Удаленное, измененное или
 # постороннее правило дает другую структуру. Для мобильного доступа это отличает
@@ -257,7 +259,12 @@ def _balanced(tokens: list[str], start: int) -> int:
 
 
 def _table_rules(sql: str | None) -> dict:
-    """Правила CHECK и параметры таблицы из ее CREATE TABLE."""
+    """Правила CHECK, определения столбцов и параметры таблицы из ее CREATE TABLE.
+
+    `column_definitions` — каждое определение (столбец или ограничение таблицы)
+    целиком: тип, COLLATE, DEFAULT, NOT NULL, ключи, CHECK, GENERATED. Атрибут,
+    который не виден ни в PRAGMA, ни в индексах (например COLLATE столбца,
+    меняющий смысл CHECK), здесь виден."""
     tokens = _sql_tokens(sql)
     open_at = tokens.index("(")
     close_at = _balanced(tokens, open_at)
@@ -283,7 +290,73 @@ def _table_rules(sql: str | None) -> dict:
                 i = end + 1
             else:
                 i += 1
-    return {"checks": sorted(checks), "options": " ".join(tokens[close_at + 1:])}
+    return {"checks": sorted(checks), "options": " ".join(tokens[close_at + 1:]),
+            "column_definitions": sorted(" ".join(d) for d in definitions)}
+
+
+# Пробные записи (по таблицам строгой сверки): правила проверяются не только по
+# тексту, но и фактической записью — в отдельной таблице в памяти, созданной из
+# того же CREATE TABLE. Сюда входят значения, отличающиеся только регистром.
+_PORTAL_BASE = {"patient_id": "p1", "email_normalized": "probe@example.test", "status": "linked",
+                "linked_at": "t", "enrollment_state": "none", "updated_at": "t"}
+_WRITE_PROBES = {
+    "patient_portal_access": (
+        ("valid", {}),
+        ("valid_revoked", {"status": "revoked", "revoked_at": "t"}),
+        ("valid_active_enrolled", {"status": "active", "activated_at": "t", "enrollment_state": "totp_enrolled"}),
+        ("status_upper", {"status": "LINKED"}),
+        ("status_mixed", {"status": "Active"}),
+        ("status_revoked_upper", {"status": "REVOKED", "revoked_at": "t"}),
+        ("status_unknown", {"status": "INVALID"}),
+        ("status_null", {"status": None}),
+        ("revoked_without_time", {"status": "revoked"}),
+        ("enrollment_upper", {"enrollment_state": "TOTP_ENROLLED"}),
+        ("enrollment_mixed", {"enrollment_state": "Totp_Enrolled"}),
+        ("enrollment_none_upper", {"enrollment_state": "NONE"}),
+        ("enrollment_unknown", {"enrollment_state": "sms"}),
+        ("email_null", {"email_normalized": None}),
+        ("email_case_duplicate", {"__second__": {"patient_id": "p2", "email_normalized": "PROBE@EXAMPLE.TEST"}}),
+        ("email_trailing_space_duplicate", {"__second__": {"patient_id": "p2", "email_normalized": "probe@example.test "}}),
+        ("patient_case_duplicate", {"__second__": {"patient_id": "P1", "email_normalized": "other@example.test"}}),
+    ),
+}
+_PROBE_BASES = {"patient_portal_access": _PORTAL_BASE}
+
+
+def _write_probes(table: str, create_sql: str | None) -> list | str | None:
+    """[[probe, accepted]] для пробных записей, или "error", если CREATE TABLE не выполнить."""
+    probes = _WRITE_PROBES.get(table)
+    tokens = _sql_tokens(create_sql)
+    if probes is None:
+        return None
+    if tokens[:3] != ["create", "table", table]:
+        return "error"
+    scratch = sqlite3.connect(":memory:")
+    try:
+        try:
+            scratch.execute(create_sql)      # один оператор; внешние ключи в пустой базе выключены
+        except sqlite3.Error:
+            return "error"
+        results = []
+        for name, change in probes:
+            second = change.get("__second__")
+            first = {**_PROBE_BASES[table], **{k: v for k, v in change.items() if k != "__second__"}}
+            rows = [first] + ([{**_PROBE_BASES[table], **second}] if second else [])
+            scratch.execute("SAVEPOINT probe")
+            accepted = True
+            try:
+                for row in rows:
+                    scratch.execute(f'INSERT INTO "{table}" ({", ".join(row)}) VALUES ({", ".join("?" * len(row))})',
+                                    tuple(row.values()))
+            except sqlite3.Error:
+                accepted = False
+            finally:
+                scratch.execute("ROLLBACK TO probe")
+                scratch.execute("RELEASE probe")
+            results.append([name, accepted])
+        return results
+    finally:
+        scratch.close()
 
 
 def _strict_table(conn: sqlite3.Connection, table: str) -> dict | None:
@@ -305,7 +378,8 @@ def _strict_table(conn: sqlite3.Connection, table: str) -> dict | None:
             "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'"))
         if table in tokens)
     return {"columns": columns, "indexes": sorted(indexes), "foreign_keys": foreign_keys,
-            **_table_rules(row[0]), "index_sql": index_sql, "triggers": triggers}
+            **_table_rules(row[0]), "ddl": " ".join(_sql_tokens(row[0])),
+            "write_probes": _write_probes(table, row[0]), "index_sql": index_sql, "triggers": triggers}
 
 
 def _strict_structure(conn: sqlite3.Connection, tables) -> dict[str, dict | None]:
