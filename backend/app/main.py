@@ -5,6 +5,7 @@ process on the same origin, so there is nothing to allow-list. If this is
 ever split into separate origins, CORS must be added back restrictively.
 """
 import logging
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import config, idempotency, process_guard, security
 from .db import SchemaVersionError, get_connection, init_db
-from .routes import ai, analytics, audit_log, auth, consilium, data_quality, importexport, internal_notifications, migrate, notifications, patients, staff, structure
+from .routes import ai, analytics, audit_log, auth, consilium, data_quality, duplicate_review, importexport, internal_notifications, migrate, notifications, patients, staff, structure
 
 logging.basicConfig(
     level=logging.DEBUG if config.DEBUG else logging.INFO,
@@ -182,8 +183,30 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+def _is_erroneous_write(exc: BaseException) -> bool:
+    while exc is not None:
+        if isinstance(exc, sqlite3.IntegrityError) and "patient_erroneous_readonly" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+@app.exception_handler(sqlite3.IntegrityError)
+async def integrity_error_handler(request: Request, exc: sqlite3.IntegrityError):
+    """WP2.4-D: запись в карточку, помеченную ошибочной, отклонила база (гонка с
+    пометкой). Ответ тот же, что у карточки вне области: 404 без подробностей."""
+    if _is_erroneous_write(exc):
+        logger.info("Write to an erroneous patient card rejected on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=404, content={"detail": "Patient not found"})
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
+    if _is_erroneous_write(exc):
+        logger.info("Write to an erroneous patient card rejected on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=404, content={"detail": "Patient not found"})
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
@@ -202,6 +225,7 @@ app.include_router(analytics.router)
 app.include_router(internal_notifications.router)
 app.include_router(staff.router)
 app.include_router(structure.router)
+app.include_router(duplicate_review.router)
 
 
 # Единственная точка входа приложения. Устаревшие страницы прежних версий

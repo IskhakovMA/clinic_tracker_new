@@ -1827,6 +1827,7 @@ const app = {
             data: !chair && (this.can('importData') || this.can('exportData')),
             staff: this.can('manageUsers'),
             structure: this.can('manageDepartments'),
+            duplicates: this.can('viewDuplicateRegistry'),
             audit: this.can('viewAudit'),
             settings: !chair,
         };
@@ -1977,6 +1978,7 @@ const app = {
         }
         if (view === 'analytics') this.renderAnalytics();
         if (view === 'quality') this.renderDataQuality();
+        if (view === 'duplicates') this.renderDuplicates();
         if (view === 'audit') this.renderAudit();
         if (view === 'settings') this.renderSettings();
         if (view === 'data') this.renderMigrationPanel();
@@ -6744,6 +6746,362 @@ const app = {
         this.openPatient(created.id);
     },
 
+    /* ========================================= ВОЗМОЖНЫЕ ДУБЛИ ПАЦИЕНТОВ */
+    // WP2.4-D. Раздел виден только разработчику и заместителю главного врача по
+    // онкологии; каждое действие сервер проверяет сам. Сведения о пациентах
+    // выводятся только как текст (el(..., {text})), без разметки.
+
+    DUPLICATE_DISCLAIMER: 'Совпадение данных не доказывает, что это один пациент.',
+    // Реестр загружается страницами: сервер отдает не более 200 строк за запрос.
+    DUPLICATE_PAGE_SIZE: 50,
+    duplicatesOffset: 0,
+    DUPLICATE_STATE_LABELS: {
+        open: 'Новый',
+        under_review: 'Техническая проверка',
+        needs_clinical_review: 'Нужно клиническое рассмотрение',
+        not_duplicate: 'Не дубль',
+        resolved: 'Решено: карточка помечена ошибочной',
+    },
+    DUPLICATE_REASON_LABELS: {
+        policy: 'Совпадает номер полиса ОМС',
+        name_age: 'Совпадают ФИО и возраст',
+        name_diagnosis: 'Совпадают ФИО и диагноз',
+        name_nosology: 'Совпадают ФИО и локализация',
+        phone: 'Совпадает телефон (слабый признак)',
+    },
+    DUPLICATE_STRENGTH_LABELS: { strong: 'Сильные признаки', medium: 'Средние признаки', weak: 'Слабые признаки' },
+    DUPLICATE_ACTION_LABELS: {
+        technical_review_started: 'Начата техническая проверка',
+        technical_note: 'Технический комментарий',
+        not_duplicate: 'Решение: не дубль',
+        needs_clinical_review: 'Передано на клиническое рассмотрение',
+        marked_erroneous: 'Карточка помечена ошибочной',
+        reopened: 'Кандидат открыт повторно',
+        mark_reverted: 'Пометка снята',
+    },
+
+    duplicateStateChip(state) {
+        const tone = state === 'resolved' ? 'good' : state === 'needs_clinical_review' ? 'danger'
+            : state === 'not_duplicate' ? 'neutral' : 'warning';
+        return el('span', { class: `chip chip--${tone}`, text: this.DUPLICATE_STATE_LABELS[state] || state });
+    },
+
+    duplicatePatientLine(p) {
+        if (!p || !p.exists) return el('span', { class: 'muted', text: 'Карточка отсутствует' });
+        const parts = [p.name, p.age ? `${p.age} лет` : ''].filter(Boolean).join(' · ');
+        return el('span', {}, [
+            el('span', { text: parts }),
+            p.erroneous ? el('span', { class: 'chip chip--danger', text: 'Ошибочная' }) : null,
+        ]);
+    },
+
+    async renderDuplicates({ resetPage = false } = {}) {
+        if (!this.can('viewDuplicateRegistry')) return this.showView('patients');
+        if (resetPage) this.duplicatesOffset = 0;
+        $('duplicatesScanBtn').classList.toggle('is-hidden', !this.can('scanDuplicates'));
+        const list = $('duplicatesList');
+        list.replaceChildren(el('p', { class: 'muted', text: 'Загрузка…' }));
+        $('duplicatesDetail').replaceChildren();
+        try {
+            const params = new URLSearchParams();
+            const state = $('duplicatesStateFilter').value;
+            const strength = $('duplicatesStrengthFilter').value;
+            if (state) params.set('state', state);
+            if (strength) params.set('strength', strength);
+            params.set('limit', String(this.DUPLICATE_PAGE_SIZE));
+            params.set('offset', String(this.duplicatesOffset));
+            let data = await apiGetJson(`/api/duplicates/candidates?${params}`);
+            if (!data.items.length && data.total > 0 && this.duplicatesOffset > 0) {
+                // Страница опустела (например, после решения по фильтру состояния) — последняя непустая.
+                this.duplicatesOffset = Math.floor((data.total - 1) / this.DUPLICATE_PAGE_SIZE) * this.DUPLICATE_PAGE_SIZE;
+                params.set('offset', String(this.duplicatesOffset));
+                data = await apiGetJson(`/api/duplicates/candidates?${params}`);
+            }
+            this.duplicates = { data, currentId: null };
+            this.renderDuplicatePager(data);
+            this.renderDuplicateList(data);
+            await this.renderErroneousCards();
+        } catch (e) {
+            list.replaceChildren(el('p', { class: 'muted', text: `Не удалось загрузить реестр: ${e.message}` }));
+        }
+    },
+
+    renderDuplicatePager(data) {
+        const first = data.total ? data.offset + 1 : 0;
+        const last = data.offset + data.items.length;
+        $('duplicatesPageInfo').textContent = data.total
+            ? `Показаны ${first}–${last} из ${data.total}` : 'Нет кандидатов';
+        $('duplicatesPrevBtn').disabled = data.offset <= 0;
+        $('duplicatesNextBtn').disabled = last >= data.total;
+    },
+
+    async moveDuplicatesPage(step) {
+        const data = this.duplicates && this.duplicates.data;
+        if (!data) return;
+        const next = this.duplicatesOffset + step * this.DUPLICATE_PAGE_SIZE;
+        if (next < 0 || next >= data.total) return;
+        this.duplicatesOffset = next;
+        await this.renderDuplicates();
+    },
+
+    renderDuplicateList(data) {
+        const stats = $('duplicatesStats');
+        stats.replaceChildren(...Object.entries(data.stateCounts || {}).map(([state, count]) => el('div', { class: 'stat' }, [
+            el('div', { class: 'stat__label', text: this.DUPLICATE_STATE_LABELS[state] || state }),
+            el('div', { class: 'stat__value', text: String(count) }),
+        ])));
+        const scan = data.lastScan;
+        $('duplicatesLastScan').textContent = scan
+            ? `Последнее сканирование: ${this.formatDateTime(scan.startedAt)} — ${scan.status === 'completed'
+                ? `проверено карточек: ${scan.patientsScanned}, пар: ${scan.pairsFound}` : `не завершено (${scan.errorCode || scan.status})`}`
+            : 'Сканирование еще не выполнялось.';
+        const list = $('duplicatesList');
+        if (!data.items.length) {
+            list.replaceChildren(el('p', { class: 'muted', text: 'Кандидатов нет.' }));
+            return;
+        }
+        list.replaceChildren(el('ul', { class: 'list' }, data.items.map(item => el('li', { class: 'list-row' }, [
+            el('div', {}, [
+                el('div', {}, [this.duplicateStateChip(item.state),
+                    el('span', { class: 'chip chip--neutral', text: this.DUPLICATE_STRENGTH_LABELS[item.strength] || item.strength })]),
+                el('div', {}, [this.duplicatePatientLine(item.patients[0])]),
+                el('div', {}, [this.duplicatePatientLine(item.patients[1])]),
+                el('div', { class: 'muted', text: item.reasonCodes.map(c => this.DUPLICATE_REASON_LABELS[c] || c).join('; ') }),
+                item.notFoundInLastScan ? el('div', { class: 'muted', text: 'Не найден при последнем сканировании' }) : null,
+                item.signalsChangedAt ? el('div', { class: 'muted', text: 'Признаки изменились после решения — нужна повторная оценка' }) : null,
+            ]),
+            el('button', { type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть',
+                on: { click: () => this.openDuplicateCandidate(item.id) } }),
+        ]))));
+    },
+
+    async openDuplicateCandidate(id) {
+        const box = $('duplicatesDetail');
+        box.replaceChildren(el('p', { class: 'muted', text: 'Загрузка…' }));
+        try {
+            const data = await apiGetJson(`/api/duplicates/candidates/${encodeURIComponent(id)}`);
+            this.duplicates.currentId = id;
+            this.renderDuplicateDetail(data);
+            box.scrollIntoView({ block: 'start' });
+        } catch (e) {
+            box.replaceChildren(el('p', { class: 'muted', text: `Не удалось открыть кандидата: ${e.message}` }));
+        }
+    },
+
+    duplicateCardBlock(card, data) {
+        if (!card.exists) return el('div', { class: 'panel panel--pad' }, el('p', { class: 'muted', text: 'Карточка отсутствует.' }));
+        const allowed = data.allowedActions || {};
+        const rows = [
+            ['ФИО', card.name], ['Возраст', card.age ? String(card.age) : '—'], ['Полис ОМС', card.maskedPolicy || '—'],
+            ['Диагноз', card.diagnosis || '—'], ['Этап', this.stageNames[card.stage] || card.stage || '—'], ['Лечащий врач', card.treatingDoctorName || '—'],
+            ['Отделение', card.departments || '—'], ['Создана', this.formatDateTime(card.createdAt)],
+        ];
+        const deps = card.dependencies || [];
+        const blocks = [
+            el('div', {}, rows.map(([k, v]) => el('p', {}, [el('span', { class: 'muted', text: k + ': ' }), el('span', { text: v })]))),
+            card.erroneous ? el('div', { class: 'alert alert--danger' }, [
+                el('strong', { text: 'Карточка помечена ошибочной' }),
+                el('p', { text: `С ${this.formatDateTime(card.markedAt)}. Исключена из активной работы; история сохранена.` }),
+            ]) : null,
+            deps.length ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: 'Есть значимые клинические зависимости — пометка ошибочной невозможна' }),
+                el('ul', {}, deps.map(d => el('li', { text: `${d.label}: ${d.count}` }))),
+                el('p', { text: 'Нужно отдельное клиническое рассмотрение. Медицинские записи этой карточки не изменяются.' }),
+            ]) : el('p', { class: 'muted', text: 'Значимых клинических зависимостей нет.' }),
+        ];
+        if ((allowed.markPatientIds || []).includes(card.id)) {
+            blocks.push(el('button', { type: 'button', class: 'btn btn--danger', text: 'Пометить эту карточку ошибочной',
+                on: { click: () => this.markDuplicateCard(data, card) } }));
+        }
+        if ((allowed.unmarkPatientIds || []).includes(card.id)) {
+            blocks.push(el('button', { type: 'button', class: 'btn btn--ghost', text: 'Снять пометку',
+                on: { click: () => this.unmarkErroneousCard(card.id, card.markId) } }));
+        }
+        return el('div', { class: 'panel panel--pad' }, blocks);
+    },
+
+    renderDuplicateDetail(data) {
+        const allowed = data.allowedActions || {};
+        const actions = [];
+        const act = (label, handler, cls = 'btn btn--ghost') => el('button', { type: 'button', class: cls, text: label, on: { click: handler } });
+        if (allowed.technicalStart) actions.push(act('Начать техническую проверку', () => this.duplicateTechnical(data, 'start')));
+        if (allowed.technicalNote) actions.push(act('Технический комментарий', () => this.duplicateTechnical(data, 'note')));
+        if (allowed.notDuplicate) actions.push(act('Не дубль', () => this.duplicateDecision(data, 'not_duplicate')));
+        if (allowed.needsClinicalReview) actions.push(act('Передать на клиническое рассмотрение', () => this.duplicateDecision(data, 'needs_clinical_review')));
+        if (allowed.reopen) actions.push(act('Открыть повторно', () => this.duplicateDecision(data, 'reopen')));
+        const warnings = [];
+        if (data.signalsOutdated) warnings.push('Признаки совпадения изменились после сканирования: сейчас — '
+            + ((data.currentReasonCodes || []).map(c => this.DUPLICATE_REASON_LABELS[c] || c).join('; ') || 'совпадений нет')
+            + '. Нужна повторная оценка.');
+        if (data.cardsChangedSinceScan) warnings.push('Данные карточек изменились после сканирования.');
+        if (data.signalsChangedAt) warnings.push('Признаки изменились после принятого решения — нужна повторная оценка.');
+        const confirmations = data.confirmations || null;
+        $('duplicatesDetail').replaceChildren(el('div', { class: 'panel panel--pad' }, [
+            el('h2', { class: 'panel__title', text: 'Кандидат в дубли' }),
+            el('p', { class: 'alert alert--info', text: data.disclaimer || this.DUPLICATE_DISCLAIMER }),
+            el('div', {}, [this.duplicateStateChip(data.state),
+                el('span', { class: 'chip chip--neutral', text: this.DUPLICATE_STRENGTH_LABELS[data.strength] || data.strength })]),
+            el('p', { text: `Признаки при сканировании: ${data.reasonCodes.map(c => this.DUPLICATE_REASON_LABELS[c] || c).join('; ')}` }),
+            ...warnings.map(w => el('p', { class: 'alert alert--warning', text: w })),
+            el('div', { class: 'grid-2' }, data.patients.map(card => this.duplicateCardBlock(card, data))),
+            actions.length ? el('div', { class: 'pagehead__actions' }, actions) : null,
+            confirmations ? el('div', {}, [
+                el('h3', { text: 'Подтверждения возможного дубля при создании или изменении полиса' }),
+                confirmations.length ? el('ul', { class: 'list' }, confirmations.map(c => el('li', { class: 'list-row' }, [
+                    el('span', { text: `${this.formatDateTime(c.createdAt)} · ${c.by || '—'} · совпадений: ${c.matchedPatientIds.length}` }),
+                    el('span', { class: 'muted', dataset: { reasonFor: c.id } }),
+                    el('button', { type: 'button', class: 'btn btn--ghost btn--sm', text: 'Показать причину (запись в журнал)',
+                        on: { click: (event) => this.showConfirmationReason(data.id, c.id, event.currentTarget) } }),
+                ]))) : el('p', { class: 'muted', text: 'Подтверждений нет.' }),
+            ]) : null,
+            el('h3', { text: 'История разбора' }),
+            data.reviews.length ? el('ul', { class: 'list' }, data.reviews.map(r => el('li', { class: 'list-row' }, [
+                el('span', { text: `${this.formatDateTime(r.at)} · ${r.by || '—'} · ${this.DUPLICATE_ACTION_LABELS[r.action] || r.action}` }),
+                r.reason ? el('span', { class: 'muted', text: r.reason }) : null,
+                r.dependencies.length ? el('span', { class: 'muted', text: `Зависимости: ${r.dependencies.length}` }) : null,
+            ]))) : el('p', { class: 'muted', text: 'Действий еще не было.' }),
+            data.marks.length ? el('h3', { text: 'Пометки карточек' }) : null,
+            data.marks.length ? el('ul', { class: 'list' }, data.marks.map(m => el('li', { class: 'list-row' }, [
+                el('span', { text: `${this.formatDateTime(m.at)} · ${m.by || '—'} · ${m.action === 'mark' ? 'пометка' : 'снятие пометки'}` }),
+                el('span', { class: 'muted', text: m.reason }),
+            ]))) : null,
+        ]));
+    },
+
+    askRegistryReason({ title, text, okLabel, required = true, label = 'Причина' }) {
+        return new Promise(resolve => {
+            $('registryReasonTitle').textContent = title;
+            $('registryReasonText').textContent = text;
+            $('registryReasonInput').value = '';
+            $('registryReasonLabel').textContent = required ? `${label} (обязательно)` : label;
+            $('registryReasonInput').required = required;
+            $('registryReasonError').classList.add('is-hidden');
+            $('registryReasonOkBtn').textContent = okLabel;
+            const form = $('registryReasonForm');
+            const finish = (value) => {
+                form.removeEventListener('submit', onSubmit);
+                $('registryReasonCancelBtn').removeEventListener('click', onCancel);
+                ui.pendingRegistryReasonCancel = null;
+                ui.closeModal('registryReasonModal');
+                resolve(value);
+            };
+            const onSubmit = (event) => {
+                event.preventDefault();
+                const value = $('registryReasonInput').value.trim();
+                if (required && !value) {
+                    $('registryReasonError').textContent = 'Укажите причину.';
+                    $('registryReasonError').classList.remove('is-hidden');
+                    return;
+                }
+                finish(value);
+            };
+            const onCancel = () => finish(null);
+            form.addEventListener('submit', onSubmit);
+            $('registryReasonCancelBtn').addEventListener('click', onCancel);
+            ui.pendingRegistryReasonCancel = onCancel;
+            ui.openModal('registryReasonModal');
+        });
+    },
+
+    async registryAction(request, success, reopenId) {
+        try {
+            await request();
+            ui.toast(success, 'good');
+        } catch (e) {
+            ui.toast(e.message, 'danger');
+        }
+        await this.renderDuplicates();
+        if (reopenId) await this.openDuplicateCandidate(reopenId);
+    },
+
+    async duplicateTechnical(data, action) {
+        const comment = await this.askRegistryReason({
+            title: action === 'start' ? 'Начать техническую проверку' : 'Технический комментарий',
+            text: 'Технический разбор не является клиническим решением.',
+            okLabel: 'Сохранить', required: action === 'note', label: 'Технический комментарий',
+        });
+        if (comment === null) return;
+        await this.registryAction(() => apiPost(`/api/duplicates/candidates/${encodeURIComponent(data.id)}/technical-review`,
+            { action, comment: comment || null, expectedVersion: data.version }), 'Сохранено.', data.id);
+    },
+
+    async duplicateDecision(data, decision) {
+        const titles = { not_duplicate: 'Решение: не дубль', needs_clinical_review: 'Передать на клиническое рассмотрение',
+            reopen: 'Открыть кандидата повторно' };
+        const reason = await this.askRegistryReason({ title: titles[decision], text: this.DUPLICATE_DISCLAIMER + ' Укажите причину решения.',
+            okLabel: 'Сохранить решение' });
+        if (!reason) return;
+        await this.registryAction(() => apiPost(`/api/duplicates/candidates/${encodeURIComponent(data.id)}/decision`,
+            { decision, reason, expectedVersion: data.version }), 'Решение сохранено.', data.id);
+    },
+
+    async markDuplicateCard(data, card) {
+        const reason = await this.askRegistryReason({
+            title: 'Пометить карточку ошибочной',
+            text: `Карточка «${card.name}» будет исключена из активной работы и станет доступна только для чтения. `
+                + 'Она не удаляется, история не переносится. Сервер заново проверит клинические зависимости.',
+            okLabel: 'Пометить ошибочной',
+        });
+        if (!reason) return;
+        await this.registryAction(() => apiPost(`/api/duplicates/candidates/${encodeURIComponent(data.id)}/mark`,
+            { patientId: card.id, reason, expectedVersion: data.version }), 'Карточка помечена ошибочной.', data.id);
+    },
+
+    async unmarkErroneousCard(patientId, markId) {
+        const reason = await this.askRegistryReason({ title: 'Снять пометку «ошибочная»',
+            text: 'Карточка вернется в обычную работу. История пометки сохранится.', okLabel: 'Снять пометку' });
+        if (!reason) return;
+        await this.registryAction(() => apiPost(`/api/duplicates/erroneous/${encodeURIComponent(patientId)}/unmark`,
+            { markId, reason }), 'Пометка снята.');
+    },
+
+    async showConfirmationReason(candidateId, confirmationId, button) {
+        try {
+            const result = await apiPost(`/api/duplicates/candidates/${encodeURIComponent(candidateId)}/confirmations/`
+                + `${encodeURIComponent(confirmationId)}/reason`);
+            const target = button.parentElement.querySelector(`[data-reason-for="${CSS.escape(confirmationId)}"]`);
+            if (target) target.textContent = result.reason;
+            button.remove();
+        } catch (e) {
+            ui.toast(`Не удалось показать причину: ${e.message}`, 'danger');
+        }
+    },
+
+    async runDuplicateScan() {
+        if (!this.can('scanDuplicates')) return;
+        const btn = $('duplicatesScanBtn');
+        btn.disabled = true;
+        try {
+            const result = await apiPost('/api/duplicates/scans');
+            ui.toast(`Сканирование завершено: карточек ${result.patientsScanned}, пар ${result.pairsFound}, новых ${result.pairsNew}.`, 'good');
+        } catch (e) {
+            ui.toast(`Сканирование не выполнено: ${e.message}`, 'danger');
+        } finally {
+            btn.disabled = false;
+        }
+        await this.renderDuplicates();
+    },
+
+    async renderErroneousCards() {
+        const box = $('duplicatesErroneous');
+        const data = await apiGetJson('/api/duplicates/erroneous');
+        if (!data.items.length) {
+            box.replaceChildren(el('p', { class: 'muted', text: 'Помеченных ошибочными карточек нет.' }));
+            return;
+        }
+        box.replaceChildren(el('ul', { class: 'list' }, data.items.map(card => el('li', { class: 'list-row' }, [
+            el('div', {}, [
+                this.duplicatePatientLine(card),
+                el('div', { class: 'muted', text: `Помечена ${this.formatDateTime(card.markedAt)} · ${card.markedBy || '—'}` }),
+                el('div', { class: 'muted', text: card.markReason }),
+            ]),
+            el('button', { type: 'button', class: 'btn btn--ghost btn--sm', text: 'Кандидат',
+                on: { click: () => this.openDuplicateCandidate(card.candidateId) } }),
+            this.can('markErroneous') ? el('button', { type: 'button', class: 'btn btn--ghost btn--sm', text: 'Снять пометку',
+                on: { click: () => this.unmarkErroneousCard(card.id, card.markId) } }) : null,
+        ]))));
+    },
+
     /* ========================================= ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ */
 
     malignantDiagnosisOptions() {
@@ -10040,6 +10398,12 @@ const app = {
 
         // Журнал аудита
         on('auditRefreshBtn', 'click', () => this.renderAudit());
+        on('duplicatesRefreshBtn', 'click', () => this.renderDuplicates());
+        on('duplicatesScanBtn', 'click', () => this.runDuplicateScan());
+        on('duplicatesStateFilter', 'change', () => this.renderDuplicates({ resetPage: true }));
+        on('duplicatesStrengthFilter', 'change', () => this.renderDuplicates({ resetPage: true }));
+        on('duplicatesPrevBtn', 'click', () => this.moveDuplicatesPage(-1));
+        on('duplicatesNextBtn', 'click', () => this.moveDuplicatesPage(1));
 
         // Закрытие модалок: клик по подложке и Escape
         for (const modal of document.querySelectorAll('.modal')) {
@@ -10079,6 +10443,10 @@ const app = {
 
     /** Закрытие окна «крестиком»/Escape должно вести себя как «Отмена». */
     dismissModal(id) {
+        if (id === 'registryReasonModal' && ui.pendingRegistryReasonCancel) {
+            ui.pendingRegistryReasonCancel();
+            return;
+        }
         if (id === 'confirmModal' && ui.pendingConfirmCancel) {
             ui.pendingConfirmCancel();
             return;

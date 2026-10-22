@@ -86,11 +86,22 @@ def load_current_user(conn: sqlite3.Connection, user_id: str) -> CurrentUser | N
 
 # --- область видимости пациентов ----------------------------------------
 
+# WP2.4-D: «активная карточка» — карточка, не помеченная ошибочной. Единая
+# политика: условие входит в patient_scope_filter, поэтому помеченная карточка
+# одновременно исчезает из списков, поиска, объектных проверок (чтение и запись —
+# 404), экспорта, аналитики, «Качества данных», уведомлений, календаря,
+# консилиума, AI-инструментов и проверки совпадений WP2.4-C. Сама карточка и ее
+# история не меняются; доступ к ней — только через реестр дублей (developer,
+# deputy_chief_oncology) по его отдельным проверкам прав.
+ACTIVE_PATIENT_SQL = "patients.id NOT IN (SELECT patient_id FROM patient_erroneous_state)"
+
+
 def patient_scope_filter(user: CurrentUser) -> tuple[str, list]:
     """SQL-условие видимости пациента для WHERE. Применяется ко ВСЕМ выборкам:
-    список, поиск, объектная проверка, экспорт, статистика, календарь."""
+    список, поиск, объектная проверка, экспорт, статистика, календарь.
+    Включает условие активной карточки (WP2.4-D, ACTIVE_PATIENT_SQL)."""
     if user.scope_strategy in (SCOPE_GLOBAL, SCOPE_GLOBAL_READONLY):
-        return "1 = 1", []
+        return ACTIVE_PATIENT_SQL, []
     if user.scope_strategy == SCOPE_BY_DEPARTMENT:
         if not user.department_ids:
             return "0 = 1", []
@@ -100,11 +111,11 @@ def patient_scope_filter(user: CurrentUser) -> tuple[str, list]:
                     SELECT ud.user_id FROM user_departments ud
                     JOIN departments d ON d.id = ud.department_id AND d.status = 'active'
                     WHERE ud.department_id IN ({marks})
-                )""",
+                ) AND {ACTIVE_PATIENT_SQL}""",
             list(user.department_ids),
         )
     if user.scope_strategy == SCOPE_BY_TREATING_DOCTOR:
-        return "patients.treating_doctor_user_id = ?", [user.id]
+        return f"patients.treating_doctor_user_id = ? AND {ACTIVE_PATIENT_SQL}", [user.id]
     # Неизвестная стратегия — fail-closed.
     return "0 = 1", []
 
@@ -312,6 +323,44 @@ def can_access_consilium(user: CurrentUser) -> bool:
     return can_book_consilium(user) or can_manage_consilium(user) or can_decide_consilium(user)
 
 
+# --- реестр возможных дублей (WP2.4-D; U1, U3, U7) -------------------------
+# Глобальный реестр видят только разработчик и заместитель главного врача по
+# онкологии. Права реестра не дают никаких прав на изменение диагнозов,
+# лечения, маршрутов, консилиумов и медицинской истории.
+
+def can_view_duplicate_registry(user: CurrentUser) -> bool:
+    return user.role_id in (ROLE_DEVELOPER, ROLE_DEPUTY_CHIEF)
+
+
+def can_scan_duplicates(user: CurrentUser) -> bool:
+    """Глобальное сканирование — техническая операция разработчика."""
+    return user.role_id == ROLE_DEVELOPER
+
+
+def can_technically_review_duplicates(user: CurrentUser) -> bool:
+    """Технический разбор и комментарии; клинических решений не дает."""
+    return user.role_id == ROLE_DEVELOPER
+
+
+def can_decide_duplicates(user: CurrentUser) -> bool:
+    """Клиническое решение по кандидату («не дубль», клиническое рассмотрение)."""
+    return user.role_id == ROLE_DEPUTY_CHIEF
+
+
+def can_mark_erroneous(user: CurrentUser) -> bool:
+    """Пометка карточки ошибочной (только без клинических зависимостей — сервис)."""
+    return user.role_id == ROLE_DEPUTY_CHIEF
+
+
+def can_unmark_erroneous(user: CurrentUser) -> bool:
+    return user.role_id == ROLE_DEPUTY_CHIEF
+
+
+def can_read_duplicate_confirmation_reasons(user: CurrentUser) -> bool:
+    """Причины подтверждений WP2.4-C — только в контексте клинического разбора."""
+    return user.role_id == ROLE_DEPUTY_CHIEF
+
+
 def can_import(user: CurrentUser, mode: str = "add") -> bool:
     if user.role_id == ROLE_CONSILIUM_CHAIR:
         return False
@@ -359,4 +408,10 @@ def permissions_payload(user: CurrentUser) -> dict:
         "markReferralCompletion": can_mark_referral_completion(user),
         "useConsiliumFavorites": can_use_chair_favorites(user),
         "consiliumChair": user.role_id == ROLE_CONSILIUM_CHAIR,
+        "viewDuplicateRegistry": can_view_duplicate_registry(user),
+        "scanDuplicates": can_scan_duplicates(user),
+        "reviewDuplicatesTechnically": can_technically_review_duplicates(user),
+        "decideDuplicates": can_decide_duplicates(user),
+        "markErroneous": can_mark_erroneous(user),
+        "readDuplicateConfirmationReasons": can_read_duplicate_confirmation_reasons(user),
     }

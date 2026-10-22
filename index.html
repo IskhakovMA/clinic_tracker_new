@@ -81,6 +81,7 @@
             <button type="button" class="nav__item" data-view="data">Импорт / Экспорт</button>
             <button type="button" class="nav__item is-hidden" data-view="staff">Сотрудники</button>
             <button type="button" class="nav__item is-hidden" data-view="structure">Структура</button>
+            <button type="button" class="nav__item is-hidden" data-view="duplicates">Возможные дубли</button>
             <button type="button" class="nav__item" data-view="audit">Журнал аудита</button>
             <button type="button" class="nav__item" data-view="settings">Настройки</button>
         </nav>
@@ -844,6 +845,52 @@
                 <div class="panel panel--pad" id="unresolvedPanel"></div>
             </section>
 
+            <section class="view is-hidden" id="view-duplicates">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title">Возможные дубли пациентов</h1>
+                        <p class="pagehead__subtitle">Совпадение данных не доказывает, что это один пациент. Ничего не объединяется и не удаляется.</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--primary is-hidden" id="duplicatesScanBtn">Запустить сканирование</button>
+                        <button type="button" class="btn btn--ghost" id="duplicatesRefreshBtn">Обновить</button>
+                    </div>
+                </div>
+                <p class="muted" id="duplicatesLastScan"></p>
+                <div class="stats" id="duplicatesStats"></div>
+                <div class="toolbar">
+                    <label class="field"><span class="field__label">Состояние</span>
+                        <select class="select" id="duplicatesStateFilter">
+                            <option value="">Все</option>
+                            <option value="open">Новые</option>
+                            <option value="under_review">Техническая проверка</option>
+                            <option value="needs_clinical_review">Нужно клиническое рассмотрение</option>
+                            <option value="not_duplicate">Не дубль</option>
+                            <option value="resolved">Решено</option>
+                        </select>
+                    </label>
+                    <label class="field"><span class="field__label">Признаки</span>
+                        <select class="select" id="duplicatesStrengthFilter">
+                            <option value="">Все</option>
+                            <option value="strong">Сильные</option>
+                            <option value="medium">Средние</option>
+                            <option value="weak">Слабые</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="panel panel--pad" id="duplicatesList"></div>
+                <div class="toolbar">
+                    <button type="button" class="btn btn--ghost" id="duplicatesPrevBtn" disabled>Назад</button>
+                    <span class="muted" id="duplicatesPageInfo" aria-live="polite"></span>
+                    <button type="button" class="btn btn--ghost" id="duplicatesNextBtn" disabled>Вперёд</button>
+                </div>
+                <div id="duplicatesDetail"></div>
+                <div class="panel panel--pad">
+                    <h2 class="panel__title">Карточки, помеченные ошибочными</h2>
+                    <div id="duplicatesErroneous"></div>
+                </div>
+            </section>
+
             <section class="view is-hidden" id="view-audit">
                 <div class="pagehead">
                     <div class="pagehead__text">
@@ -1377,6 +1424,24 @@
     </div>
 </div>
 
+<!-- МОДАЛКА: ПРИЧИНА РЕШЕНИЯ ПО РЕЕСТРУ ДУБЛЕЙ (WP2.4-D) -->
+<div class="modal" id="registryReasonModal" role="dialog" aria-modal="true" aria-labelledby="registryReasonTitle" hidden>
+    <div class="modal__box">
+        <div class="modal__head">
+            <h2 class="modal__title" id="registryReasonTitle">Причина решения</h2>
+        </div>
+        <form class="modal__body form" id="registryReasonForm">
+            <p class="alert alert--warning" id="registryReasonText"></p>
+            <p class="alert alert--danger is-hidden" id="registryReasonError" role="alert"></p>
+            <label class="field field--wide"><span class="field__label" id="registryReasonLabel">Причина</span><textarea class="textarea" id="registryReasonInput" rows="3" maxlength="2000"></textarea></label>
+        </form>
+        <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="registryReasonCancelBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="registryReasonForm" id="registryReasonOkBtn">Сохранить</button>
+        </div>
+    </div>
+</div>
+
 <!-- МОДАЛКА: ЭКСПОРТ -->
 <div class="modal" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle" hidden>
     <div class="modal__box">
@@ -1749,6 +1814,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=possible-duplicates-v44"></script>
+<script src="/static/app.js?v=duplicate-registry-v46"></script>
 </body>
 </html>

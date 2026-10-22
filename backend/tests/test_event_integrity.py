@@ -407,6 +407,14 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
         conn.execute("DROP TABLE import_files_processed")
         # WP2.4-C (v25): таблица подтверждений возможных дублей — вычитается целиком.
         conn.execute("DROP TABLE patient_duplicate_confirmations")
+        # WP2.4-D (v26): реестр возможных дублей и пометки карточек — вычитаются целиком
+        # (вместе с триггерами защиты помеченной карточки на таблицах v19).
+        for name in [r[0] for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'trg_erroneous_readonly_%'")]:
+            conn.execute(f"DROP TRIGGER {name}")
+        for table in ("patient_erroneous_state", "patient_erroneous_marks", "patient_duplicate_reviews",
+                      "patient_duplicate_candidates", "patient_duplicate_scans"):
+            conn.execute(f"DROP TABLE {table}")
         conn.execute("UPDATE schema_version SET version = 19")
     # Резервная копия опубликованной v19 принимается к восстановлению.
     conn.close()

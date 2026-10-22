@@ -978,7 +978,8 @@ def test_ai_schema_has_no_ai_tables(auth_client):
     # v23 (WP2.4-A) — только столбцы и триггеры происхождения карточки пациента;
     # v24 (WP2.4-B) — только таблицы ключей идемпотентности и истории файлов импорта;
     # v25 (WP2.4-C) — только таблица подтверждений возможных дублей пациентов.
-    assert config.SCHEMA_VERSION == 25
+    # v26 (WP2.4-D) — только таблицы реестра возможных дублей и пометок карточек.
+    assert config.SCHEMA_VERSION == 26
     tables = {
         row["name"]
         for row in get_conn().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()

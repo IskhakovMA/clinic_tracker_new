@@ -447,6 +447,97 @@ CREATE TABLE IF NOT EXISTS patient_duplicate_confirmations (
     CHECK ((operation = 'import') = (import_id IS NOT NULL))
 );
 
+-- WP2.4-D (v26). Глобальный реестр возможных дублей. Все таблицы реестра не
+-- имеют внешних ключей на patients (как audit_events): реестр — след проверки,
+-- он не мешает существующему удалению карточки и не меняет медицинских записей.
+
+-- Запуски сканирования: одновременно выполняется не более одного (частичный
+-- уникальный индекс по status = 'running'); результат публикуется одной
+-- транзакцией вместе с переводом запуска в completed. report — только агрегаты.
+CREATE TABLE IF NOT EXISTS patient_duplicate_scans (
+    id TEXT PRIMARY KEY,
+    status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'interrupted')),
+    started_by_user_id TEXT NOT NULL REFERENCES users(id),
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    patients_scanned INTEGER CHECK (patients_scanned IS NULL OR patients_scanned >= 0),
+    pairs_found INTEGER CHECK (pairs_found IS NULL OR pairs_found >= 0),
+    pairs_new INTEGER CHECK (pairs_new IS NULL OR pairs_new >= 0),
+    pairs_updated INTEGER CHECK (pairs_updated IS NULL OR pairs_updated >= 0),
+    error_code TEXT,
+    report TEXT CHECK (report IS NULL OR json_valid(report)),
+    CHECK ((status = 'running') = (finished_at IS NULL)),
+    CHECK (status != 'completed' OR (patients_scanned IS NOT NULL AND pairs_found IS NOT NULL))
+);
+
+-- Кандидат — пара карточек в каноническом порядке (a < b), одна запись на пару.
+-- state — проекция последней записи журнала разбора (триггеры); признаки
+-- совпадения — технические коды без персональных данных.
+CREATE TABLE IF NOT EXISTS patient_duplicate_candidates (
+    id TEXT PRIMARY KEY,
+    patient_a_id TEXT NOT NULL CHECK (length(patient_a_id) BETWEEN 1 AND 64),
+    patient_b_id TEXT NOT NULL CHECK (length(patient_b_id) BETWEEN 1 AND 64),
+    reason_codes TEXT NOT NULL CHECK (
+        json_valid(reason_codes) AND json_type(reason_codes) = 'array' AND json_array_length(reason_codes) >= 1
+    ),
+    strength TEXT NOT NULL CHECK (strength IN ('strong', 'medium', 'weak')),
+    source TEXT NOT NULL DEFAULT 'scan' CHECK (source = 'scan'),
+    state TEXT NOT NULL DEFAULT 'open'
+        CHECK (state IN ('open', 'under_review', 'needs_clinical_review', 'not_duplicate', 'resolved')),
+    first_scan_id TEXT NOT NULL REFERENCES patient_duplicate_scans(id),
+    last_scan_id TEXT NOT NULL REFERENCES patient_duplicate_scans(id),
+    detected_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    signals_changed_at TEXT,
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    CHECK (patient_a_id < patient_b_id),
+    UNIQUE (patient_a_id, patient_b_id)
+);
+
+-- Журнал разбора кандидата: только добавление.
+CREATE TABLE IF NOT EXISTS patient_duplicate_reviews (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    candidate_id TEXT NOT NULL REFERENCES patient_duplicate_candidates(id),
+    action TEXT NOT NULL CHECK (action IN (
+        'technical_review_started', 'technical_note', 'not_duplicate', 'needs_clinical_review',
+        'marked_erroneous', 'reopened', 'mark_reverted'
+    )),
+    state TEXT NOT NULL
+        CHECK (state IN ('open', 'under_review', 'needs_clinical_review', 'not_duplicate', 'resolved')),
+    reason TEXT CHECK (reason IS NULL OR (length(trim(reason)) >= 1 AND length(reason) <= 2000)),
+    dependency_codes TEXT CHECK (
+        dependency_codes IS NULL OR (json_valid(dependency_codes) AND json_type(dependency_codes) = 'array')
+    ),
+    patient_id TEXT CHECK (patient_id IS NULL OR length(patient_id) BETWEEN 1 AND 64),
+    reviewed_by_user_id TEXT NOT NULL REFERENCES users(id),
+    reviewed_at TEXT NOT NULL,
+    CHECK (reason IS NOT NULL OR action IN ('technical_review_started', 'needs_clinical_review'))
+);
+
+-- Пометка карточки ошибочной и ее снятие: только добавление. Снятие ссылается
+-- на снимаемую пометку (reverts_mark_id).
+CREATE TABLE IF NOT EXISTS patient_erroneous_marks (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
+    patient_id TEXT NOT NULL CHECK (length(patient_id) BETWEEN 1 AND 64),
+    candidate_id TEXT NOT NULL REFERENCES patient_duplicate_candidates(id),
+    action TEXT NOT NULL CHECK (action IN ('mark', 'unmark')),
+    reverts_mark_id TEXT,
+    reason TEXT NOT NULL CHECK (length(trim(reason)) >= 1 AND length(reason) <= 2000),
+    by_user_id TEXT NOT NULL REFERENCES users(id),
+    at TEXT NOT NULL,
+    CHECK ((action = 'unmark') = (reverts_mark_id IS NOT NULL))
+);
+
+-- Текущее состояние «ошибочная карточка»: проекция журнала пометок, которую
+-- ведут только триггеры журнала (строка есть ⇔ последняя запись — mark).
+CREATE TABLE IF NOT EXISTS patient_erroneous_state (
+    patient_id TEXT PRIMARY KEY,
+    mark_id TEXT NOT NULL UNIQUE,
+    marked_at TEXT NOT NULL
+);
+
 """
 
 # Индексы создаются после миграции: часть из них ссылается на колонки,
@@ -559,6 +650,11 @@ REQUIRED_TABLES = (
     "idempotency_keys",
     "import_files_processed",
     "patient_duplicate_confirmations",
+    "patient_duplicate_scans",
+    "patient_duplicate_candidates",
+    "patient_duplicate_reviews",
+    "patient_erroneous_marks",
+    "patient_erroneous_state",
 )
 
 NOTIFICATION_TEMPLATE_SEED = (
@@ -1662,6 +1758,254 @@ def migrate_v24_to_v25(conn: sqlite3.Connection) -> None:
         _ensure_trigger(conn, name, sql)
 
 
+# WP2.4-D (v26): реестр возможных дублей и пометка ошибочных карточек.
+DUPLICATE_REGISTRY_INDEX_SQL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_duplicate_scans_one_running "
+    "ON patient_duplicate_scans(status) WHERE status = 'running'",
+    "CREATE INDEX IF NOT EXISTS idx_duplicate_scans_started ON patient_duplicate_scans(started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_duplicate_candidates_state ON patient_duplicate_candidates(state)",
+    "CREATE INDEX IF NOT EXISTS idx_duplicate_candidates_b ON patient_duplicate_candidates(patient_b_id)",
+    "CREATE INDEX IF NOT EXISTS idx_duplicate_reviews_candidate ON patient_duplicate_reviews(candidate_id, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_erroneous_marks_patient ON patient_erroneous_marks(patient_id, seq)",
+)
+
+# Допустимые переходы состояния кандидата (действие: из каких состояний → в какое).
+# Сервис проверяет их сам; триггер — защита на уровне базы.
+DUPLICATE_REVIEW_TRANSITIONS = {
+    "technical_review_started": (("open",), "under_review"),
+    "not_duplicate": (("open", "under_review", "needs_clinical_review"), "not_duplicate"),
+    "needs_clinical_review": (("open", "under_review"), "needs_clinical_review"),
+    "marked_erroneous": (("open", "under_review"), "resolved"),
+    "reopened": (("not_duplicate",), "open"),
+    "mark_reverted": (("resolved",), "open"),
+}
+
+
+# Записи о пометке и ее снятии допустимы только вместе с самой пометкой
+# (снятием) этой карточки по этому кандидату в журнале patient_erroneous_marks.
+_REVIEW_JOURNAL_CONDITIONS = {
+    "marked_erroneous": """EXISTS (SELECT 1 FROM patient_erroneous_state s
+                                   JOIN patient_erroneous_marks m ON m.id = s.mark_id
+                                   WHERE s.patient_id = NEW.patient_id AND m.candidate_id = NEW.candidate_id)""",
+    "mark_reverted": """EXISTS (SELECT 1 FROM patient_erroneous_marks m
+                                WHERE m.action = 'unmark' AND m.patient_id = NEW.patient_id
+                                  AND m.candidate_id = NEW.candidate_id
+                                  AND NOT EXISTS (SELECT 1 FROM patient_erroneous_state s
+                                                  WHERE s.patient_id = NEW.patient_id))""",
+}
+
+
+def _review_transition_sql() -> str:
+    current = "(SELECT state FROM patient_duplicate_candidates WHERE id = NEW.candidate_id)"
+    allowed = [f"(NEW.action = 'technical_note' AND NEW.state = {current})"]
+    for action, (sources, target) in DUPLICATE_REVIEW_TRANSITIONS.items():
+        src = ", ".join(f"'{x}'" for x in sources)
+        extra = f" AND {_REVIEW_JOURNAL_CONDITIONS[action]}" if action in _REVIEW_JOURNAL_CONDITIONS else ""
+        allowed.append(f"(NEW.action = '{action}' AND NEW.state = '{target}' AND {current} IN ({src}){extra})")
+    return " OR ".join(allowed)
+
+
+DUPLICATE_REGISTRY_TRIGGERS = (
+    ("trg_duplicate_scans_finished_immutable", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_scans_finished_immutable
+        BEFORE UPDATE ON patient_duplicate_scans
+        WHEN OLD.status != 'running' OR NEW.id != OLD.id OR NEW.started_by_user_id != OLD.started_by_user_id
+             OR NEW.started_at != OLD.started_at
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_scan_immutable');
+        END"""),
+    ("trg_duplicate_scans_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_scans_no_delete
+        BEFORE DELETE ON patient_duplicate_scans
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_scan_immutable');
+        END"""),
+    ("trg_duplicate_candidates_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_candidates_no_delete
+        BEFORE DELETE ON patient_duplicate_candidates
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_candidate_immutable');
+        END"""),
+    ("trg_duplicate_candidates_pair_immutable", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_candidates_pair_immutable
+        BEFORE UPDATE OF id, patient_a_id, patient_b_id, source, first_scan_id, detected_at
+        ON patient_duplicate_candidates
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_candidate_immutable');
+        END"""),
+    ("trg_duplicate_candidates_state_from_reviews", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_candidates_state_from_reviews
+        BEFORE UPDATE OF state ON patient_duplicate_candidates
+        WHEN NEW.state IS NOT COALESCE(
+            (SELECT state FROM patient_duplicate_reviews WHERE candidate_id = NEW.id ORDER BY seq DESC LIMIT 1),
+            'open')
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_candidate_state_from_reviews_only');
+        END"""),
+    ("trg_duplicate_candidates_insert_open", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_candidates_insert_open
+        BEFORE INSERT ON patient_duplicate_candidates
+        WHEN NEW.state != 'open'
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_candidate_state_from_reviews_only');
+        END"""),
+    ("trg_duplicate_reviews_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_reviews_no_update
+        BEFORE UPDATE ON patient_duplicate_reviews
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_review_immutable');
+        END"""),
+    ("trg_duplicate_reviews_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_reviews_no_delete
+        BEFORE DELETE ON patient_duplicate_reviews
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_review_immutable');
+        END"""),
+    ("trg_duplicate_reviews_transition", f"""
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_reviews_transition
+        BEFORE INSERT ON patient_duplicate_reviews
+        WHEN NOT ({_review_transition_sql()})
+        BEGIN
+            SELECT RAISE(ABORT, 'duplicate_review_transition_not_allowed');
+        END"""),
+    ("trg_duplicate_reviews_project_state", """
+        CREATE TRIGGER IF NOT EXISTS trg_duplicate_reviews_project_state
+        AFTER INSERT ON patient_duplicate_reviews
+        BEGIN
+            UPDATE patient_duplicate_candidates SET state = NEW.state, version = version + 1
+            WHERE id = NEW.candidate_id;
+        END"""),
+    ("trg_erroneous_marks_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_marks_no_update
+        BEFORE UPDATE ON patient_erroneous_marks
+        BEGIN
+            SELECT RAISE(ABORT, 'erroneous_mark_immutable');
+        END"""),
+    ("trg_erroneous_marks_no_delete", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_marks_no_delete
+        BEFORE DELETE ON patient_erroneous_marks
+        BEGIN
+            SELECT RAISE(ABORT, 'erroneous_mark_immutable');
+        END"""),
+    ("trg_erroneous_marks_mark_check", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_marks_mark_check
+        BEFORE INSERT ON patient_erroneous_marks
+        WHEN NEW.action = 'mark'
+        BEGIN
+            SELECT RAISE(ABORT, 'patient_already_erroneous')
+            WHERE EXISTS (SELECT 1 FROM patient_erroneous_state WHERE patient_id = NEW.patient_id);
+            SELECT RAISE(ABORT, 'patient_not_found')
+            WHERE NOT EXISTS (SELECT 1 FROM patients WHERE id = NEW.patient_id);
+        END"""),
+    ("trg_erroneous_marks_unmark_check", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_marks_unmark_check
+        BEFORE INSERT ON patient_erroneous_marks
+        WHEN NEW.action = 'unmark' AND NOT EXISTS (
+            SELECT 1 FROM patient_erroneous_state WHERE patient_id = NEW.patient_id AND mark_id = NEW.reverts_mark_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'patient_not_erroneous');
+        END"""),
+    ("trg_erroneous_marks_project_mark", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_marks_project_mark
+        AFTER INSERT ON patient_erroneous_marks
+        WHEN NEW.action = 'mark'
+        BEGIN
+            INSERT INTO patient_erroneous_state (patient_id, mark_id, marked_at)
+            VALUES (NEW.patient_id, NEW.id, NEW.at);
+        END"""),
+    ("trg_erroneous_marks_project_unmark", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_marks_project_unmark
+        AFTER INSERT ON patient_erroneous_marks
+        WHEN NEW.action = 'unmark'
+        BEGIN
+            DELETE FROM patient_erroneous_state WHERE patient_id = NEW.patient_id;
+        END"""),
+    ("trg_erroneous_state_insert_from_journal", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_state_insert_from_journal
+        BEFORE INSERT ON patient_erroneous_state
+        WHEN NOT EXISTS (SELECT 1 FROM patient_erroneous_marks
+                         WHERE id = NEW.mark_id AND patient_id = NEW.patient_id AND action = 'mark')
+             OR EXISTS (SELECT 1 FROM patient_erroneous_marks
+                        WHERE action = 'unmark' AND reverts_mark_id = NEW.mark_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'erroneous_state_from_journal_only');
+        END"""),
+    ("trg_erroneous_state_no_update", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_state_no_update
+        BEFORE UPDATE ON patient_erroneous_state
+        BEGIN
+            SELECT RAISE(ABORT, 'erroneous_state_from_journal_only');
+        END"""),
+    ("trg_erroneous_state_delete_from_journal", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_state_delete_from_journal
+        BEFORE DELETE ON patient_erroneous_state
+        WHEN NOT EXISTS (SELECT 1 FROM patient_erroneous_marks
+                         WHERE action = 'unmark' AND reverts_mark_id = OLD.mark_id)
+        BEGIN
+            SELECT RAISE(ABORT, 'erroneous_state_from_journal_only');
+        END"""),
+)
+
+# Помеченная карточка — только чтение на уровне базы: любые изменения ее
+# медицинских записей (маршрут, события, диагноз, планы, консилиумы, вопросы
+# внимания, согласия и уведомления) и самой карточки отклоняются, какой бы путь
+# записи их ни выполнял. Пометка проверяет зависимости в той же транзакции, так
+# что запись, успевшая до пометки, видна ей как зависимость, а запись после
+# пометки отклоняется здесь.
+_ERRONEOUS = "SELECT 1 FROM patient_erroneous_state WHERE patient_id = {key}"
+_EVENT_PATIENT = "(SELECT patient_id FROM history_entries WHERE id = {ref}.history_entry_id)"
+ERRONEOUS_GUARDED_TABLES = (
+    ("patients", "id", ("UPDATE", "DELETE")),
+    ("history_entries", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    ("events", None, ("INSERT", "UPDATE", "DELETE")),
+    ("patient_diagnosis_history", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    ("future_plans", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    ("patient_attention_issues", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    ("patient_notification_preferences", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    ("notifications", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    ("oncology_consilium_appointments", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+)
+
+
+def _erroneous_guard_triggers() -> tuple[tuple[str, str], ...]:
+    triggers = []
+    for table, column, operations in ERRONEOUS_GUARDED_TABLES:
+        for op in operations:
+            refs = {"INSERT": ("NEW",), "UPDATE": ("NEW", "OLD"), "DELETE": ("OLD",)}[op]
+            keys = [(_EVENT_PATIENT.format(ref=r) if column is None else f"{r}.{column}") for r in refs]
+            cond = " OR ".join(f"EXISTS ({_ERRONEOUS.format(key=k)})" for k in keys)
+            name = f"trg_erroneous_readonly_{table}_{op.lower()}"
+            triggers.append((name, f"""
+        CREATE TRIGGER IF NOT EXISTS {name}
+        BEFORE {op} ON {table}
+        WHEN {cond}
+        BEGIN
+            SELECT RAISE(ABORT, 'patient_erroneous_readonly');
+        END"""))
+    return tuple(triggers)
+
+
+ERRONEOUS_GUARD_TRIGGERS = _erroneous_guard_triggers()
+
+
+def migrate_v25_to_v26(conn: sqlite3.Connection) -> None:
+    """v25 → v26: registry of possible duplicates, erroneous marks (WP2.4-D).
+
+    Only adds: the tables come from SCHEMA_SQL (IF NOT EXISTS); here — indexes,
+    append-only and projection triggers and the read-only guards of an
+    erroneous card. No existing row is touched; repeated runs change nothing.
+    Runs after the notification schema is ensured: guards on notifications must
+    not be lost to a rebuild of that table."""
+    for table in ("patient_duplicate_scans", "patient_duplicate_candidates", "patient_duplicate_reviews",
+                  "patient_erroneous_marks", "patient_erroneous_state"):
+        if not _table_columns(conn, table):
+            return
+    for sql in DUPLICATE_REGISTRY_INDEX_SQL:
+        conn.execute(sql)
+    for name, sql in DUPLICATE_REGISTRY_TRIGGERS + ERRONEOUS_GUARD_TRIGGERS:
+        _ensure_trigger(conn, name, sql)
+
+
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
 
@@ -1750,6 +2094,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         migrate_v23_to_v24(conn)         # idempotency keys, history of processed import files
         migrate_v24_to_v25(conn)         # confirmations of possible duplicates
         _ensure_notification_schema(conn)
+        migrate_v25_to_v26(conn)         # duplicate registry, erroneous marks (after notification rebuilds)
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)

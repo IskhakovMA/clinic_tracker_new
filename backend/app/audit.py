@@ -31,6 +31,11 @@ migration_replayed) and a confirmed repeat of a processed import file
 (import_repeat_confirmed) are fail-closed too (WP2.4-B): no replay result is
 returned without its audit row. Keys themselves are never written to audit.
 
+The duplicate registry (WP2.4-D) writes every scan, registry and candidate view,
+technical review, clinical decision, mark, unmark, refused mark and every read of
+a WP2.4-C confirmation reason fail-closed: protected data is returned only after
+its audit row is written. Details carry technical ids, codes and counts only.
+
 A confirmed possible duplicate (patient_duplicate_confirmed, WP2.4-C) is
 written fail-closed in the transaction of the confirmed operation; the reason
 itself is kept in patient_duplicate_confirmations and never in this log.
@@ -67,6 +72,20 @@ PATIENT_CREATE_REPLAYED = "patient_create_replayed"
 # WP2.4-C: осознанно подтвержденный возможный дубль — обязательная запись в транзакции
 # операции (операция и число совпадений; причина хранится отдельно и сюда не пишется).
 PATIENT_DUPLICATE_CONFIRMED = "patient_duplicate_confirmed"
+# WP2.4-D: реестр возможных дублей. Все записи — обязательные (fail-closed), кроме
+# исхода неуспешного сканирования; детали — только технические ID, коды и количества.
+DUPLICATE_SCAN_STARTED = "duplicate_scan_started"
+DUPLICATE_SCAN_COMPLETED = "duplicate_scan_completed"
+DUPLICATE_SCAN_FAILED = "duplicate_scan_failed"
+DUPLICATE_SCAN_INTERRUPTED = "duplicate_scan_interrupted"
+DUPLICATE_REGISTRY_VIEWED = "duplicate_registry_viewed"
+DUPLICATE_CANDIDATE_VIEWED = "duplicate_candidate_viewed"
+DUPLICATE_TECHNICAL_REVIEW = "duplicate_technical_review"
+DUPLICATE_CLINICAL_DECISION = "duplicate_clinical_decision"
+DUPLICATE_CONFIRMATION_REASON_VIEWED = "duplicate_confirmation_reason_viewed"
+PATIENT_MARKED_ERRONEOUS = "patient_marked_erroneous"
+PATIENT_UNMARKED_ERRONEOUS = "patient_unmarked_erroneous"
+PATIENT_MARK_REFUSED = "patient_mark_refused"
 PATIENT_UPDATED = "patient_updated"
 PATIENT_DIAGNOSIS_CHANGED = "patient_diagnosis_changed"
 CONSILIUM_CODE_CHANGED = "consilium_code_changed"

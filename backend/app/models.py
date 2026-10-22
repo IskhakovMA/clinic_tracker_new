@@ -243,6 +243,34 @@ DUPLICATE_REASON_MAX = 2000
 DUPLICATE_MATCHES_MAX = 50
 
 
+class DuplicateTechnicalReviewIn(StrictRequestModel):
+    """WP2.4-D: технический разбор кандидата (разработчик). Комментарий — свободный
+    текст разбора; сервер нормализует и ограничивает его сам."""
+    action: Literal["start", "note"]
+    comment: Optional[str] = Field(None, max_length=8000)
+    expectedVersion: Optional[int] = Field(None, ge=1, le=2**31)
+
+
+class DuplicateClinicalDecisionIn(StrictRequestModel):
+    """WP2.4-D: клиническое решение заместителя главного врача по онкологии."""
+    decision: Literal["not_duplicate", "needs_clinical_review", "reopen"]
+    reason: str = Field(..., max_length=8000)
+    expectedVersion: int = Field(..., ge=1, le=2**31)
+
+
+class DuplicateMarkIn(StrictRequestModel):
+    """WP2.4-D: пометить выбранную карточку пары ошибочной."""
+    patientId: str = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., max_length=8000)
+    expectedVersion: int = Field(..., ge=1, le=2**31)
+
+
+class DuplicateUnmarkIn(StrictRequestModel):
+    """WP2.4-D: снять действующую пометку (markId — снимаемая пометка)."""
+    markId: str = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., max_length=8000)
+
+
 class DuplicateConfirmation(StrictRequestModel):
     """Осознанное подтверждение возможного дубля (WP2.4-C).
 
