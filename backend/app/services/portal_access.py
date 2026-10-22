@@ -90,15 +90,15 @@ def _same_address(a: str, b: str) -> bool:
     return a.translate(_ASCII_FOLD) == b.translate(_ASCII_FOLD)
 
 
-def _audit_conflict(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str, *, required: bool) -> None:
+def _audit_conflict(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str) -> None:
     """След неудачной привязки.
 
     Без него перебор адресов не оставлял следа ровно в том случае, который
     интересен злоумышленнику. В строку идёт только исход: ни адреса, ни
     карточки-владельца в журнале нет.
     """
-    write = audit.record_required_or_fail if required else audit.record
-    write(
+    # Обязательный аудит: вызывается только внутри открытой транзакции.
+    audit.record_required_or_fail(
         conn,
         audit.PORTAL_ACCESS_CONFLICT,
         result=audit.RESULT_DENIED,
@@ -210,7 +210,7 @@ def link_email(
             if owner is not None and owner != patient_id:
                 # Чужую привязку не подтверждаем деталями: вызывающий слой отдаёт 409
                 # без имени пациента и без адреса. След пишется в этой же транзакции.
-                _audit_conflict(conn, fresh, patient_id, required=True)
+                _audit_conflict(conn, fresh, patient_id)
                 conflict = True
             else:
                 existing = _get_row(conn, patient_id)
@@ -250,9 +250,13 @@ def link_email(
         if "UNIQUE" not in str(exc) or "patient_portal_access.email_normalized" not in str(exc):
             raise
         # Адрес занят записью, которую проверка под блокировкой не увидела (иной
-        # путь записи в обход сервиса). Транзакция уже откатана; след — отдельно,
-        # без адреса, ответ — тот же безопасный конфликт.
-        _audit_conflict(conn, user, patient_id, required=False)
+        # путь записи в обход сервиса). Транзакция изменения уже откатана; след
+        # пишется обязательным аудитом в собственной транзакции — без адреса и без
+        # чужой карточки. Не удалось записать след — AuditWriteFailed (503), а не
+        # обычный конфликт без следа. Запись одна: проверка под блокировкой в этом
+        # пути конфликта не нашла и ничего не писала.
+        with transaction(conn):
+            _audit_conflict(conn, user, patient_id)
         raise EmailAlreadyLinked() from None
     if conflict:
         raise EmailAlreadyLinked()

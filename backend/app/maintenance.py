@@ -135,6 +135,19 @@ def check_database(db_path: Path) -> dict:
         else:
             report["schema_version"] = None
 
+        if report.get("schema_version") == config.SCHEMA_VERSION:
+            # Текущая схема: таблицы со строгой сверкой должны совпадать с эталоном
+            # этой сборки целиком — с правилами CHECK, индексами и триггерами.
+            expected = _current_structure()[1]
+            actual = _strict_structure(conn, STRICT_TABLES)
+            for table in STRICT_TABLES:
+                if actual[table] is None or actual[table] == expected[table]:
+                    continue   # отсутствующую таблицу уже сообщает missing tables
+                differs = sorted(k for k in expected[table] if actual[table].get(k) != expected[table][k])
+                report["ok"] = False
+                report["problems"].append(
+                    f"structure of {table} differs from this build: {', '.join(differs)}")
+
         if "patients" in tables:
             report["patient_count"] = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     finally:
@@ -190,25 +203,109 @@ def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
     }
 
 
-# Таблицы, для которых совпадения набора столбцов мало: сверяются типы, NOT NULL,
-# значения по умолчанию, первичный ключ, уникальные индексы с коллацией и внешние
-# ключи. Для мобильного доступа это отличает проверенную сборку portal-a3fbe00
-# (UNIQUE COLLATE NOCASE) от ранней или измененной таблицы с теми же столбцами.
+# Таблицы, для которых совпадения набора столбцов мало. Сверяются: столбцы
+# (тип, NOT NULL, значение по умолчанию, первичный ключ, скрытые/вычисляемые),
+# уникальные индексы с коллацией, внешние ключи, каждое правило CHECK (текст
+# выражения после разбора на токены, с владельцем — столбцом или таблицей),
+# параметры таблицы (WITHOUT ROWID, STRICT), явные индексы и все триггеры,
+# которые срабатывают на таблице или ссылаются на нее. Удаленное, измененное или
+# постороннее правило дает другую структуру. Для мобильного доступа это отличает
+# проверенную сборку portal-a3fbe00 от ранней или измененной таблицы.
 STRICT_TABLES = ("patient_portal_access",)
+
+_SQL_TOKEN = re.compile(
+    r"""(?P<skip>\s+|--[^\n]*(?:\n|$)|/\*.*?(?:\*/|$))
+      |(?P<string>'(?:[^']|'')*')
+      |(?P<quoted>"(?:[^"]|"")*"|`(?:[^`]|``)*`|\[[^\]]*\])
+      |(?P<word>[A-Za-z_][A-Za-z0-9_$]*)
+      |(?P<number>\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+)
+      |(?P<op><>|!=|<=|>=|==|\|\||<<|>>|.)""",
+    re.S | re.X,
+)
+_TABLE_CONSTRAINT_START = {"constraint", "check", "primary", "unique", "foreign"}
+
+
+def _sql_tokens(sql: str | None) -> list[str]:
+    """SQL как последовательность токенов: без пробелов и комментариев, слова и
+    идентификаторы в нижнем регистре (кавычки идентификаторов снимаются), строки
+    — как есть. Комментарий с текстом CHECK правилом не считается."""
+    tokens = []
+    for match in _SQL_TOKEN.finditer(sql or ""):
+        kind, value = match.lastgroup, match.group()
+        if kind == "skip":
+            continue
+        if kind == "quoted":
+            value = value[1:-1].replace(value[0] * 2, value[0]) if value[0] != "[" else value[1:-1]
+            value = value.lower()
+        elif kind == "word":
+            value = value.lower()
+        tokens.append(value)
+    return tokens
+
+
+def _balanced(tokens: list[str], start: int) -> int:
+    """Индекс закрывающей скобки для открывающей в tokens[start]."""
+    depth = 0
+    for i in range(start, len(tokens)):
+        if tokens[i] == "(":
+            depth += 1
+        elif tokens[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    raise ValueError("unbalanced parentheses")
+
+
+def _table_rules(sql: str | None) -> dict:
+    """Правила CHECK и параметры таблицы из ее CREATE TABLE."""
+    tokens = _sql_tokens(sql)
+    open_at = tokens.index("(")
+    close_at = _balanced(tokens, open_at)
+    definitions, current, depth = [], [], 0
+    for token in tokens[open_at + 1:close_at]:
+        if token == "," and depth == 0:
+            definitions.append(current)
+            current = []
+            continue
+        depth += token == "("
+        depth -= token == ")"
+        current.append(token)
+    definitions.append(current)
+    checks = []
+    for definition in definitions:
+        owner = "" if definition and definition[0] in _TABLE_CONSTRAINT_START else (definition[0] if definition else "")
+        i = 0
+        while i < len(definition):
+            if definition[i] == "check" and i + 1 < len(definition) and definition[i + 1] == "(":
+                end = _balanced(definition, i + 1)
+                name = definition[i - 1] if i >= 2 and definition[i - 2] == "constraint" else ""
+                checks.append([owner, name, " ".join(definition[i + 2:end])])
+                i = end + 1
+            else:
+                i += 1
+    return {"checks": sorted(checks), "options": " ".join(tokens[close_at + 1:])}
 
 
 def _strict_table(conn: sqlite3.Connection, table: str) -> dict | None:
-    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+    row = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone()
+    if row is None:
         return None
-    columns = sorted([r[1], (r[2] or "").upper(), r[3], r[4], r[5]]
-                     for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall())
+    columns = sorted([r[1], (r[2] or "").upper(), r[3], r[4], r[5], r[6]]
+                     for r in conn.execute(f'PRAGMA table_xinfo("{table}")').fetchall())
     indexes = []
     for index in conn.execute(f'PRAGMA index_list("{table}")').fetchall():
         keys = [[r[2], r[4], r[3]] for r in conn.execute(f'PRAGMA index_xinfo("{index[1]}")').fetchall() if r[5]]
         indexes.append([index[2], index[3], index[4], keys])   # unique, origin, partial, (column, collation, desc)
     foreign_keys = sorted([r[2], r[3], r[4], r[5], r[6]]
                           for r in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall())
-    return {"columns": columns, "indexes": sorted(indexes), "foreign_keys": foreign_keys}
+    index_sql = sorted(" ".join(_sql_tokens(r[0])) for r in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL", (table,)))
+    triggers = sorted(
+        " ".join(tokens) for tokens in (_sql_tokens(r[1]) for r in conn.execute(
+            "SELECT tbl_name, sql FROM sqlite_master WHERE type = 'trigger'"))
+        if table in tokens)
+    return {"columns": columns, "indexes": sorted(indexes), "foreign_keys": foreign_keys,
+            **_table_rules(row[0]), "index_sql": index_sql, "triggers": triggers}
 
 
 def _strict_structure(conn: sqlite3.Connection, tables) -> dict[str, dict | None]:

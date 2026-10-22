@@ -245,8 +245,13 @@ def test_verified_portal_build_is_still_recognised(client, tmp_path):
     plain = _sqlite_from_fixture(tmp_path / "a3f.sqlite", fixture=PORTAL_V10)
     assert maintenance.identify_backup_build(plain, 10) == "portal-a3fbe00"
     builds = {b["id"]: b for b in maintenance.restore_builds()}
-    assert builds["portal-a3fbe00"]["strict_tables"]["patient_portal_access"] == \
-        builds["current"]["strict_tables"]["patient_portal_access"]
+    verified = builds["portal-a3fbe00"]["strict_tables"]["patient_portal_access"]
+    current = builds["current"]["strict_tables"]["patient_portal_access"]
+    # Таблица та же; v27 добавляет только свои триггеры (защита помеченной карточки, запрет пометки).
+    assert {k: v for k, v in verified.items() if k != "triggers"} == {k: v for k, v in current.items() if k != "triggers"}
+    assert verified["triggers"] == []
+    names = sorted(t.split()[2] for t in current["triggers"])
+    assert names == sorted(PORTAL_GUARDS | {MARK_TRIGGER})
 
 
 # ================================================================ 2. link / change / revoke
