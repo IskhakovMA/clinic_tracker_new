@@ -284,18 +284,26 @@ def link_portal_access(
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
-    """Привязать или сменить адрес мобильного доступа."""
-    _require_readable(conn, user, patient_id)
-    if not policy.can_manage_portal_access(conn, user, patient_id):
-        _forbidden(conn, user, "action=portal_access_manage")
+    """Привязать или сменить адрес мобильного доступа.
+
+    Права, область и статус сотрудника проверяет сервис под блокировкой записи;
+    изменение и его обязательный аудит фиксируются вместе."""
     try:
         access = portal_access.link_email(conn, user, patient_id, body)
+    except portal_access.PortalAccessNotFound:
+        _not_found()
+    except portal_access.PortalAccessForbidden:
+        _forbidden(conn, user, "action=portal_access_manage")
     except portal_access.EmailAlreadyLinked:
         # Ответ не подтверждает, какой именно карточке принадлежит адрес.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Этот адрес уже используется для мобильного доступа другого пациента",
         ) from None
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Мобильный доступ не изменен")
+    except sqlite3.OperationalError as e:
+        _card_write_busy(e, "Мобильный доступ не изменен")
     return {
         "access": access,
         "canManage": True,
@@ -313,15 +321,21 @@ def revoke_portal_access(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     """Отключить мобильный доступ — защитное действие, доступное и лечащему врачу."""
-    _require_readable(conn, user, patient_id)
-    if not policy.can_revoke_portal_access(conn, user, patient_id):
+    try:
+        access = portal_access.revoke(conn, user, patient_id)
+    except portal_access.PortalAccessNotFound:
+        _not_found()
+    except portal_access.PortalAccessForbidden:
         _forbidden(conn, user, "action=portal_access_revoke")
-    access = portal_access.revoke(conn, user, patient_id)
-    if access is None:
+    except portal_access.PortalAccessNotConfigured:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Мобильный доступ не настроен",
-        )
+        ) from None
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Мобильный доступ не отключен")
+    except sqlite3.OperationalError as e:
+        _card_write_busy(e, "Мобильный доступ не отключен")
     return {
         "access": access,
         "canManage": policy.can_manage_portal_access(conn, user, patient_id),

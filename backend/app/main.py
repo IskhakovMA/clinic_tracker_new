@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
@@ -189,6 +191,17 @@ def _is_erroneous_write(exc: BaseException) -> bool:
             return True
         exc = exc.__cause__ or exc.__context__
     return False
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    """Адрес мобильного доступа не возвращается в ответе 422: стандартный ответ
+    FastAPI повторяет введенное значение (поле input), а этот ответ видят
+    журналы прокси и инструменты браузера. Для остальных путей — как прежде."""
+    if request.url.path.endswith("/portal-access"):
+        errors = [{"type": e.get("type"), "loc": list(e.get("loc", ())), "msg": e.get("msg")} for e in exc.errors()]
+        return JSONResponse(status_code=422, content={"detail": errors})
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.exception_handler(sqlite3.IntegrityError)

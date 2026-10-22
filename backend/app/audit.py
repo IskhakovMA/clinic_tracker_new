@@ -245,6 +245,7 @@ def record_required(
     actor_role: str | None = None,
     actor_department_id: str | None = None,
     target_user_id: str | None = None,
+    result: str = RESULT_OK,
 ) -> None:
     """Fail-closed audit row inside the caller's open transaction.
 
@@ -260,7 +261,7 @@ def record_required(
                                      request_id, detail, actor_user_id, actor_role,
                                      actor_department_id, target_user_id, target_department_id)
            VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)""",
-        (now_iso(), event_type, patient_id, RESULT_OK, detail,
+        (now_iso(), event_type, patient_id, result, detail,
          actor_user_id, actor_role, actor_department_id, target_user_id),
     )
 

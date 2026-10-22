@@ -7044,7 +7044,9 @@ const app = {
             ['Диагноз', card.diagnosis || '—'], ['Этап', this.stageNames[card.stage] || card.stage || '—'], ['Лечащий врач', card.treatingDoctorName || '—'],
             ['Отделение', card.departments || '—'], ['Создана', this.formatDateTime(card.createdAt)],
         ];
-        const deps = card.dependencies || [];
+        const allDeps = card.dependencies || [];
+        const deps = allDeps.filter(d => d.kind !== 'access');
+        const accessDeps = allDeps.filter(d => d.kind === 'access');
         const blocks = [
             el('div', {}, rows.map(([k, v]) => el('p', {}, [el('span', { class: 'muted', text: k + ': ' }), el('span', { text: v })]))),
             card.erroneous ? el('div', { class: 'alert alert--danger' }, [
@@ -7056,6 +7058,10 @@ const app = {
                 el('ul', {}, deps.map(d => el('li', { text: `${d.label}: ${d.count}` }))),
                 el('p', { text: 'Нужно отдельное клиническое рассмотрение. Медицинские записи этой карточки не изменяются.' }),
             ]) : el('p', { class: 'muted', text: 'Значимых клинических зависимостей нет.' }),
+            accessDeps.length ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: 'Действует мобильный доступ пациента — пометка ошибочной невозможна' }),
+                el('p', { text: 'Сначала отключите мобильный доступ в карточке пациента. При пометке он не отключается автоматически.' }),
+            ]) : null,
         ];
         if ((allowed.markPatientIds || []).includes(card.id)) {
             blocks.push(el('button', { type: 'button', class: 'btn btn--danger', text: 'Пометить эту карточку ошибочной',

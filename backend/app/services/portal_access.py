@@ -16,6 +16,15 @@ Two invariants are enforced here rather than left to callers:
   destructive, audited action inside the actor's own write scope, and the
   record of what happened lives in the audit log, not in this table.
 
+Every change (link, change, revoke) follows the WP2.3–2.4 write standard: one
+BEGIN IMMEDIATE transaction; the actor's role, status and scope are re-read
+from the database after the lock is taken; the required audit row is written
+in the same transaction (a failed audit write rolls the change back, 503).
+Repeating the same request is safe: linking the address a card already has
+changes nothing (activation is kept), revoking a revoked access changes
+nothing. A card marked erroneous (WP2.4-D) is outside active work: it is not
+visible here, and database triggers reject any change of its access row.
+
 The row is the single source of truth for "can this person activate the app".
 `activation_allowed` is the seam Stage 2 will call; it is already reported to
 staff so that a revoked state is visible before anyone tries to use it.
@@ -26,7 +35,7 @@ import sqlite3
 from typing import Any
 
 from .. import audit, policy
-from ..db import now_iso
+from ..db import now_iso, transaction
 from ..email_address import masked_email
 from ..models import PortalAccessLinkIn
 
@@ -43,29 +52,53 @@ STATUS_LABELS = {
 # Состояния, из которых пациент может завершить активацию в мобильном
 # приложении. Stage 2 обязан спрашивать именно это, а не статус напрямую.
 ACTIVATION_ALLOWED_STATUSES = (STATUS_LINKED, STATUS_ACTIVE)
+# Действующий доступ: он же не дает пометить карточку ошибочной (WP2.4-D).
+IN_FORCE_STATUSES = ACTIVATION_ALLOWED_STATUSES
 
 
 class EmailAlreadyLinked(Exception):
     """Адрес уже принадлежит другой карточке.
 
-    Поднимается и предварительной проверкой, и перехватом нарушения UNIQUE:
-    источником истины является ограничение базы, а проверка нужна лишь для
-    того, чтобы обычный путь не доходил до исключения.
+    Поднимается и проверкой под блокировкой записи, и перехватом нарушения
+    UNIQUE: источником истины является ограничение базы. Ответ одинаков, какой
+    бы карточке (в области сотрудника или вне ее, помеченной или нет) адрес ни
+    принадлежал.
     """
+
+
+class PortalAccessNotFound(Exception):
+    """Карточка не видна сотруднику (404, без сведений о ней)."""
+
+
+class PortalAccessForbidden(Exception):
+    """Карточка видна, но действие сотруднику не разрешено (403)."""
+
+
+class PortalAccessNotConfigured(Exception):
+    """Отключать нечего: доступ для карточки не настраивался (404)."""
 
 
 def activation_allowed(row: sqlite3.Row | None) -> bool:
     return row is not None and row["status"] in ACTIVATION_ALLOWED_STATUSES
 
 
-def _audit_conflict(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str) -> None:
+_ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _same_address(a: str, b: str) -> bool:
+    """Тот же адрес в смысле UNIQUE COLLATE NOCASE столбца (регистр ASCII)."""
+    return a.translate(_ASCII_FOLD) == b.translate(_ASCII_FOLD)
+
+
+def _audit_conflict(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str, *, required: bool) -> None:
     """След неудачной привязки.
 
     Без него перебор адресов не оставлял следа ровно в том случае, который
-    интересен злоумышленнику: промах писался как обычная привязка, попадание —
-    никак. В строку идёт только исход, адрес в журнал не попадает.
+    интересен злоумышленнику. В строку идёт только исход: ни адреса, ни
+    карточки-владельца в журнале нет.
     """
-    audit.record(
+    write = audit.record_required_or_fail if required else audit.record
+    write(
         conn,
         audit.PORTAL_ACCESS_CONFLICT,
         result=audit.RESULT_DENIED,
@@ -82,6 +115,7 @@ def _get_row(conn: sqlite3.Connection, patient_id: str) -> sqlite3.Row | None:
 
 
 def _owner_of_email(conn: sqlite3.Connection, email: str) -> str | None:
+    # Сравнение по коллации столбца (NOCASE): совпадает с тем, что проверит UNIQUE.
     row = conn.execute(
         "SELECT patient_id FROM patient_portal_access WHERE email_normalized = ?", (email,)
     ).fetchone()
@@ -139,6 +173,21 @@ def get_state(conn: sqlite3.Connection, patient_id: str) -> dict[str, Any]:
     return _row_to_dict(conn, _get_row(conn, patient_id))
 
 
+def _fresh_actor(conn: sqlite3.Connection, actor: policy.CurrentUser, patient_id: str, allowed) -> policy.CurrentUser:
+    """Права, перечитанные под блокировкой записи: роль, статус, область.
+
+    Порядок тот же, что у остальных endpoint'ов карточки: невидимая карточка —
+    404 (существование не раскрывается), видимая без права — 403."""
+    fresh = policy.reload_current_user(conn, actor)
+    if fresh is None:
+        raise PortalAccessForbidden()
+    if not policy.can_read_patient(conn, fresh, patient_id):
+        raise PortalAccessNotFound()
+    if not allowed(conn, fresh, patient_id):
+        raise PortalAccessForbidden()
+    return fresh
+
+
 def link_email(
     conn: sqlite3.Connection,
     user: policy.CurrentUser,
@@ -147,85 +196,96 @@ def link_email(
 ) -> dict[str, Any]:
     """Привязать или сменить адрес; повторная привязка снимает отзыв.
 
-    Авторизация проверяется вызывающим слоем (`policy.can_manage_portal_access`),
-    чтобы отказ выглядел одинаково со всеми остальными endpoint'ами пациента.
+    Тот же адрес у действующего доступа (linked/active) — повтор запроса:
+    ничего не меняется, активация и вход пациента сохраняются, новой записи
+    журнала нет. Новый адрес или возврат отозванного доступа начинают
+    активацию заново: прежний enrollment относился к прежнему владельцу адреса.
     """
     email = body.email
-    owner = _owner_of_email(conn, email)
-    if owner is not None and owner != patient_id:
-        # Чужую привязку не подтверждаем деталями: вызывающий слой отдаёт 409
-        # без имени пациента и без адреса.
-        _audit_conflict(conn, user, patient_id)
-        raise EmailAlreadyLinked()
-
-    existing = _get_row(conn, patient_id)
-    now = now_iso()
+    conflict = False
     try:
-        if existing is None:
-            with conn:
-                conn.execute(
-                    """INSERT INTO patient_portal_access
-                       (patient_id, email_normalized, status, linked_at, linked_by_user_id,
-                        activated_at, enrollment_state, last_login_at, revoked_at, revoked_by_user_id, updated_at)
-                       VALUES (?, ?, 'linked', ?, ?, NULL, 'none', NULL, NULL, NULL, ?)""",
-                    (patient_id, email, now, user.id, now),
-                )
-            event = audit.PORTAL_ACCESS_LINKED
-            detail = "status=linked previous=none"
-        else:
-            email_changed = existing["email_normalized"] != email
-            was_revoked = existing["status"] == STATUS_REVOKED
-            with conn:
-                # Возврат к состоянию «привязан» всегда начинает активацию заново:
-                # прежний enrollment относился к прежнему владельцу адреса.
-                conn.execute(
-                    """UPDATE patient_portal_access
-                       SET email_normalized = ?, status = 'linked', linked_at = ?, linked_by_user_id = ?,
-                           activated_at = NULL, enrollment_state = 'none', last_login_at = NULL,
-                           revoked_at = NULL, revoked_by_user_id = NULL, updated_at = ?
-                       WHERE patient_id = ?""",
-                    (email, now, user.id, now, patient_id),
-                )
-            event = audit.PORTAL_ACCESS_EMAIL_CHANGED if email_changed else audit.PORTAL_ACCESS_LINKED
-            detail = f"status=linked previous={existing['status']} email_changed={'yes' if email_changed else 'no'}"
-            if was_revoked:
-                detail += " restored=yes"
-    except sqlite3.IntegrityError:
-        # Параллельный запрос занял адрес между проверкой и записью. `with conn`
-        # уже откатил транзакцию, поэтому состояние чистое: отвечаем тем же
-        # безопасным конфликтом, что и на обычном пути.
-        _audit_conflict(conn, user, patient_id)
+        with transaction(conn):
+            fresh = _fresh_actor(conn, user, patient_id, policy.can_manage_portal_access)
+            owner = _owner_of_email(conn, email)
+            if owner is not None and owner != patient_id:
+                # Чужую привязку не подтверждаем деталями: вызывающий слой отдаёт 409
+                # без имени пациента и без адреса. След пишется в этой же транзакции.
+                _audit_conflict(conn, fresh, patient_id, required=True)
+                conflict = True
+            else:
+                existing = _get_row(conn, patient_id)
+                if (existing is not None and existing["status"] in IN_FORCE_STATUSES
+                        and _same_address(existing["email_normalized"], email)):
+                    return get_state(conn, patient_id)           # повтор: состояние не меняется
+                now = now_iso()
+                if existing is None:
+                    conn.execute(
+                        """INSERT INTO patient_portal_access
+                           (patient_id, email_normalized, status, linked_at, linked_by_user_id,
+                            activated_at, enrollment_state, last_login_at, revoked_at, revoked_by_user_id, updated_at)
+                           VALUES (?, ?, 'linked', ?, ?, NULL, 'none', NULL, NULL, NULL, ?)""",
+                        (patient_id, email, now, fresh.id, now),
+                    )
+                    event = audit.PORTAL_ACCESS_LINKED
+                    detail = "status=linked previous=none"
+                else:
+                    email_changed = not _same_address(existing["email_normalized"], email)
+                    conn.execute(
+                        """UPDATE patient_portal_access
+                           SET email_normalized = ?, status = 'linked', linked_at = ?, linked_by_user_id = ?,
+                               activated_at = NULL, enrollment_state = 'none', last_login_at = NULL,
+                               revoked_at = NULL, revoked_by_user_id = NULL, updated_at = ?
+                           WHERE patient_id = ?""",
+                        (email, now, fresh.id, now, patient_id),
+                    )
+                    event = audit.PORTAL_ACCESS_EMAIL_CHANGED if email_changed else audit.PORTAL_ACCESS_LINKED
+                    detail = (f"status=linked previous={existing['status']} "
+                              f"email_changed={'yes' if email_changed else 'no'}")
+                    if existing["status"] == STATUS_REVOKED:
+                        detail += " restored=yes"
+                audit.record_required_or_fail(conn, event, patient_id=patient_id, detail=detail,
+                                              **audit.actor_ctx(fresh))
+                result = get_state(conn, patient_id)
+    except sqlite3.IntegrityError as exc:
+        if "UNIQUE" not in str(exc) or "patient_portal_access.email_normalized" not in str(exc):
+            raise
+        # Адрес занят записью, которую проверка под блокировкой не увидела (иной
+        # путь записи в обход сервиса). Транзакция уже откатана; след — отдельно,
+        # без адреса, ответ — тот же безопасный конфликт.
+        _audit_conflict(conn, user, patient_id, required=False)
         raise EmailAlreadyLinked() from None
+    if conflict:
+        raise EmailAlreadyLinked()
+    return result
 
-    audit.record(conn, event, patient_id=patient_id, detail=detail, **audit.actor_ctx(user))
-    return get_state(conn, patient_id)
 
-
-def revoke(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str) -> dict[str, Any] | None:
-    """Отключить мобильный доступ. Возвращает None, если доступа не было.
+def revoke(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str) -> dict[str, Any]:
+    """Отключить мобильный доступ.
 
     Адрес намеренно сохраняется: это и след для разбора, и защита от того,
-    чтобы отозванный адрес тихо увели на другую карточку.
+    чтобы отозванный адрес тихо увели на другую карточку. Повтор для уже
+    отозванного доступа ничего не меняет и журнал не дополняет.
     """
-    existing = _get_row(conn, patient_id)
-    if existing is None:
-        return None
-    if existing["status"] == STATUS_REVOKED:
-        return get_state(conn, patient_id)
-    now = now_iso()
-    with conn:
+    with transaction(conn):
+        fresh = _fresh_actor(conn, user, patient_id, policy.can_revoke_portal_access)
+        existing = _get_row(conn, patient_id)
+        if existing is None:
+            raise PortalAccessNotConfigured()
+        if existing["status"] == STATUS_REVOKED:
+            return get_state(conn, patient_id)
+        now = now_iso()
         conn.execute(
             """UPDATE patient_portal_access
                SET status = 'revoked', revoked_at = ?, revoked_by_user_id = ?,
                    enrollment_state = 'none', updated_at = ?
                WHERE patient_id = ?""",
-            (now, user.id, now, patient_id),
+            (now, fresh.id, now, patient_id),
         )
-    audit.record(
-        conn,
-        audit.PORTAL_ACCESS_REVOKED,
-        patient_id=patient_id,
-        detail=f"status=revoked previous={existing['status']}",
-        **audit.actor_ctx(user),
-    )
-    return get_state(conn, patient_id)
+        audit.record_required_or_fail(
+            conn,
+            audit.PORTAL_ACCESS_REVOKED,
+            patient_id=patient_id,
+            detail=f"status=revoked previous={existing['status']}",
+            **audit.actor_ctx(fresh),
+        )
+        return get_state(conn, patient_id)

@@ -67,6 +67,17 @@ DEPENDENCY_LABELS = {
 }
 DEPENDENCY_ORDER = tuple(DEPENDENCY_LABELS)
 
+# Зависимости, которые не являются клинической историей, но тоже не дают пометить
+# карточку (решение владельца, интеграция Patient Portal): действующий мобильный
+# доступ (linked/active). Отозванный доступ не мешает; при пометке доступ не
+# отключается автоматически — сначала его отключает сотрудник, а после пометки
+# запись доступа не меняется (триггеры ERRONEOUS_GUARDED_TABLES).
+ACCESS_DEPENDENCY_LABELS = {
+    "mobile_access": "Действующий мобильный доступ пациента (адрес привязан или доступ активен)",
+}
+MARK_DEPENDENCY_LABELS = {**DEPENDENCY_LABELS, **ACCESS_DEPENDENCY_LABELS}
+MARK_DEPENDENCY_ORDER = tuple(MARK_DEPENDENCY_LABELS)
+
 DISCLAIMER = "Совпадение данных не доказывает, что это один пациент."
 
 
@@ -102,6 +113,20 @@ class ClinicalDependenciesFound(RegistryConflict):
             "CLINICAL_DEPENDENCIES",
             "У выбранной карточки есть значимые клинические зависимости: пометить ее ошибочной нельзя. "
             "Случай передан на отдельное клиническое рассмотрение.",
+            dependencies=codes,
+        )
+
+
+class MobileAccessInForce(RegistryConflict):
+    """У выбранной карточки действует мобильный доступ: пометка запрещена, пока
+    сотрудник его не отключит. Это не клиническая зависимость — кандидат остается
+    в прежнем состоянии, клинического рассмотрения не требуется."""
+
+    def __init__(self, codes: list[str]):
+        super().__init__(
+            "MOBILE_ACCESS_IN_FORCE",
+            "У выбранной карточки действует мобильный доступ пациента: пометить ее ошибочной нельзя. "
+            "Сначала отключите мобильный доступ в карточке пациента — при пометке он не отключается автоматически.",
             dependencies=codes,
         )
 
@@ -373,7 +398,7 @@ def _card(conn: sqlite3.Connection, patient_id: str) -> dict:
         return {"id": patient_id, "exists": False}
     state = conn.execute("SELECT mark_id, marked_at FROM patient_erroneous_state WHERE patient_id = ?",
                          (patient_id,)).fetchone()
-    deps = clinical_dependencies(conn, patient_id)
+    deps = {**clinical_dependencies(conn, patient_id), **access_dependencies(conn, patient_id)}
     return {
         "id": row["id"], "exists": True, "name": row["name"], "age": row["age"] or 0,
         "maskedPolicy": _mask_policy(row["policy_number"]), "diagnosis": row["diagnosis"] or "",
@@ -382,7 +407,9 @@ def _card(conn: sqlite3.Connection, patient_id: str) -> dict:
         "creationSource": row["creation_source"],
         "erroneous": state is not None, "markId": state["mark_id"] if state else None,
         "markedAt": state["marked_at"] if state else None,
-        "dependencies": [{"code": c, "label": DEPENDENCY_LABELS[c], "count": deps[c]} for c in DEPENDENCY_ORDER if c in deps],
+        "dependencies": [{"code": c, "label": MARK_DEPENDENCY_LABELS[c], "count": deps[c],
+                          "kind": "access" if c in ACCESS_DEPENDENCY_LABELS else "clinical"}
+                         for c in MARK_DEPENDENCY_ORDER if c in deps],
     }
 
 
@@ -415,6 +442,15 @@ def clinical_dependencies(conn: sqlite3.Connection, patient_id: str) -> dict[str
                                      "AND status IN ('pending', 'processing')"),
     }
     return {k: v for k, v in counts.items() if v}
+
+
+def access_dependencies(conn: sqlite3.Connection, patient_id: str) -> dict[str, int]:
+    """Неклинические зависимости, которые тоже запрещают пометку: действующий
+    мобильный доступ (linked/active). Код → количество; пустой — не мешает."""
+    count = conn.execute(
+        "SELECT COUNT(*) FROM patient_portal_access WHERE patient_id = ? AND status IN ('linked', 'active')",
+        (patient_id,)).fetchone()[0]
+    return {"mobile_access": count} if count else {}
 
 
 def _patient_rows(conn, ids):
@@ -703,14 +739,17 @@ def mark_erroneous(conn: sqlite3.Connection, actor: policy.CurrentUser, candidat
     BEGIN IMMEDIATE → перечитать сотрудника → проверить кандидата, версию,
     карточку и вторую карточку пары → заново вычислить признаки совпадения пары
     по текущим данным и сверить их с зарегистрированными → заново проверить
-    клинические зависимости → append-only mark и запись разбора → обязательный
+    клинические зависимости и действующий мобильный доступ → append-only mark и запись разбора → обязательный
     аудит → COMMIT.
     Если признаки пары изменились после сканирования (совпадение исчезло или
     стало другим), пометка отклоняется (409 SIGNALS_CHANGED) без каких-либо
     записей: решение принимается только по актуальным признакам, после
     повторного сканирования.
-    При зависимостях пометка отклоняется, а кандидат переводится в
-    needs_clinical_review (с аудитом) — это фиксируется и при отказе."""
+    При клинических зависимостях пометка отклоняется, а кандидат переводится в
+    needs_clinical_review (с аудитом) — это фиксируется и при отказе. Если мешает
+    только действующий мобильный доступ, отказ (MOBILE_ACCESS_IN_FORCE) пишется в
+    аудит, а кандидат остается в прежнем состоянии: после отключения доступа
+    сотрудником пометку можно повторить. Доступ при пометке не отключается."""
     _require(actor, policy.can_mark_erroneous)
     text = _reason(reason)
     if not isinstance(patient_id, str) or not patient_id:
@@ -745,14 +784,23 @@ def mark_erroneous(conn: sqlite3.Connection, actor: policy.CurrentUser, candidat
                 "запустите повторное сканирование и оцените пару по актуальным данным.",
                 reasonCodes=stored_codes, currentReasonCodes=current_codes)
         deps = clinical_dependencies(conn, patient_id)
+        access = access_dependencies(conn, patient_id)
         if deps:
-            codes = [c for c in DEPENDENCY_ORDER if c in deps]
+            codes = [c for c in MARK_DEPENDENCY_ORDER if c in deps or c in access]
             _insert_review(conn, candidate_id, "needs_clinical_review", "needs_clinical_review", fresh,
                            dependency_codes=codes, patient_id=patient_id)
             audit.record_required_or_fail(
                 conn, audit.PATIENT_MARK_REFUSED, patient_id=patient_id,
                 detail=f"candidate_id={candidate_id} dependencies={','.join(codes)}", **audit.actor_ctx(fresh))
             refusal = ClinicalDependenciesFound(codes)
+        elif access:
+            # Только мобильный доступ: кандидат не меняется (это не клиническая
+            # зависимость), отказ фиксируется обязательным аудитом.
+            codes = [c for c in MARK_DEPENDENCY_ORDER if c in access]
+            audit.record_required_or_fail(
+                conn, audit.PATIENT_MARK_REFUSED, patient_id=patient_id,
+                detail=f"candidate_id={candidate_id} dependencies={','.join(codes)}", **audit.actor_ctx(fresh))
+            refusal = MobileAccessInForce(codes)
         else:
             mark_id = uuid.uuid4().hex
             try:
@@ -763,6 +811,8 @@ def mark_erroneous(conn: sqlite3.Connection, actor: policy.CurrentUser, candidat
             except sqlite3.IntegrityError as e:
                 if "patient_already_erroneous" in str(e):
                     raise RegistryConflict("ALREADY_ERRONEOUS", "Карточка уже помечена ошибочной.")
+                if "patient_mobile_access_in_force" in str(e):
+                    raise MobileAccessInForce(["mobile_access"])
                 raise
             _insert_review(conn, candidate_id, "marked_erroneous", "resolved", fresh, reason=text, patient_id=patient_id)
             audit.record_required_or_fail(

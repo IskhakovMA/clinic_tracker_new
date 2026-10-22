@@ -190,30 +190,61 @@ def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
     }
 
 
-_current_structure_cache: dict[str, frozenset[str]] | None = None
+# Таблицы, для которых совпадения набора столбцов мало: сверяются типы, NOT NULL,
+# значения по умолчанию, первичный ключ, уникальные индексы с коллацией и внешние
+# ключи. Для мобильного доступа это отличает проверенную сборку portal-a3fbe00
+# (UNIQUE COLLATE NOCASE) от ранней или измененной таблицы с теми же столбцами.
+STRICT_TABLES = ("patient_portal_access",)
 
 
-def _current_structure() -> dict[str, frozenset[str]]:
+def _strict_table(conn: sqlite3.Connection, table: str) -> dict | None:
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)).fetchone():
+        return None
+    columns = sorted([r[1], (r[2] or "").upper(), r[3], r[4], r[5]]
+                     for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall())
+    indexes = []
+    for index in conn.execute(f'PRAGMA index_list("{table}")').fetchall():
+        keys = [[r[2], r[4], r[3]] for r in conn.execute(f'PRAGMA index_xinfo("{index[1]}")').fetchall() if r[5]]
+        indexes.append([index[2], index[3], index[4], keys])   # unique, origin, partial, (column, collation, desc)
+    foreign_keys = sorted([r[2], r[3], r[4], r[5], r[6]]
+                          for r in conn.execute(f'PRAGMA foreign_key_list("{table}")').fetchall())
+    return {"columns": columns, "indexes": sorted(indexes), "foreign_keys": foreign_keys}
+
+
+def _strict_structure(conn: sqlite3.Connection, tables) -> dict[str, dict | None]:
+    return {table: _strict_table(conn, table) for table in tables}
+
+
+_current_structure_cache: tuple[dict[str, frozenset[str]], dict] | None = None
+
+
+def _current_structure() -> tuple[dict[str, frozenset[str]], dict]:
     global _current_structure_cache
     if _current_structure_cache is None:
         conn = connect_readonly_check(Path(":memory:"))
         try:
             _db.init_db(conn)  # эталон структуры текущей сборки, не миграция копии
-            _current_structure_cache = _structure(conn)
+            _current_structure_cache = (_structure(conn), _strict_structure(conn, STRICT_TABLES))
         finally:
             conn.close()
     return _current_structure_cache
 
 
 def restore_builds() -> list[dict]:
-    """Verified builds: [{id, schema_version, tables}] including the running one."""
+    """Verified builds: [{id, schema_version, tables, strict_tables}] including the running one.
+
+    `strict_tables` (optional) holds the detailed structure of selected tables;
+    a backup must match it exactly as well as the column sets."""
     data = json.loads(RESTORE_BUILDS_PATH.read_text(encoding="utf-8"))
     builds = [
         {"id": b["id"], "schema_version": b["schema_version"],
-         "tables": {t: frozenset(cols) for t, cols in b["tables"].items()}}
+         "tables": {t: frozenset(cols) for t, cols in b["tables"].items()},
+         "strict_tables": b.get("strict_tables", {})}
         for b in data["builds"]
     ]
-    builds.append({"id": "current", "schema_version": config.SCHEMA_VERSION, "tables": _current_structure()})
+    tables, strict = _current_structure()
+    builds.append({"id": "current", "schema_version": config.SCHEMA_VERSION, "tables": tables,
+                   "strict_tables": strict})
     return builds
 
 
@@ -221,11 +252,14 @@ def identify_backup_build(path: Path, schema_version: int) -> str:
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         snapshot = _structure(conn)
+        builds = [b for b in restore_builds()
+                  if b["schema_version"] == schema_version and b["tables"] == snapshot]
+        builds = [b for b in builds
+                  if _strict_structure(conn, b["strict_tables"]) == b["strict_tables"]]
     finally:
         conn.close()
-    for build in restore_builds():
-        if build["schema_version"] == schema_version and build["tables"] == snapshot:
-            return build["id"]
+    for build in builds:
+        return build["id"]
     supported = ", ".join(f"v{b['schema_version']} ({b['id']})" for b in restore_builds())
     raise MaintenanceError(
         f"Резервная копия отклонена: структура схемы v{schema_version} не совпадает ни с одной "

@@ -1986,6 +1986,9 @@ ERRONEOUS_GUARDED_TABLES = (
     ("patient_notification_preferences", "patient_id", ("INSERT", "UPDATE", "DELETE")),
     ("notifications", "patient_id", ("INSERT", "UPDATE", "DELETE")),
     ("oncology_consilium_appointments", "patient_id", ("INSERT", "UPDATE", "DELETE")),
+    # Мобильный доступ (v27): действующий доступ (linked/active) не дает пометить
+    # карточку, а после пометки запись доступа — и отозванная — не меняется никаким путем.
+    ("patient_portal_access", "patient_id", ("INSERT", "UPDATE", "DELETE")),
 )
 
 
@@ -2030,6 +2033,14 @@ def migrate_v25_to_v26(conn: sqlite3.Connection) -> None:
 
 class SchemaVersionError(RuntimeError):
     """The database file was written by a different (newer or unknown) build."""
+
+
+class MigrationConflictError(SchemaVersionError):
+    """Data in the file contradicts a constraint the migration has to add.
+
+    Raised before anything is dropped or rewritten; init_db rolls the whole
+    transaction back, so the file stays exactly as it was. The message carries
+    counts only — never the conflicting values (they are patient addresses)."""
 
 
 def _check_schema_version(conn: sqlite3.Connection) -> None:
@@ -2079,17 +2090,40 @@ def _rebuild_portal_access_nocase(conn: sqlite3.Connection) -> None:
     SQLite не умеет менять коллацию колонки через ALTER, поэтому таблица
     пересобирается — тем же приёмом, что и internal_notification_state в v6.
     Нужно только для баз, созданных ранней сборкой v10 (до релиза); на свежей
-    базе SCHEMA_SQL уже создаёт таблицу правильно и функция ничего не делает.
+    базе и на сборке portal-a3fbe00 SCHEMA_SQL уже создает таблицу правильно
+    и функция ничего не делает.
+
+    Ни одна строка не теряется и не объединяется. Адреса, которые отличаются
+    только регистром, нарушили бы новое UNIQUE: такой конфликт обнаруживается
+    до любых изменений, и миграция останавливается (MigrationConflictError),
+    init_db откатывает транзакцию целиком — исходная таблица остается как была.
+    Решать, чей это адрес, должен человек, а не миграция. Копирование идет
+    обычным INSERT (без OR IGNORE): любое другое нарушение тоже останавливает
+    миграцию, а сверка числа строк перед DROP — последняя страховка.
     """
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'patient_portal_access'"
     ).fetchone()
     if row is None or "COLLATE NOCASE" in (row["sql"] or "").upper():
         return
+    conflicts = conn.execute(
+        """SELECT COUNT(*) AS groups, COALESCE(SUM(n), 0) AS rows_in_conflict FROM (
+               SELECT COUNT(*) AS n FROM patient_portal_access
+               GROUP BY email_normalized COLLATE NOCASE HAVING COUNT(*) > 1)"""
+    ).fetchone()
+    if conflicts["groups"]:
+        raise MigrationConflictError(
+            "Обновление схемы до v27 остановлено: в таблице мобильного доступа "
+            f"{conflicts['groups']} адрес(а) записаны для {conflicts['rows_in_conflict']} карточек "
+            "и отличаются только регистром букв. База не изменена, ни одна запись не удалена. "
+            "Оставьте каждый адрес только у одной карточки (решение принимает ответственный "
+            "сотрудник) и повторите запуск."
+        )
+    source_rows = conn.execute("SELECT COUNT(*) FROM patient_portal_access").fetchone()[0]
     _execute_script(
         conn,
         """
-        CREATE TABLE IF NOT EXISTS patient_portal_access_nocase (
+        CREATE TABLE patient_portal_access_nocase (
             patient_id TEXT PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
             email_normalized TEXT NOT NULL UNIQUE COLLATE NOCASE,
             status TEXT NOT NULL CHECK (status IN ('linked', 'active', 'revoked')),
@@ -2104,16 +2138,44 @@ def _rebuild_portal_access_nocase(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL,
             CHECK (status <> 'revoked' OR revoked_at IS NOT NULL)
         );
-        INSERT OR IGNORE INTO patient_portal_access_nocase
+        INSERT INTO patient_portal_access_nocase
             (patient_id, email_normalized, status, linked_at, linked_by_user_id,
              activated_at, enrollment_state, last_login_at, revoked_at, revoked_by_user_id, updated_at)
         SELECT patient_id, email_normalized, status, linked_at, linked_by_user_id,
                activated_at, enrollment_state, last_login_at, revoked_at, revoked_by_user_id, updated_at
         FROM patient_portal_access;
+        """,
+    )
+    copied = conn.execute("SELECT COUNT(*) FROM patient_portal_access_nocase").fetchone()[0]
+    if copied != source_rows:
+        raise MigrationConflictError(
+            "Обновление схемы до v27 остановлено: записи мобильного доступа скопированы не полностью "
+            f"({copied} из {source_rows}). База не изменена."
+        )
+    # Триггер пометки ссылается на таблицу и мешал бы DROP; migrate_v26_to_v27
+    # создает его заново сразу после пересборки, в той же транзакции.
+    conn.execute(f"DROP TRIGGER IF EXISTS {MOBILE_ACCESS_MARK_TRIGGER[0]}")
+    _execute_script(
+        conn,
+        """
         DROP TABLE patient_portal_access;
         ALTER TABLE patient_portal_access_nocase RENAME TO patient_portal_access;
-        """
+        """,
     )
+
+
+# Пометка ошибочной при действующем мобильном доступе запрещена и на уровне базы:
+# сервис проверяет это под той же блокировкой, что и клинические зависимости,
+# а триггер закрывает любой другой путь записи пометки.
+MOBILE_ACCESS_MARK_TRIGGER = ("trg_erroneous_mark_requires_no_mobile_access", """
+        CREATE TRIGGER IF NOT EXISTS trg_erroneous_mark_requires_no_mobile_access
+        BEFORE INSERT ON patient_erroneous_marks
+        WHEN NEW.action = 'mark' AND EXISTS (
+            SELECT 1 FROM patient_portal_access
+            WHERE patient_id = NEW.patient_id AND status IN ('linked', 'active'))
+        BEGIN
+            SELECT RAISE(ABORT, 'patient_mobile_access_in_force');
+        END""")
 
 
 def migrate_v26_to_v27(conn: sqlite3.Connection) -> None:
@@ -2137,6 +2199,13 @@ def migrate_v26_to_v27(conn: sqlite3.Connection) -> None:
     """
     _execute_script(conn, SCHEMA_SQL)
     _rebuild_portal_access_nocase(conn)
+    # Пересборка таблицы удаляет ее триггеры: защита записи доступа помеченной
+    # карточки (ERRONEOUS_GUARDED_TABLES) восстанавливается здесь, после нее.
+    for name, sql in ERRONEOUS_GUARD_TRIGGERS:
+        if name.startswith("trg_erroneous_readonly_patient_portal_access_"):
+            _ensure_trigger(conn, name, sql)
+    if _table_columns(conn, "patient_erroneous_marks"):
+        _ensure_trigger(conn, *MOBILE_ACCESS_MARK_TRIGGER)
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -2221,9 +2290,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 8:
             migrate_v8_to_v9(conn)
-            migrate_v9_to_v10(conn)
-            conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
-        elif row["version"] == 9:
             migrate_v9_to_v10(conn)
             conn.execute("UPDATE schema_version SET version = ?", (config.SCHEMA_VERSION,))
         elif row["version"] == 9:

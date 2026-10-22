@@ -577,9 +577,11 @@ def test_existing_v10_database_gains_the_collation(tmp_path):
     db_path = tmp_path / "early-v10.db"
     conn = _connect(db_path)
     init_db(conn)
-    # Воспроизводим раннюю схему v10 — UNIQUE без коллации.
+    # Воспроизводим раннюю схему v10 — UNIQUE без коллации. Триггера пометки
+    # (v27, ссылается на таблицу) в ранней сборке не было.
     conn.executescript(
         """
+        DROP TRIGGER IF EXISTS trg_erroneous_mark_requires_no_mobile_access;
         DROP TABLE patient_portal_access;
         CREATE TABLE patient_portal_access (
             patient_id TEXT PRIMARY KEY REFERENCES patients(id) ON DELETE CASCADE,
