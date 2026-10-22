@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ru" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Система планирования — UX-прототип для сотрудников</title>
+    <script src="theme-init.js"></script>
+    <!-- Шрифты IBM Plex встроены в приложение — без внешних запросов -->
+    <link rel="stylesheet" href="../../static/fonts.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<a class="skip" href="#main">Перейти к содержимому</a>
+<div class="shell" id="shell">
+    <aside class="side" id="side" aria-label="Разделы системы">
+        <div class="brand">
+            <span class="brand__mark" aria-hidden="true">СП</span>
+            <span class="brand__text"><span class="brand__name">Система планирования</span><span class="brand__sub">Маршрут онкологического пациента</span></span>
+        </div>
+        <nav id="nav" aria-label="Основные разделы"></nav>
+        <div class="side__foot" id="sideUser"></div>
+    </aside>
+
+    <div class="work">
+        <header class="top">
+            <button class="btn btn--icon top__menu" id="menuBtn" type="button" aria-label="Открыть меню разделов" aria-controls="side" aria-expanded="false">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+            </button>
+            <form class="top__search" role="search" id="globalSearch">
+                <label class="sr-only" for="globalQ">Найти пациента</label>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+                <input id="globalQ" type="search" placeholder="Найти пациента: ФИО, полис ОМС или код МКБ-10" autocomplete="off">
+                <kbd aria-hidden="true">/</kbd>
+            </form>
+            <div class="top__right">
+                <button class="btn top__ai" id="aiBtn" type="button" aria-haspopup="dialog" aria-controls="aiPanel" aria-expanded="false">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 16l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/></svg><span class="top__ai-label">ИИ-помощник</span>
+                </button>
+                <button class="btn btn--icon bell" id="bellBtn" type="button" aria-haspopup="dialog" aria-controls="bellPanel" aria-expanded="false">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/></svg>
+                    <span class="bell__count" id="bellCount"></span>
+                </button>
+                <button class="btn btn--icon" id="themeBtn" type="button" aria-label="Переключить светлую и темную тему">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
+                </button>
+            </div>
+        </header>
+
+        <div class="demo" role="group" aria-label="Управление демонстрацией (не часть интерфейса системы)">
+            <span class="demo__tag">Прототип · синтетические данные</span>
+            <label class="demo__field">Роль
+                <select id="demoRole"></select>
+            </label>
+            <label class="demo__field">Состояние экрана
+                <select id="demoState">
+                    <option value="ok">Данные</option>
+                    <option value="loading">Загрузка</option>
+                    <option value="empty">Пусто</option>
+                    <option value="error">Ошибка сервера</option>
+                </select>
+            </label>
+            <a class="demo__link" href="../redesign/">Открыть прежний прототип (Stage 3.5)</a>
+        </div>
+
+        <main id="main" tabindex="-1"></main>
+    </div>
+</div>
+
+<div class="ai-scrim" id="aiScrim" hidden></div>
+<aside class="ai-panel" id="aiPanel" role="dialog" aria-modal="true" aria-labelledby="aiTitle" aria-describedby="aiSub" hidden>
+    <div class="ai-panel__head">
+        <div><h2 class="ai-panel__title" id="aiTitle">ИИ-помощник</h2><p class="ai-panel__sub" id="aiSub">Ответы по доступным вам данным</p></div>
+        <button class="btn btn--icon" id="aiClose" type="button" aria-label="Закрыть помощника"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="ai-panel__body" id="aiBody"></div>
+</aside>
+<div class="bell-panel" id="bellPanel" role="dialog" aria-modal="false" aria-labelledby="bellTitle" hidden></div>
+<div id="layer"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+
+<script src="../redesign/nosology.js"></script>
+<script src="../redesign/icd10.js"></script>
+<script src="../redesign/data.js"></script>
+<script src="text.js"></script>
+<script src="client-path.js"></script>
+<script src="core.js"></script>
+<script src="consilium-core.js"></script>
+<script src="events-core.js"></script>
+<script src="newpatient-core.js"></script>
+<script src="app.js"></script>
+<script src="consilium.js"></script>
+<script src="events.js"></script>
+<script src="newpatient.js"></script>
+</body>
+</html>
