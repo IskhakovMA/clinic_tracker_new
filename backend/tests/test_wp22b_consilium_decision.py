@@ -233,6 +233,9 @@ def test_09_concurrent_marks_record_exactly_one_decision(auth_client):
     card = _card(auth_client, p["id"])
     ev = card["history"][0]["events"][0]
     path = get_conn().execute("PRAGMA database_list").fetchone()["file"]
+    # Один раз до потоков: decision_doctor_id() читает через общее тестовое соединение,
+    # которое нельзя использовать из двух потоков. В потоках — только свои соединения.
+    doctor_id = decision_doctor_id()
     results, barrier = [], threading.Barrier(2)
 
     def mark(decision):
@@ -242,7 +245,7 @@ def test_09_concurrent_marks_record_exactly_one_decision(auth_client):
         try:
             results.append(store.mark_consilium_decision(
                 conn, p["id"], ev["id"], decision, ev["version"], expected_stage="consult",
-                expected_history_entry_id=card["history"][0]["id"], user_id=decision_doctor_id()) is not None)
+                expected_history_entry_id=card["history"][0]["id"], user_id=doctor_id) is not None)
         except store.DecisionConflict as e:
             results.append(e.code)
         finally:
