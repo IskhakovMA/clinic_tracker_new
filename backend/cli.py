@@ -231,6 +231,8 @@ def cmd_migrate_db(args: argparse.Namespace) -> int:
         return 1
     try:
         result = maintenance.migrate_database(config.DB_PATH, confirm_offline=True)
+    except maintenance.CommittedButUnverifiedError as e:
+        return _report_unverified(e, audit.SCHEMA_MIGRATED)
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -373,6 +375,8 @@ def cmd_restore(args: argparse.Namespace) -> int:
     try:
         result = maintenance.restore_database(args.backup_file, config.DB_PATH, confirm_offline=True,
                                               replace_damaged=args.replace_damaged)
+    except maintenance.CommittedButUnverifiedError as e:
+        return _report_unverified(e, audit.RESTORE_PERFORMED)
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
@@ -499,6 +503,28 @@ def cmd_notifications_drain(args: argparse.Namespace) -> int:
         f"skipped={result['skipped']} retry_scheduled={result['retry_scheduled']}"
     )
     return 0
+
+
+# Код выхода restore/migrate-db, когда операция прошла точку фиксации, но не
+# подтверждена (база уже изменена; нужна проверка оператором).
+EXIT_COMMITTED_UNVERIFIED = 3
+
+
+def _report_unverified(e: maintenance.CommittedButUnverifiedError, event_type: str) -> int:
+    """База уже изменена, подтверждения нет: ни «успеха», ни «база не изменена»."""
+    print("ОПЕРАЦИЯ НЕ ПОДТВЕРЖДЕНА: " + str(e), file=sys.stderr)
+    for key, value in e.details.items():
+        if value is not None:
+            print(f"  {key}: {_safe(value)}", file=sys.stderr)
+    try:
+        with db_guard.shared():
+            audit.record(db.get_connection(), event_type, result=audit.RESULT_ERROR,
+                         detail=f"via=cli state={e.state}"[:200])
+    except Exception as exc:  # файловая система уже сбоит — событие может не записаться
+        print(f"Событие аудита не записано ({type(exc).__name__}).", file=sys.stderr)
+    finally:
+        db.reset_singleton_for_tests()
+    return EXIT_COMMITTED_UNVERIFIED
 
 
 # Команды, которые сами берут нужные блокировки или не открывают рабочую базу.

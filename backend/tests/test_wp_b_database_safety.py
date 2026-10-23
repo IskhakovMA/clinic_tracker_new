@@ -829,3 +829,278 @@ def test_check_db_while_app_runs_without_open_wal_uses_unchanged_copy(auth_clien
     assert report["ok"] is True
     assert _files(config.DATA_DIR) == before
     assert _leftovers(config.DATA_DIR) == []
+
+
+# --- review fix: failures after the commit point --------------------------
+# Restore commits at os.replace(staging, clinic.db); migrate-db commits inside init_db.
+# A later failure must never be reported as "база не изменена" or as success.
+
+def _fail_after_replace(monkeypatch, *, fsync=False, chmod=False):
+    """Inject EIO into os.fsync / EPERM into os.chmod for clinic.db once clinic.db was replaced."""
+    import errno
+    from backend.app import maintenance
+    real_replace, real_fsync, real_chmod = os.replace, os.fsync, os.chmod
+    replaced = {"done": False}
+
+    def replace(src, dst):
+        real_replace(src, dst)
+        if str(dst).endswith("clinic.db"):
+            replaced["done"] = True
+
+    def failing_fsync(fd):
+        if replaced["done"]:
+            raise OSError(errno.EIO, "Input/output error")
+        real_fsync(fd)
+
+    def failing_chmod(path, mode, *args, **kwargs):
+        if replaced["done"] and str(path).endswith("clinic.db"):
+            raise OSError(errno.EPERM, "Operation not permitted")
+        return real_chmod(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(maintenance.os, "replace", replace)
+    if fsync:
+        monkeypatch.setattr(maintenance.os, "fsync", failing_fsync)
+    if chmod:
+        monkeypatch.setattr(maintenance.os, "chmod", failing_chmod)
+    return replaced
+
+
+def test_fsync_failure_after_replace_is_not_reported_as_unchanged(data_dir, tmp_path, monkeypatch):
+    from backend.app import maintenance
+    live = _current_db(data_dir, patients=("Синтетик Из Копии",))
+    backup = maintenance.backup_database(live, tmp_path / "b.cbk")
+    conn = sqlite3.connect(str(live))
+    conn.execute("UPDATE patients SET name = 'Синтетик После Копии'")
+    conn.commit()
+    conn.close()
+    backup_before = _digest(backup)
+    with monkeypatch.context() as m:
+        replaced = _fail_after_replace(m, fsync=True)
+        with pytest.raises(maintenance.CommittedButUnverifiedError) as exc:
+            maintenance.restore_database(backup, live, confirm_offline=True)
+    assert replaced["done"] is True
+    err = exc.value
+    assert err.operation == "restore" and err.state == "replaced_not_durable"
+    message = str(err)
+    assert "ЗАМЕНЕНА" in message and "долговечность записи не подтверждена" in message
+    assert "не изменен" not in message
+    assert "автоматически не выполняется" in message
+    # Actual state: the restored content is installed, nothing was retried or rolled back.
+    assert _patient_names(live) == ["Синтетик Из Копии"]
+    # The verified copy of the previous DB and the source backup are kept.
+    pre = Path(err.details["pre_restore_backup"])
+    assert pre.exists() and maintenance.validate_backup(pre)["patient_count"] == 1
+    assert _digest(backup) == backup_before
+    assert _leftovers(data_dir) == []
+    # Locks are released: the operator can check and, if needed, restore again by hand.
+    assert maintenance.diagnose_database(live)["ok"] is True
+    assert maintenance.restore_database(backup, live, confirm_offline=True)["previous_state"] == "healthy"
+
+
+def test_fsync_failure_after_replace_damaged_keeps_quarantine(data_dir, tmp_path, monkeypatch):
+    from backend.app import maintenance
+    live = _current_db(data_dir, patients=("Синтетик Из Копии",))
+    backup = maintenance.backup_database(live, tmp_path / "b.cbk")
+    live.write_bytes(os.urandom(16384))
+    (data_dir / "clinic.db-wal").write_bytes(os.urandom(2048))
+    damaged = _files(data_dir)
+    with monkeypatch.context() as m:
+        _fail_after_replace(m, fsync=True)
+        with pytest.raises(maintenance.CommittedButUnverifiedError) as exc:
+            maintenance.restore_database(backup, live, confirm_offline=True, replace_damaged=True)
+    err = exc.value
+    assert err.state == "replaced_not_durable"
+    assert "не изменен" not in str(err)
+    quarantine = Path(err.details["quarantine"])
+    assert _digest(quarantine / "clinic.db") == damaged["clinic.db"]
+    assert _digest(quarantine / "clinic.db-wal") == damaged["clinic.db-wal"]
+    assert str(quarantine) in str(err)
+    assert _patient_names(live) == ["Синтетик Из Копии"]
+
+
+def test_chmod_failure_after_replace_is_reported(data_dir, tmp_path, monkeypatch):
+    from backend.app import maintenance
+    live = _current_db(data_dir, patients=("Синтетик Из Копии",))
+    backup = maintenance.backup_database(live, tmp_path / "b.cbk")
+    with monkeypatch.context() as m:
+        _fail_after_replace(m, chmod=True)
+        with pytest.raises(maintenance.CommittedButUnverifiedError) as exc:
+            maintenance.restore_database(backup, live, confirm_offline=True)
+    assert exc.value.state == "replaced_permissions_unconfirmed"
+    assert "права доступа 0600" in str(exc.value) and "не изменен" not in str(exc.value)
+    assert Path(exc.value.details["pre_restore_backup"]).exists()
+    assert _patient_names(live) == ["Синтетик Из Копии"]
+
+
+def test_failure_before_replace_still_reports_unchanged(data_dir, tmp_path, monkeypatch):
+    """Control: os.replace itself fails -> nothing installed, the old files are back."""
+    import errno
+    from backend.app import maintenance
+    live = _current_db(data_dir, patients=("Синтетик Рабочий",))
+    backup = maintenance.backup_database(live, tmp_path / "b.cbk")
+    before = _files(data_dir)
+
+    def no_space(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    with monkeypatch.context() as m:
+        m.setattr(maintenance.os, "replace", no_space)
+        with pytest.raises(maintenance.MaintenanceError) as exc:
+            maintenance.restore_database(backup, live, confirm_offline=True)
+    assert not isinstance(exc.value, maintenance.CommittedButUnverifiedError)
+    assert "не изменены" in str(exc.value)
+    assert _files(data_dir) == before
+
+
+def test_failed_put_back_after_failed_replace_is_not_reported_as_unchanged(data_dir, tmp_path, monkeypatch):
+    import errno
+    from backend.app import maintenance
+    live = _current_db(data_dir)
+    backup = maintenance.backup_database(live, tmp_path / "b.cbk")
+    live.write_bytes(os.urandom(8192))
+    real_rename = os.rename
+
+    def no_space(*_args, **_kwargs):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    def rename(src, dst):
+        if "quarantine" in str(src):                  # putting the damaged file back fails
+            raise OSError(errno.EIO, "Input/output error")
+        return real_rename(src, dst)
+
+    with monkeypatch.context() as m:
+        m.setattr(maintenance.os, "replace", no_space)
+        m.setattr(maintenance.os, "rename", rename)
+        with pytest.raises(maintenance.MaintenanceError) as exc:
+            maintenance.restore_database(backup, live, confirm_offline=True, replace_damaged=True)
+    message = str(exc.value)
+    assert "не изменены" not in message.split("Резервная копия")[0]
+    assert "остались там" in message and "clinic.db" in message
+    quarantine = next((data_dir / "quarantine").iterdir())
+    assert (quarantine / "clinic.db").exists()               # the damaged file is kept, not deleted
+
+
+def test_migration_check_failure_after_commit_is_reported_as_committed(data_dir, monkeypatch):
+    import errno
+    from backend.app import maintenance
+    live = _v20_db(data_dir / "clinic.db")
+
+    def broken(_path):
+        raise OSError(errno.EIO, "Input/output error")
+
+    with monkeypatch.context() as m:
+        m.setattr(maintenance, "_diagnose_copy", broken)
+        with pytest.raises(maintenance.CommittedButUnverifiedError) as exc:
+            maintenance.migrate_database(live, confirm_offline=True)
+    err = exc.value
+    assert err.operation == "migrate-db" and err.state == "migrated_check_incomplete"
+    message = str(err)
+    assert "ЗАФИКСИРОВАНА" in message and f"v{current_schema_version()}" in message
+    assert "откатана" not in message and "не изменена" not in message
+    assert "check-db" in message and "restore" in message
+    assert err.details["file_schema_version"] == current_schema_version()
+    assert _schema_version(live) == current_schema_version()           # the migration is in the file
+    backup = Path(err.details["pre_migration_backup"])
+    assert maintenance.inspect_backup(backup)["schema_version"] == 20   # verified copy kept
+    assert maintenance.validate_backup(backup)["migrated_from_schema_version"] == 20
+    assert maintenance.diagnose_database(live)["ok"] is True            # the operator's next step works
+
+
+def test_migration_check_problems_after_commit_are_reported_as_committed(data_dir, monkeypatch):
+    from backend.app import maintenance
+    live = _v20_db(data_dir / "clinic.db")
+    real = maintenance._diagnose_copy
+    calls = {"n": 0}
+
+    def failing_after_commit(path):
+        report = real(path)
+        report["ok"] = False
+        report["problems"] = ["synthetic post-commit problem"]
+        calls["n"] += 1
+        return report
+
+    with monkeypatch.context() as m:
+        m.setattr(maintenance, "_diagnose_copy", failing_after_commit)
+        with pytest.raises(maintenance.CommittedButUnverifiedError) as exc:
+            maintenance.migrate_database(live, confirm_offline=True)
+    assert exc.value.state == "migrated_check_failed"
+    assert "synthetic post-commit problem" in str(exc.value) and "откатана" not in str(exc.value)
+    assert _schema_version(live) == current_schema_version()
+
+
+def test_migration_failure_before_commit_reports_the_real_old_version(data_dir, monkeypatch):
+    from backend.app import maintenance
+    live = _v20_db(data_dir / "clinic.db")
+    before = _digest(live)
+
+    real_init = maintenance.init_db
+
+    def broken_init(conn, **kwargs):
+        files = [Path(r[2]).resolve() for r in conn.execute("PRAGMA database_list") if r[2]]
+        if live.resolve() not in files:
+            return real_init(conn, **kwargs)          # trial migration of the decrypted copy: normal
+        conn.execute("BEGIN IMMEDIATE")              # live file: change, then fail before COMMIT
+        conn.execute("UPDATE schema_version SET version = 99")
+        conn.rollback()
+        raise RuntimeError("synthetic migration failure")
+
+    with monkeypatch.context() as m:
+        m.setattr(maintenance, "init_db", broken_init)
+        with pytest.raises(maintenance.MaintenanceError) as exc:
+            maintenance.migrate_database(live, confirm_offline=True)
+    assert not isinstance(exc.value, maintenance.CommittedButUnverifiedError)
+    assert "откатана" in str(exc.value) and "прежняя схема v20" in str(exc.value)
+    assert _schema_version(live) == 20 and _digest(live) == before
+
+
+_CLI_FAULT = r"""
+import errno, os, sys
+sys.path.insert(0, sys.argv[1])
+from backend.app import maintenance
+real_replace, real_fsync = os.replace, os.fsync
+state = {"replaced": False}
+def replace(src, dst):
+    real_replace(src, dst)
+    if str(dst).endswith("clinic.db"):
+        state["replaced"] = True
+def fsync(fd):
+    if state["replaced"]:
+        raise OSError(errno.EIO, "Input/output error")
+    real_fsync(fd)
+os.replace, os.fsync = replace, fsync
+if sys.argv[2] == "migrate-db":
+    def broken(_path):
+        raise OSError(errno.EIO, "Input/output error")
+    maintenance._diagnose_copy = broken
+from backend import cli
+sys.argv = ["backend.cli", *sys.argv[2:]]
+raise SystemExit(cli.main())
+"""
+
+
+@pytest.mark.parametrize("operation", ["restore", "restore-damaged", "migrate-db"])
+def test_cli_reports_committed_unverified_state_without_false_success(data_dir, tmp_path, operation):
+    from backend.app import maintenance
+    if operation == "migrate-db":
+        live = _v20_db(data_dir / "clinic.db")
+        args = ["migrate-db", "--confirm-offline"]
+    else:
+        live = _current_db(data_dir, patients=("Синтетик Из Копии",))
+        backup = maintenance.backup_database(live, tmp_path / "b.cbk")
+        args = ["restore", str(backup), "--confirm-offline", "--yes"]
+        if operation == "restore-damaged":
+            live.write_bytes(os.urandom(8192))
+            args.append("--replace-damaged")
+    env = dict(os.environ, CLINIC_DATA_DIR=str(data_dir), PYTHONDONTWRITEBYTECODE="1", CLINIC_AI_MODE="disabled")
+    result = subprocess.run([sys.executable, "-c", _CLI_FAULT, str(PROJECT_ROOT), *args], env=env,
+                            capture_output=True, text=True, timeout=120)
+    out = result.stdout + result.stderr
+    assert result.returncode == 3, out
+    assert "ОПЕРАЦИЯ НЕ ПОДТВЕРЖДЕНА" in result.stderr
+    assert "Восстановление завершено" not in out and "Миграция выполнена" not in out
+    assert "не изменен" not in result.stderr
+    conn = sqlite3.connect(f"{live.as_uri()}?mode=ro", uri=True)
+    row = conn.execute("SELECT event_type, result, detail FROM audit_events ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    expected = "schema_migrated" if operation == "migrate-db" else "restore_performed"
+    assert row[0] == expected and row[1] == "error" and "state=" in row[2]

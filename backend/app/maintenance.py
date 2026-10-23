@@ -33,6 +33,23 @@ class MaintenanceError(RuntimeError):
     """Operator-facing failure (bad file, failed check) — safe to print."""
 
 
+class CommittedButUnverifiedError(MaintenanceError):
+    """The operation passed its commit point, a later step failed.
+
+    restore: os.replace already installed the restored file, but the directory
+    sync (durability) or the file permissions could not be confirmed.
+    migrate-db: init_db committed the new schema, but the final check did not
+    complete or found problems. The database is NOT unchanged; nothing is
+    retried automatically. `state` is a short machine-readable label for the
+    CLI and the audit event; `details` holds non-PHI paths for the operator."""
+
+    def __init__(self, message: str, *, operation: str, state: str, details: dict):
+        super().__init__(message)
+        self.operation = operation
+        self.state = state
+        self.details = details
+
+
 MAGIC = b"CTBK"
 FORMAT_VERSION = 1
 ALGORITHM = "AES-256-GCM"
@@ -1413,12 +1430,52 @@ def _quarantine_dir(db_path: Path) -> Path:
     return target
 
 
+class _ReplacedButNotDurable(Exception):
+    """Internal: os.replace succeeded, the directory sync failed."""
+
+    def __init__(self, cause: OSError, quarantine: Path | None):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.quarantine = quarantine
+
+
+class _RollbackIncomplete(Exception):
+    """Internal: the replacement failed and moved files could not all be put back."""
+
+    def __init__(self, cause: OSError, quarantine: Path | None, left: list[str]):
+        super().__init__(str(cause))
+        self.cause = cause
+        self.quarantine = quarantine
+        self.left = left
+
+
+def _fsync_dir_strict(path: Path) -> None:
+    """Like _fsync_dir, but a directory that cannot be opened or synced is an error.
+
+    Only where POSIX directory sync exists; elsewhere (Windows) durability is
+    left to the filesystem as before."""
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _install_staging(staging: Path, db_path: Path, *, move_main: bool) -> Path | None:
     """Move the old files aside (never delete them) and install the staging file.
 
     Leftover WAL/SHM always go to quarantine: a WAL of the old file applied
-    to the restored one would corrupt it. If the installation fails, the
-    moved files are put back."""
+    to the restored one would corrupt it.
+
+    Commit point: os.replace(staging, db_path).
+    - Before it (quarantine moves, the replace itself) an OSError puts the
+      moved files back and is raised as OSError: the live files are as before;
+      if putting back fails, _RollbackIncomplete says which files stay where.
+    - After it the restored file is installed; a failed directory sync raises
+      _ReplacedButNotDurable — the change happened, its durability is not
+      confirmed."""
     to_move = [path for path in _sidecars(db_path).values() if path.exists()]
     if move_main and db_path.exists():
         to_move.insert(0, db_path)
@@ -1429,18 +1486,46 @@ def _install_staging(staging: Path, db_path: Path, *, move_main: bool) -> Path |
             target = quarantine / path.name
             os.rename(path, target)
             moved.append((path, target))
-        os.replace(staging, db_path)
-    except OSError:
+        os.replace(staging, db_path)          # точка фиксации
+    except OSError as exc:
+        left = []
         for original, target in reversed(moved):
             try:
                 os.rename(target, original)
             except OSError:
-                pass
+                left.append(original.name)
+        if left:
+            raise _RollbackIncomplete(exc, quarantine, sorted(left)) from exc
         raise
-    _fsync_dir(db_path.parent)
-    if quarantine is not None:
-        _fsync_dir(quarantine)
+    try:
+        _fsync_dir_strict(db_path.parent)
+        if quarantine is not None:
+            _fsync_dir_strict(quarantine)
+    except OSError as exc:
+        raise _ReplacedButNotDurable(exc, quarantine) from exc
     return quarantine
+
+
+def _restore_unverified(state: str, cause: OSError, *, db_path: Path, pre_restore_backup,
+                        quarantine: Path | None, what: str) -> CommittedButUnverifiedError:
+    details = {
+        "db_path": str(db_path),
+        "pre_restore_backup": str(pre_restore_backup) if pre_restore_backup else None,
+        "quarantine": str(quarantine) if quarantine else None,
+        "cause": f"{type(cause).__name__}: {cause.strerror or cause}",
+    }
+    keep = []
+    if pre_restore_backup:
+        keep.append(f"проверенная копия прежней базы {Path(pre_restore_backup).name}")
+    if quarantine:
+        keep.append(f"карантин {quarantine}")
+    return CommittedButUnverifiedError(
+        f"Restore: база ЗАМЕНЕНА восстановленной копией, но {what} ({details['cause']}). "
+        "Состояние восстановления требует проверки; повторный restore автоматически не выполняется. "
+        "Не запускайте приложение. Проверьте файловую систему (место, ошибки ввода-вывода, права), "
+        "затем выполните python -m backend.cli check-db. Если check-db не проходит — повторите restore "
+        "вручную. " + ("Сохранено: " + "; ".join(keep) + "." if keep else ""),
+        operation="restore", state=state, details=details)
 
 
 def _restore_locked(backup_path: Path, db_path: Path, *, replace_damaged: bool) -> dict:
@@ -1499,13 +1584,33 @@ def _restore_locked(backup_path: Path, db_path: Path, *, replace_damaged: bool) 
             lock_conn = None
         try:
             quarantine = _install_staging(staging, db_path, move_main=state in ("damaged", "empty"))
+        except _ReplacedButNotDurable as failure:
+            raise _restore_unverified(
+                "replaced_not_durable", failure.cause, db_path=db_path, pre_restore_backup=pre_restore_backup,
+                quarantine=failure.quarantine,
+                what="долговечность записи не подтверждена: синхронизация каталога (fsync) завершилась ошибкой",
+            ) from failure.cause
+        except _RollbackIncomplete as failure:
+            raise MaintenanceError(
+                f"Не удалось заменить базу ({type(failure.cause).__name__}), и не все файлы удалось вернуть "
+                f"из карантина {failure.quarantine}: {', '.join(failure.left)} остались там. База по пути "
+                f"{db_path.name} может отсутствовать. Не запускайте приложение; верните файлы из карантина "
+                "вручную или повторите restore. Резервная копия не изменена.") from failure.cause
         except OSError as exc:
             raise MaintenanceError(
                 f"Не удалось заменить базу: {type(exc).__name__} ({exc.strerror or exc}). Текущая база "
                 "и резервная копия не изменены"
                 + (f"; копия текущей базы: {Path(pre_restore_backup).name}" if pre_restore_backup else "")
                 + ".") from exc
-        _restrict_permissions(db_path)
+        # После точки фиксации: права файла подтверждаются строго (не best effort).
+        try:
+            os.chmod(db_path, 0o600)
+        except OSError as exc:
+            raise _restore_unverified(
+                "replaced_permissions_unconfirmed", exc, db_path=db_path, pre_restore_backup=pre_restore_backup,
+                quarantine=quarantine,
+                what="права доступа 0600 к восстановленному файлу не подтверждены (chmod завершился ошибкой)",
+            ) from exc
     except OSError as exc:
         raise MaintenanceError(
             f"Restore не выполнен: {type(exc).__name__} ({exc.strerror or 'ошибка файловой системы'}). "
@@ -1579,26 +1684,87 @@ def _migrate_locked(db_path: Path) -> dict:
         db_path, config.BACKUP_DIR / f"pre_migrate_v{version}_{stamp}_{secrets.token_hex(4)}{DEFAULT_BACKUP_SUFFIX}",
         allow_older_schema=True)
     verified = _verify_pre_migration_backup(backup)
-    conn = sqlite3.connect(str(db_path))
+    try:
+        conn = sqlite3.connect(str(db_path))
+    except sqlite3.Error as exc:
+        raise MaintenanceError(
+            f"migrate-db: база не открыта ({type(exc).__name__}); миграция не начиналась, база не изменена. "
+            f"Проверенная копия: {backup.name}") from exc
     conn.row_factory = sqlite3.Row
     try:
         conn.execute(f"PRAGMA busy_timeout = {SQLITE_EXCLUSIVE_TIMEOUT_MS}")
         conn.execute("PRAGMA foreign_keys = ON")
-        try:
-            init_db(conn)
-        except Exception as exc:
-            raise MaintenanceError(
-                f"Миграция v{version} → v{config.SCHEMA_VERSION} не выполнена ({type(exc).__name__}); "
-                f"транзакция откатана, база не изменена. Проверенная копия: {backup.name}") from exc
-    finally:
+        init_db(conn)                       # точка фиксации — COMMIT внутри init_db
+    except Exception as exc:
         conn.close()
-    after = _diagnose_copy(db_path)
+        conn = None
+        raise _migration_failure(db_path, version, backup, exc) from exc
+    finally:
+        if conn is not None:
+            conn.close()
+    # Миграция зафиксирована. Всё, что ниже, — проверка уже изменённого файла.
+    try:
+        after = _diagnose_copy(db_path)
+    except (OSError, sqlite3.Error, MaintenanceError) as exc:
+        raise _migration_unverified(
+            db_path, version, backup, "migrated_check_incomplete",
+            f"итоговая проверка не завершена ({type(exc).__name__}: {getattr(exc, 'strerror', None) or exc})",
+        ) from exc
     if not after["ok"]:
-        raise MaintenanceError(
-            "После миграции проверка базы не пройдена: " + "; ".join(after["problems"])
-            + f". Верните состояние из проверенной копии {backup.name} (restore --confirm-offline).")
+        raise _migration_unverified(
+            db_path, version, backup, "migrated_check_failed",
+            "итоговая проверка нашла проблемы: " + "; ".join(after["problems"]))
     return {"status": "migrated", "from_schema_version": version, "schema_version": after["schema_version"],
             "pre_migration_backup": str(backup), "backup_verified": verified, "check": after}
+
+
+def _file_schema_version(db_path: Path) -> int | None:
+    """Schema version as stored in the file now (None if it cannot be read)."""
+    try:
+        conn = sqlite3.connect(_readonly_uri(db_path), uri=True)
+        try:
+            row = conn.execute("SELECT version FROM schema_version").fetchone()
+        finally:
+            conn.close()
+    except (sqlite3.Error, OSError):
+        return None
+    return row[0] if row else None
+
+
+def _migration_failure(db_path: Path, version, backup: Path, exc: BaseException) -> MaintenanceError:
+    """init_db raised: report what the file holds now instead of assuming a rollback."""
+    actual = _file_schema_version(db_path)
+    if actual == version:
+        return MaintenanceError(
+            f"Миграция v{version} → v{config.SCHEMA_VERSION} не выполнена ({type(exc).__name__}); "
+            f"транзакция откатана, в файле прежняя схема v{actual}, база не изменена. "
+            f"Проверенная копия: {backup.name}")
+    if actual == config.SCHEMA_VERSION:
+        return _migration_unverified(
+            db_path, version, backup, "migrated_check_incomplete",
+            f"после фиксации произошла ошибка ({type(exc).__name__})")
+    return CommittedButUnverifiedError(
+        f"Миграция v{version} → v{config.SCHEMA_VERSION} прервана ошибкой ({type(exc).__name__}); "
+        f"версию схемы в файле подтвердить не удалось ({actual!r}). Состояние базы требует проверки. "
+        "Не запускайте приложение; выполните python -m backend.cli check-db. Если проверка не проходит — "
+        f"restore проверенной копии {backup.name} (--confirm-offline).",
+        operation="migrate-db", state="migration_state_unknown",
+        details={"db_path": str(db_path), "pre_migration_backup": str(backup), "from_schema_version": version,
+                 "file_schema_version": actual})
+
+
+def _migration_unverified(db_path: Path, version, backup: Path, state: str, what: str) -> CommittedButUnverifiedError:
+    actual = _file_schema_version(db_path)
+    return CommittedButUnverifiedError(
+        f"Миграция v{version} → v{config.SCHEMA_VERSION} ЗАФИКСИРОВАНА (схема в файле: "
+        f"{'v' + str(actual) if actual is not None else 'не прочитана'}), но {what}. Откат не выполнялся; "
+        "повтор автоматически не выполняется. Не запускайте приложение. Проверьте файловую систему, затем "
+        "python -m backend.cli check-db. Если check-db не проходит — восстановите проверенную копию "
+        f"{backup.name} (схема v{version}): restore --confirm-offline (этой сборкой копия будет снова "
+        "обновлена на временной копии) или restore прежней сборкой для возврата к ней.",
+        operation="migrate-db", state=state,
+        details={"db_path": str(db_path), "pre_migration_backup": str(backup), "from_schema_version": version,
+                 "file_schema_version": actual})
 
 
 def _decrypt_and_check_recovery(backup: Path, temp_dir: Path) -> tuple[Path, dict]:

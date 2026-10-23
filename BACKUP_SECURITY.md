@@ -202,8 +202,15 @@ plaintext content, or PHI.
    files are put back.
 10. Releases the locks; the CLI then records a no-PHI audit event.
 
-If any step fails (wrong key, no space, no permission, busy file), the live DB,
-its WAL/SHM and the backup file stay as they were and no staging file remains.
+If any step **before** `os.replace` fails (wrong key, no space, no permission,
+busy file), the live DB, its WAL/SHM and the backup file stay as they were and
+no staging file remains (exit code 1). If putting quarantined files back after a
+failed replacement also fails, the message says which files stay in quarantine
+and does not claim the DB is unchanged. A failure **after** `os.replace` (directory
+`fsync`, `chmod 0600`) is reported as "ОПЕРАЦИЯ НЕ ПОДТВЕРЖДЕНА" with exit code 3:
+the restored file is installed, its durability or permissions are not confirmed,
+nothing is retried; the recovery copy and quarantine are kept (OPERATIONS.md,
+exit codes table).
 An interrupted restore (`kill -9`, power loss) leaves the live DB either old or
 fully replaced (or, in the damaged-DB path, moved to quarantine with the path
 empty); repeat the same command.

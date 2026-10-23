@@ -81,6 +81,23 @@ passed, copy stored off the data directory):
   `clinic.db-wal`/`clinic.db-shm` (the WAL holds committed data), editing with
   the `sqlite3` shell, `VACUUM`, changing `schema_version`.
 
+Exit codes of `restore` and `migrate-db`: `0` done and checked; `1` refused or
+failed **before** the commit point — the database is unchanged; `3` **ОПЕРАЦИЯ НЕ
+ПОДТВЕРЖДЕНА**: the commit point was passed (restore: `os.replace` installed the
+restored file; migrate-db: `init_db` committed the new schema), a later step failed:
+
+| State (`state=` in the audit event, result `error`) | Meaning | What to do |
+| --- | --- | --- |
+| `replaced_not_durable` | restored file installed, directory `fsync` failed: durability not confirmed | do not start the app; check the filesystem (I/O errors, space); `check-db`; if it fails, run restore again by hand |
+| `replaced_permissions_unconfirmed` | restored file installed, `chmod 0600` failed | fix the permissions (`chmod 600 clinic.db`), `check-db` |
+| `migrated_check_incomplete` | new schema committed, the final check did not run to the end | do not start the app; check the filesystem; `check-db`; if it fails, restore the verified `pre_migrate_*` copy |
+| `migrated_check_failed` | new schema committed, the final check found problems | same as above |
+| `migration_state_unknown` | init_db failed and the schema version in the file could not be read | same as above |
+
+In state `3` nothing is retried or rolled back automatically, the verified
+`pre_restore_*`/`pre_migrate_*` copy and `quarantine/` are kept, and the message
+lists their paths.
+
 `check-db` is always safe: with the app stopped it checks a private copy of the
 file and its WAL (the live file is not opened); with the app running it reads
 the live file with SQLite `mode=ro` (main file and WAL are not written). A
