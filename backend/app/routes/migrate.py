@@ -12,8 +12,8 @@ from .. import audit, idempotency, importexport, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
 from ..models import ImportCommitRequest, ImportPreviewRequest
 from ..services import import_operations
-from .importexport import (_import_possible_duplicates, decision_audit, historical_decisions_request,
-                           historical_decisions_view)
+from .importexport import (_import_possible_duplicates, decision_audit, future_fact_audit,
+                           historical_decisions_request, historical_decisions_view)
 
 router = APIRouter(prefix="/api/migrate/localstorage", tags=["migrate"])
 
@@ -57,6 +57,7 @@ def migrate_preview(
     # WP2.2-B: решения ОК из локальных данных переносятся только с отдельным подтверждением.
     report["historicalDecisions"] = {**historical_decisions_view(document, "add"),
                                      "fileSha256": inspection.provenance["fileSha256"]}
+    report["futureFacts"] = importexport.future_facts_impact(document, "add")
     return {"valid": True, "errors": [], "serverHasData": _patient_count(conn) > 0, **report}
 
 
@@ -113,9 +114,11 @@ def migrate_commit(
                               detail=(f"added={result['added']} provenance=local_migration "
                                       f"file_status={inspection.provenance['status']} "
                                       f"file_sha256={inspection.provenance['fileSha256']} "
-                                      f"import_id={import_id} imported_decisions={result['importedDecisions']}"),
+                                      f"import_id={import_id} imported_decisions={result['importedDecisions']} "
+                                      f"future_facts={result['futureFacts']}"),
                               **ctx)
         decision_audit(conn, ctx, result, import_id=import_id, file_sha256=inspection.provenance["fileSha256"])
+        future_fact_audit(conn, ctx, result, import_id=import_id, file_sha256=inspection.provenance["fileSha256"])
 
     def execute(before_write, fresh: policy.CurrentUser) -> dict:
         acting["user"] = fresh

@@ -1,7 +1,7 @@
 import sqlite3
 from backend.app import config
 
-from .conftest import make_patient_payload, current_schema_version, event_add_body, unsigned_import
+from .conftest import create_empty_card, make_patient_payload, current_schema_version, event_add_body, unsigned_import
 
 
 def test_empty_db_boots_and_serves(client):
@@ -23,9 +23,9 @@ def test_data_survives_reconnect(auth_client, tmp_path):
 
 
 def test_foreign_keys_cascade(auth_client, tmp_path):
-    p = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf).json()
+    p = {"id": create_empty_card(auth_client)}      # WP-C FIX1-P1: удаляется только пустая карточка
     auth_client.post(f"/api/patients/{p['id']}/history/0/events", json=event_add_body(auth_client, p['id'], 0), headers=auth_client.csrf)
-    auth_client.delete(f"/api/patients/{p['id']}", headers=auth_client.csrf)
+    assert auth_client.delete(f"/api/patients/{p['id']}", headers=auth_client.csrf).status_code == 200
 
     conn = sqlite3.connect(str(tmp_path / "clinic.db"))
     assert conn.execute("SELECT COUNT(*) FROM history_entries").fetchone()[0] == 0

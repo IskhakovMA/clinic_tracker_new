@@ -1,4 +1,4 @@
-from .conftest import card_version, checklist_state, make_patient_payload, event_delete, event_patch, stage_body, event_add_body
+from .conftest import card_version, checklist_state, create_empty_card, make_patient_payload, event_delete, event_patch, stage_body, event_add_body
 
 
 def _create(auth_client, **overrides):
@@ -21,9 +21,13 @@ def test_crud_roundtrip(auth_client):
     assert r.status_code == 200
     assert r.json()["name"] == "Новое Имя"
 
+    # WP-C FIX1-P1: карточка с диагнозом и жалобами не удаляется физически.
     r = auth_client.delete(f"/api/patients/{pid}", headers=auth_client.csrf)
-    assert r.status_code == 200
-    assert auth_client.get(f"/api/patients/{pid}").status_code == 404
+    assert r.status_code == 409 and r.json()["code"] == "PATIENT_HAS_CLINICAL_HISTORY"
+    assert auth_client.get(f"/api/patients/{pid}").status_code == 200
+    empty = create_empty_card(auth_client)
+    assert auth_client.delete(f"/api/patients/{empty}", headers=auth_client.csrf).status_code == 200
+    assert auth_client.get(f"/api/patients/{empty}").status_code == 404
 
 
 def test_client_cannot_choose_id(auth_client):

@@ -379,6 +379,21 @@ def unsigned_import(client, raw: str, mode: str, *, confirm: bool = True, histor
     return client.post("/api/import/commit", json=body, headers=client.csrf)
 
 
+def create_empty_card(client, **overrides) -> str:
+    """Пустая карточка (WP-C FIX1-P1): без диагноза, жалоб, локализации и других медицинских полей.
+
+    Удалить можно только такую карточку без истории. Форма требует диагноз, поэтому
+    пустую карточку создаёт импорт записи без медицинских данных; возвращает её id."""
+    import json
+    before = {r[0] for r in get_conn().execute("SELECT id FROM patients")}
+    fields = {"diagnosis": "", "nosology": "", "complaint": "", **overrides}
+    raw = json.dumps({"schemaVersion": 3, "patients": [make_patient_payload(**fields)]}, ensure_ascii=False)
+    r = unsigned_import(client, raw, "add")
+    assert r.status_code == 200, r.text
+    (created,) = {r[0] for r in get_conn().execute("SELECT id FROM patients")} - before
+    return created
+
+
 def legacy_export(document: dict) -> dict:
     """Выгрузка в прежнем (неподписанном) формате: без признаков подписи и
     без id записей маршрута и событий — как файлы до формата 2."""

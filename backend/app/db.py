@@ -169,6 +169,10 @@ CREATE TABLE IF NOT EXISTS patient_diagnosis_history (
 -- (триггеры trg_fact_history_*): прежнее значение факта не теряется при исправлении
 -- или очистке. Без внешних ключей: строки переживают любые правки событий, а
 -- карточку с такой историей удалить нельзя (PATIENT_HISTORY_DEPENDENCIES).
+-- source: где факт внесён; actor_user_id — автор, если он известен (NULL для фактов
+-- из импорта и переноса: их автор неизвестен, исполнителя хранит журнал аудита).
+-- anomaly = 'future_date': факт из исторической выгрузки позже «сегодня» учреждения —
+-- сохранён как есть, но не считается подтверждённым медицинским фактом.
 CREATE TABLE IF NOT EXISTS patient_event_fact_history (
     id TEXT PRIMARY KEY,
     seq INTEGER NOT NULL,
@@ -178,9 +182,11 @@ CREATE TABLE IF NOT EXISTS patient_event_fact_history (
     old_value TEXT,
     new_value TEXT,
     change_type TEXT NOT NULL CHECK (change_type IN ('initial', 'correction', 'cleared', 'reentry')),
-    source TEXT NOT NULL CHECK (source IN ('event_update', 'stage_change')),
+    source TEXT NOT NULL CHECK (source IN ('event_update', 'stage_change', 'patient_create', 'import',
+                                           'migration', 'legacy')),
     changed_at TEXT NOT NULL,
     actor_user_id TEXT,
+    anomaly TEXT CHECK (anomaly IS NULL OR anomaly IN ('future_date')),
     UNIQUE (event_id, seq)
 );
 
@@ -2291,11 +2297,24 @@ def migrate_v26_to_v27(conn: sqlite3.Connection) -> None:
 # перечень используют и проверка в store.delete_patient (число и коды для ответа
 # 409), и триггер trg_patients_delete_requires_no_history (страховка базы: другой
 # путь кода или прямой DELETE карточку с историей тоже не удалит). Пустая карточка —
-# только первая запись маршрута без заметки и отметок чек-листа и плановые события
-# без фактов: её удаление ничего медицинского не уничтожает.
+# только первая запись маршрута без заметки и отметок чек-листа, плановые события
+# без фактов и ни одного заполненного медицинского поля карточки (диагноз, жалобы,
+# локализация, результат и код ПГИ, код ОК, стадия): её удаление ничего медицинского
+# не уничтожает. ФИО, возраст, телефон, полис, приоритет, этап и ответственные —
+# не медицинские сведения и удаление не блокируют.
 _EVENTS_OF = ("FROM events e JOIN history_entries h ON h.id = e.history_entry_id "
               "WHERE h.patient_id = {pid}")
+_CARD = "FROM patients WHERE id = {pid} AND "
 PATIENT_HISTORY_DEPENDENCIES: tuple[tuple[str, str], ...] = (
+    # Текущие медицинские поля карточки (WP-C FIX1): клинические сведения есть и без
+    # отдельной истории изменений.
+    ("current_diagnosis", _CARD + "COALESCE(diagnosis, '') != ''"),
+    ("current_complaint", _CARD + "COALESCE(complaint, '') != ''"),
+    ("localization", _CARD + "COALESCE(nosology, '') != ''"),
+    ("pgi_result", _CARD + "(pgi_malignancy_confirmed IS NOT NULL OR COALESCE(pgi_result_date, '') != '')"),
+    ("pgi_code", _CARD + "COALESCE(pgi_code, '') != ''"),
+    ("consilium_code", _CARD + "COALESCE(consilium_code, '') != ''"),
+    ("disease_stage", _CARD + "COALESCE(disease_stage, '') != ''"),
     ("stage_transitions",
      "FROM history_entries WHERE patient_id = {pid} AND seq > "
      "(SELECT MIN(seq) FROM history_entries WHERE patient_id = {pid})"),

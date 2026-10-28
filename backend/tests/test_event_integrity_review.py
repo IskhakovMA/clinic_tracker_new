@@ -12,6 +12,7 @@ import pytest
 from .conftest import (
     DEV_USERNAME,
     create_account,
+    create_empty_card,
     create_department,
     get_conn,
     login,
@@ -98,9 +99,13 @@ def _preview(client, document):
     return r.json()
 
 
-def _archived_patient(client, name="Архив Синтетический"):
-    """Пациент с двумя событиями, первое из которых удалено (в архиве)."""
-    pid = _create(client, name=name, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
+def _archived_patient(client, name="Архив Синтетический", *, empty=False):
+    """Пациент с двумя событиями, первое из которых удалено (в архиве).
+
+    empty=True — карточка без медицинских полей (WP-C FIX1-P1: только такую можно удалить)."""
+    events = [{"date": "2026-01-10"}, {"date": "2026-02-10"}]
+    pid = (create_empty_card(client, name=name, events=events) if empty
+           else _create(client, name=name, events=events)["id"])
     first = _events(client, pid)[0]
     assert _delete(client, pid, first).status_code == 200
     return pid, first["id"]
@@ -628,7 +633,7 @@ def test_backups_are_recognised_by_schema_and_a_newer_one_is_rejected(auth_clien
 # === F5. Удаление карточки пациента ============================================
 
 def test_patient_with_deleted_event_cannot_be_deleted(auth_client):
-    pid, archived = _archived_patient(auth_client)
+    pid, archived = _archived_patient(auth_client, empty=True)
     before = _snapshot()
     r = auth_client.delete(f"/api/patients/{pid}", headers=auth_client.csrf)
     assert r.status_code == 409
@@ -640,20 +645,21 @@ def test_patient_with_deleted_event_cannot_be_deleted(auth_client):
 
 
 def test_patient_without_archive_is_deleted_as_before_and_consilium_still_blocks(auth_client):
-    plain = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
+    plain = create_empty_card(auth_client, events=[{"date": "2026-01-10"}])
     assert auth_client.delete(f"/api/patients/{plain}", headers=auth_client.csrf).status_code == 200
     assert auth_client.get(f"/api/patients/{plain}").status_code == 404
-    booked = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
+    booked = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]   # запись ОК требует диагноз
     consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     assert auth_client.post("/api/consilium/appointments", json=appointment_payload(booked),
                             headers=auth_client.csrf).status_code in (200, 201)
     r = auth_client.delete(f"/api/patients/{booked}", headers=auth_client.csrf)
     assert r.status_code == 409 and "консилиума" in r.json()["detail"]
-    assert _audit(booked, "patient_deleted")[-1]["detail"] == "consilium_records=1"
+    assert _audit(booked, "patient_deleted")[-1]["detail"] == (
+        "current_diagnosis=1;current_complaint=1;localization=1;consilium_records=1")
 
 
 def test_patient_delete_follows_restore_state(auth_client):
-    pid, archived = _archived_patient(auth_client)
+    pid, archived = _archived_patient(auth_client, empty=True)
     assert auth_client.delete(f"/api/patients/{pid}", headers=auth_client.csrf).status_code == 409
     # Восстановленное событие снова активно; прежняя политика удаления карточки действует.
     assert _restore(auth_client, pid, archived, _deleted(auth_client, pid)[0]["version"]).status_code == 200

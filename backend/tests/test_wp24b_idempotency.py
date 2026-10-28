@@ -511,7 +511,8 @@ def test_another_users_file_gives_no_warning(client):
     assert preview["previouslyImported"] is None
     second = _import(client, raw, key=_key())
     assert second.status_code == 200 and REPLAYED not in second.headers
-    assert set(second.json()) == {"added", "updated", "skipped", "unchanged", "appendedEvents", "provenance"}
+    assert set(second.json()) == {"added", "updated", "skipped", "unchanged", "appendedEvents", "futureFacts",
+                                  "provenance"}
     assert "doc.a" not in second.text and "previouslyImported" not in second.text
 
 

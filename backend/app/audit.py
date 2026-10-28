@@ -100,6 +100,7 @@ PATIENT_EVENT_RESTORED = "patient_event_restored"
 IMPORT_PREVIEW = "import_preview"
 IMPORT_COMMITTED = "import_committed"
 IMPORT_IDS_PRESERVED = "import_internal_ids_preserved"
+IMPORT_FUTURE_FACTS = "import_future_facts"   # FIX1-P3: факт из будущего в исторической выгрузке
 EXPORT = "export"
 MIGRATION_COMMITTED = "migration_committed"
 # WP2.4-B: повтор импорта или переноса по ключу и осознанный повтор ранее

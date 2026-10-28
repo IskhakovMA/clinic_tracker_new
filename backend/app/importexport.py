@@ -588,6 +588,34 @@ def historical_decision_count(document: ImportDocument, mode: str) -> int:
                if ev.consiliumDecision)
 
 
+FUTURE_FACTS_MESSAGE = (
+    "В файле есть фактические даты событий позже сегодняшней даты учреждения. Импорт исторической "
+    "выгрузки их не меняет: даты сохраняются как в файле, но отмечаются в карточке как неподтверждённые "
+    "до проверки и исправления сотрудником. Аномалия записывается в журнал аудита без самих дат."
+)
+
+
+def future_fact_counts(document: ImportDocument, mode: str) -> dict[int, int]:
+    """Сколько фактических дат из будущего импорт в режиме mode записал бы, по номеру записи файла.
+
+    Факты записывают только add/replace (новые карточки целиком); update дописывает лишь
+    плановые события без факта (_plan_patient_update). Часы — учреждения (clock.today_moscow,
+    то же правило, что и FACT_DATE_IN_FUTURE у ручного ввода)."""
+    if mode not in CARD_CREATING_MODES:
+        return {}
+    counts = {i: sum(1 for h in _file_history(p, None) for ev in h.events
+                     if store.is_future_fact("actual_date", ev.actualDate))
+              for i, p in enumerate(document.patients)}
+    return {i: n for i, n in counts.items() if n}
+
+
+def future_facts_impact(document: ImportDocument, mode: str) -> dict:
+    """Предупреждение предпросмотра: только числа, без дат и других медицинских значений."""
+    counts = future_fact_counts(document, mode)
+    facts = sum(counts.values())
+    return {"facts": facts, "patients": len(counts), "message": FUTURE_FACTS_MESSAGE if facts else ""}
+
+
 class ImportNotEmptyError(ValueError):
     """Migration of local data is allowed only into an empty database."""
 
@@ -1005,8 +1033,11 @@ def _insert_full_patient(
             # Решение ОК из файла — только подтвержденный перенос исторического решения
             # (источник import): автор и время решения неизвестны и не придумываются,
             # исполнитель импорта хранится отдельно и автором не становится.
+            # WP-C FIX1: факт из файла — первоначальная запись истории фактов с источником
+            # import/migration; автор факта неизвестен (исполнителя хранит журнал аудита).
             event_id = store.insert_event(conn, entry_id, ev_seq, ev, layout[seq][1][ev_seq] if layout else None,
-                                          decision_import=decision_import)
+                                          decision_import=decision_import,
+                                          fact_source="migration" if creation_source == "migration" else "import")
             if ev.consiliumDecision and imported_decisions is not None:
                 imported_decisions.append({"patientId": patient_id, "eventId": event_id, "historySeq": seq})
     for item in p.diagnosisHistory:
@@ -1135,6 +1166,9 @@ def commit_import(
                     raise RuntimeError("import_id is required to record confirmed duplicates")
                 duplicate_rows = dict(rows)
         imported_decisions: list[dict] = []
+        # FIX1-P3: фактические даты из будущего определяются до записи; значения не
+        # меняются, а аномалия уходит в обязательный аудит и в историю фактов.
+        future_counts = future_fact_counts(document, mode)
 
         def layout_of(index: int):
             return ids.structure[index] if verified else None
@@ -1164,7 +1198,8 @@ def commit_import(
                     else:
                         # Только дописываем новые события в конец существующих этапов.
                         for entry_id, event, event_id in plan:
-                            store.insert_event(conn, entry_id, store._next_event_seq(conn, entry_id), event, event_id)
+                            store.insert_event(conn, entry_id, store._next_event_seq(conn, entry_id), event, event_id,
+                                               fact_source="import")
                         store.touch_patient(conn, p.id)
                         updated += 1
                         appended_events += len(plan)
@@ -1185,13 +1220,15 @@ def commit_import(
                 raise ImportRestrictedError(1) from exc
             raise
         result = {"added": added, "updated": updated, "skipped": skipped,
-                  "unchanged": unchanged, "appendedEvents": appended_events}
+                  "unchanged": unchanged, "appendedEvents": appended_events,
+                  "futureFacts": sum(future_counts.values())}
+        future_patients = [{"patientId": created_ids[i], "facts": n} for i, n in sorted(future_counts.items())]
         if audit_hook is not None:
             # Обязательная запись аудита — в той же транзакции: её сбой
-            # откатывает импорт целиком. Созданные id и события с перенесенными
-            # решениями нужны только аудиту (ответ клиенту прежний).
+            # откатывает импорт целиком. Созданные id, события с перенесенными
+            # решениями и карточки с будущими фактами нужны только аудиту.
             audit_hook({**result, "createdIds": list(created_ids), "importedDecisions": len(imported_decisions),
-                        "decisionEvents": list(imported_decisions)})
+                        "decisionEvents": list(imported_decisions), "futureFactPatients": future_patients})
 
     return result
 

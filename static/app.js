@@ -2260,14 +2260,16 @@ const app = {
         const typeName = ev.treatmentType ? (treatmentTypeNames[ev.treatmentType] || ev.treatmentType) : null;
         if (ev.noPlan) {
             parts.push(`факт ${ev.actualDate || '—'}${ev.actualTime ? ' ' + ev.actualTime : ''}`);
-            return { text: parts.join(''), status: 'состоялось' };
+            return { text: parts.join(''), status: ev.actualDateUnverified ? 'факт из импорта не подтверждён: дата позже сегодняшней' : 'состоялось' };
         }
         if (ev.date) parts.push(`план ${ev.date}${ev.time ? ' ' + ev.time : ''}`);
         else parts.push('план не указан');
         if (ev.actualDate) parts.push(`факт ${ev.actualDate}${ev.actualTime ? ' ' + ev.actualTime : ''}`);
         if (typeName) parts.push(typeName);
         if (ev.consiliumDecision) parts.push(`Решение: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`);
-        const status = ev.actualDate ? (ev.matchedPlan ? 'состоялось по плану' : 'состоялось с отклонением') : (isPending ? 'ожидается' : 'без отметки');
+        // FIX1-P3: дата из будущего, пришедшая в исторической выгрузке, — не подтверждённый факт.
+        const status = ev.actualDateUnverified ? 'факт из импорта не подтверждён: дата позже сегодняшней'
+            : ev.actualDate ? (ev.matchedPlan ? 'состоялось по плану' : 'состоялось с отклонением') : (isPending ? 'ожидается' : 'без отметки');
         return { text: parts.join(' · '), status };
     },
 
@@ -4134,7 +4136,7 @@ const app = {
                     const { text, status } = this.formatEventText(ev, isPending, this.TREATMENT_LABELS);
                     return el('div', { class: 'plan-row' }, [
                         el('span', { class: 'plan-row__date', text: text }),
-                        el('span', { class: `chip chip--${ev.actualDate ? (ev.matchedPlan === false ? 'warning' : 'good') : 'neutral'}`, text: status }),
+                        el('span', { class: `chip chip--${ev.actualDate ? (ev.actualDateUnverified || ev.matchedPlan === false ? 'warning' : 'good') : 'neutral'}`, text: status }),
                     ]);
                 }) : [el('p', { class: 'muted', text: 'Плановая дата не указана.' })]),
                 occ.note ? el('p', { class: 'alert alert--warning', text: `Заметка: ${occ.note}` }) : null,
@@ -6252,6 +6254,7 @@ const app = {
                 patient_updated: 'Изменён пациент', patient_deleted: 'Удалён пациент',
                 patient_event_deleted: 'Удалено событие маршрута', patient_event_restored: 'Восстановлено событие маршрута',
                 import_preview: 'Проверка импорта', import_committed: 'Импорт выполнен',
+                import_future_facts: 'Импорт: факт с датой позже сегодняшней',
                 export: 'Экспорт', migration_committed: 'Перенос локальных данных',
                 backup_created: 'Создана резервная копия', restore_performed: 'Восстановление из копии',
                 db_integrity_failed: 'Ошибка целостности базы',
@@ -9874,6 +9877,14 @@ const app = {
                 el('p', { text: historical.message }),
             ])
             : null;
+        // FIX1-P3: фактические даты из будущего в исторической выгрузке — импорт их не меняет, только предупреждает.
+        const future = (this.importReport && this.importReport.futureFacts || {})[mode];
+        const futureAlert = future && future.facts
+            ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: `Фактические даты позже сегодняшней: ${future.facts} (карточек: ${future.patients})` }),
+                el('p', { text: future.message }),
+            ])
+            : null;
         const repeatAlert = repeatRequired
             ? el('div', { class: 'alert alert--warning' }, [
                 el('strong', { text: 'Вы уже импортировали этот файл' }),
@@ -9904,7 +9915,7 @@ const app = {
             ])
             : null;
         const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, policyDuplicatesAlert, limitAlert, possibleAlert,
-            repeatAlert, preserveAlert, historicalAlert].filter(Boolean);
+            repeatAlert, preserveAlert, historicalAlert, futureAlert].filter(Boolean);
         if (!impact || !impact.records) {
             box.replaceChildren(...extra);
             return;
@@ -10030,7 +10041,9 @@ const app = {
         // B-02: сервер подтвердил импорт — операция закрыта (окно и ключ сброшены).
         // Ошибка обновления экрана дальше не выдается за ошибку импорта.
         this.closeImportReviewModal();
-        ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`, 'good');
+        ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`
+            + (result.futureFacts ? ` Фактических дат позже сегодняшней: ${result.futureFacts} — они отмечены в карточках как неподтверждённые.` : ''),
+            result.futureFacts ? 'warning' : 'good');
         await this.refreshAfterSavedOperation('Импорт сохранен', async () => {
             await this.loadPatients();
             await this.loadActivity();

@@ -15,6 +15,7 @@ from .conftest import (
     DEV_USERNAME,
     create_account,
     create_department,
+    create_empty_card,
     get_conn,
     legacy_export,
     login,
@@ -261,7 +262,8 @@ def test_signed_consilium_records_stay_protected(client):
 # C. Создание карточки с сохранением внутренних id -------------------------------
 
 def _deleted_patient_file(client):
-    pid = _create(client, name="Удалённая Карточка", events=[{"date": "2026-01-10"}])["id"]
+    # WP-C FIX1-P1: удалить можно только карточку без медицинских данных.
+    pid = create_empty_card(client, name="Удалённая Карточка", events=[{"date": "2026-01-10"}])
     raw = _export(client)
     assert client.delete(f"/api/patients/{pid}", headers=client.csrf).status_code == 200
     return pid, raw

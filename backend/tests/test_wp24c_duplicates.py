@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from .conftest import pre_v28_rows, card_version, app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import pre_v28_rows, card_version, create_empty_card, app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _parallel, _rows
 from .test_wp24a_patient_create import _db_path, _while_locked, _world
@@ -571,7 +571,8 @@ def test_refused_key_is_reevaluated_when_the_match_is_gone(client):
     совпадение есть — 409 без создания; исчезло — обычное создание."""
     _world()
     login(client, "doc.a")
-    first = _create(client, name="Синтетик Первый").json()["id"]
+    # WP-C FIX1-P1: совпадение исчезает удалением — удалить можно только пустую карточку.
+    first = create_empty_card(client, name="Синтетик Первый", policyNumber=X)
     key = _key()
     assert _create(client, key=key, name="Синтетик Второй").status_code == 409
     assert client.delete(f"/api/patients/{first}", headers=client.csrf).status_code == 200

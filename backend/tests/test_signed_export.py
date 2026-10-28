@@ -15,6 +15,7 @@ from .conftest import (
     TEST_EXPORT_SIGNING_KEY_ID,
     create_account,
     create_department,
+    create_empty_card,
     get_conn,
     legacy_export,
     login,
@@ -339,7 +340,7 @@ def test_repeated_signed_import_is_a_conflict_not_a_duplicate(auth_client):
 
 
 def test_signed_file_into_an_empty_database_and_then_again(auth_client):
-    _create(auth_client, name="Перенос", events=[{"date": "2030-01-10"}])
+    create_empty_card(auth_client, name="Перенос", events=[{"date": "2030-01-10"}])   # FIX1-P1: пустая
     raw = _export(auth_client)
     pid = json.loads(raw)["patients"][0]["id"]
     assert auth_client.delete(f"/api/patients/{pid}", headers=auth_client.csrf).status_code == 200
@@ -437,8 +438,9 @@ def test_import_is_not_saved_without_its_audit_row(auth_client):
 def test_failure_during_signed_import_rolls_back(auth_client, monkeypatch):
     from backend.app import importexport
     # WP2.4-B (U9): разные синтетические полисы — файл с одинаковыми полисами отклоняется до записи.
-    _create(auth_client, name="Первый", policyNumber="7700000000024101", events=[{"date": "2030-01-10"}])
-    _create(auth_client, name="Второй", policyNumber="7700000000024102", events=[{"date": "2030-02-10"}])
+    # FIX1-P1: пустые карточки — их можно удалить, чтобы база стала пустой для replace.
+    create_empty_card(auth_client, name="Первый", policyNumber="7700000000024101", events=[{"date": "2030-01-10"}])
+    create_empty_card(auth_client, name="Второй", policyNumber="7700000000024102", events=[{"date": "2030-02-10"}])
     raw = _export(auth_client)
     original, calls = importexport._insert_full_patient, []
 
@@ -449,7 +451,7 @@ def test_failure_during_signed_import_rolls_back(auth_client, monkeypatch):
         return original(conn, p, *args, **kwargs)
 
     for patient in auth_client.get("/api/patients").json():
-        auth_client.delete(f"/api/patients/{patient['id']}", headers=auth_client.csrf)
+        assert auth_client.delete(f"/api/patients/{patient['id']}", headers=auth_client.csrf).status_code == 200
     monkeypatch.setattr(importexport, "_insert_full_patient", failing)
     before = _snapshot()
     r = _commit(auth_client, raw, "replace", preserveIdsConfirmation=preserve_ids_confirmation(raw, "replace"))

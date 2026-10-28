@@ -1,7 +1,7 @@
 """Full integration smoke: the entire operator workflow in one scenario."""
 import json
 
-from .conftest import card_version, DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, event_add_body, preserve_ids_confirmation
+from .conftest import card_version, DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, event_add_body
 
 
 def test_full_scenario(client):
@@ -42,16 +42,15 @@ def test_full_scenario(client):
     doc = json.loads(exported.text)
     assert doc["patients"][0]["id"] == pid
 
-    # 8. Delete
-    assert client.delete(f"/api/patients/{pid}", headers=csrf).status_code == 200
-    assert client.get("/api/patients").json() == []
+    # 8. Delete — WP-C FIX1-P1: карточка с диагнозом и жалобами физически не удаляется.
+    r = client.delete(f"/api/patients/{pid}", headers=csrf)
+    assert r.status_code == 409 and r.json()["code"] == "PATIENT_HAS_CLINICAL_HISTORY"
+    assert [p["id"] for p in client.get("/api/patients").json()] == [pid]
 
-    # 9. Import the export back
-    # Карточка с прежними id создаётся только с подтверждением разработчика.
-    assert client.post("/api/import/commit", json={"raw": exported.text, "mode": "add"}, headers=csrf).status_code == 428
-    r = client.post("/api/import/commit", json={"raw": exported.text, "mode": "add",
-                    "preserveIdsConfirmation": preserve_ids_confirmation(exported.text, "add")}, headers=csrf)
-    assert r.json()["added"] == 1
+    # 9. Import the export back — та же карточка совпадает с файлом, дубль не создаётся.
+    assert client.post("/api/import/commit", json={"raw": exported.text, "mode": "add"}, headers=csrf).status_code == 409
+    r = client.post("/api/import/commit", json={"raw": exported.text, "mode": "update"}, headers=csrf)
+    assert r.status_code == 200 and r.json()["unchanged"] == 1 and r.json()["added"] == 0
 
     # 10. Logout
     assert client.post("/api/auth/logout", headers=csrf).status_code == 200

@@ -71,6 +71,18 @@ def decision_audit(conn, ctx: dict, result: dict, *, import_id: str, file_sha256
         )
 
 
+def future_fact_audit(conn, ctx: dict, result: dict, *, import_id: str, file_sha256: str) -> None:
+    """FIX1-P3: по одной обязательной записи на карточку, получившую фактические даты из
+    будущего (в транзакции импорта). Только число фактов — без дат и медицинских значений."""
+    for f in result.get("futureFactPatients", []):
+        audit.record_required(
+            conn, audit.IMPORT_FUTURE_FACTS, patient_id=f["patientId"],
+            detail=(f"anomaly=future_date;field=actual_date;facts={f['facts']};verified=0;"
+                    f"import_id={import_id};file_sha256={file_sha256}"),
+            **ctx,
+        )
+
+
 def _id_preservation(inspection, document, mode: str) -> dict:
     """Нужно ли подтверждение создания карточек с прежними id (только числа)."""
     required = bool(inspection.ids.verified and mode in ("add", "replace") and document.patients)
@@ -127,6 +139,10 @@ def import_preview(
     report["idPreservation"] = {mode: _id_preservation(inspection, document, mode) for mode in modes}
     # WP2.2-B: перенос исторических решений ОК — только с отдельным подтверждением.
     report["historicalDecisions"] = {mode: historical_decisions_view(document, mode) for mode in modes}
+    # FIX1-P3: фактические даты из будущего (историческая выгрузка) — только числа.
+    report["futureFacts"] = {
+        mode: importexport.future_facts_impact(document, mode) for mode in modes
+    }
     # WP2.4-B (U9): повторяющиеся непустые полисы внутри файла — по самому файлу, без поиска в базе.
     report["filePolicyDuplicates"] = {mode: importexport.file_policy_duplicates_impact(document, mode)
                                       for mode in modes}
@@ -236,10 +252,12 @@ def import_commit(
                     f"appended_events={result['appendedEvents']} {file_ref} "
                     f"key_id={provenance.get('keyId') or '-'} "
                     f"unsigned_confirmed={int(confirmed)} patients={patients} events={events} "
-                    f"import_id={import_id} imported_decisions={result['importedDecisions']}"),
+                    f"import_id={import_id} imported_decisions={result['importedDecisions']} "
+                    f"future_facts={result['futureFacts']}"),
             **ctx,
         )
         decision_audit(conn, ctx, result, import_id=import_id, file_sha256=provenance["fileSha256"])
+        future_fact_audit(conn, ctx, result, import_id=import_id, file_sha256=provenance["fileSha256"])
         if preserve["required"]:
             # По одной обязательной записи на каждую карточку, созданную с прежним
             # id (patient_id указан — граница видна в журнале). Формулировка

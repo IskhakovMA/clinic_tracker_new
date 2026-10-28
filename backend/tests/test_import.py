@@ -1,6 +1,6 @@
 import json
 
-from .conftest import make_patient_payload, unsigned_import
+from .conftest import create_empty_card, make_patient_payload, unsigned_import
 
 
 def _import_doc(patients, schema_version=1):
@@ -47,7 +47,7 @@ def test_valid_import_add_mode(auth_client):
     r = unsigned_import(auth_client, raw, "add")
     assert r.status_code == 200
     assert r.json() == {"added": 1, "updated": 0, "skipped": 0, "unchanged": 0, "appendedEvents": 0,
-                        "provenance": "unsigned_external"}
+                        "futureFacts": 0, "provenance": "unsigned_external"}
 
     patients = auth_client.get("/api/patients").json()
     assert len(patients) == 1
@@ -151,8 +151,9 @@ def test_update_mode_only_touches_matches(auth_client):
 
 
 def test_replace_mode_only_into_an_empty_database(auth_client):
-    auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf)
-    auth_client.post("/api/patients", json=make_patient_payload(name="Второй"), headers=auth_client.csrf)
+    # Пустые карточки (WP-C FIX1-P1): удалить можно только карточку без медицинских данных.
+    create_empty_card(auth_client)
+    create_empty_card(auth_client, name="Второй")
 
     r = unsigned_import(auth_client, _import_doc([_valid_patient()]), "replace")
     assert r.status_code == 409 and "Полная замена заблокирована" in r.json()["detail"]

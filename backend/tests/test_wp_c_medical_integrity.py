@@ -22,12 +22,14 @@ from .conftest import (
     card_version,
     checklist_state,
     create_account,
+    create_empty_card,
     decision_doctor_id,
     get_conn,
     login,
     make_patient_payload,
     mark_decision,
     stage_body,
+    unsigned_import,
 )
 
 TEST_BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 32 zero bytes (synthetic test key)
@@ -49,6 +51,11 @@ def _create(client, **kw):
     r = client.post("/api/patients", json=make_patient_payload(**kw), headers=client.csrf)
     assert r.status_code == 201, r.text
     return r.json()
+
+
+def _empty_card(client, **kw):
+    """Пустая карточка (FIX1-P1): ни одного заполненного медицинского поля (через импорт)."""
+    return create_empty_card(client, **{"stage": "exam", "events": [{"date": "2026-11-20", "time": "10:00"}], **kw})
 
 
 def _card(client, pid):
@@ -256,13 +263,19 @@ def _protected_rows(pid):
 
 def test_empty_card_is_deleted_with_required_audit(auth_client):
     c = auth_client
-    pid = _create(c, stage="exam", events=[{"date": "2026-11-20", "time": "10:00"}])["id"]   # план, не факт
+    pid = _empty_card(c)                                              # план, не факт; без медицинских полей
+    card = _card(c, pid)
+    assert (card["diagnosis"], card["complaint"], card["nosology"], card["pgiResult"]) == ("", "", "", "")
+    audit_before = _count("SELECT COUNT(*) FROM audit_events WHERE patient_id = ?", pid)
     r = c.delete(f"/api/patients/{pid}", headers=c.csrf)
     assert r.status_code == 200 and r.json() == {"deleted": True}
     assert _count("SELECT COUNT(*) FROM patients WHERE id = ?", pid) == 0
-    assert _count("SELECT COUNT(*) FROM history_entries WHERE patient_id = ?", pid) == 0
+    assert _count("SELECT COUNT(*) FROM history_entries WHERE patient_id = ?", pid) == 0   # каскад FK
+    assert _count("SELECT COUNT(*) FROM events WHERE history_entry_id NOT IN (SELECT id FROM history_entries)") == 0
     assert _count("SELECT COUNT(*) FROM audit_events WHERE patient_id = ? AND event_type = 'patient_deleted' "
                   "AND result = 'ok'", pid) == 1
+    # Прежние записи аудита карточки не удаляются вместе с ней.
+    assert _count("SELECT COUNT(*) FROM audit_events WHERE patient_id = ?", pid) == audit_before + 1
 
 
 @pytest.mark.parametrize("dependency", sorted(DEPENDENCIES))
@@ -270,7 +283,7 @@ def test_card_with_each_dependency_is_not_deleted(auth_client, dependency):
     c = auth_client
     stage = "consult" if dependency == "consilium_decision_marks" else "exam"
     kw = {"treatingDoctorUserId": decision_doctor_id()} if dependency == "consilium_decision_marks" else {}
-    pid = _create(c, stage=stage, events=[{"date": "2026-08-20", "time": "10:00"}], **kw)["id"]
+    pid = _empty_card(c, stage=stage, events=[{"date": "2026-08-20", "time": "10:00"}], **kw)
     DEPENDENCIES[dependency](c, pid)
     if dependency == "consilium_decision_marks":
         login(c, DEV_USERNAME)
@@ -280,7 +293,12 @@ def test_card_with_each_dependency_is_not_deleted(auth_client, dependency):
     assert r.status_code == 409, r.text
     body = r.json()
     assert body["code"] == "PATIENT_HAS_CLINICAL_HISTORY"
+    # Пустая карточка: блокирует именно эта зависимость (у истории факта — вместе с самим фактом;
+    # у правки диагноза — вместе с текущим диагнозом и выведенной из него локализацией).
+    companions = {"fact_history": {"performed_events"}, "performed_events": {"fact_history"},
+                  "diagnosis_history": {"current_diagnosis", "localization"}}
     assert dependency in body["dependencies"]
+    assert set(body["dependencies"]) <= {dependency, *companions.get(dependency, set())}, body["dependencies"]
     assert "Синтетик" not in body["detail"] and "C34" not in body["detail"]   # без ПДн и диагнозов
     assert _count("SELECT COUNT(*) FROM patients WHERE id = ?", pid) == 1
     assert _protected_rows(pid) == before
@@ -320,7 +338,7 @@ def test_history_added_concurrently_is_not_destroyed_by_delete(auth_client):
     которую пытаются добавить в этот момент, не может проскочить в окно и быть стёрта."""
     from backend.app import store
     c = auth_client
-    pid = _create(c, stage="exam", events=[{"date": "2026-11-20"}])["id"]
+    pid = _empty_card(c, events=[{"date": "2026-11-20"}])
     path = _db_path()
     thread, result, resume = _paused(path, "DELETE FROM PATIENTS", lambda conn: store.delete_patient(conn, pid))
     # Удаление проверило зависимости (их нет) и стоит перед DELETE с блокировкой записи.
@@ -340,7 +358,7 @@ def test_history_added_concurrently_is_not_destroyed_by_delete(auth_client):
 def test_history_committed_first_blocks_the_delete(auth_client):
     from backend.app import store
     c = auth_client
-    pid = _create(c, stage="exam", events=[{"date": "2026-11-20"}])["id"]
+    pid = _empty_card(c, events=[{"date": "2026-11-20"}])
     path = _db_path()
     writer = _short_conn(path, timeout=5)
     writer.execute("BEGIN IMMEDIATE")
@@ -369,14 +387,201 @@ def test_delete_permissions_are_unchanged(client):
     create_account("del.reader", "deputy_chief_oncology")   # глобальная роль только для чтения
     assert login(client, "del.doctor").status_code == 200
     doc_id = get_conn().execute("SELECT id FROM users WHERE username = 'del.doctor'").fetchone()[0]
-    pid = _create(client, stage="exam", events=[{"date": "2026-11-20"}], treatingDoctorUserId=doc_id)["id"]
-    keep = _create(client, stage="exam", events=[{"date": "2026-11-20"}], treatingDoctorUserId=doc_id)["id"]
+    pid = _empty_card(client, events=[{"date": "2026-11-20"}], treatingDoctorUserId=doc_id)
+    keep = _empty_card(client, events=[{"date": "2026-11-20"}], treatingDoctorUserId=doc_id)
     assert login(client, "del.reader").status_code == 200
     assert client.delete(f"/api/patients/{keep}", headers=client.csrf).status_code == 403
     assert login(client, "del.doctor").status_code == 200
     assert client.delete(f"/api/patients/{pid}", headers=client.csrf).status_code == 200
     _dep_diagnosis(client, keep)
     assert client.delete(f"/api/patients/{keep}", headers=client.csrf).status_code == 409
+
+
+# ---------------------------------------------------------------- FIX1-P1
+# Текущие клинически значимые поля карточки — такая же зависимость, как история.
+
+CURRENT_FIELDS = {
+    # код зависимости: (столбец, синтетическое значение)
+    "current_diagnosis": ("diagnosis", "C34.1"),
+    "current_complaint": ("complaint", "Кашель (синтетика)"),
+    "localization": ("nosology", "lung34"),
+    "pgi_result": ("pgi_malignancy_confirmed", 1),
+    "pgi_code": ("pgi_code", "ПГИ-001"),
+    "consilium_code": ("consilium_code", "ОК-001"),
+    "disease_stage": ("disease_stage", "II"),
+}
+
+
+def _set_columns(pid, **cols):
+    conn = get_conn()
+    for col, value in cols.items():
+        conn.execute(f"UPDATE patients SET {col} = ? WHERE id = ?", (value, pid))  # nosec B608 - фиксированные имена
+    conn.commit()
+
+
+def _delete(c, pid):
+    return c.delete(f"/api/patients/{pid}", headers=c.csrf)
+
+
+def _direct_delete_blocked(pid):
+    raw = _short_conn(_db_path())
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="patient_has_clinical_history"):
+            raw.execute("DELETE FROM patients WHERE id = ?", (pid,))
+        raw.rollback()
+    finally:
+        raw.close()
+
+
+@pytest.mark.parametrize("code", sorted(CURRENT_FIELDS))
+def test_card_with_a_current_medical_field_is_not_deleted(auth_client, code):
+    """Каждое поле отдельно: API отвечает 409 с этим кодом, прямой SQL останавливает триггер."""
+    c = auth_client
+    pid = _empty_card(c)
+    column, value = CURRENT_FIELDS[code]
+    _set_columns(pid, **{column: value})
+    before = _protected_rows(pid)
+    r = _delete(c, pid)
+    assert r.status_code == 409, r.text
+    assert r.json()["code"] == "PATIENT_HAS_CLINICAL_HISTORY"
+    assert r.json()["dependencies"] == [code]
+    assert str(value) not in r.json()["detail"]                        # без медицинских значений
+    _direct_delete_blocked(pid)
+    assert _count("SELECT COUNT(*) FROM patients WHERE id = ?", pid) == 1
+    assert _protected_rows(pid) == before
+
+
+def test_pgi_result_date_alone_blocks_the_delete(auth_client):
+    c = auth_client
+    pid = _empty_card(c)
+    _set_columns(pid, pgi_result_date="2026-08-01")
+    assert _delete(c, pid).json()["dependencies"] == ["pgi_result"]
+    _direct_delete_blocked(pid)
+
+
+@pytest.mark.parametrize("value", ["", None])
+def test_blank_medical_fields_do_not_block(auth_client, value):
+    """Пустые строки и NULL — не медицинская информация; ФИО, телефон, полис, приоритет не блокируют."""
+    c = auth_client
+    pid = _empty_card(c, priority="high")
+    _set_columns(pid, diagnosis=value, complaint=value, nosology=value, pgi_code=value, consilium_code=value,
+                 disease_stage=value, pgi_result_date=value)
+    assert _delete(c, pid).status_code == 200
+
+
+def test_imported_card_with_diagnosis_complaint_and_pgi_is_not_deleted(auth_client):
+    """Воспроизведение P1: импортированная карточка с медицинскими полями из файла (без истории изменений)."""
+    c = auth_client
+    pid = _empty_card(c, diagnosis="C34.1", complaint="Одышка (синтетика)", pgiResult="confirmed",
+                      pgiResultDate="2026-08-01")
+    assert _count("SELECT COUNT(*) FROM patient_diagnosis_history WHERE patient_id = ?", pid) == 0
+    r = _delete(c, pid)
+    assert r.status_code == 409
+    # Локализацию импорт выводит из диагноза.
+    assert set(r.json()["dependencies"]) == {"current_diagnosis", "current_complaint", "localization", "pgi_result"}
+    _direct_delete_blocked(pid)
+
+
+@pytest.mark.parametrize("combo", [
+    ("current_diagnosis", "current_complaint"),
+    ("current_diagnosis", "pgi_result"),
+    ("current_complaint", "pgi_result"),
+    ("current_diagnosis", "current_complaint", "pgi_result", "pgi_code", "consilium_code"),
+])
+def test_combinations_of_current_fields_are_all_listed(auth_client, combo):
+    c = auth_client
+    pid = _empty_card(c)
+    _set_columns(pid, **{CURRENT_FIELDS[code][0]: CURRENT_FIELDS[code][1] for code in combo})
+    r = _delete(c, pid)
+    assert r.status_code == 409 and sorted(r.json()["dependencies"]) == sorted(combo)
+    _direct_delete_blocked(pid)
+
+
+def test_card_from_the_form_keeps_its_diagnosis_and_is_not_deleted(auth_client):
+    """Форма всегда требует диагноз: такая карточка больше не удаляется (прежний путь потери данных)."""
+    c = auth_client
+    pid = _create(c, stage="exam", events=[{"date": "2026-11-20"}])["id"]
+    r = _delete(c, pid)
+    assert r.status_code == 409
+    assert {"current_diagnosis", "current_complaint", "localization"} == set(r.json()["dependencies"])
+    assert _card(c, pid)["diagnosis"] == "C34.1"
+
+
+def test_complaint_and_pgi_entered_through_the_api_block_the_delete(auth_client):
+    c = auth_client
+    pid = _empty_card(c)
+    assert _patch(c, pid, "complaint", "Слабость (синтетика)").status_code == 200
+    assert _delete(c, pid).json()["dependencies"] == ["current_complaint"]
+    other = _empty_card(c)
+    assert _patch(c, other, "pgiResult", {"result": "not_confirmed", "date": "2026-08-01"}).status_code == 200
+    assert "pgi_result" in _delete(c, other).json()["dependencies"]
+    _direct_delete_blocked(other)
+
+
+def test_diagnosis_written_while_delete_holds_the_lock_waits(auth_client):
+    """Конкурентно: удаление проверило поля (пусто) и держит блокировку — диагноз не проскочит в окно."""
+    from backend.app import store
+    c = auth_client
+    pid = _empty_card(c)
+    path = _db_path()
+    thread, result, resume = _paused(path, "DELETE FROM PATIENTS", lambda conn: store.delete_patient(conn, pid))
+    other = _short_conn(path)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            other.execute("UPDATE patients SET diagnosis = 'C34.2' WHERE id = ?", (pid,))
+    finally:
+        other.close()
+    resume.set()
+    thread.join(20)
+    assert result.get("value") is True, result          # удалена пустая карточка; диагноз не был записан
+
+
+def test_diagnosis_committed_first_blocks_the_delete(auth_client):
+    from backend.app import store
+    c = auth_client
+    pid = _empty_card(c)
+    path = _db_path()
+    writer = _short_conn(path, timeout=5)
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("UPDATE patients SET diagnosis = 'C34.2' WHERE id = ?", (pid,))
+    deleter = _short_conn(path, timeout=0.2)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            store.delete_patient(deleter, pid)
+    finally:
+        deleter.close()
+    writer.commit()
+    writer.close()
+    with pytest.raises(store.PatientDeleteBlocked) as exc:
+        store.delete_patient(get_conn(), pid)
+    assert list(exc.value.dependencies) == ["current_diagnosis"]
+
+
+def test_field_set_and_delete_in_one_transaction_is_blocked_by_the_trigger(auth_client):
+    """Обход сервиса: одна транзакция заполняет жалобы и сразу удаляет — триггер видит текущее значение."""
+    c = auth_client
+    pid = _empty_card(c)
+    raw = _short_conn(_db_path())
+    try:
+        raw.execute("BEGIN IMMEDIATE")
+        raw.execute("UPDATE patients SET complaint = 'Боль (синтетика)' WHERE id = ?", (pid,))
+        with pytest.raises(sqlite3.IntegrityError, match="patient_has_clinical_history"):
+            raw.execute("DELETE FROM patients WHERE id = ?", (pid,))
+        raw.rollback()
+    finally:
+        raw.close()
+    assert _count("SELECT COUNT(*) FROM patients WHERE id = ?", pid) == 1
+    assert _count("SELECT COUNT(*) FROM history_entries WHERE patient_id = ?", pid) == 1   # каскад не прошёл
+
+
+def test_service_check_and_trigger_share_one_dependency_list():
+    from backend.app import db, store
+    codes = [code for code, _ in db.PATIENT_HISTORY_DEPENDENCIES]
+    assert set(CURRENT_FIELDS) <= set(codes)
+    assert set(codes) == set(store.PATIENT_DELETE_DEPENDENCY_LABELS)
+    guard = db._patient_delete_guard_sql()
+    for column, _ in CURRENT_FIELDS.values():
+        assert column in guard
 
 
 # ================================================================ AUD-06
@@ -394,7 +599,10 @@ def _snapshot(pid):
                                        "attention_close", "checklist"])
 def test_patient_change_is_not_saved_without_audit(auth_client, operation, kind):
     c = auth_client
-    pid = _create(c, stage="exam", events=[{"date": "2026-11-20"}])["id"]
+    if operation == "delete":
+        pid = _empty_card(c, events=[{"date": "2026-11-20"}])     # удалить можно только пустую карточку
+    else:
+        pid = _create(c, stage="exam", events=[{"date": "2026-11-20"}])["id"]
     if operation == "attention_close":
         issue = c.post(f"/api/patients/{pid}/attention", json={"reasonCode": "emergency_hospitalization",
                        "eventDate": "2026-08-21"}, headers=c.csrf).json()["issue"]
@@ -632,6 +840,251 @@ def test_fact_history_survives_audit_failure_only_with_the_change(auth_client):
         _restore_audit()
     assert _facts(pid) == []
     assert _card(c, pid)["history"][0]["events"][0]["actualDate"] in (None, "")
+
+
+# ---------------------------------------------------------------- FIX1-P2
+# Новый факт, внесённый любым путём записи, получает запись initial.
+
+def _fact_rows(pid):
+    return [dict(r) for r in get_conn().execute(
+        "SELECT field, old_value, new_value, change_type, source, actor_user_id, changed_at, anomaly "
+        "FROM patient_event_fact_history WHERE patient_id = ? ORDER BY event_id, seq", (pid,))]
+
+
+def _user_id(username=DEV_USERNAME):
+    return get_conn().execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()[0]
+
+
+def _imported_id(name):
+    return get_conn().execute("SELECT id FROM patients WHERE name = ?", (name,)).fetchone()[0]
+
+
+def test_fact_entered_in_the_create_form_is_recorded_as_initial(auth_client):
+    c = auth_client
+    pid = _create(c, stage="exam", events=[{"date": "2026-08-20", "actualDate": "2026-08-20",
+                                            "actualTime": "10:00"}])["id"]
+    rows = _fact_rows(pid)
+    assert [(r["field"], r["old_value"], r["new_value"], r["change_type"], r["source"]) for r in rows] == [
+        ("actual_date", None, "2026-08-20", "initial", "patient_create"),
+        ("actual_time", None, "10:00", "initial", "patient_create"),
+    ]
+    assert {r["actor_user_id"] for r in rows} == {_user_id()}          # автор — создатель карточки
+    assert all(r["anomaly"] is None for r in rows)
+    # Время записи — момент внесения на сервере, а не фактическая дата события.
+    assert all(r["changed_at"][:10] != "2026-08-20" for r in rows)
+
+
+def test_card_without_facts_has_no_fact_history(auth_client):
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-11-20", "time": "10:00"}])["id"]
+    assert _fact_rows(pid) == []
+
+
+def test_imported_fact_is_initial_without_a_forged_author(auth_client):
+    c = auth_client
+    name = "Импортов Факт Синтетик"
+    raw = json.dumps({"schemaVersion": 3, "patients": [make_patient_payload(
+        name=name, events=[{"date": "2026-08-20", "actualDate": "2026-08-21", "actualTime": "09:00"}])]},
+        ensure_ascii=False)
+    assert unsigned_import(c, raw, "add").status_code == 200
+    rows = _fact_rows(_imported_id(name))
+    assert [(r["field"], r["old_value"], r["new_value"], r["change_type"], r["source"]) for r in rows] == [
+        ("actual_date", None, "2026-08-21", "initial", "import"),
+        ("actual_time", None, "09:00", "initial", "import"),
+    ]
+    # Автор исторического факта неизвестен: импортирующий сотрудник им не назначается.
+    assert {r["actor_user_id"] for r in rows} == {None}
+
+
+def test_migrated_fact_is_initial_with_source_migration(auth_client):
+    client = auth_client
+    name = "Перенесенов Синтетик"
+    raw = json.dumps({"schemaVersion": 3, "patients": [make_patient_payload(
+        name=name, events=[{"date": "2026-08-20", "actualDate": "2026-08-20"}])]}, ensure_ascii=False)
+    r = client.post("/api/migrate/localstorage/commit", json={"raw": raw, "mode": "add"}, headers=client.csrf)
+    assert r.status_code == 200, r.text
+    rows = _fact_rows(_imported_id(name))
+    assert [(r["change_type"], r["source"], r["actor_user_id"]) for r in rows] == [("initial", "migration", None)]
+
+
+def _legacy_doc(c, pid):
+    """Неподписанная выгрузка одной карточки (прежний формат) — для дописывания событий режимом update."""
+    from .conftest import legacy_export
+    exported = c.get("/api/export", headers=c.csrf).json()
+    return legacy_export({**exported, "patients": [p for p in exported["patients"] if p["id"] == pid]})
+
+
+def test_created_fact_then_correction_and_clearing(auth_client):
+    c = auth_client
+    pid = _create(c, stage="exam", events=[{"date": "2026-08-20", "actualDate": "2026-08-20"}])["id"]
+    assert _set_fact(c, pid, "2026-08-21").status_code == 200
+    assert _set_fact(c, pid, "").status_code == 200
+    assert [(r["old_value"], r["new_value"], r["change_type"], r["source"]) for r in _fact_rows(pid)] == [
+        (None, "2026-08-20", "initial", "patient_create"),
+        ("2026-08-20", "2026-08-21", "correction", "event_update"),
+        ("2026-08-21", None, "cleared", "event_update"),
+    ]
+
+
+def test_stage_change_on_a_card_created_with_a_fact_keeps_one_initial(auth_client):
+    c = auth_client
+    pid = _create(c, stage="exam", events=[{"date": "2026-08-20", "actualDate": "2026-08-20"}])["id"]
+    r = c.post(f"/api/patients/{pid}/stage", json=stage_body(c, pid, {"newStage": "appointment"}), headers=c.csrf)
+    assert r.status_code == 200, r.text
+    assert [(r["change_type"], r["source"]) for r in _fact_rows(pid)] == [("initial", "patient_create")]
+
+
+def test_insert_event_with_a_fact_requires_a_source(auth_client):
+    """Новый путь записи не может забыть историю факта: без источника вставка отклоняется."""
+    from backend.app import store
+    from backend.app.models import EventIn
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-08-20"}])["id"]
+    conn = get_conn()
+    entry = conn.execute("SELECT id FROM history_entries WHERE patient_id = ?", (pid,)).fetchone()[0]
+    with pytest.raises(RuntimeError, match="fact_source"):
+        store.insert_event(conn, entry, 99, EventIn(date="2026-08-20", actualDate="2026-08-20"))
+    conn.rollback()
+    store.insert_event(conn, entry, 99, EventIn(date="2026-08-30"))     # план без факта — без истории
+    conn.rollback()
+
+
+def test_v27_fact_keeps_compatibility_without_initial(auth_client):
+    """Факт, записанный до v28 (без истории), не получает задним числом выдуманной записи initial."""
+    c = auth_client
+    pid = _create(c, stage="exam", events=[{"date": "2026-08-20"}])["id"]
+    conn = get_conn()
+    conn.execute("UPDATE events SET actual_date = '2026-08-19' WHERE history_entry_id IN "
+                 "(SELECT id FROM history_entries WHERE patient_id = ?)", (pid,))
+    conn.commit()
+    assert _fact_rows(pid) == []
+    assert _set_fact(c, pid, "2026-08-18").status_code == 200
+    assert [(r["old_value"], r["new_value"], r["change_type"]) for r in _fact_rows(pid)] == [
+        ("2026-08-19", "2026-08-18", "correction")]
+
+
+# ---------------------------------------------------------------- FIX1-P3
+# Историческая выгрузка с фактической датой из будущего: импорт разрешён, но явно.
+
+FUTURE = "2031-01-10"
+
+
+def _future_doc(name, *, future=FUTURE, extra=()):
+    events = [{"date": "2026-08-20", "actualDate": future}, *extra]
+    return json.dumps({"schemaVersion": 3, "patients": [make_patient_payload(name=name, events=events)]},
+                      ensure_ascii=False)
+
+
+def test_preview_reports_future_facts_before_commit(auth_client):
+    c = auth_client
+    raw = _future_doc("Будущев Предпросмотр", extra=[{"date": "2026-08-21", "actualDate": "2026-08-21"}])
+    r = c.post("/api/import/preview", json={"raw": raw}, headers=c.csrf)
+    assert r.status_code == 200, r.text
+    view = r.json()["futureFacts"]
+    assert view["add"]["facts"] == 1 and view["add"]["patients"] == 1
+    assert view["add"]["message"] and FUTURE not in json.dumps(view)          # без самих дат
+    assert view["update"]["facts"] == 0                                       # update не создаёт карточек
+    assert _count("SELECT COUNT(*) FROM patients WHERE name = 'Будущев Предпросмотр'") == 0
+
+
+def test_preview_without_future_facts_has_no_warning(auth_client):
+    c = auth_client
+    raw = _future_doc("Прошлов Синтетик", future="2026-08-20")
+    view = c.post("/api/import/preview", json={"raw": raw}, headers=c.csrf).json()["futureFacts"]
+    assert view["add"] == {"facts": 0, "patients": 0, "message": ""}
+
+
+def test_future_fact_is_imported_unchanged_unverified_and_audited(auth_client):
+    c = auth_client
+    name = "Будущев Синтетик"
+    r = unsigned_import(c, _future_doc(name), "add")
+    assert r.status_code == 200, r.text
+    assert r.json()["futureFacts"] == 1                                       # итог для оператора
+    pid = _imported_id(name)
+    ev = _card(c, pid)["history"][0]["events"][0]
+    assert ev["actualDate"] == FUTURE                                         # значение не изменено молча
+    assert ev["actualDateUnverified"] is True                                 # не подтверждённый факт
+    rows = _fact_rows(pid)
+    assert [(r["new_value"], r["change_type"], r["source"], r["anomaly"], r["actor_user_id"]) for r in rows] == [
+        (FUTURE, "initial", "import", "future_date", None)]
+    audits = get_conn().execute("SELECT event_type, detail FROM audit_events WHERE patient_id = ? "
+                                "AND event_type = 'import_future_facts'", (pid,)).fetchall()
+    assert len(audits) == 1
+    detail = audits[0]["detail"]
+    assert "anomaly=future_date" in detail and "facts=1" in detail and "verified=0" in detail
+    assert FUTURE not in detail and "C34" not in detail and "Синтетик" not in detail
+    committed = get_conn().execute("SELECT detail FROM audit_events WHERE event_type = 'import_committed' "
+                                   "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    assert "future_facts=1" in committed and FUTURE not in committed
+
+
+def test_update_import_never_appends_facts(auth_client):
+    """update дописывает только плановые события: будущий (как и любой) факт им не вносится."""
+    c = auth_client
+    pid = _create(c, stage="exam", events=[{"date": "2026-08-20", "time": "10:00"}])["id"]
+    doc = _legacy_doc(c, pid)
+    doc["patients"][0]["history"][0]["events"].append({"date": "2026-08-25", "actualDate": FUTURE})
+    raw = json.dumps(doc, ensure_ascii=False)
+    report = c.post("/api/import/preview", json={"raw": raw}, headers=c.csrf).json()
+    assert report["futureFacts"]["update"]["facts"] == 0 and report["overwriteImpact"]["update"]["blocked"]
+    assert unsigned_import(c, raw, "update").status_code == 409
+    assert _fact_rows(pid) == [] and len(_card(c, pid)["history"][0]["events"]) == 1
+
+
+def test_migration_with_a_future_fact_is_detected_and_audited(auth_client):
+    c = auth_client
+    raw = _future_doc("Будущев Перенесенов")
+    preview = c.post("/api/migrate/localstorage/preview", json={"raw": raw}, headers=c.csrf)
+    assert preview.status_code == 200 and preview.json()["futureFacts"]["facts"] == 1, preview.text
+    r = c.post("/api/migrate/localstorage/commit", json={"raw": raw, "mode": "add"}, headers=c.csrf)
+    assert r.status_code == 200 and r.json()["futureFacts"] == 1, r.text
+    pid = _imported_id("Будущев Перенесенов")
+    assert [(r["source"], r["anomaly"]) for r in _fact_rows(pid)] == [("migration", "future_date")]
+    assert _count("SELECT COUNT(*) FROM audit_events WHERE patient_id = ? AND event_type = 'import_future_facts'",
+                  pid) == 1
+    assert "future_facts=1" in get_conn().execute(
+        "SELECT detail FROM audit_events WHERE event_type = 'migration_committed'").fetchone()[0]
+
+
+def test_unverified_flag_is_not_exported_and_clears_after_staff_correction(auth_client):
+    c = auth_client
+    name = "Будущев Исправленов"
+    assert unsigned_import(c, _future_doc(name), "add").status_code == 200
+    pid = _imported_id(name)
+    exported = [p for p in c.get("/api/export", headers=c.csrf).json()["patients"] if p["id"] == pid][0]
+    assert "actualDateUnverified" not in exported["history"][0]["events"][0]
+    assert exported["history"][0]["events"][0]["actualDate"] == FUTURE        # формат выгрузки прежний
+    # Сотрудник не может подтвердить дату из будущего — только исправить её.
+    assert _set_fact(c, pid, "2031-01-11").json()["code"] == "FACT_DATE_IN_FUTURE"
+    assert _set_fact(c, pid, "2026-08-20").status_code == 200
+    ev = _card(c, pid)["history"][0]["events"][0]
+    assert ev["actualDateUnverified"] is False
+    assert [(r["change_type"], r["source"], r["anomaly"]) for r in _fact_rows(pid)] == [
+        ("initial", "import", "future_date"), ("correction", "event_update", None)]
+
+
+def test_future_fact_import_is_not_saved_without_its_anomaly_audit(auth_client):
+    c = auth_client
+    conn = get_conn()
+    conn.execute("CREATE TRIGGER zz_test_fail_future_audit BEFORE INSERT ON audit_events "
+                 "WHEN NEW.event_type = 'import_future_facts' "
+                 "BEGIN SELECT RAISE(ABORT, 'test: audit storage unavailable'); END")
+    conn.commit()
+    try:
+        r = unsigned_import(c, _future_doc("Будущев Безаудитов"), "add")
+    finally:
+        conn.execute("DROP TRIGGER IF EXISTS zz_test_fail_future_audit")
+        conn.commit()
+    assert r.status_code == 503, r.text
+    assert _count("SELECT COUNT(*) FROM patients WHERE name = 'Будущев Безаудитов'") == 0
+
+
+def test_staff_paths_still_reject_future_facts(auth_client):
+    """Исключение только для исторических источников: форма и перевод этапа — по-прежнему 422."""
+    c = auth_client
+    r = c.post("/api/patients", json=make_patient_payload(events=[{"date": "2026-08-20", "actualDate": FUTURE}]),
+               headers=c.csrf)
+    assert r.status_code == 422
+    from backend.app import store
+    assert store.HISTORICAL_FACT_SOURCES == ("import", "migration", "legacy")
 
 
 # ================================================================ AUD-09
@@ -1122,6 +1575,12 @@ def test_v27_database_is_migrated_explicitly_and_keeps_history(tmp_path, monkeyp
         with pytest.raises(store.PatientDeleteBlocked) as exc:
             store.delete_patient(live, full)
         assert {"performed_events", "diagnosis_history", "mobile_access", "archived_events"} <= set(exc.value.dependencies)
+        # FIX1-P1: у «пустой» карточки v27 есть текущие диагноз и жалобы — она тоже защищена.
+        with pytest.raises(store.PatientDeleteBlocked) as exc:
+            store.delete_patient(live, empty)
+        assert set(exc.value.dependencies) == {"current_diagnosis", "current_complaint", "localization"}
+        live.execute("UPDATE patients SET diagnosis = '', complaint = '', nosology = '' WHERE id = ?", (empty,))
+        live.commit()
         assert store.delete_patient(live, empty) is True
     finally:
         live.close()

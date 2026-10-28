@@ -87,6 +87,10 @@ def _event_row_to_dict(row: sqlite3.Row) -> dict:
                                             if "consilium_decision_imported_by_name" in row.keys() else None),
         "consiliumDecisionImportId": row["consilium_decision_import_id"],
         "setAt": row["set_at"],
+        # FIX1-P3: фактическая дата из будущего, пришедшая в исторической выгрузке, не
+        # считается подтверждённой, пока сотрудник её не исправит (последняя запись
+        # истории факта несёт аномалию). В выгрузку не передаётся.
+        "actualDateUnverified": bool(row["actual_date_anomaly"]) if "actual_date_anomaly" in row.keys() else False,
     }
 
 
@@ -96,7 +100,7 @@ EXPORT_EXCLUDED_EVENT_KEYS = frozenset({
     "version", "consiliumDecisionSource", "consiliumDecisionAt",
     "consiliumDecisionByUserId", "consiliumDecisionByName",
     "consiliumDecisionImportedAt", "consiliumDecisionImportedByUserId",
-    "consiliumDecisionImportedByName", "consiliumDecisionImportId",
+    "consiliumDecisionImportedByName", "consiliumDecisionImportId", "actualDateUnverified",
 })
 
 
@@ -153,13 +157,22 @@ EVENT_VALUE_COLUMNS = ("date", "time", "treatment_type", "actual_date", "actual_
 
 
 def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: EventIn,
-                 event_id: Optional[str] = None, *, decision_import: Optional[dict] = None) -> str:
+                 event_id: Optional[str] = None, *, decision_import: Optional[dict] = None,
+                 fact_source: Optional[str] = None, fact_actor: Optional[str] = None) -> str:
     """Вставка события. Решение ОК во вставляемом событии допустимо только как
     подтвержденный перенос исторического решения из файла (decision_import:
     imported_by — исполнитель импорта, imported_at, import_id); автор и время самого
     решения при этом не известны и не придумываются. Ручная отметка решения —
-    отдельная операция mark_consilium_decision."""
+    отдельная операция mark_consilium_decision.
+
+    WP-C FIX1: событие с фактической датой или временем получает первоначальную
+    запись в patient_event_fact_history (initial) в той же транзакции. Источник
+    обязателен (fact_source): вставка факта без указания источника — ошибка
+    программы, а не тихий пропуск истории. fact_actor — автор, если он известен."""
     event_id = event_id or new_id()
+    has_fact = bool(ev.actualDate or ev.actualTime)
+    if has_fact and fact_source is None:
+        raise RuntimeError("insert_event with a fact needs fact_source")
     if ev.consiliumDecision and not decision_import:
         raise ValueError(DECISION_SEPARATE_OPERATION_MESSAGE)
     imported = decision_import if ev.consiliumDecision else None
@@ -181,6 +194,13 @@ def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: 
             imported["import_id"] if imported else None,
         ),
     )
+    if has_fact:
+        row = conn.execute("SELECT actual_date, actual_time FROM events WHERE id = ?", (event_id,)).fetchone()
+        patient_id = conn.execute("SELECT patient_id FROM history_entries WHERE id = ?",
+                                  (history_entry_id,)).fetchone()[0]
+        for column in FACT_COLUMNS:
+            record_fact_change(conn, event_id=event_id, patient_id=patient_id, column=column, old=None,
+                               new=row[column], source=fact_source, actor_user_id=fact_actor)
     return event_id
 
 
@@ -198,7 +218,10 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         # Карточка показывает активные события; удалённые — отдельным запросом.
         events = conn.execute(
             """SELECT events.*, u.full_name AS consilium_decision_by_name,
-                      iu.full_name AS consilium_decision_imported_by_name FROM events
+                      iu.full_name AS consilium_decision_imported_by_name,
+                      (SELECT fh.anomaly FROM patient_event_fact_history fh
+                       WHERE fh.event_id = events.id AND fh.field = 'actual_date'
+                       ORDER BY fh.seq DESC LIMIT 1) AS actual_date_anomaly FROM events
                LEFT JOIN users u ON u.id = events.consilium_decision_by_user_id
                LEFT JOIN users iu ON iu.id = events.consilium_decision_imported_by_user_id
                WHERE events.history_entry_id = ? AND events.deleted_at IS NULL
@@ -382,8 +405,9 @@ def insert_patient_rows(
         "VALUES (?, ?, 0, ?, ?, NULL, '')",
         (entry_id, pid, data.stage, now),
     )
+    fact_source = "legacy" if creation_source == LEGACY_CREATION_SOURCE else "patient_create"
     for seq, ev in enumerate(data.events):
-        insert_event(conn, entry_id, seq, ev)
+        insert_event(conn, entry_id, seq, ev, fact_source=fact_source, fact_actor=created_by_user_id)
     return pid
 
 
@@ -452,6 +476,13 @@ def touch_patient(conn: sqlite3.Connection, patient_id: str) -> None:
 
 
 PATIENT_DELETE_DEPENDENCY_LABELS = {
+    "current_diagnosis": "диагноз",
+    "current_complaint": "жалобы",
+    "localization": "локализация",
+    "pgi_result": "результат ПГИ",
+    "pgi_code": "код ПГИ",
+    "consilium_code": "код онкоконсилиума",
+    "disease_stage": "стадия заболевания",
     "stage_transitions": "переходы между этапами маршрута",
     "history_notes": "заметки к этапам",
     "checklist_marks": "отметки чек-листа",
@@ -839,6 +870,13 @@ def require_fact_not_in_future(actual_date: Optional[str]) -> None:
 FACT_COLUMNS = ("actual_date", "actual_time")
 
 
+HISTORICAL_FACT_SOURCES = ("import", "migration", "legacy")
+
+
+def is_future_fact(column: str, value) -> bool:
+    return column == "actual_date" and bool(value) and str(value) > clock.today_moscow().isoformat()
+
+
 def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: str, column: str,
                        old, new, source: str, actor_user_id: Optional[str]) -> Optional[str]:
     """Записать изменение факта события в patient_event_fact_history (AUD-08).
@@ -846,7 +884,11 @@ def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: s
     Только в транзакции самого изменения. Тип: initial — первое внесение;
     correction — замена одного значения другим; cleared — очистка (прежнее значение
     сохраняется здесь); reentry — повторное внесение после очистки. Неизменное
-    значение не записывается. Возвращает тип или None."""
+    значение не записывается. Возвращает тип или None.
+
+    Фактическая дата позже «сегодня» учреждения бывает только у фактов из
+    исторической выгрузки (интерактивные пути её отклоняют): такая запись получает
+    anomaly = 'future_date' — значение сохранено как есть, но не подтверждено."""
     if not conn.in_transaction:
         raise RuntimeError("record_fact_change must run inside the change's transaction")
     if column not in FACT_COLUMNS:
@@ -864,13 +906,20 @@ def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: s
         change_type = "cleared"
     else:
         change_type = "correction"
+    anomaly = None
+    if is_future_fact(column, new):
+        if source not in HISTORICAL_FACT_SOURCES:
+            raise FactInFuture()
+        anomaly = "future_date"
     seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM patient_event_fact_history WHERE event_id = ?",
                        (event_id,)).fetchone()[0]
     conn.execute(
         """INSERT INTO patient_event_fact_history
-           (id, seq, event_id, patient_id, field, old_value, new_value, change_type, source, changed_at, actor_user_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (new_id(), seq, event_id, patient_id, column, old, new, change_type, source, now_iso(), actor_user_id),
+           (id, seq, event_id, patient_id, field, old_value, new_value, change_type, source, changed_at,
+            actor_user_id, anomaly)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (new_id(), seq, event_id, patient_id, column, old, new, change_type, source, now_iso(), actor_user_id,
+         anomaly),
     )
     return change_type
 
@@ -879,7 +928,8 @@ def fact_history(conn: sqlite3.Connection, patient_id: str) -> list[dict]:
     return [
         {"eventId": r["event_id"], "seq": r["seq"], "field": "actualDate" if r["field"] == "actual_date" else "actualTime",
          "oldValue": r["old_value"], "newValue": r["new_value"], "changeType": r["change_type"],
-         "source": r["source"], "changedAt": r["changed_at"], "actorUserId": r["actor_user_id"]}
+         "source": r["source"], "changedAt": r["changed_at"], "actorUserId": r["actor_user_id"],
+         "anomaly": r["anomaly"]}
         for r in conn.execute(
             "SELECT * FROM patient_event_fact_history WHERE patient_id = ? ORDER BY event_id, seq", (patient_id,))
     ]
@@ -1024,11 +1074,9 @@ def change_stage(
                         last_event_update.noPlan, last_event_update.date, last_event_update.time, req_date, req_time),
                 })
                 next_seq = _next_event_seq(conn, current_entry_id)
-                outcome["event_id"] = insert_event(conn, current_entry_id, next_seq, ev)
+                outcome["event_id"] = insert_event(conn, current_entry_id, next_seq, ev,
+                                                   fact_source="stage_change", fact_actor=actor_user_id)
                 outcome["fact"] = "set" if req_date else "none"
-                for column, value in (("actual_date", req_date), ("actual_time", req_time)):
-                    record_fact_change(conn, event_id=outcome["event_id"], patient_id=patient_id, column=column,
-                                       old=None, new=value, source="stage_change", actor_user_id=actor_user_id)
 
         now = now_iso()
         # Условие по прежнему этапу: два одновременных перевода не создадут
@@ -1277,7 +1325,10 @@ def deleted_events(conn: sqlite3.Connection, patient_id: str) -> list[dict]:
     rows = conn.execute(
         """SELECT events.*, h.seq AS history_seq, h.stage AS history_stage,
                   u.full_name AS deleted_by_name, du.full_name AS consilium_decision_by_name,
-                  iu.full_name AS consilium_decision_imported_by_name
+                  iu.full_name AS consilium_decision_imported_by_name,
+                  (SELECT fh.anomaly FROM patient_event_fact_history fh
+                   WHERE fh.event_id = events.id AND fh.field = 'actual_date'
+                   ORDER BY fh.seq DESC LIMIT 1) AS actual_date_anomaly
            FROM events
            JOIN history_entries h ON h.id = events.history_entry_id
            LEFT JOIN users u ON u.id = events.deleted_by_user_id
