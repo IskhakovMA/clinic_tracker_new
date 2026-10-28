@@ -81,6 +81,14 @@ def future_fact_audit(conn, ctx: dict, result: dict, *, import_id: str, file_sha
                     f"import_id={import_id};file_sha256={file_sha256}"),
             **ctx,
         )
+    # FIX2: неподтверждённость, переданная файлом для уже наступивших дат.
+    for f in result.get("unverifiedFactPatients", []):
+        audit.record_required(
+            conn, audit.IMPORT_UNVERIFIED_FACTS, patient_id=f["patientId"],
+            detail=(f"anomaly=unverified_transfer;field=actual_date;facts={f['facts']};verified=0;"
+                    f"import_id={import_id};file_sha256={file_sha256}"),
+            **ctx,
+        )
 
 
 def _id_preservation(inspection, document, mode: str) -> dict:
@@ -142,6 +150,10 @@ def import_preview(
     # FIX1-P3: фактические даты из будущего (историческая выгрузка) — только числа.
     report["futureFacts"] = {
         mode: importexport.future_facts_impact(document, mode) for mode in modes
+    }
+    # FIX2: перенесённая неподтверждённость уже наступивших дат — отдельный показатель.
+    report["unverifiedFacts"] = {
+        mode: importexport.unverified_facts_impact(document, mode) for mode in modes
     }
     # WP2.4-B (U9): повторяющиеся непустые полисы внутри файла — по самому файлу, без поиска в базе.
     report["filePolicyDuplicates"] = {mode: importexport.file_policy_duplicates_impact(document, mode)
@@ -253,7 +265,7 @@ def import_commit(
                     f"key_id={provenance.get('keyId') or '-'} "
                     f"unsigned_confirmed={int(confirmed)} patients={patients} events={events} "
                     f"import_id={import_id} imported_decisions={result['importedDecisions']} "
-                    f"future_facts={result['futureFacts']}"),
+                    f"future_facts={result['futureFacts']} unverified_facts={result['unverifiedFacts']}"),
             **ctx,
         )
         decision_audit(conn, ctx, result, import_id=import_id, file_sha256=provenance["fileSha256"])
@@ -435,8 +447,7 @@ def export_patients(
         # ручной отметки решения ОК — нет: формат файла прежний). Удалённые события
         # остаются в базе и резервных копиях и в файл не попадают.
         row["history"] = [
-            {**entry, "events": [{k: v for k, v in ev.items() if k not in store.EXPORT_EXCLUDED_EVENT_KEYS}
-                                 for ev in entry["events"]]}
+            {**entry, "events": [store.export_event(ev) for ev in entry["events"]]}
             for entry in row["history"]
         ]
         exported.append(row)

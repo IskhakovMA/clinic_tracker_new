@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from .conftest import (
+    DEV_FULL_NAME,
     DEV_USERNAME,
     PROJECT_ROOT,
     TEST_MOSCOW_NOW,
@@ -30,6 +31,10 @@ from .conftest import (
     mark_decision,
     stage_body,
     unsigned_import,
+    app_stopped,
+    legacy_export,
+    preserve_ids_confirmation,
+    set_moscow_now,
 )
 
 TEST_BACKUP_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # 32 zero bytes (synthetic test key)
@@ -1044,14 +1049,15 @@ def test_migration_with_a_future_fact_is_detected_and_audited(auth_client):
         "SELECT detail FROM audit_events WHERE event_type = 'migration_committed'").fetchone()[0]
 
 
-def test_unverified_flag_is_not_exported_and_clears_after_staff_correction(auth_client):
+def test_unverified_flag_is_exported_and_clears_after_staff_correction(auth_client):
     c = auth_client
     name = "Будущев Исправленов"
     assert unsigned_import(c, _future_doc(name), "add").status_code == 200
     pid = _imported_id(name)
     exported = [p for p in c.get("/api/export", headers=c.csrf).json()["patients"] if p["id"] == pid][0]
-    assert "actualDateUnverified" not in exported["history"][0]["events"][0]
-    assert exported["history"][0]["events"][0]["actualDate"] == FUTURE        # формат выгрузки прежний
+    # FIX2 (вариант A): неподтверждённость уходит в файл как true; значение даты прежнее.
+    assert exported["history"][0]["events"][0]["actualDateUnverified"] is True
+    assert exported["history"][0]["events"][0]["actualDate"] == FUTURE
     # Сотрудник не может подтвердить дату из будущего — только исправить её.
     assert _set_fact(c, pid, "2031-01-11").json()["code"] == "FACT_DATE_IN_FUTURE"
     assert _set_fact(c, pid, "2026-08-20").status_code == 200
@@ -1059,6 +1065,8 @@ def test_unverified_flag_is_not_exported_and_clears_after_staff_correction(auth_
     assert ev["actualDateUnverified"] is False
     assert [(r["change_type"], r["source"], r["anomaly"]) for r in _fact_rows(pid)] == [
         ("initial", "import", "future_date"), ("correction", "event_update", None)]
+    exported = [p for p in c.get("/api/export", headers=c.csrf).json()["patients"] if p["id"] == pid][0]
+    assert "actualDateUnverified" not in exported["history"][0]["events"][0]   # после исправления — поля нет
 
 
 def test_future_fact_import_is_not_saved_without_its_anomaly_audit(auth_client):
@@ -1085,6 +1093,292 @@ def test_staff_paths_still_reject_future_facts(auth_client):
     assert r.status_code == 422
     from backend.app import store
     assert store.HISTORICAL_FACT_SOURCES == ("import", "migration", "legacy")
+
+
+# ---------------------------------------------------------------- FIX2
+# Неподтверждённость факта переживает экспорт и импорт в другую базу (вариант A).
+
+def _other_database(client, monkeypatch, tmp_path, label, now):
+    """Перенос в другую установку: приложение останавливается и запускается на новой
+    пустой синтетической базе с тем же ключом подписи выгрузок; часы — now."""
+    from backend.app import config
+    data = tmp_path / label
+    data.mkdir(mode=0o700)
+    with app_stopped():
+        monkeypatch.setattr(config, "DATA_DIR", data.resolve())
+        monkeypatch.setattr(config, "DB_PATH", data.resolve() / "clinic.db")
+        monkeypatch.setattr(config, "BACKUP_DIR", data.resolve() / "backups")
+    set_moscow_now(monkeypatch, now)
+    assert _count("SELECT COUNT(*) FROM patients") == 0
+    create_account(DEV_USERNAME, "developer", DEV_FULL_NAME)
+    assert login(client, DEV_USERNAME).status_code == 200
+
+
+def _export_text(c):
+    r = c.get("/api/export", headers=c.csrf)
+    assert r.status_code == 200, r.text
+    return r.text
+
+
+def _signed_add(c, raw):
+    return c.post("/api/import/commit", json={"raw": raw, "mode": "add",
+                  "preserveIdsConfirmation": preserve_ids_confirmation(raw, "add")}, headers=c.csrf)
+
+
+def _first_event(raw):
+    return json.loads(raw)["patients"][0]["history"][0]["events"][0]
+
+
+def _source_file(c, monkeypatch, name="Переносов Синтетик"):
+    """База A (2026-10-01): импорт факта 2031-01-10 из исторического файла, подписанная выгрузка."""
+    set_moscow_now(monkeypatch, "2026-10-01T09:00:00+03:00")
+    assert unsigned_import(c, _future_doc(name), "add").status_code == 200
+    raw = _export_text(c)
+    assert _first_event(raw)["actualDateUnverified"] is True
+    return raw
+
+
+def _only_card_event(c):
+    pid = get_conn().execute("SELECT id FROM patients").fetchone()[0]
+    return pid, _card(c, pid)["history"][0]["events"][0]
+
+
+def test_transfer_after_the_date_keeps_the_fact_unverified(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    preview = c.post("/api/import/preview", json={"raw": raw}, headers=c.csrf).json()
+    assert preview["provenance"]["status"] == "verified_signed"
+    assert preview["futureFacts"]["add"]["facts"] == 0                      # дата уже наступила
+    assert preview["unverifiedFacts"]["add"] == {"facts": 1, "patients": 1, "message": preview[
+        "unverifiedFacts"]["add"]["message"]} and FUTURE not in json.dumps(preview["unverifiedFacts"])
+    r = _signed_add(c, raw)
+    assert r.status_code == 200 and (r.json()["futureFacts"], r.json()["unverifiedFacts"]) == (0, 1), r.text
+    pid, ev = _only_card_event(c)
+    assert ev["actualDate"] == FUTURE and ev["actualDateUnverified"] is True
+    rows = _fact_rows(pid)
+    assert [(r["old_value"], r["new_value"], r["change_type"], r["source"], r["anomaly"], r["actor_user_id"])
+            for r in rows] == [(None, FUTURE, "initial", "import", "unverified_transfer", None)]
+    assert not rows[0]["changed_at"].startswith(FUTURE)                    # время переноса, не события
+    audits = get_conn().execute("SELECT detail FROM audit_events WHERE patient_id = ? "
+                                "AND event_type = 'import_unverified_facts'", (pid,)).fetchall()
+    assert len(audits) == 1 and "anomaly=unverified_transfer" in audits[0][0] and "facts=1" in audits[0][0]
+    assert FUTURE not in audits[0][0] and "C34" not in audits[0][0]
+    assert _count("SELECT COUNT(*) FROM audit_events WHERE event_type = 'import_future_facts'") == 0
+    committed = get_conn().execute("SELECT detail FROM audit_events WHERE event_type = 'import_committed' "
+                                   "AND result = 'ok'").fetchone()[0]
+    assert "future_facts=0 unverified_facts=1" in committed and FUTURE not in committed
+
+
+def test_transfer_before_the_date_counts_the_fact_once_as_future(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2026-10-02T09:00:00+03:00")
+    r = _signed_add(c, raw)
+    assert (r.json()["futureFacts"], r.json()["unverifiedFacts"]) == (1, 0)   # показатели не смешиваются
+    pid, ev = _only_card_event(c)
+    assert ev["actualDateUnverified"] is True
+    assert [(r["change_type"], r["anomaly"]) for r in _fact_rows(pid)] == [("initial", "future_date")]
+    assert _count("SELECT COUNT(*) FROM audit_events WHERE event_type = 'import_unverified_facts'") == 0
+
+
+def test_two_consecutive_transfers_keep_the_status(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    assert _signed_add(c, raw).status_code == 200
+    second = _export_text(c)
+    assert _first_event(second)["actualDateUnverified"] is True
+    _other_database(c, monkeypatch, tmp_path, "db-c", "2031-03-01T09:00:00+03:00")
+    assert _signed_add(c, second).json()["unverifiedFacts"] == 1
+    pid, ev = _only_card_event(c)
+    assert ev["actualDateUnverified"] is True
+    assert [(r["change_type"], r["source"], r["anomaly"]) for r in _fact_rows(pid)] == [
+        ("initial", "import", "unverified_transfer")]                          # без дублей истории
+
+
+def test_unverified_flag_is_covered_by_the_signature(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    for change in ("drop", "false"):
+        doc = json.loads(raw)
+        event = doc["patients"][0]["history"][0]["events"][0]
+        if change == "drop":
+            del event["actualDateUnverified"]
+        else:
+            event["actualDateUnverified"] = False
+        tampered = json.dumps(doc, ensure_ascii=False)
+        preview = c.post("/api/import/preview", json={"raw": tampered}, headers=c.csrf).json()
+        assert preview["valid"] is False and preview["provenance"]["status"] == "invalid_signature", change
+        assert _signed_add(c, tampered).status_code == 422, change
+    assert _count("SELECT COUNT(*) FROM patients") == 0
+
+
+def test_false_is_not_proof_of_confirmation(auth_client):
+    c = auth_client
+    for value in (False, "false", 0, None):
+        events = [{"date": "2026-08-20", "actualDate": "2026-08-20", "actualDateUnverified": value}]
+        raw = json.dumps({"schemaVersion": 3, "patients": [make_patient_payload(name="Ложнов", events=events)]},
+                         ensure_ascii=False)
+        r = unsigned_import(c, raw, "add")
+        if value is None:
+            assert r.status_code == 200                       # поле не передано по смыслу — сведений нет
+        else:
+            assert r.status_code == 422, value
+    pid = _imported_id("Ложнов")
+    assert _fact_rows(pid)[0]["anomaly"] is None and _card(c, pid)["history"][0]["events"][0][
+        "actualDateUnverified"] is False
+    no_fact = json.dumps({"schemaVersion": 3, "patients": [make_patient_payload(
+        name="Безфактов", events=[{"date": "2026-08-20", "actualDateUnverified": True}])]}, ensure_ascii=False)
+    assert unsigned_import(c, no_fact, "add").status_code == 422
+
+
+def test_client_api_does_not_accept_the_flag(auth_client):
+    c = auth_client
+    created = c.post("/api/patients", json=make_patient_payload(events=[
+        {"date": "2026-08-20", "actualDate": "2026-08-20", "actualDateUnverified": True}]), headers=c.csrf)
+    assert created.status_code == 422
+    pid = _create(c, stage="exam", events=[{"date": "2026-08-20"}])["id"]
+    ev = _card(c, pid)["history"][0]["events"][0]
+    patch = c.patch(f"/api/patients/{pid}/events/{ev['id']}",
+                    json={"field": "actualDateUnverified", "value": "", "version": ev["version"]}, headers=c.csrf)
+    assert patch.status_code == 422
+    stage = c.post(f"/api/patients/{pid}/stage", json=stage_body(c, pid, {"newStage": "appointment", "lastEventUpdate": {
+        "actualDate": "2026-08-20", "actualDateUnverified": True}}), headers=c.csrf)
+    assert stage.status_code == 422
+    assert _fact_rows(pid) == []
+
+
+def test_unsigned_file_with_the_flag_keeps_it(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    stripped = json.dumps(legacy_export(json.loads(raw)), ensure_ascii=False)   # без подписи, признак на месте
+    assert unsigned_import(c, stripped, "add", confirm=False).status_code == 428
+    r = unsigned_import(c, stripped, "add")
+    assert r.status_code == 200 and r.json()["unverifiedFacts"] == 1
+    assert _only_card_event(c)[1]["actualDateUnverified"] is True
+
+
+def test_residual_risk_stripped_signature_and_flag_is_an_explicit_unsigned_import(auth_client, monkeypatch, tmp_path):
+    """Остаточный риск варианта A (задокументирован): без подписи и признака файл идёт
+    неподписанным путём — только с подтверждением оператора и аудитом; факт становится
+    обычным историческим фактом (без отметки о подтверждении сотрудником)."""
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    doc = legacy_export(json.loads(raw))
+    del doc["patients"][0]["history"][0]["events"][0]["actualDateUnverified"]
+    stripped = json.dumps(doc, ensure_ascii=False)
+    preview = c.post("/api/import/preview", json={"raw": stripped}, headers=c.csrf).json()
+    assert preview["provenance"]["confirmationRequired"] is True
+    assert preview["provenance"]["status"] in ("unsigned_legacy", "unsigned_external")
+    assert unsigned_import(c, stripped, "add", confirm=False).status_code == 428
+    assert unsigned_import(c, stripped, "add").status_code == 200
+    pid, ev = _only_card_event(c)
+    assert ev["actualDateUnverified"] is False
+    assert [(r["source"], r["actor_user_id"]) for r in _fact_rows(pid)] == [("import", None)]   # не «подтверждено»
+    committed = get_conn().execute("SELECT detail FROM audit_events WHERE event_type = 'import_committed' "
+                                   "AND result = 'ok'").fetchone()[0]
+    assert "unsigned_confirmed=1" in committed and "provenance=unsigned" in committed
+
+
+def test_transferred_unverified_import_is_not_saved_without_its_audit(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    conn = get_conn()
+    conn.execute("CREATE TRIGGER zz_test_fail_unverified_audit BEFORE INSERT ON audit_events "
+                 "WHEN NEW.event_type = 'import_unverified_facts' "
+                 "BEGIN SELECT RAISE(ABORT, 'test: audit storage unavailable'); END")
+    conn.commit()
+    try:
+        r = _signed_add(c, raw)
+    finally:
+        conn.execute("DROP TRIGGER IF EXISTS zz_test_fail_unverified_audit")
+        conn.commit()
+    assert r.status_code == 503, r.text
+    assert _count("SELECT COUNT(*) FROM patients") == 0
+    assert _count("SELECT COUNT(*) FROM patient_event_fact_history") == 0
+
+
+def test_transferred_fact_history_initial_correction_cleared_reentry(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    assert _signed_add(c, raw).status_code == 200
+    pid, _ = _only_card_event(c)
+    # Сотрудник без права записи не может снять отметку.
+    create_account("fx.reader", "deputy_chief_oncology")
+    assert login(c, "fx.reader").status_code == 200
+    assert _set_fact(c, pid, "2031-01-09").status_code == 403
+    assert login(c, DEV_USERNAME).status_code == 200
+    assert _card(c, pid)["history"][0]["events"][0]["actualDateUnverified"] is True
+    for value in ("", FUTURE):                     # очистка и повторный ввод той же наступившей даты
+        assert _set_fact(c, pid, value).status_code == 200
+    assert _set_fact(c, pid, "2031-01-09").status_code == 200
+    assert [(r["old_value"], r["new_value"], r["change_type"], r["source"], r["anomaly"]) for r in _fact_rows(pid)] == [
+        (None, FUTURE, "initial", "import", "unverified_transfer"),
+        (FUTURE, None, "cleared", "event_update", None),
+        (None, FUTURE, "reentry", "event_update", None),
+        (FUTURE, "2031-01-09", "correction", "event_update", None),
+    ]
+    assert _card(c, pid)["history"][0]["events"][0]["actualDateUnverified"] is False
+    assert "actualDateUnverified" not in _first_event(_export_text(c))
+    assert _count("SELECT COUNT(*) FROM audit_events WHERE patient_id = ? AND event_type = 'patient_updated' "
+                  "AND result = 'ok' AND detail LIKE '%field=actualDate%'", pid) == 3
+
+
+def test_update_mode_does_not_raise_or_lower_trust(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    assert _signed_add(c, raw).status_code == 200
+    pid, _ = _only_card_event(c)
+    doc = legacy_export(json.loads(_export_text(c)))
+    del doc["patients"][0]["history"][0]["events"][0]["actualDateUnverified"]   # «без отметки»
+    r = unsigned_import(c, json.dumps(doc, ensure_ascii=False), "update")
+    assert r.status_code == 200 and r.json()["unchanged"] == 1 and r.json()["unverifiedFacts"] == 0
+    assert _card(c, pid)["history"][0]["events"][0]["actualDateUnverified"] is True
+    assert len(_fact_rows(pid)) == 1
+    # Файл с отметкой не возвращает её факту, исправленному сотрудником (update не трогает факты).
+    assert _set_fact(c, pid, "2031-01-09").status_code == 200
+    stale = legacy_export(json.loads(_export_text(c)))
+    stale["patients"][0]["history"][0]["events"][0]["actualDateUnverified"] = True
+    r = unsigned_import(c, json.dumps(stale, ensure_ascii=False), "update")
+    assert r.status_code == 200 and r.json()["unchanged"] == 1
+    assert _card(c, pid)["history"][0]["events"][0]["actualDateUnverified"] is False
+    assert len(_fact_rows(pid)) == 2
+
+
+def test_migration_keeps_a_transferred_unverified_fact(auth_client, monkeypatch, tmp_path):
+    c = auth_client
+    raw = _source_file(c, monkeypatch)
+    _other_database(c, monkeypatch, tmp_path, "db-b", "2031-02-01T09:00:00+03:00")
+    local = json.dumps(legacy_export(json.loads(raw)), ensure_ascii=False)
+    preview = c.post("/api/migrate/localstorage/preview", json={"raw": local}, headers=c.csrf).json()
+    assert preview["unverifiedFacts"]["facts"] == 1 and preview["futureFacts"]["facts"] == 0
+    r = c.post("/api/migrate/localstorage/commit", json={"raw": local, "mode": "add"}, headers=c.csrf)
+    assert r.status_code == 200 and r.json()["unverifiedFacts"] == 1, r.text
+    pid, ev = _only_card_event(c)
+    assert ev["actualDateUnverified"] is True
+    assert [(r["source"], r["anomaly"]) for r in _fact_rows(pid)] == [("migration", "unverified_transfer")]
+    assert "unverified_facts=1" in get_conn().execute(
+        "SELECT detail FROM audit_events WHERE event_type = 'migration_committed'").fetchone()[0]
+
+
+def test_files_without_unverified_facts_keep_the_previous_format(auth_client):
+    """Новая выгрузка без неподтверждённых фактов — те же ключи событий, что и раньше;
+    прежний подписанный файл (без признака) импортируется как обычные исторические факты."""
+    c = auth_client
+    _create(c, stage="exam", events=[{"date": "2026-08-20", "actualDate": "2026-08-20"}, {"date": "2026-11-20"}])
+    raw = _export_text(c)
+    doc = json.loads(raw)
+    assert doc["formatVersion"] == 2
+    for ev in doc["patients"][0]["history"][0]["events"]:
+        assert set(ev) == {"id", "date", "time", "treatmentType", "actualDate", "actualTime", "matchedPlan",
+                           "noPlan", "consiliumDecision", "setAt"}
 
 
 # ================================================================ AUD-09

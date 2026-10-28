@@ -2260,7 +2260,7 @@ const app = {
         const typeName = ev.treatmentType ? (treatmentTypeNames[ev.treatmentType] || ev.treatmentType) : null;
         if (ev.noPlan) {
             parts.push(`факт ${ev.actualDate || '—'}${ev.actualTime ? ' ' + ev.actualTime : ''}`);
-            return { text: parts.join(''), status: ev.actualDateUnverified ? 'факт из импорта не подтверждён: дата позже сегодняшней' : 'состоялось' };
+            return { text: parts.join(''), status: ev.actualDateUnverified ? 'факт из импорта не подтверждён' : 'состоялось' };
         }
         if (ev.date) parts.push(`план ${ev.date}${ev.time ? ' ' + ev.time : ''}`);
         else parts.push('план не указан');
@@ -2268,7 +2268,7 @@ const app = {
         if (typeName) parts.push(typeName);
         if (ev.consiliumDecision) parts.push(`Решение: ${this.CONSILIUM_DECISION_LABELS[ev.consiliumDecision] || ev.consiliumDecision}`);
         // FIX1-P3: дата из будущего, пришедшая в исторической выгрузке, — не подтверждённый факт.
-        const status = ev.actualDateUnverified ? 'факт из импорта не подтверждён: дата позже сегодняшней'
+        const status = ev.actualDateUnverified ? 'факт из импорта не подтверждён'
             : ev.actualDate ? (ev.matchedPlan ? 'состоялось по плану' : 'состоялось с отклонением') : (isPending ? 'ожидается' : 'без отметки');
         return { text: parts.join(' · '), status };
     },
@@ -6255,6 +6255,7 @@ const app = {
                 patient_event_deleted: 'Удалено событие маршрута', patient_event_restored: 'Восстановлено событие маршрута',
                 import_preview: 'Проверка импорта', import_committed: 'Импорт выполнен',
                 import_future_facts: 'Импорт: факт с датой позже сегодняшней',
+                import_unverified_facts: 'Импорт: неподтверждённый факт из файла',
                 export: 'Экспорт', migration_committed: 'Перенос локальных данных',
                 backup_created: 'Создана резервная копия', restore_performed: 'Восстановление из копии',
                 db_integrity_failed: 'Ошибка целостности базы',
@@ -9885,6 +9886,14 @@ const app = {
                 el('p', { text: future.message }),
             ])
             : null;
+        // FIX2: неподтверждённые факты, переданные файлом (дата уже наступила), — отдельный показатель.
+        const unverified = (this.importReport && this.importReport.unverifiedFacts || {})[mode];
+        const unverifiedAlert = unverified && unverified.facts
+            ? el('div', { class: 'alert alert--warning' }, [
+                el('strong', { text: `Неподтверждённые фактические даты из файла: ${unverified.facts} (карточек: ${unverified.patients})` }),
+                el('p', { text: unverified.message }),
+            ])
+            : null;
         const repeatAlert = repeatRequired
             ? el('div', { class: 'alert alert--warning' }, [
                 el('strong', { text: 'Вы уже импортировали этот файл' }),
@@ -9915,7 +9924,7 @@ const app = {
             ])
             : null;
         const extra = [overwriteAlert, archiveAlert, duplicateAlert, accessAlert, policyDuplicatesAlert, limitAlert, possibleAlert,
-            repeatAlert, preserveAlert, historicalAlert, futureAlert].filter(Boolean);
+            repeatAlert, preserveAlert, historicalAlert, futureAlert, unverifiedAlert].filter(Boolean);
         if (!impact || !impact.records) {
             box.replaceChildren(...extra);
             return;
@@ -10042,8 +10051,9 @@ const app = {
         // Ошибка обновления экрана дальше не выдается за ошибку импорта.
         this.closeImportReviewModal();
         ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`
-            + (result.futureFacts ? ` Фактических дат позже сегодняшней: ${result.futureFacts} — они отмечены в карточках как неподтверждённые.` : ''),
-            result.futureFacts ? 'warning' : 'good');
+            + (result.futureFacts ? ` Фактических дат позже сегодняшней: ${result.futureFacts} — они отмечены в карточках как неподтверждённые.` : '')
+            + (result.unverifiedFacts ? ` Неподтверждённых фактических дат из файла: ${result.unverifiedFacts} — отметка сохранена.` : ''),
+            (result.futureFacts || result.unverifiedFacts) ? 'warning' : 'good');
         await this.refreshAfterSavedOperation('Импорт сохранен', async () => {
             await this.loadPatients();
             await this.loadActivity();

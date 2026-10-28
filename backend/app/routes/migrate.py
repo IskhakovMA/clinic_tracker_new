@@ -58,6 +58,7 @@ def migrate_preview(
     report["historicalDecisions"] = {**historical_decisions_view(document, "add"),
                                      "fileSha256": inspection.provenance["fileSha256"]}
     report["futureFacts"] = importexport.future_facts_impact(document, "add")
+    report["unverifiedFacts"] = importexport.unverified_facts_impact(document, "add")
     return {"valid": True, "errors": [], "serverHasData": _patient_count(conn) > 0, **report}
 
 
@@ -115,7 +116,8 @@ def migrate_commit(
                                       f"file_status={inspection.provenance['status']} "
                                       f"file_sha256={inspection.provenance['fileSha256']} "
                                       f"import_id={import_id} imported_decisions={result['importedDecisions']} "
-                                      f"future_facts={result['futureFacts']}"),
+                                      f"future_facts={result['futureFacts']} "
+                                      f"unverified_facts={result['unverifiedFacts']}"),
                               **ctx)
         decision_audit(conn, ctx, result, import_id=import_id, file_sha256=inspection.provenance["fileSha256"])
         future_fact_audit(conn, ctx, result, import_id=import_id, file_sha256=inspection.provenance["fileSha256"])

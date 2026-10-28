@@ -609,6 +609,30 @@ def future_fact_counts(document: ImportDocument, mode: str) -> dict[int, int]:
     return {i: n for i, n in counts.items() if n}
 
 
+UNVERIFIED_FACTS_MESSAGE = (
+    "Файл передаёт фактические даты, отмеченные источником как неподтверждённые. Импорт сохраняет "
+    "их как в файле и оставляет неподтверждёнными, даже если дата уже наступила, — до проверки и "
+    "исправления сотрудником. Аномалия записывается в журнал аудита без самих дат."
+)
+
+
+def unverified_fact_counts(document: ImportDocument, mode: str) -> dict[int, int]:
+    """FIX2: факты с actualDateUnverified=true из файла, дата которых уже наступила
+    (будущие учитывает future_fact_counts — показатели не смешиваются)."""
+    if mode not in CARD_CREATING_MODES:
+        return {}
+    counts = {i: sum(1 for h in _file_history(p, None) for ev in h.events
+                     if ev.actualDateUnverified and not store.is_future_fact("actual_date", ev.actualDate))
+              for i, p in enumerate(document.patients)}
+    return {i: n for i, n in counts.items() if n}
+
+
+def unverified_facts_impact(document: ImportDocument, mode: str) -> dict:
+    counts = unverified_fact_counts(document, mode)
+    facts = sum(counts.values())
+    return {"facts": facts, "patients": len(counts), "message": UNVERIFIED_FACTS_MESSAGE if facts else ""}
+
+
 def future_facts_impact(document: ImportDocument, mode: str) -> dict:
     """Предупреждение предпросмотра: только числа, без дат и других медицинских значений."""
     counts = future_fact_counts(document, mode)
@@ -1169,6 +1193,7 @@ def commit_import(
         # FIX1-P3: фактические даты из будущего определяются до записи; значения не
         # меняются, а аномалия уходит в обязательный аудит и в историю фактов.
         future_counts = future_fact_counts(document, mode)
+        unverified_counts = unverified_fact_counts(document, mode)
 
         def layout_of(index: int):
             return ids.structure[index] if verified else None
@@ -1221,14 +1246,16 @@ def commit_import(
             raise
         result = {"added": added, "updated": updated, "skipped": skipped,
                   "unchanged": unchanged, "appendedEvents": appended_events,
-                  "futureFacts": sum(future_counts.values())}
+                  "futureFacts": sum(future_counts.values()), "unverifiedFacts": sum(unverified_counts.values())}
         future_patients = [{"patientId": created_ids[i], "facts": n} for i, n in sorted(future_counts.items())]
+        unverified_patients = [{"patientId": created_ids[i], "facts": n} for i, n in sorted(unverified_counts.items())]
         if audit_hook is not None:
             # Обязательная запись аудита — в той же транзакции: её сбой
             # откатывает импорт целиком. Созданные id, события с перенесенными
             # решениями и карточки с будущими фактами нужны только аудиту.
             audit_hook({**result, "createdIds": list(created_ids), "importedDecisions": len(imported_decisions),
-                        "decisionEvents": list(imported_decisions), "futureFactPatients": future_patients})
+                        "decisionEvents": list(imported_decisions), "futureFactPatients": future_patients,
+                        "unverifiedFactPatients": unverified_patients})
 
     return result
 

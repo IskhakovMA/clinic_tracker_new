@@ -172,7 +172,9 @@ CREATE TABLE IF NOT EXISTS patient_diagnosis_history (
 -- source: где факт внесён; actor_user_id — автор, если он известен (NULL для фактов
 -- из импорта и переноса: их автор неизвестен, исполнителя хранит журнал аудита).
 -- anomaly = 'future_date': факт из исторической выгрузки позже «сегодня» учреждения —
--- сохранён как есть, но не считается подтверждённым медицинским фактом.
+-- сохранён как есть, но не считается подтверждённым медицинским фактом;
+-- 'unverified_transfer': источник передал факт как неподтверждённый (actualDateUnverified
+-- в файле), дата уже наступила — неподтверждённость переносится, а не исчезает.
 CREATE TABLE IF NOT EXISTS patient_event_fact_history (
     id TEXT PRIMARY KEY,
     seq INTEGER NOT NULL,
@@ -186,7 +188,7 @@ CREATE TABLE IF NOT EXISTS patient_event_fact_history (
                                            'migration', 'legacy')),
     changed_at TEXT NOT NULL,
     actor_user_id TEXT,
-    anomaly TEXT CHECK (anomaly IS NULL OR anomaly IN ('future_date')),
+    anomaly TEXT CHECK (anomaly IS NULL OR anomaly IN ('future_date', 'unverified_transfer')),
     UNIQUE (event_id, seq)
 );
 

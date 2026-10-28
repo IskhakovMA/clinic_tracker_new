@@ -96,12 +96,24 @@ def _event_row_to_dict(row: sqlite3.Row) -> dict:
 
 # Поля решения ОК в выгрузке не передаются: формат файла прежний, автор — учетная
 # запись этой установки, а импортированное решение получает источник import.
+# actualDateUnverified в выгрузку попадает только как true (export_event).
 EXPORT_EXCLUDED_EVENT_KEYS = frozenset({
     "version", "consiliumDecisionSource", "consiliumDecisionAt",
     "consiliumDecisionByUserId", "consiliumDecisionByName",
     "consiliumDecisionImportedAt", "consiliumDecisionImportedByUserId",
     "consiliumDecisionImportedByName", "consiliumDecisionImportId", "actualDateUnverified",
 })
+
+
+def export_event(ev: dict) -> dict:
+    """Событие для выгрузки (WP-C FIX2, вариант A): прежние поля и признак
+    "actualDateUnverified": true только у неподтверждённой фактической даты —
+    у остальных событий поля нет, формат файла прежний. Признак входит в
+    подписываемое содержимое документа."""
+    out = {k: v for k, v in ev.items() if k not in EXPORT_EXCLUDED_EVENT_KEYS}
+    if ev.get("actualDateUnverified"):
+        out["actualDateUnverified"] = True
+    return out
 
 
 def pgi_result_to_db(value) -> int | None:
@@ -173,6 +185,11 @@ def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: 
     has_fact = bool(ev.actualDate or ev.actualTime)
     if has_fact and fact_source is None:
         raise RuntimeError("insert_event with a fact needs fact_source")
+    # FIX2: неподтверждённость из файла переносится только историческими источниками
+    # (импорт, перенос); у событий API этого признака нет вовсе (EventIn).
+    transferred_unverified = bool(getattr(ev, "actualDateUnverified", None))
+    if transferred_unverified and fact_source not in HISTORICAL_FACT_SOURCES:
+        raise RuntimeError("actualDateUnverified is accepted only from historical sources")
     if ev.consiliumDecision and not decision_import:
         raise ValueError(DECISION_SEPARATE_OPERATION_MESSAGE)
     imported = decision_import if ev.consiliumDecision else None
@@ -200,7 +217,8 @@ def insert_event(conn: sqlite3.Connection, history_entry_id: str, seq: int, ev: 
                                   (history_entry_id,)).fetchone()[0]
         for column in FACT_COLUMNS:
             record_fact_change(conn, event_id=event_id, patient_id=patient_id, column=column, old=None,
-                               new=row[column], source=fact_source, actor_user_id=fact_actor)
+                               new=row[column], source=fact_source, actor_user_id=fact_actor,
+                               transferred_unverified=transferred_unverified and column == "actual_date")
     return event_id
 
 
@@ -878,7 +896,8 @@ def is_future_fact(column: str, value) -> bool:
 
 
 def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: str, column: str,
-                       old, new, source: str, actor_user_id: Optional[str]) -> Optional[str]:
+                       old, new, source: str, actor_user_id: Optional[str],
+                       transferred_unverified: bool = False) -> Optional[str]:
     """Записать изменение факта события в patient_event_fact_history (AUD-08).
 
     Только в транзакции самого изменения. Тип: initial — первое внесение;
@@ -888,7 +907,9 @@ def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: s
 
     Фактическая дата позже «сегодня» учреждения бывает только у фактов из
     исторической выгрузки (интерактивные пути её отклоняют): такая запись получает
-    anomaly = 'future_date' — значение сохранено как есть, но не подтверждено."""
+    anomaly = 'future_date' — значение сохранено как есть, но не подтверждено.
+    transferred_unverified (FIX2): источник передал дату как неподтверждённую;
+    если она уже наступила — anomaly = 'unverified_transfer' (не зависит от календаря)."""
     if not conn.in_transaction:
         raise RuntimeError("record_fact_change must run inside the change's transaction")
     if column not in FACT_COLUMNS:
@@ -907,10 +928,14 @@ def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: s
     else:
         change_type = "correction"
     anomaly = None
+    if transferred_unverified and source not in HISTORICAL_FACT_SOURCES:
+        raise RuntimeError("transferred_unverified is accepted only from historical sources")
     if is_future_fact(column, new):
         if source not in HISTORICAL_FACT_SOURCES:
             raise FactInFuture()
         anomaly = "future_date"
+    elif transferred_unverified and new:
+        anomaly = "unverified_transfer"
     seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM patient_event_fact_history WHERE event_id = ?",
                        (event_id,)).fetchone()[0]
     conn.execute(

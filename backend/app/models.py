@@ -757,10 +757,28 @@ def _reject_dangerous_keys(d: dict) -> None:
         raise ValueError("payload contains disallowed keys")
 
 
+class ImportEventIn(EventIn):
+    """Событие файла импорта (WP-C FIX2, вариант A). Только эта модель знает
+    признак actualDateUnverified; API создания и правки карточки его не принимают
+    (EventIn строгая — поле там отклоняется как лишнее).
+
+    Признак может только понизить доверие к факту: допустимо лишь значение true
+    (неподтверждённость фактической даты сохраняется). false не доказывает
+    подтверждение сотрудником и отклоняется; отсутствие поля — источник сведений
+    не передал."""
+    actualDateUnverified: Optional[Literal[True]] = None
+
+    @model_validator(mode="after")
+    def _unverified_needs_fact(self):
+        if self.actualDateUnverified and not self.actualDate:
+            raise ValueError("actualDateUnverified requires actualDate")
+        return self
+
+
 class ImportHistoryEntry(StrictRequestModel):
     stage: str
     enteredAt: str = Field(..., max_length=40)
-    events: list[EventIn] = Field(default_factory=list)
+    events: list[ImportEventIn] = Field(default_factory=list)
     checklist: dict[str, bool] = Field(default_factory=dict)
     note: str = Field("", max_length=5000)
 
@@ -826,7 +844,7 @@ class ImportPatientIn(StrictRequestModel):
     diagnosisHistory: list[DiagnosisHistoryOut] = Field(default_factory=list)
     # Legacy localStorage/create-payload shape kept events at the patient root.
     # It is a known compatibility field, not an open-ended extra.
-    events: list[EventIn] = Field(default_factory=list)
+    events: list[ImportEventIn] = Field(default_factory=list)
     futurePlans: dict[str, ImportFuturePlan] = Field(default_factory=dict)  # accepted, retired on import
     # Появилось в схеме v2; старые выгрузки без этого поля остаются валидными.
     # Значение никогда не принимается на веру — сервер проверяет его по scope актора.

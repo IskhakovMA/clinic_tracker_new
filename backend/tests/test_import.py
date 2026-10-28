@@ -47,7 +47,7 @@ def test_valid_import_add_mode(auth_client):
     r = unsigned_import(auth_client, raw, "add")
     assert r.status_code == 200
     assert r.json() == {"added": 1, "updated": 0, "skipped": 0, "unchanged": 0, "appendedEvents": 0,
-                        "futureFacts": 0, "provenance": "unsigned_external"}
+                        "futureFacts": 0, "unverifiedFacts": 0, "provenance": "unsigned_external"}
 
     patients = auth_client.get("/api/patients").json()
     assert len(patients) == 1
