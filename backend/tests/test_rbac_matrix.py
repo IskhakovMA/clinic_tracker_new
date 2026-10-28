@@ -9,7 +9,7 @@
 """
 import pytest
 
-from .conftest import (
+from .conftest import (card_version, checklist_state,
     unsigned_import,
     stage_body,
     TEST_PASSWORD,
@@ -70,7 +70,7 @@ def test_developer_sees_and_edits_everything(client, rbac):
     assert names == {"Пациентов А-Один", "Пациентов А-Два", "Пациентов Б-Один", "Пациентов Без-Врача"}
     # изменение любого пациента
     r = client.patch(f"/api/patients/{rbac['p_b1']}",
-                     json={"field": "age", "value": 61}, headers=client.csrf)
+                     json={"expectedVersion": card_version(rbac['p_b1']), "field": "age", "value": 61}, headers=client.csrf)
     assert r.status_code == 200
     # unresolved видим и открывается
     assert client.get(f"/api/patients/{rbac['p_unresolved']}").status_code == 200
@@ -100,7 +100,7 @@ def test_readonly_roles_see_all_but_cannot_write(client, rbac, username):
     assert r.status_code == 403
     # изменение запрещено
     assert client.patch(f"/api/patients/{rbac['p_a1']}",
-                        json={"field": "age", "value": 70}, headers=csrf).status_code == 403
+                        json={"expectedVersion": card_version(rbac['p_a1']), "field": "age", "value": 70}, headers=csrf).status_code == 403
     # удаление запрещено
     assert client.delete(f"/api/patients/{rbac['p_a1']}", headers=csrf).status_code == 403
     # смена этапа запрещена
@@ -111,7 +111,7 @@ def test_readonly_roles_see_all_but_cannot_write(client, rbac, username):
     assert client.patch(f"/api/patients/{rbac['p_a1']}/history/0/note",
                         json={"note": "x"}, headers=csrf).status_code == 403
     assert client.patch(f"/api/patients/{rbac['p_a1']}/history/0/checklist",
-                        json={"item": "Тест", "checked": True}, headers=csrf).status_code == 403
+                        json={"expected": checklist_state(rbac['p_a1'], 0, "Тест"), "item": "Тест", "checked": True}, headers=csrf).status_code == 403
     assert client.put(f"/api/patients/{rbac['p_a1']}/future-plans/0",
                       json={"field": "date", "value": "2026-08-01"}, headers=csrf).status_code == 404
     # импорт запрещён
@@ -126,7 +126,7 @@ def test_readonly_roles_see_all_but_cannot_write(client, rbac, username):
     assert client.get("/api/audit").status_code == 403
     # смена лечащего врача запрещена
     assert client.put(f"/api/patients/{rbac['p_a1']}/treating-doctor",
-                      json={"userId": rbac["doc_b1"]}, headers=csrf).status_code == 403
+                      json={"expectedVersion": card_version(rbac['p_a1']), "userId": rbac["doc_b1"]}, headers=csrf).status_code == 403
 
 
 # --- Заведующий отделением -----------------------------------------------
@@ -138,13 +138,13 @@ def test_head_scope_limited_to_own_departments(client, rbac):
     assert names == {"Пациентов А-Один", "Пациентов А-Два"}
     # может изменять пациентов своего отделения
     assert client.patch(f"/api/patients/{rbac['p_a1']}",
-                        json={"field": "age", "value": 55}, headers=client.csrf).status_code == 200
+                        json={"expectedVersion": card_version(rbac['p_a1']), "field": "age", "value": 55}, headers=client.csrf).status_code == 200
     assert client.patch(f"/api/patients/{rbac['p_a2']}",
-                        json={"field": "age", "value": 56}, headers=client.csrf).status_code == 200
+                        json={"expectedVersion": card_version(rbac['p_a2']), "field": "age", "value": 56}, headers=client.csrf).status_code == 200
     # чужой пациент по прямому ID неотличим от несуществующего
     assert client.get(f"/api/patients/{rbac['p_b1']}").status_code == 404
     assert client.patch(f"/api/patients/{rbac['p_b1']}",
-                        json={"field": "age", "value": 99}, headers=client.csrf).status_code == 404
+                        json={"expectedVersion": card_version(rbac['p_b1']), "field": "age", "value": 99}, headers=client.csrf).status_code == 404
     assert client.delete(f"/api/patients/{rbac['p_b1']}", headers=client.csrf).status_code == 404
     # unresolved не виден заведующему
     assert client.get(f"/api/patients/{rbac['p_unresolved']}").status_code == 404
@@ -179,7 +179,7 @@ def test_head_creates_patient_only_with_own_department_doctor(client, rbac):
     assert r.status_code == 403
     # менять лечащего врача заведующий не может
     assert client.put(f"/api/patients/{rbac['p_a1']}/treating-doctor",
-                      json={"userId": rbac["doc_a2"]}, headers=client.csrf).status_code == 403
+                      json={"expectedVersion": card_version(rbac['p_a1']), "userId": rbac["doc_a2"]}, headers=client.csrf).status_code == 403
 
 
 def test_head_of_two_departments_sees_both(client, rbac):
@@ -206,10 +206,10 @@ def test_doctor_sees_only_own_patients_even_same_department(client, rbac):
     assert client.get(f"/api/patients/{rbac['p_unresolved']}").status_code == 404
     # изменять чужого нельзя (404 — существование не раскрывается)
     assert client.patch(f"/api/patients/{rbac['p_a2']}",
-                        json={"field": "age", "value": 33}, headers=client.csrf).status_code == 404
+                        json={"expectedVersion": card_version(rbac['p_a2']), "field": "age", "value": 33}, headers=client.csrf).status_code == 404
     # свой пациент — полный CRUD
     assert client.patch(f"/api/patients/{rbac['p_a1']}",
-                        json={"field": "age", "value": 45}, headers=client.csrf).status_code == 200
+                        json={"expectedVersion": card_version(rbac['p_a1']), "field": "age", "value": 45}, headers=client.csrf).status_code == 200
     # экспорт — только свои
     import json as _json
     doc = _json.loads(client.get("/api/export", headers=client.csrf).text)
@@ -233,10 +233,10 @@ def test_doctor_creates_patient_pinned_to_self(client, rbac):
     assert r.status_code == 403
     # менять лечащего врача нельзя
     assert client.put(f"/api/patients/{rbac['p_a1']}/treating-doctor",
-                      json={"userId": rbac["doc_a2"]}, headers=client.csrf).status_code == 403
+                      json={"expectedVersion": card_version(rbac['p_a1']), "userId": rbac["doc_a2"]}, headers=client.csrf).status_code == 403
     # legacy-текст врача тоже менять нельзя
     assert client.patch(f"/api/patients/{rbac['p_a1']}",
-                        json={"field": "doctor", "value": "Самозванцев"}, headers=client.csrf).status_code == 403
+                        json={"expectedVersion": card_version(rbac['p_a1']), "field": "doctor", "value": "Самозванцев"}, headers=client.csrf).status_code == 403
 
 
 # --- Смена лечащего врача -------------------------------------------------
@@ -245,7 +245,7 @@ def test_treating_doctor_change_moves_scope_immediately(client, rbac):
     # Разработчик переводит пациента A1 → B1
     as_user(client, "dev.rbac")
     r = client.put(f"/api/patients/{rbac['p_a1']}/treating-doctor",
-                   json={"userId": rbac["doc_b1"]}, headers=client.csrf)
+                   json={"expectedVersion": card_version(rbac['p_a1']), "userId": rbac["doc_b1"]}, headers=client.csrf)
     assert r.status_code == 200
     assert r.json()["treatingDoctorUserId"] == rbac["doc_b1"]
 
@@ -272,7 +272,7 @@ def test_treating_doctor_change_moves_scope_immediately(client, rbac):
 def test_unresolved_assignment_by_developer(client, rbac):
     as_user(client, "dev.rbac")
     r = client.put(f"/api/patients/{rbac['p_unresolved']}/treating-doctor",
-                   json={"userId": rbac["doc_a1"]}, headers=client.csrf)
+                   json={"expectedVersion": card_version(rbac['p_unresolved']), "userId": rbac["doc_a1"]}, headers=client.csrf)
     assert r.status_code == 200
     # очередь несопоставленных опустела
     assert client.get("/api/patients/unresolved").json()["patients"] == []

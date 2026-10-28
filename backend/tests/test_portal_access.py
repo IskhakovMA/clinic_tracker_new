@@ -11,7 +11,7 @@ import pytest
 from backend.app import config
 from backend.app.email_address import email_is_valid, masked_email, normalize_email
 
-from .conftest import TEST_PASSWORD, create_account, create_department, get_conn, login, make_patient_payload
+from .conftest import card_version, TEST_PASSWORD, create_account, create_department, get_conn, login, make_patient_payload
 
 
 def _create_patient(client, **overrides):
@@ -241,18 +241,22 @@ def test_unknown_patient_is_not_found_for_every_operation(auth_client):
 def test_ordinary_patient_edit_does_not_create_mobile_access(auth_client):
     pid = _create_patient(auth_client)["id"]
     r = auth_client.patch(
-        f"/api/patients/{pid}", json={"field": "phone", "value": "+7 999 111-22-33"}, headers=auth_client.csrf
+        f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "phone", "value": "+7 999 111-22-33"}, headers=auth_client.csrf
     )
     assert r.status_code == 200
     assert get_conn().execute("SELECT COUNT(*) FROM patient_portal_access").fetchone()[0] == 0
     assert _state(auth_client, pid).json()["access"]["linked"] is False
 
 
-def test_deleting_patient_removes_access_row(auth_client):
+def test_deleting_patient_with_mobile_access_is_refused(auth_client):
+    """WP-C (AUD-03): карточку с мобильным доступом физически не удалить — прежде строка
+    доступа стиралась каскадом вместе с карточкой; теперь отказ 409 и строка остается."""
     pid = _create_patient(auth_client)["id"]
     _link(auth_client, pid, "cascade@example.com")
-    assert auth_client.delete(f"/api/patients/{pid}", headers=auth_client.csrf).status_code in (200, 204)
-    assert get_conn().execute("SELECT COUNT(*) FROM patient_portal_access").fetchone()[0] == 0
+    r = auth_client.delete(f"/api/patients/{pid}", headers=auth_client.csrf)
+    assert r.status_code == 409
+    assert r.json()["code"] == "PATIENT_HAS_CLINICAL_HISTORY" and "mobile_access" in r.json()["dependencies"]
+    assert get_conn().execute("SELECT COUNT(*) FROM patient_portal_access").fetchone()[0] == 1
 
 
 # --- RBAC и область видимости -------------------------------------------
@@ -577,6 +581,9 @@ def test_existing_v10_database_gains_the_collation(tmp_path):
     db_path = tmp_path / "early-v10.db"
     conn = _connect(db_path)
     init_db(conn)
+    from .conftest import strip_v28
+    strip_v28(conn)   # WP-C: объектов v28 в ранней сборке v10 не было
+    conn.commit()
     # Воспроизводим раннюю схему v10 — UNIQUE без коллации. Триггера пометки
     # (v27, ссылается на таблицу) в ранней сборке не было.
     conn.executescript(

@@ -56,6 +56,9 @@ def _create_locked(conn: sqlite3.Connection, fresh: policy.CurrentUser, body: Pa
     doctor_user_id, error = policy.resolve_create_doctor(conn, fresh, body.treatingDoctorUserId)
     if error is not None:
         raise PatientCreateForbidden("action=patient_create_doctor", error)
+    # WP-C (AUD-08): факт события из формы — уже наступившая дата учреждения.
+    for event in body.events:
+        store.require_fact_not_in_future(event.actualDate)
     # WP2.4-C: совпадение полиса в области сотрудника (по свежим правам, под
     # блокировкой) — только с подтверждением, точно совпадающим с этим списком.
     confirmed = patient_duplicates.check_policy(conn, fresh, body.policyNumber, body.duplicateConfirmation)

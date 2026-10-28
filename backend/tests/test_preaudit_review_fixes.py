@@ -22,7 +22,7 @@ import uuid
 
 import pytest
 
-from .conftest import DEV_USERNAME, PROJECT_ROOT, get_conn, make_patient_payload
+from .conftest import card_version, DEV_USERNAME, PROJECT_ROOT, get_conn, make_patient_payload
 from .test_restore_migration import _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _parallel, _rows
 from .test_wp24a_patient_create import _while_locked, _world
@@ -163,7 +163,7 @@ def test_migration_succeeds_once_a_person_resolves_the_conflict(client, tmp_path
     conn.commit()
     rows = _portal_rows(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 28   # WP-C: текущая схема v28
     assert _portal_rows(conn) == rows
     assert "COLLATE NOCASE" in _table_sql(conn).upper()
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE tbl_name IN "
@@ -251,7 +251,8 @@ def test_verified_portal_build_is_still_recognised(client, tmp_path):
     assert {k: v for k, v in verified.items() if k != "triggers"} == {k: v for k, v in current.items() if k != "triggers"}
     assert verified["triggers"] == []
     names = sorted(t.split()[2] for t in current["triggers"])
-    assert names == sorted(PORTAL_GUARDS | {MARK_TRIGGER})
+    # WP-C (v28): защита удаления карточки проверяет и мобильный доступ — её текст ссылается на таблицу.
+    assert names == sorted(PORTAL_GUARDS | {MARK_TRIGGER, "trg_patients_delete_requires_no_history"})
 
 
 # ================================================================ 2. link / change / revoke
@@ -458,7 +459,7 @@ def test_no_address_or_other_card_leaks_through_errors_audit_or_logs(client, cap
 
 def test_validation_errors_elsewhere_are_unchanged(client):
     ids, head, (pid, _) = _cards(client)
-    response = head.patch(f"/api/patients/{pid}", json={"field": "unknown", "value": "x"}, headers=head.csrf)
+    response = head.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "unknown", "value": "x"}, headers=head.csrf)
     assert response.status_code == 422 and "input" in response.text
 
 

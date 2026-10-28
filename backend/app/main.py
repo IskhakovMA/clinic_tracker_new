@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import config, db_guard, idempotency, process_guard, security
+from . import audit, config, db_guard, idempotency, process_guard, security
 from .db import SchemaVersionError, get_connection
 from .db import reset_singleton_for_tests as reset_singleton
 from .routes import ai, analytics, audit_log, auth, consilium, data_quality, duplicate_review, importexport, internal_notifications, migrate, notifications, patients, staff, structure
@@ -224,6 +224,27 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
         errors = [{"type": e.get("type"), "loc": list(e.get("loc", ())), "msg": e.get("msg")} for e in exc.errors()]
         return JSONResponse(status_code=422, content={"detail": errors})
     return await request_validation_exception_handler(request, exc)
+
+
+@app.exception_handler(audit.AuditWriteFailed)
+async def audit_write_failed_handler(request: Request, exc: audit.AuditWriteFailed):
+    """WP-C (AUD-06): обязательная запись аудита не сохранена — изменение откатано."""
+    logger.warning("required audit write failed on %s %s; change rolled back", request.method, request.url.path)
+    return JSONResponse(status_code=503, content={
+        "detail": "Не удалось сохранить изменение вместе с записью журнала аудита. Данные не изменены, "
+                  "повторите попытку позже",
+        "code": "AUDIT_UNAVAILABLE"})
+
+
+@app.exception_handler(sqlite3.OperationalError)
+async def database_busy_handler(request: Request, exc: sqlite3.OperationalError):
+    """Блокировка записи не дождалась своей очереди: изменение откатано (503), не 500."""
+    if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        logger.info("database busy on %s %s", request.method, request.url.path)
+        return JSONResponse(status_code=503, content={
+            "detail": "База данных временно занята. Данные не изменены, повторите попытку", "code": "DATABASE_BUSY"})
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
 @app.exception_handler(sqlite3.IntegrityError)

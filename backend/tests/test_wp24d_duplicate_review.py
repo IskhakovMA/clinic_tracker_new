@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 
-from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import pre_v28_rows, card_version, app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _parallel, _rows
 from .test_wp24a_patient_create import _while_locked, _world
@@ -733,7 +733,7 @@ def test_unmark_restores_the_card_to_normal_work(client):
     assert response.status_code == 200 and response.json()["candidateState"] == "open"
     assert doctor.get(f"/api/patients/{b}").status_code == 200
     assert b in {p["id"] for p in doctor.get("/api/patients").json()}
-    assert doctor.patch(f"/api/patients/{b}", json={"field": "complaint", "value": "Новая жалоба"},
+    assert doctor.patch(f"/api/patients/{b}", json={"expectedVersion": card_version(b), "field": "complaint", "value": "Новая жалоба"},
                         headers=doctor.csrf).status_code == 200
     history = _rows("SELECT action, reverts_mark_id FROM patient_erroneous_marks ORDER BY seq")
     assert history == [{"action": "mark", "reverts_mark_id": None}, {"action": "unmark", "reverts_mark_id": mark_id}]
@@ -765,8 +765,8 @@ def test_every_write_route_refuses_the_erroneous_card(client):
     digest = _med_digest(b)
     for tab in (doctor, dev):
         calls = [
-            tab.patch(f"/api/patients/{b}", json={"field": "complaint", "value": "x"}, headers=tab.csrf),
-            tab.patch(f"/api/patients/{b}", json={"field": "policyNumber", "value": Y}, headers=tab.csrf),
+            tab.patch(f"/api/patients/{b}", json={"expectedVersion": card_version(b), "field": "complaint", "value": "x"}, headers=tab.csrf),
+            tab.patch(f"/api/patients/{b}", json={"expectedVersion": card_version(b), "field": "policyNumber", "value": Y}, headers=tab.csrf),
             tab.delete(f"/api/patients/{b}", headers=tab.csrf),
             tab.post(f"/api/patients/{b}/stage", json={"newStage": "appointment", "expectedStage": "exam",
                                                       "expectedHistoryEntryId": entry.get("id")}, headers=tab.csrf),
@@ -788,7 +788,7 @@ def test_every_write_route_refuses_the_erroneous_card(client):
             tab.get(f"/api/notifications/patients/{b}"),
         ]
         if tab is dev:
-            calls.append(tab.put(f"/api/patients/{b}/treating-doctor", json={"treatingDoctorUserId": ids["doc.a"]},
+            calls.append(tab.put(f"/api/patients/{b}/treating-doctor", json={"expectedVersion": card_version(b), "treatingDoctorUserId": ids["doc.a"]},
                                  headers=tab.csrf))
         for response in calls:
             assert response.status_code in (403, 404, 409, 422), (response.request.method, response.request.url, response.text)
@@ -812,7 +812,14 @@ def test_database_rejects_direct_writes_to_an_erroneous_card(client):
         _consilium_sql(ids, b),
     ]
     for sql, params in statements:
-        with pytest.raises(sqlite3.IntegrityError, match="patient_erroneous_readonly"):
+        # WP-C: прямое удаление карточки и записи маршрута отклоняют и защиты истории (v28);
+        # порядок триггеров SQLite не определён — для этих двух операций годится любая.
+        expected = "patient_erroneous_readonly"
+        if sql.startswith("DELETE FROM patients"):
+            expected += "|patient_has_clinical_history"
+        elif sql.startswith("DELETE FROM history_entries"):
+            expected += "|history_entry_immutable"
+        with pytest.raises(sqlite3.IntegrityError, match=expected):
             get_conn().execute(sql, params)
         get_conn().rollback()
     # Карточка с событием: изменение события тоже отклоняется.
@@ -1076,12 +1083,12 @@ def test_v25_fixture_migrates_to_v26_without_touching_rows(client, tmp_path):
     assert identify_backup_build(path, 25) == "wp24c-e92e3f5"
     tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' "
                                          "AND name NOT LIKE 'sqlite_%' AND name != 'schema_version' ORDER BY name")]
-    before = {t: [tuple(r) for r in conn.execute(f'SELECT * FROM "{t}" ORDER BY rowid')] for t in tables}  # nosec
+    before = {t: pre_v28_rows(conn, t) for t in tables}
     signed = conn.execute("SELECT * FROM oncology_consilium_appointments WHERE status = 'signed'").fetchall()
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27   # combined-preaudit: v27 — мобильный доступ пациента
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
     for t in tables:
-        assert [tuple(r) for r in conn.execute(f'SELECT * FROM "{t}" ORDER BY rowid')] == before[t], t  # nosec
+        assert pre_v28_rows(conn, t) == before[t], t
     assert [tuple(r) for r in conn.execute("SELECT * FROM oncology_consilium_appointments WHERE status = 'signed'")] == [
         tuple(r) for r in signed]
     for t in ("patient_duplicate_scans", "patient_duplicate_candidates", "patient_duplicate_reviews",
@@ -1108,7 +1115,7 @@ def test_restore_of_a_v25_backup_migrates_to_v26(auth_client, tmp_path, backup_k
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27   # combined-preaudit: текущая схема v27
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit: текущая схема v27
     assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1
     conn.close()

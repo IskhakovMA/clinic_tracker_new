@@ -726,7 +726,8 @@ def _registry_xlsx(
     rows: list[list[object]] = [header, *[[item[c] for c in columns] for item in items]]
     content = workbook_bytes(sheet_name, rows)
     suffix = date or "all"
-    audit.record(
+    # WP-C (AUD-06): запись аудита фиксируется до выдачи файла с ПДн.
+    audit.record_committed_or_fail(
         conn, audit.CONSILIUM_REGISTRY_EXPORTED,
         detail=f"registry={registry};date={suffix};row_count={len(items)};format=xlsx",
         **audit.actor_ctx(user),

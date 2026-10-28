@@ -1,4 +1,4 @@
-from .conftest import make_patient_payload, event_delete, event_patch, stage_body, event_add_body
+from .conftest import card_version, checklist_state, make_patient_payload, event_delete, event_patch, stage_body, event_add_body
 
 
 def _create(auth_client, **overrides):
@@ -17,7 +17,7 @@ def test_crud_roundtrip(auth_client):
     assert r.json()["name"] == "Тестов Тест Тестович"
     assert r.json()["history"][0]["stage"] == "exam"
 
-    r = auth_client.patch(f"/api/patients/{pid}", json={"field": "name", "value": "Новое Имя"}, headers=auth_client.csrf)
+    r = auth_client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "name", "value": "Новое Имя"}, headers=auth_client.csrf)
     assert r.status_code == 200
     assert r.json()["name"] == "Новое Имя"
 
@@ -61,7 +61,7 @@ def test_unknown_id_404(auth_client):
     assert auth_client.get("/api/patients/ffffffffffffffffffffffffffffffff").status_code == 404
     r = auth_client.patch(
         "/api/patients/ffffffffffffffffffffffffffffffff",
-        json={"field": "name", "value": "x"},
+        json={"field": "name", "value": "x", "expectedVersion": 1},
         headers=auth_client.csrf,
     )
     assert r.status_code == 404
@@ -71,7 +71,7 @@ def test_mutations_require_csrf(auth_client):
     created = _create(auth_client)
     pid = created["id"]
     assert auth_client.post("/api/patients", json=make_patient_payload()).status_code == 403
-    assert auth_client.patch(f"/api/patients/{pid}", json={"field": "name", "value": "x"}).status_code == 403
+    assert auth_client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "name", "value": "x"}).status_code == 403
     assert auth_client.delete(f"/api/patients/{pid}").status_code == 403
     # wrong token also rejected
     assert (
@@ -173,7 +173,7 @@ def test_note_and_checklist(auth_client):
 
     r = auth_client.patch(
         f"/api/patients/{pid}/history/0/checklist",
-        json={"item": "Общий анализ крови", "checked": True},
+        json={"expected": checklist_state(pid, 0, "Общий анализ крови"), "item": "Общий анализ крови", "checked": True},
         headers=auth_client.csrf,
     )
     assert r.json()["history"][0]["checklist"] == {"Общий анализ крови": True}
@@ -193,14 +193,14 @@ def test_pgi_result_requires_date_and_saves_atomically(auth_client):
     pid = _create(auth_client)["id"]
     missing = auth_client.patch(
         f"/api/patients/{pid}",
-        json={"field": "pgiResult", "value": "confirmed"},
+        json={"expectedVersion": card_version(pid), "field": "pgiResult", "value": "confirmed"},
         headers=auth_client.csrf,
     )
     assert missing.status_code == 422
 
     saved = auth_client.patch(
         f"/api/patients/{pid}",
-        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-10"}},
+        json={"expectedVersion": card_version(pid), "field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-10"}},
         headers=auth_client.csrf,
     )
     assert saved.status_code == 200, saved.text
@@ -209,7 +209,7 @@ def test_pgi_result_requires_date_and_saves_atomically(auth_client):
 
     cleared = auth_client.patch(
         f"/api/patients/{pid}",
-        json={"field": "pgiResult", "value": {"result": "", "date": ""}},
+        json={"expectedVersion": card_version(pid), "field": "pgiResult", "value": {"result": "", "date": ""}},
         headers=auth_client.csrf,
     )
     assert cleared.status_code == 200

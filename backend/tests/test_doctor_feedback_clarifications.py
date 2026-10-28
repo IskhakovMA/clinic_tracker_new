@@ -3,7 +3,7 @@ from backend.app import config
 import sqlite3
 from pathlib import Path
 
-from .conftest import app_stopped, DEV_USERNAME, create_account, create_department, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, current_schema_version, stage_body, unsigned_import
+from .conftest import card_version, app_stopped, DEV_USERNAME, create_account, create_department, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, current_schema_version, stage_body, unsigned_import
 
 
 def _create_patient(client, **overrides):
@@ -116,7 +116,7 @@ def test_pgi_result_persistence_no_auto_route_change_rbac_and_audit(auth_client,
 
     confirmed = auth_client.patch(
         f"/api/patients/{own['id']}",
-        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
+        json={"expectedVersion": card_version(own['id']), "field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
         headers=auth_client.csrf,
     )
     assert confirmed.status_code == 200, confirmed.text
@@ -125,7 +125,7 @@ def test_pgi_result_persistence_no_auto_route_change_rbac_and_audit(auth_client,
     assert confirmed.json()["stage"] == "consult"
     not_confirmed = auth_client.patch(
         f"/api/patients/{own['id']}",
-        json={"field": "pgiResult", "value": {"result": "not_confirmed", "date": "2026-08-21"}},
+        json={"expectedVersion": card_version(own['id']), "field": "pgiResult", "value": {"result": "not_confirmed", "date": "2026-08-21"}},
         headers=auth_client.csrf,
     )
     assert not_confirmed.status_code == 200, not_confirmed.text
@@ -143,7 +143,7 @@ def test_pgi_result_persistence_no_auto_route_change_rbac_and_audit(auth_client,
     assert login(client, "readonly.pgi").status_code == 200
     read_only = client.patch(
         f"/api/patients/{own['id']}",
-        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
+        json={"expectedVersion": card_version(own['id']), "field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
         headers=client.csrf,
     )
     assert read_only.status_code == 403
@@ -151,7 +151,7 @@ def test_pgi_result_persistence_no_auto_route_change_rbac_and_audit(auth_client,
     assert login(client, "doctor.pgi.a").status_code == 200
     hidden_foreign = client.patch(
         f"/api/patients/{foreign['id']}",
-        json={"field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
+        json={"expectedVersion": card_version(foreign['id']), "field": "pgiResult", "value": {"result": "confirmed", "date": "2026-08-20"}},
         headers=client.csrf,
     )
     assert hidden_foreign.status_code == 404
@@ -357,7 +357,7 @@ def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_at
     )
     auth_client.patch(
         f"/api/patients/{patient['id']}",
-        json={"field": "diagnosis", "value": "C73"},
+        json={"expectedVersion": card_version(patient['id']), "field": "diagnosis", "value": "C73"},
         headers=auth_client.csrf,
     )
     auth_client.post(
@@ -382,12 +382,19 @@ def test_schema_v9_encrypted_backup_restore_preserves_structured_feedback_and_at
     assert maintenance.inspect_backup(backup)["schema_version"] == config.SCHEMA_VERSION
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
-    with get_conn():
-        get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
-    assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
 
+    # WP-C (AUD-03): карточку с клинической историей удалить нельзя — потерю данных
+    # моделирует утраченный файл базы (приложение остановлено): restore возвращает
+    # карточку со всеми уточнениями врача.
     with app_stopped():
+        lost = tmp_path / "lost-clinic.db"
+        db_path.replace(lost)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                sidecar.replace(tmp_path / ("lost-clinic.db" + suffix))
         restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
+    assert restore["previous_state"] == "missing"
     assert restore["schema_version"] == config.SCHEMA_VERSION
     # Restore revokes every session from the snapshot; sign in again.
     assert login(auth_client, DEV_USERNAME).status_code == 200

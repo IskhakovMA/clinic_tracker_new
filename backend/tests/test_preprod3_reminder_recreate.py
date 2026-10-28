@@ -38,7 +38,7 @@ def test_event_moved_away_and_back_gets_a_reminder_again(auth_client):
 
 def test_cleared_actual_date_restores_the_reminder(auth_client):
     pid = _setup(auth_client)
-    _patch(auth_client, pid, "actualDate", datetime.now(timezone.utc).date().isoformat())
+    _patch(auth_client, pid, "actualDate", _clinic_today())
     _generate(auth_client)
     assert _pending(pid) == []
     _patch(auth_client, pid, "actualDate", "")
@@ -111,3 +111,10 @@ def test_reminder_for_an_appointment_already_past_is_not_sent(auth_client):
     rows = _queued(conn, pid)
     assert [r["status"] for r in rows] == ["skipped"]
     assert rows[0]["error_code"] == "event_passed"
+
+
+def _clinic_today() -> str:
+    """WP-C: факт «событие выполнено сегодня» — дата учреждения (в тестах часы учреждения
+    закреплены, реальная дата может быть позже: такой «факт» был бы в будущем)."""
+    from backend.app import clock
+    return clock.today_moscow().isoformat()

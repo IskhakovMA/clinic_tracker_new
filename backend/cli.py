@@ -239,7 +239,11 @@ def cmd_migrate_db(args: argparse.Namespace) -> int:
     if result["status"] == "current":
         print(f"Схема уже текущая (v{result['schema_version']}). База не изменена.")
         return 0
-    print(f"Миграция выполнена: v{result['from_schema_version']} → v{result['schema_version']}.")
+    if result["status"] == "repaired":
+        print(f"Защитные триггеры восстановлены по эталону сборки (схема v{result['schema_version']}): "
+              + ", ".join(result.get("repaired_triggers") or []))
+    else:
+        print(f"Миграция выполнена: v{result['from_schema_version']} → v{result['schema_version']}.")
     print(f"  копия до миграции (проверена): {Path(result['pre_migration_backup']).name}")
     print("  check-db после миграции: OK")
     try:
@@ -446,7 +450,11 @@ def cmd_audit_tail(args: argparse.Namespace) -> int:
 
 def cmd_audit_prune(args: argparse.Namespace) -> int:
     conn = db.get_connection()
-    removed = audit.prune(conn, args.days)
+    try:
+        removed = audit.prune(conn, args.days)
+    except ValueError as e:
+        print(f"Журнал аудита не очищен: {e}.", file=sys.stderr)
+        return 1
     days = args.days if args.days is not None else config.AUDIT_RETENTION_DAYS
     print(f"Удалено событий старше {days} дн.: {removed}")
     return 0

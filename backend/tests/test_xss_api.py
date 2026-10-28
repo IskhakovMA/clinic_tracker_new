@@ -8,7 +8,7 @@ a way that would tempt someone to strip escaping client-side.
 """
 import json
 
-from .conftest import make_patient_payload
+from .conftest import checklist_state, make_patient_payload
 
 PAYLOADS = [
     '<img src=x onerror="window.__xss_test=1">',
@@ -42,7 +42,7 @@ def test_payload_in_note_and_checklist(auth_client):
 
     r = auth_client.patch(
         f"/api/patients/{pid}/history/0/checklist",
-        json={"item": payload[:200], "checked": True},
+        json={"expected": checklist_state(pid, 0, payload[:200]), "item": payload[:200], "checked": True},
         headers=auth_client.csrf,
     )
     assert payload[:200] in r.json()["history"][0]["checklist"]

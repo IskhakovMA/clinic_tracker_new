@@ -18,7 +18,7 @@ from datetime import timedelta, timezone
 
 import pytest
 
-from .conftest import (
+from .conftest import (card_version,
     DEV_USERNAME, PROJECT_ROOT, consilium_grid, consilium_version, create_account, create_department, get_conn,
     login, set_moscow_now,
 )
@@ -524,7 +524,7 @@ def test_booking_held_then_reassignment_applies_afterwards(client, monkeypatch):
     doctor, dev = _client_for(client, "doc.a1"), _client_for(client, DEV_USERNAME)
     booked, reassigned, waited = _interleave(
         lambda: _book(doctor, pts["a1"], DAY, "13:00"),
-        lambda: dev.put(f"/api/patients/{pts['a1']}/treating-doctor", json={"userId": ids["doc.b"]},
+        lambda: dev.put(f"/api/patients/{pts['a1']}/treating-doctor", json={"expectedVersion": card_version(pts['a1']), "userId": ids["doc.b"]},
                         headers=dev.csrf), hold)
     assert waited and booked.status_code == 201 and reassigned.status_code == 200
     aid = booked.json()["id"]
@@ -543,7 +543,7 @@ def test_reassignment_burst_never_leaves_a_record_for_a_foreign_patient(client):
         get_conn().execute("UPDATE patients SET treating_doctor_user_id = ? WHERE id = ?", (ids["doc.a1"], pts["a1"]))
         get_conn().commit()
         res = _parallel(lambda: _book(doctor, pts["a1"], DAY, "13:00"),
-                        lambda: dev.put(f"/api/patients/{pts['a1']}/treating-doctor", json={"userId": ids["doc.b"]},
+                        lambda: dev.put(f"/api/patients/{pts['a1']}/treating-doctor", json={"expectedVersion": card_version(pts['a1']), "userId": ids["doc.b"]},
                                         headers=dev.csrf))
         codes = (res[0][0].status_code, res[1][0].status_code)
         outcomes.append(codes)
@@ -650,7 +650,7 @@ def test_notifications_follow_the_treating_doctor(client):
     _return(client, aid, back_to="doc.a1")
     assert len(_notes(client)) == 1
     login(client, DEV_USERNAME)
-    assert client.put(f"/api/patients/{pts['a1']}/treating-doctor", json={"userId": ids["doc.b"]},
+    assert client.put(f"/api/patients/{pts['a1']}/treating-doctor", json={"expectedVersion": card_version(pts['a1']), "userId": ids["doc.b"]},
                       headers=client.csrf).status_code == 200
     login(client, "doc.a1")
     assert _notes(client) == []                                 # прежний врач: ни ФИО, ни записи

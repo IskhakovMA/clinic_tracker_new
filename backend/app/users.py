@@ -61,10 +61,11 @@ def get_user_by_username(conn: sqlite3.Connection, username: str) -> Optional[sq
     ).fetchone()
 
 
-def _write_scope(conn: sqlite3.Connection, commit: bool):
-    """`with conn:` commits on exit; inside an outer db.transaction the caller
-    passes commit=False so the statement joins that transaction instead."""
-    return conn if commit else contextlib.nullcontext()
+def _write_scope(conn: sqlite3.Connection, commit: bool = True):
+    """`with conn:` commits on exit; inside an outer db.transaction the
+    statement joins that transaction instead (commit=False, or an already open
+    transaction — WP-C: the change and its required audit row commit together)."""
+    return conn if commit and not conn.in_transaction else contextlib.nullcontext()
 
 
 def create_user(
@@ -138,7 +139,7 @@ def reset_password(
     if get_user(conn, user_id) is None:
         raise UserError("Пользователь не найден.")
     security.validate_password_strength(new_password)
-    with conn:
+    with _write_scope(conn):
         conn.execute(
             """UPDATE users SET password_hash = ?, must_change_password = ?,
                                 password_changed_at = ?, updated_at = ? WHERE id = ?""",
@@ -149,7 +150,7 @@ def reset_password(
 
 def change_own_password(conn: sqlite3.Connection, user_id: str, new_password: str) -> None:
     security.validate_password_strength(new_password)
-    with conn:
+    with _write_scope(conn):
         conn.execute(
             """UPDATE users SET password_hash = ?, must_change_password = 0,
                                 password_changed_at = ?, updated_at = ? WHERE id = ?""",
@@ -158,7 +159,7 @@ def change_own_password(conn: sqlite3.Connection, user_id: str, new_password: st
 
 
 def touch_last_login(conn: sqlite3.Connection, user_id: str) -> None:
-    with conn:
+    with _write_scope(conn):
         conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (now_iso(), user_id))
 
 
@@ -187,7 +188,7 @@ def create_department(conn: sqlite3.Connection, name: str) -> str:
         raise UserError("Отделение с таким названием уже существует.")
     dept_id = new_id()
     now = now_iso()
-    with conn:
+    with _write_scope(conn):
         conn.execute(
             "INSERT INTO departments (id, name, status, created_at, updated_at) "
             "VALUES (?, ?, 'active', ?, ?)",
@@ -223,7 +224,7 @@ def update_department(
     sets.append("updated_at = ?")
     params.append(now_iso())
     params.append(dept_id)
-    with conn:
+    with _write_scope(conn):
         conn.execute(f"UPDATE departments SET {', '.join(sets)} WHERE id = ?", params)
 
 
@@ -241,7 +242,7 @@ def add_doctor_to_department(conn: sqlite3.Connection, user_id: str, dept_id: st
     dept = get_department(conn, dept_id)
     if dept is None or dept["status"] != "active":
         raise UserError("Отделение не найдено или архивировано.")
-    with conn:
+    with _write_scope(conn):
         conn.execute(
             "INSERT OR IGNORE INTO user_departments (user_id, department_id, created_at) VALUES (?, ?, ?)",
             (user_id, dept_id, now_iso()),
@@ -249,7 +250,7 @@ def add_doctor_to_department(conn: sqlite3.Connection, user_id: str, dept_id: st
 
 
 def remove_doctor_from_department(conn: sqlite3.Connection, user_id: str, dept_id: str) -> bool:
-    with conn:
+    with _write_scope(conn):
         cur = conn.execute(
             "DELETE FROM user_departments WHERE user_id = ? AND department_id = ?",
             (user_id, dept_id),
@@ -263,7 +264,7 @@ def set_department_head(conn: sqlite3.Connection, dept_id: str, user_id: Optiona
     dept = get_department(conn, dept_id)
     if dept is None:
         raise UserError("Отделение не найдено.")
-    with conn:
+    with _write_scope(conn):
         conn.execute("DELETE FROM department_heads WHERE department_id = ?", (dept_id,))
         if user_id is not None:
             if get_user(conn, user_id) is None:

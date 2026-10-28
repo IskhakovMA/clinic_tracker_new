@@ -1,6 +1,6 @@
 import json
 
-from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, stage_body, unsigned_import
+from .conftest import card_version, DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, stage_body, unsigned_import
 
 SENSITIVE_MARKERS = [
     TEST_PASSWORD,
@@ -62,7 +62,7 @@ def test_logout_is_recorded(auth_client):
 
 def test_crud_events_recorded_with_patient_id(auth_client):
     created = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf).json()
-    auth_client.patch(f"/api/patients/{created['id']}", json={"field": "doctor", "value": "Др. Новый"}, headers=auth_client.csrf)
+    auth_client.patch(f"/api/patients/{created['id']}", json={"expectedVersion": card_version(created['id']), "field": "doctor", "value": "Др. Новый"}, headers=auth_client.csrf)
     auth_client.delete(f"/api/patients/{created['id']}", headers=auth_client.csrf)
 
     events = auth_client.get("/api/audit").json()["events"]
@@ -183,31 +183,30 @@ def test_audit_prune_removes_old_events(auth_client):
     assert audit.count_events(conn) > 0
 
 
-def test_audit_failure_is_fail_open(auth_client):
-    """A broken audit insert must not break the clinical operation.
+def test_audit_failure_blocks_critical_changes_but_not_best_effort_events(auth_client):
+    """A broken audit insert (the table is dropped, so the INSERT really fails).
 
-    The audit table is dropped out from under the app, so the INSERT raises
-    for real rather than through a patched stand-in.
-
-    WP2.4-A: creating a card is no longer fail-open — its audit row is part of
-    the creation transaction (approved requirement, test_wp24a). Operations
-    with fail-open audit keep working; creation is refused with 503 and
-    leaves no card.
+    WP-C (AUD-06): critical clinical changes are fail-closed — a card field change
+    is refused with 503 and nothing is saved (WP2.4-A already did this for card
+    creation). Best-effort events written by audit.record (logins, denials) still
+    swallow the failure instead of propagating it.
     """
     from backend.app import audit, db
     created = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf)
     assert created.status_code == 201
+    pid = created.json()["id"]
     conn = db.get_connection()
     with conn:
         conn.execute("DROP TABLE audit_events")
 
-    r = auth_client.patch(f"/api/patients/{created.json()['id']}", json={"field": "doctor", "value": "Др. Новый"},
-                          headers=auth_client.csrf)
-    assert r.status_code == 200, "a fail-open clinical operation must survive an audit write failure"
+    r = auth_client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "doctor",
+                                                       "value": "Др. Новый"}, headers=auth_client.csrf)
+    assert r.status_code == 503, "WP-C: a card change requires its audit row"
+    assert conn.execute("SELECT doctor FROM patients WHERE id = ?", (pid,)).fetchone()[0] != "Др. Новый"
     before = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
     r = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf)
     assert r.status_code == 503, "WP2.4-A: creation requires its audit row"
     assert conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0] == before
 
-    # And the helper itself swallows the failure instead of propagating it.
+    # The best-effort helper itself swallows the failure instead of propagating it.
     audit.record(conn, audit.PATIENT_CREATED, patient_id="whatever")

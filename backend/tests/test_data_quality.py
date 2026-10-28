@@ -2,7 +2,7 @@
 import json
 from datetime import date
 
-from .conftest import (
+from .conftest import (card_version,
     TEST_PASSWORD,
     create_account,
     create_department,
@@ -262,14 +262,14 @@ def test_reading_quality_and_crud_correction_do_not_add_audit_phi_and_readonly_c
     client.get("/api/data-quality/issues")
     assert client.patch(
         f"/api/patients/{ids['p_a']}",
-        json={"field": "phone", "value": "+7 900 111-11-11"},
+        json={"expectedVersion": card_version(ids['p_a']), "field": "phone", "value": "+7 900 111-11-11"},
         headers=client.csrf,
     ).status_code == 403
 
     _as_user(client, "dq.dev")
     assert client.patch(
         f"/api/patients/{ids['p_a']}",
-        json={"field": "phone", "value": "+7 900 111-11-11"},
+        json={"expectedVersion": card_version(ids['p_a']), "field": "phone", "value": "+7 900 111-11-11"},
         headers=client.csrf,
     ).status_code == 200
     audit_text = json.dumps(client.get("/api/audit").json(), ensure_ascii=False)

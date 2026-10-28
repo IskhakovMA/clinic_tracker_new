@@ -56,7 +56,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from . import config
-from .db import now_iso
+from .db import AUDIT_DELETE_FLOOR_DAYS, now_iso
 
 logger = logging.getLogger("clinic.audit")
 
@@ -185,7 +185,8 @@ CONSILIUM_SCHEDULE_SLOT_DELETED = "consilium_schedule_slot_deleted"
 CONSILIUM_REGISTRY_EXPORTED = "consilium_registry_exported"
 CONSILIUM_DEMO_RESET = "consilium_demo_reset"
 
-# Не удаляются audit-prune: история удалений медицинских событий.
+# Не удаляются audit-prune: история удалений медицинских событий (тот же перечень
+# закреплён в базе триггером, db.AUDIT_RETAINED_EVENT_TYPES).
 RETAINED_EVENT_TYPES = frozenset({PATIENT_EVENT_DELETED, PATIENT_EVENT_RESTORED})
 
 RESULT_OK = "ok"
@@ -248,6 +249,7 @@ def record_required(
     actor_department_id: str | None = None,
     target_user_id: str | None = None,
     result: str = RESULT_OK,
+    target_department_id: str | None = None,
 ) -> None:
     """Fail-closed audit row inside the caller's open transaction.
 
@@ -262,9 +264,9 @@ def record_required(
         """INSERT INTO audit_events (created_at, event_type, actor, patient_id, result,
                                      request_id, detail, actor_user_id, actor_role,
                                      actor_department_id, target_user_id, target_department_id)
-           VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, NULL)""",
+           VALUES (?, ?, NULL, ?, ?, NULL, ?, ?, ?, ?, ?, ?)""",
         (now_iso(), event_type, patient_id, result, detail,
-         actor_user_id, actor_role, actor_department_id, target_user_id),
+         actor_user_id, actor_role, actor_department_id, target_user_id, target_department_id),
     )
 
 
@@ -279,6 +281,23 @@ def record_required_or_fail(conn: sqlite3.Connection, event_type: str, **kwargs)
     try:
         record_required(conn, event_type, **kwargs)
     except sqlite3.Error as exc:
+        raise AuditWriteFailed() from exc
+
+
+def record_committed_or_fail(conn: sqlite3.Connection, event_type: str, **kwargs) -> None:
+    """Обязательная запись аудита для операции, которую нельзя включить в транзакцию
+    базы (выдача файла экспорта): запись фиксируется отдельной транзакцией ДО того,
+    как данные покидают сервер. Сбой — AuditWriteFailed, и вызывающий не выдаёт
+    данные (503). Модель «аудит, затем выдача»: журнал может показать экспорт,
+    ответ на который не дошёл до клиента, но никогда — выданные данные без записи."""
+    if conn.in_transaction:
+        raise RuntimeError("record_committed_or_fail must not run inside another transaction")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        record_required(conn, event_type, **kwargs)
+        conn.commit()
+    except sqlite3.Error as exc:
+        conn.rollback()
         raise AuditWriteFailed() from exc
 
 
@@ -311,6 +330,10 @@ def count_events(conn: sqlite3.Connection) -> int:
 def prune(conn: sqlite3.Connection, retention_days: int | None = None) -> int:
     """Delete events older than the retention window. Returns rows removed."""
     days = config.AUDIT_RETENTION_DAYS if retention_days is None else int(retention_days)
+    # WP-C (AUD-13): триггер trg_audit_events_delete_retention не даёт удалить запись
+    # моложе AUDIT_DELETE_FLOOR_DAYS; меньший срок — явный отказ, а не тихая подмена.
+    if days < AUDIT_DELETE_FLOOR_DAYS:
+        raise ValueError(f"audit retention must be at least {AUDIT_DELETE_FLOOR_DAYS} days")
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     # Удаление и восстановление событий медицинской истории — единственный
     # след прошлых удалений (восстановление очищает deleted_at/deleted_by),

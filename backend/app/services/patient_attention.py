@@ -12,7 +12,7 @@ from datetime import date
 from typing import Any
 
 from .. import audit, policy, store
-from ..db import in_chunks, now_iso
+from ..db import in_chunks, now_iso, transaction
 from ..models import ATTENTION_COMMENT_MAX_LENGTH, ATTENTION_REASON_CODES, AttentionIssueCloseIn, AttentionIssueCreateIn
 
 STATUS_OPEN = "open"
@@ -157,7 +157,8 @@ def create_issue(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id:
         raise ValueError("eventDate is required for emergency hospitalization")
     issue_id = store.new_id()
     now = now_iso()
-    with conn:
+    # WP-C (AUD-06): вопрос внимания и запись аудита — одна транзакция.
+    with transaction(conn):
         conn.execute(
             """INSERT INTO patient_attention_issues
                (id, patient_id, reason_code, status, comment, event_date, created_at, created_by_user_id,
@@ -166,29 +167,30 @@ def create_issue(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id:
             (issue_id, patient_id, body.reasonCode, body.comment, body.eventDate, now, user.id),
         )
         store.touch_patient(conn, patient_id)
-    audit.record(
-        conn,
-        audit.ATTENTION_ISSUE_CREATED,
-        patient_id=patient_id,
-        detail=f"issue_id={issue_id} status=open",
-        **audit.actor_ctx(user),
-    )
+        audit.record_required_or_fail(
+            conn,
+            audit.ATTENTION_ISSUE_CREATED,
+            patient_id=patient_id,
+            detail=f"issue_id={issue_id} status=open",
+            **audit.actor_ctx(user),
+        )
     return _select_issues(conn, patient_id, limit=1, offset=0)[0]
 
 
 def close_issue(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: str, issue_id: str, body: AttentionIssueCloseIn) -> dict[str, Any] | None:
     if not policy.can_write_patient(conn, user, patient_id):
         return None
-    row = conn.execute(
-        "SELECT id, status FROM patient_attention_issues WHERE id = ? AND patient_id = ?",
-        (issue_id, patient_id),
-    ).fetchone()
-    if row is None:
-        return None
-    if row["status"] == STATUS_CLOSED:
-        raise RuntimeError("attention issue already closed")
     now = now_iso()
-    with conn:
+    # WP-C (AUD-06): проверка состояния, закрытие и запись аудита — одна транзакция.
+    with transaction(conn):
+        row = conn.execute(
+            "SELECT id, status FROM patient_attention_issues WHERE id = ? AND patient_id = ?",
+            (issue_id, patient_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] == STATUS_CLOSED:
+            raise RuntimeError("attention issue already closed")
         conn.execute(
             """UPDATE patient_attention_issues
                SET status = 'closed', closed_at = ?, closed_by_user_id = ?, resolution_comment = ?
@@ -196,13 +198,13 @@ def close_issue(conn: sqlite3.Connection, user: policy.CurrentUser, patient_id: 
             (now, user.id, body.resolutionComment, issue_id, patient_id),
         )
         store.touch_patient(conn, patient_id)
-    audit.record(
-        conn,
-        audit.ATTENTION_ISSUE_CLOSED,
-        patient_id=patient_id,
-        detail=f"issue_id={issue_id} status=closed",
-        **audit.actor_ctx(user),
-    )
+        audit.record_required_or_fail(
+            conn,
+            audit.ATTENTION_ISSUE_CLOSED,
+            patient_id=patient_id,
+            detail=f"issue_id={issue_id} status=closed",
+            **audit.actor_ctx(user),
+        )
     return next((issue for issue in _select_issues(conn, patient_id) if issue["id"] == issue_id), None)
 
 

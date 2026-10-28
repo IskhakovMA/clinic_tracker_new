@@ -6291,7 +6291,10 @@ const app = {
     /* ================================================================ МУТАЦИИ */
 
     async updatePatientField(patientId, fieldName, value) {
-        const body = { field: fieldName, value };
+        // WP-C: версия карточки, которую видит пользователь; правка устаревшей карточки
+        // получает 409 STALE_PATIENT_VERSION вместо тихой перезаписи чужого изменения.
+        const cached = this.getPatient(patientId);
+        const body = { field: fieldName, value, expectedVersion: cached ? cached.version : undefined };
         for (;;) {
             try {
                 const updated = await apiPatch(`/api/patients/${patientId}`, body);
@@ -6300,6 +6303,10 @@ const app = {
                 return;
             } catch (e) {
                 // WP2.4-C: другой карточке вашей области принадлежит тот же номер полиса.
+                if (this.isStaleRecord(e)) {
+                    await this.reloadAfterStaleRecord(patientId, e);
+                    return;
+                }
                 if (fieldName === 'policyNumber' && this.isDuplicateLimitExceeded(e)) {
                     ui.toast(e.data.detail || 'Номер полиса не изменен.', 'danger');
                 } else if (fieldName === 'policyNumber' && this.isPossibleDuplicate(e)) {
@@ -6321,6 +6328,20 @@ const app = {
                 return;
             }
         }
+    },
+
+    // WP-C: карточку или пункт чек-листа уже изменил другой пользователь.
+    isStaleRecord(error) {
+        return Boolean(error && error.status === 409 && error.data
+            && (error.data.code === 'STALE_PATIENT_VERSION' || error.data.code === 'STALE_CHECKLIST_ITEM'));
+    },
+
+    async reloadAfterStaleRecord(patientId, error) {
+        ui.toast((error.data && error.data.detail) || 'Карточка уже изменена другим пользователем. Обновите её.', 'warning');
+        try {
+            await this.refreshPatientRecord(patientId);
+        } catch (e) { /* карточка недоступна — список обновится при следующей загрузке */ }
+        this.refreshCurrent();
     },
 
     // WP2.4-C: ответ 409 POSSIBLE_DUPLICATE — совпадение полиса с карточками вашей области.
@@ -6495,10 +6516,19 @@ const app = {
     },
 
     async updateChecklistItem(patientId, occIndex, itemName, checked) {
+        // WP-C: состояние пункта, которое видел пользователь (нет пункта — не отмечен).
+        const cached = this.getPatient(patientId);
+        const entry = cached && cached.history ? cached.history[occIndex] : null;
+        const expected = Boolean(entry && entry.checklist && entry.checklist[itemName]);
         try {
-            const updated = await apiPatch(`/api/patients/${patientId}/history/${occIndex}/checklist`, { item: itemName, checked });
+            const updated = await apiPatch(`/api/patients/${patientId}/history/${occIndex}/checklist`,
+                { item: itemName, checked, expected });
             this.replacePatientInCache(updated);
         } catch (e) {
+            if (this.isStaleRecord(e)) {
+                await this.reloadAfterStaleRecord(patientId, e);
+                return;
+            }
             ui.toast('Не удалось сохранить чек-лист: ' + e.message, 'danger');
         }
     },
@@ -8998,13 +9028,20 @@ const app = {
         event.preventDefault();
         const patientId = this.doctorModalPatientId;
         const userId = $('doctorModalSelect').value || null;
+        const cached = this.getPatient(patientId);
         try {
-            const updated = await apiPut(`/api/patients/${patientId}/treating-doctor`, { userId });
+            const updated = await apiPut(`/api/patients/${patientId}/treating-doctor`,
+                { userId, expectedVersion: cached ? cached.version : undefined });
             this.replacePatientInCache(updated);
             ui.closeModal('doctorModal');
             ui.toast('Лечащий врач изменён. Область доступа обновлена.', 'good');
             this.refreshCurrent();
         } catch (e) {
+            if (this.isStaleRecord(e)) {
+                ui.closeModal('doctorModal');
+                await this.reloadAfterStaleRecord(patientId, e);
+                return;
+            }
             ui.toast('Не удалось сменить врача: ' + e.message, 'danger');
         }
     },
@@ -9479,7 +9516,7 @@ const app = {
         });
         if (!confirmed) return;
         try {
-            await apiPut(`/api/patients/${p.id}/treating-doctor`, { userId });
+            await apiPut(`/api/patients/${p.id}/treating-doctor`, { userId, expectedVersion: p.version });
             await this.loadPatients();
             ui.toast('Пациент сопоставлен с врачом.', 'good');
             this.renderStructure();

@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from .conftest import (
+from .conftest import (card_version,
     unsigned_import,
     TEST_PASSWORD,
     create_account,
@@ -132,7 +132,7 @@ def _admin_calls(client, t):
         # разрешён (см. test_unresolved_list_contract), сопоставление — нет.
         ("unresolved: assign doctor", lambda: client.put(
             f"/api/patients/{t['unresolved_pid']}/treating-doctor",
-            json={"userId": t["doc_target"]}, headers=csrf)),
+            json={"expectedVersion": card_version(t['unresolved_pid']), "userId": t["doc_target"]}, headers=csrf)),
         # архивирование — последним: после него membership-вызовы невозможны
         ("structure: archive", lambda: client.delete(f"/api/departments/{t['dept']}", headers=csrf)),
     ]
@@ -173,12 +173,12 @@ def test_unresolved_assignment_developer_only(client, admin_targets):
     for role in NON_DEVELOPER_ROLES:
         login(client, f"matrix.{role}")
         r = client.put(f"/api/patients/{t['unresolved_pid']}/treating-doctor",
-                       json={"userId": t["doc_target"]}, headers=client.csrf)
+                       json={"expectedVersion": card_version(t['unresolved_pid']), "userId": t["doc_target"]}, headers=client.csrf)
         # read-only роли видят пациента → 403; врач/заведующий не видят → 404
         assert r.status_code in (403, 404), f"{role}: {r.status_code}"
     login(client, "matrix.dev")
     r = client.put(f"/api/patients/{t['unresolved_pid']}/treating-doctor",
-                   json={"userId": t["doc_target"]}, headers=client.csrf)
+                   json={"expectedVersion": card_version(t['unresolved_pid']), "userId": t["doc_target"]}, headers=client.csrf)
     assert r.status_code == 200
 
 

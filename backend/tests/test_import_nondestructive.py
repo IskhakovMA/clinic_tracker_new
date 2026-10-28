@@ -72,7 +72,7 @@ def _patch(client, pid, event, field, value):
 
 @pytest.mark.parametrize("signed", [True, False])
 def test_old_update_does_not_destroy_an_event_added_after_export(auth_client, signed):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     old = _variant(_export(auth_client), signed)
     current = [e["id"] for e in _events(auth_client, pid)]
     r = auth_client.post(f"/api/patients/{pid}/history/0/events",
@@ -90,19 +90,19 @@ def test_old_update_does_not_destroy_an_event_added_after_export(auth_client, si
 
 @pytest.mark.parametrize("signed", [True, False])
 def test_old_update_does_not_roll_back_a_newer_actual_date(auth_client, signed):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     old = _variant(_export(auth_client), signed)
     event = _events(auth_client, pid)[0]
-    assert _patch(auth_client, pid, event, "actualDate", "2030-01-11").status_code == 200
+    assert _patch(auth_client, pid, event, "actualDate", "2026-01-11").status_code == 200
     before = _snapshot()
     assert _update(auth_client, old, signed).status_code == 409
     assert _snapshot() == before
-    assert _events(auth_client, pid)[0]["actualDate"] == "2030-01-11"
+    assert _events(auth_client, pid)[0]["actualDate"] == "2026-01-11"
 
 
 @pytest.mark.parametrize("signed", [True, False])
 def test_old_update_does_not_remove_a_newer_history_entry(auth_client, signed):
-    pid = _create(auth_client, events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     old = _variant(_export(auth_client), signed)
     r = auth_client.post(f"/api/patients/{pid}/stage",
                          json=stage_body(auth_client, pid, {"newStage": "appointment"}), headers=auth_client.csrf)
@@ -125,14 +125,14 @@ def test_update_that_changes_patient_values_is_a_conflict(auth_client):
 # Разрешённое: совпадающая карточка и дописанные новые события -----------------
 
 def test_identical_update_is_a_no_op_and_new_events_are_appended(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     document = legacy_export(json.loads(_export(auth_client)))
     raw = json.dumps(document, ensure_ascii=False)
     before = _snapshot()
     r = unsigned_import(auth_client, raw, "update")
     assert r.status_code == 200 and r.json()["unchanged"] == 1 and r.json()["updated"] == 0
     assert _snapshot()["events"] == before["events"]
-    document["patients"][0]["history"][0]["events"].append({"date": "2030-03-01", "time": "09:00"})
+    document["patients"][0]["history"][0]["events"].append({"date": "2026-03-01", "time": "09:00"})
     raw = json.dumps(document, ensure_ascii=False)
     preview = auth_client.post("/api/import/preview", json={"raw": raw}, headers=auth_client.csrf).json()
     assert preview["overwriteImpact"]["update"] == {"blocked": False, "conflicts": 0, "unchanged": 0,
@@ -140,7 +140,7 @@ def test_identical_update_is_a_no_op_and_new_events_are_appended(auth_client):
     r = unsigned_import(auth_client, raw, "update")
     assert r.status_code == 200 and r.json()["updated"] == 1 and r.json()["appendedEvents"] == 1
     events = _events(auth_client, pid)
-    assert [e["date"] for e in events] == ["2030-01-10", "2030-03-01"]
+    assert [e["date"] for e in events] == ["2026-01-10", "2026-03-01"]
     assert events[0]["id"] == before["events"][0][0]                   # прежнее событие не пересоздано
     # Повтор того же файла — карточка уже совпадает, дубликата нет. WP2.4-B (U4): повтор
     # своего обработанного файла выполняется только с отдельным подтверждением.
@@ -153,9 +153,9 @@ def test_identical_update_is_a_no_op_and_new_events_are_appended(auth_client):
 
 @pytest.mark.parametrize("signed", [True, False])
 def test_replace_never_deletes_existing_patients(auth_client, signed):
-    _create(auth_client, name="Первый", events=[{"date": "2030-01-10"}])
+    _create(auth_client, name="Первый", events=[{"date": "2026-01-10"}])
     raw = _variant(_export(auth_client), signed)
-    _create(auth_client, name="Не В Файле", events=[{"date": "2030-02-10"}])
+    _create(auth_client, name="Не В Файле", events=[{"date": "2026-02-10"}])
     before = _snapshot()
     preview = auth_client.post("/api/import/preview", json={"raw": raw}, headers=auth_client.csrf).json()
     assert preview["overwriteImpact"]["replace"]["blocked"] is True
@@ -178,7 +178,7 @@ def test_replace_into_an_empty_database_still_works(auth_client):
 # A8, A12, A14. Транзакции и гонки ---------------------------------------------
 
 def test_change_between_preview_and_commit_is_caught(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     raw = _export(auth_client)
     preview = auth_client.post("/api/import/preview", json={"raw": raw}, headers=auth_client.csrf).json()
     assert preview["overwriteImpact"]["update"]["blocked"] is False
@@ -193,9 +193,9 @@ def test_change_between_preview_and_commit_is_caught(auth_client):
 def test_concurrent_updates_append_once(auth_client):
     from backend.app import importexport, policy
 
-    _create(auth_client, events=[{"date": "2030-01-10"}])
+    _create(auth_client, events=[{"date": "2026-01-10"}])
     document = legacy_export(json.loads(_export(auth_client)))
-    document["patients"][0]["history"][0]["events"].append({"date": "2030-04-01"})
+    document["patients"][0]["history"][0]["events"].append({"date": "2026-04-01"})
     parsed, errors = importexport.validate_import(json.dumps(document, ensure_ascii=False))
     assert not errors
     path = get_conn().execute("PRAGMA database_list").fetchone()["file"]
@@ -218,14 +218,14 @@ def test_concurrent_updates_append_once(auth_client):
     for t in threads:
         t.join()
     assert sorted((r["updated"], r["unchanged"]) for r in results) == [(0, 1), (0, 1), (1, 0)]
-    assert get_conn().execute("SELECT COUNT(*) FROM events WHERE date = '2030-04-01'").fetchone()[0] == 1
+    assert get_conn().execute("SELECT COUNT(*) FROM events WHERE date = '2026-04-01'").fetchone()[0] == 1
 
 
 def test_failure_while_appending_rolls_everything_back(auth_client, monkeypatch):
     from backend.app import store
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     document = legacy_export(json.loads(_export(auth_client)))
-    document["patients"][0]["history"][0]["events"] += [{"date": "2030-05-01"}, {"date": "2030-06-01"}]
+    document["patients"][0]["history"][0]["events"] += [{"date": "2026-05-01"}, {"date": "2026-06-01"}]
     original, calls = store.insert_event, []
 
     def failing(*args, **kwargs):
@@ -246,7 +246,7 @@ def test_signed_consilium_records_stay_protected(client):
     from .test_consilium_appointments import appointment_payload
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
-    pid = _create(client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(client, events=[{"date": "2026-01-10"}])["id"]
     consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     assert client.post("/api/consilium/appointments", json=appointment_payload(pid),
                        headers=client.csrf).status_code in (200, 201)
@@ -261,7 +261,7 @@ def test_signed_consilium_records_stay_protected(client):
 # C. Создание карточки с сохранением внутренних id -------------------------------
 
 def _deleted_patient_file(client):
-    pid = _create(client, name="Удалённая Карточка", events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(client, name="Удалённая Карточка", events=[{"date": "2026-01-10"}])["id"]
     raw = _export(client)
     assert client.delete(f"/api/patients/{pid}", headers=client.csrf).status_code == 200
     return pid, raw
@@ -309,7 +309,7 @@ def test_doctor_cannot_use_internal_id_creation(client):
 
 
 def test_deleted_events_are_not_restored_through_id_creation(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     raw = _export(auth_client)
     event = _events(auth_client, pid)[0]
     assert auth_client.delete(f"/api/patients/{pid}/events/{event['id']}?version={event['version']}",
@@ -346,7 +346,7 @@ def test_internal_id_creation_is_audited_and_rolled_back_without_audit(auth_clie
     for part in ("action=create_with_internal_ids", "mode=add", "cards=1", "provenance=verified_signed",
                  "key_id=test-export-key", "preserve_confirmed=1", "file_sha256="):
         assert part in detail, part
-    for secret in ("Удалённая Карточка", "2030-01-10", "C34", "восстанов"):
+    for secret in ("Удалённая Карточка", "2026-01-10", "C34", "восстанов"):
         assert secret not in detail
     # 44. Прежние записи аудита не переписываются; новая запись о создании
     # с прежним id — граница между ними.
@@ -359,7 +359,7 @@ def test_internal_id_creation_is_audited_and_rolled_back_without_audit(auth_clie
 # Замечания ревью: дописывание только планового события в текущий этап ------------
 
 def _append_case(client, mutate, stage_moves=()):
-    pid = _create(client, events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(client, events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     for stage in stage_moves:
         r = client.post(f"/api/patients/{pid}/stage", json=stage_body(client, pid, {"newStage": stage}),
                         headers=client.csrf)
@@ -373,10 +373,10 @@ def _append_case(client, mutate, stage_moves=()):
 
 
 @pytest.mark.parametrize("event", [
-    {"date": "2030-03-01", "actualDate": "2030-03-01"},
-    {"date": "2030-03-01", "consiliumDecision": "treatment_strategy_changed"},
-    {"date": "2030-03-01", "matchedPlan": True},
-    {"date": "2030-03-01", "noPlan": True},
+    {"date": "2026-03-01", "actualDate": "2026-03-01"},
+    {"date": "2026-03-01", "consiliumDecision": "treatment_strategy_changed"},
+    {"date": "2026-03-01", "matchedPlan": True},
+    {"date": "2026-03-01", "noPlan": True},
 ])
 def test_appended_events_cannot_carry_facts_or_decisions(auth_client, event):
     r, before = _append_case(auth_client, lambda p: p["history"][-1]["events"].append(event), ("appointment",))
@@ -384,20 +384,20 @@ def test_appended_events_cannot_carry_facts_or_decisions(auth_client, event):
 
 
 def test_events_cannot_be_appended_to_past_stages_or_finished_routes(auth_client):
-    r, before = _append_case(auth_client, lambda p: p["history"][0]["events"].append({"date": "2030-03-01"}),
+    r, before = _append_case(auth_client, lambda p: p["history"][0]["events"].append({"date": "2026-03-01"}),
                              ("appointment",))
     assert r.status_code == 409 and _snapshot() == before
-    r, before = _append_case(auth_client, lambda p: p["history"][-1]["events"].append({"date": "2030-03-01"}),
+    r, before = _append_case(auth_client, lambda p: p["history"][-1]["events"].append({"date": "2026-03-01"}),
                              ("appointment", "completed"))
     assert r.status_code == 409 and _snapshot() == before
-    r, _ = _append_case(auth_client, lambda p: p["history"][-1]["events"].append({"date": "2030-03-01"}),
+    r, _ = _append_case(auth_client, lambda p: p["history"][-1]["events"].append({"date": "2026-03-01"}),
                         ("appointment",))
     assert r.status_code == 200 and r.json()["appendedEvents"] == 1
 
 
 def test_signed_file_with_inconsistent_structure_is_a_conflict_not_a_server_error(auth_client):
     from backend.app import export_signing
-    _create(auth_client, events=[{"date": "2030-01-10"}])
+    _create(auth_client, events=[{"date": "2026-01-10"}])
     document = json.loads(_export(auth_client))
     patient = document["patients"][0]
     patient["events"] = patient["history"][0]["events"]
@@ -416,7 +416,7 @@ def test_signed_file_with_inconsistent_structure_is_a_conflict_not_a_server_erro
 # F10. Повторный импорт неподписанного файла с существующим patient.id ----------------
 
 def _legacy_reimport_file(client):
-    pid = _create(client, name="Повторный Неподписанный", events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(client, name="Повторный Неподписанный", events=[{"date": "2026-01-10"}])["id"]
     document = legacy_export(json.loads(_export(client)))       # без подписи, id этапов и событий
     document["patients"] = [p for p in document["patients"] if p["id"] == pid]
     assert document["patients"][0]["id"] == pid                  # patient.id сохранён
@@ -431,7 +431,7 @@ def test_unsigned_add_with_an_existing_patient_id_is_rejected(auth_client):
     r = unsigned_import(auth_client, raw, "add")
     assert r.status_code == 409, r.text
     assert "уже есть в базе" in r.json()["detail"]
-    assert "Повторный Неподписанный" not in r.text and "2030-01-10" not in r.text
+    assert "Повторный Неподписанный" not in r.text and "2026-01-10" not in r.text
     assert _snapshot() == before                                              # ни пациентов, ни событий
 
 

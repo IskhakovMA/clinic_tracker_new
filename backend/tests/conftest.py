@@ -139,6 +139,48 @@ def create_account(
     return uid
 
 
+def card_version(patient_id: str) -> int:
+    """WP-C: текущая версия карточки — как её передает интерфейс в expectedVersion.
+
+    Читается из базы, а не через API: тесты отказа (карточка вне области сотрудника)
+    не должны получать лишний запрос чтения и его запись в журнал."""
+    row = get_conn().execute("SELECT version FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    return row[0] if row else 1
+
+
+def checklist_state(patient_id: str, occ_index: int, item: str) -> bool:
+    """WP-C: состояние пункта чек-листа, которое видит интерфейс (expected)."""
+    import json as _json
+    row = get_conn().execute(
+        "SELECT checklist_json FROM history_entries WHERE patient_id = ? ORDER BY seq LIMIT 1 OFFSET ?",
+        (patient_id, occ_index)).fetchone()
+    checklist = _json.loads(row[0]) if row and row[0] else {}
+    return bool(checklist.get(item, False))
+
+
+def strip_v28(conn) -> None:
+    """Убрать из свежей базы объекты v28 (WP-C), чтобы смоделировать файл более старой
+    схемы: защитные триггеры v28, столбец patients.version и таблицу истории фактов.
+    В настоящей базе v27 и старше этих объектов нет."""
+    from backend.app import db
+    for name, _ in db._wpc_triggers():
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+    conn.execute("DROP INDEX IF EXISTS idx_fact_history_patient")
+    conn.execute("DROP TABLE IF EXISTS patient_event_fact_history")
+    if "version" in {r[1] for r in conn.execute("PRAGMA table_info(patients)")}:
+        conn.execute("ALTER TABLE patients DROP COLUMN version")
+
+
+def pre_v28_rows(conn, table: str) -> list[tuple]:
+    """Строки таблицы для сравнения «до/после миграции» без столбца v28 patients.version
+    (служебная версия карточки, у мигрированных карточек — 1). Остальные столбцы, в том
+    числе версии событий и записей консилиума, сравниваются как есть."""
+    columns = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')
+               if not (table == "patients" and r[1] == "version")]
+    sql = f'SELECT {", ".join(chr(34) + c + chr(34) for c in columns)} FROM "{table}" ORDER BY rowid'  # nosec B608 - names from PRAGMA
+    return [tuple(r) for r in conn.execute(sql)]
+
+
 def create_department(name: str) -> str:
     from backend.app import users
     return users.create_department(get_conn(), name)

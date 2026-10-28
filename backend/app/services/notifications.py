@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
 from .. import audit, config, policy, store
-from ..db import now_iso
+from ..db import now_iso, transaction
 from ..models import TERMINAL_STAGES
 from ..notifications.mock_provider import provider_from_config
 from ..notifications.provider import NotificationContext, NotificationProvider
@@ -150,7 +150,10 @@ def set_preference(
     recorded_at = now if consent_status == "granted" else old["consent_recorded_at"]
     recorded_by = user.id if consent_status == "granted" else old["consent_recorded_by_user_id"]
     revoked_at = now if consent_status == "revoked" else None
-    with conn:
+    event = audit.NOTIFICATION_CONSENT_REVOKED if consent_status == "revoked" else audit.NOTIFICATION_CONSENT_GRANTED
+    # WP-C (AUD-06): согласие и его запись в журнал — одна транзакция; без записи
+    # аудита согласие не меняется (AuditWriteFailed → 503).
+    with transaction(conn):
         conn.execute(
             """INSERT INTO patient_notification_preferences
                (patient_id, sms_enabled, consent_status, consent_recorded_at,
@@ -173,8 +176,8 @@ def set_preference(
                    WHERE patient_id = ? AND status = 'pending'""",
                 (now, user.id, now, patient_id),
             )
-    event = audit.NOTIFICATION_CONSENT_REVOKED if consent_status == "revoked" else audit.NOTIFICATION_CONSENT_GRANTED
-    audit.record(conn, event, patient_id=patient_id, detail="channel=sms", **audit.actor_ctx(user))
+        audit.record_required_or_fail(conn, event, patient_id=patient_id, detail="channel=sms",
+                                      **audit.actor_ctx(user))
     return get_preference(conn, patient_id)
 
 

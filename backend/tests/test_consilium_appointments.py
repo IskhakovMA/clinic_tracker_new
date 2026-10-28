@@ -3,7 +3,7 @@ from zipfile import ZipFile
 
 import pytest
 
-from .conftest import (
+from .conftest import (card_version,
     DEV_USERNAME, consilium_version, create_account, get_conn, legacy_consilium_schedule, login,
     make_patient_payload,
 )
@@ -554,7 +554,7 @@ def test_chair_favorite_is_a_bookmark_and_chemo_exports_xlsx(client):
     assert client.get("/api/patients").json() == []
     denied = client.patch(
         f"/api/patients/{patient['id']}",
-        json={"field": "complaint", "value": "Нельзя менять избранное"},
+        json={"expectedVersion": card_version(patient['id']), "field": "complaint", "value": "Нельзя менять избранное"},
         headers=client.csrf,
     )
     assert denied.status_code == 404

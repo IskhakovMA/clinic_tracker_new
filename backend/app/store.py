@@ -9,7 +9,14 @@ import sqlite3
 import uuid
 from typing import Callable, Optional
 
-from .db import ARCHIVED_EVENT_DELETE_ERROR, now_iso, transaction
+from . import clock
+from .db import (
+    ARCHIVED_EVENT_DELETE_ERROR,
+    PATIENT_HAS_HISTORY_ERROR,
+    now_iso,
+    patient_history_dependencies,
+    transaction,
+)
 from .models import (
     DANGEROUS_KEYS,
     PRIORITIES,
@@ -234,6 +241,8 @@ def patient_to_dict(conn: sqlite3.Connection, patient_id: str) -> Optional[dict]
         "doctor": p["doctor"] or "",
         "head": p["head"] or "",
         "updatedAt": p["updated_at"],
+        # WP-C (AUD-11): версия полей карточки; клиент возвращает ее при правке.
+        "version": p["version"],
         "history": history,
         "diagnosisHistory": [
             {
@@ -391,27 +400,37 @@ def create_patient(
 
 
 def set_treating_doctor(
-    conn: sqlite3.Connection, patient_id: str, doctor_user_id: Optional[str]
+    conn: sqlite3.Connection, patient_id: str, doctor_user_id: Optional[str],
+    *, expected_version: Optional[int] = None, audit_hook: Optional[Callable[[], None]] = None,
 ) -> bool:
     """Смена лечащего врача: обновляет стабильную связь и отображаемый текст.
     Пациент не копируется — меняется только закрепление; доступ прежнего
-    врача и его заведующего исчезает при следующем запросе."""
-    p = conn.execute("SELECT id FROM patients WHERE id = ?", (patient_id,)).fetchone()
-    if p is None:
-        return False
+    врача и его заведующего исчезает при следующем запросе.
+
+    WP-C: одна транзакция BEGIN IMMEDIATE с проверкой версии карточки
+    (PatientVersionConflict) и обязательной записью аудита (audit_hook)."""
     doctor_text = _treating_doctor_name(conn, doctor_user_id)
-    with conn:
+    with transaction(conn):
+        row = _patient_for_update(conn, patient_id, expected_version)
+        if row is None:
+            return False
         if doctor_text is not None:
-            conn.execute(
-                "UPDATE patients SET treating_doctor_user_id = ?, doctor = ?, updated_at = ? WHERE id = ?",
-                (doctor_user_id, doctor_text, now_iso(), patient_id),
+            cur = conn.execute(
+                """UPDATE patients SET treating_doctor_user_id = ?, doctor = ?, updated_at = ?, version = version + 1
+                   WHERE id = ? AND version = ?""",
+                (doctor_user_id, doctor_text, now_iso(), patient_id, row["version"]),
             )
         else:
             # Сопоставление снято: legacy-текст сохраняем как был.
-            conn.execute(
-                "UPDATE patients SET treating_doctor_user_id = NULL, updated_at = ? WHERE id = ?",
-                (now_iso(), patient_id),
+            cur = conn.execute(
+                """UPDATE patients SET treating_doctor_user_id = NULL, updated_at = ?, version = version + 1
+                   WHERE id = ? AND version = ?""",
+                (now_iso(), patient_id, row["version"]),
             )
+        if cur.rowcount != 1:
+            raise PatientVersionConflict()
+        if audit_hook is not None:
+            audit_hook()
     return True
 
 
@@ -419,11 +438,11 @@ def unresolved_patients(conn: sqlite3.Connection) -> list[dict]:
     """Пациенты без сопоставленной учётной записи лечащего врача — очередь
     ручного сопоставления для Разработчика."""
     rows = conn.execute(
-        """SELECT id, name, doctor FROM patients
+        """SELECT id, name, doctor, version FROM patients
            WHERE treating_doctor_user_id IS NULL ORDER BY name"""
     ).fetchall()
     return [
-        {"id": r["id"], "name": r["name"], "legacyDoctor": r["doctor"] or ""}
+        {"id": r["id"], "name": r["name"], "legacyDoctor": r["doctor"] or "", "version": r["version"]}
         for r in rows
     ]
 
@@ -432,13 +451,48 @@ def touch_patient(conn: sqlite3.Connection, patient_id: str) -> None:
     conn.execute("UPDATE patients SET updated_at = ? WHERE id = ?", (now_iso(), patient_id))
 
 
-class PatientDeleteBlocked(Exception):
-    """Карточку нельзя удалить физически: каскад уничтожил бы историю (409)."""
+PATIENT_DELETE_DEPENDENCY_LABELS = {
+    "stage_transitions": "переходы между этапами маршрута",
+    "history_notes": "заметки к этапам",
+    "checklist_marks": "отметки чек-листа",
+    "performed_events": "события с фактической датой или временем",
+    "consilium_decision_marks": "отметки решения ОК",
+    "archived_events": "удалённые события (хранятся в архиве)",
+    "diagnosis_history": "история диагноза",
+    "fact_history": "история исправления фактов",
+    "consilium_records": "записи онкологического консилиума",
+    "attention_issues": "вопросы внимания",
+    "notification_consent": "согласие на уведомления",
+    "notification_history": "уведомления",
+    "mobile_access": "мобильный доступ",
+    "duplicate_registry": "записи реестра возможных дублей",
+}
 
-    def __init__(self, reason: str, count: int, message: str):
-        self.reason = reason
-        self.count = count
-        super().__init__(message)
+
+class PatientDeleteBlocked(Exception):
+    """Карточку нельзя удалить физически: каскад уничтожил бы медицинскую историю (409).
+
+    code — стабильный машинный код, dependencies — код зависимости → число строк
+    (без значений полей пациента)."""
+    code = "PATIENT_HAS_CLINICAL_HISTORY"
+
+    def __init__(self, dependencies: dict[str, int]):
+        self.dependencies = dict(dependencies)
+        labels = [PATIENT_DELETE_DEPENDENCY_LABELS.get(c, c) for c in self.dependencies]
+        super().__init__(
+            "У карточки есть медицинская история (" + ", ".join(labels) + "). Физическое удаление "
+            "такой карточки запрещено, данные не изменены. Ошибочную карточку помечают через реестр "
+            "возможных дублей; архивирование карточек не предусмотрено."
+        )
+
+    # Прежние атрибуты (reason/count) для журнала аудита отказа.
+    @property
+    def reason(self) -> str:
+        return next(iter(self.dependencies), "database_guard")
+
+    @property
+    def count(self) -> int:
+        return sum(self.dependencies.values())
 
 
 def archived_event_count(conn: sqlite3.Connection, patient_id: str) -> int:
@@ -453,127 +507,141 @@ def is_archived_event_delete_error(exc: BaseException) -> bool:
     return isinstance(exc, sqlite3.IntegrityError) and ARCHIVED_EVENT_DELETE_ERROR in str(exc)
 
 
-def delete_patient(conn: sqlite3.Connection, patient_id: str) -> bool:
-    """Физическое удаление карточки, если оно не уничтожает историю.
+def delete_patient(conn: sqlite3.Connection, patient_id: str,
+                   *, audit_hook: Optional[Callable[[], None]] = None) -> bool:
+    """Физическое удаление карточки — только если она не несёт медицинской истории (AUD-03).
 
-    Проверки и удаление идут под одной блокировкой записи: запись консилиума
-    или удалённое событие, появившиеся параллельно, не будут стёрты каскадом."""
+    Проверка зависимостей и DELETE — одна транзакция BEGIN IMMEDIATE: история,
+    добавленная параллельно, либо видна проверке, либо ждёт её конца. Триггер
+    trg_patients_delete_requires_no_history проверяет тот же перечень в базе —
+    другой путь кода или прямой DELETE карточку с историей тоже не удалит.
+    audit_hook пишет обязательную запись аудита в той же транзакции."""
     with transaction(conn):
-        consilium_records = conn.execute(
-            "SELECT COUNT(*) FROM oncology_consilium_appointments WHERE patient_id = ?", (patient_id,)
-        ).fetchone()[0]
-        if consilium_records:
-            raise PatientDeleteBlocked(
-                "consilium_records", consilium_records,
-                "У пациента есть записи онкологического консилиума; карточку удалить нельзя.",
-            )
-        archived = archived_event_count(conn, patient_id)
-        if archived:
-            raise PatientDeleteBlocked(
-                "archived_events", archived,
-                "У пациента есть удалённые события медицинской истории; они хранятся в базе, "
-                "поэтому карточку удалить нельзя. Данные не изменены.",
-            )
+        if conn.execute("SELECT 1 FROM patients WHERE id = ?", (patient_id,)).fetchone() is None:
+            return False
+        dependencies = patient_history_dependencies(conn, patient_id)
+        if dependencies:
+            raise PatientDeleteBlocked(dependencies)
         try:
             cur = conn.execute("DELETE FROM patients WHERE id = ?", (patient_id,))
         except sqlite3.IntegrityError as exc:
-            if is_archived_event_delete_error(exc):  # страховка базы данных
-                raise PatientDeleteBlocked(
-                    "archived_events", 1,
-                    "У пациента есть удалённые события медицинской истории; карточку удалить нельзя.",
-                ) from exc
+            if PATIENT_HAS_HISTORY_ERROR in str(exc) or is_archived_event_delete_error(exc):
+                raise PatientDeleteBlocked(patient_history_dependencies(conn, patient_id)
+                                           or {"database_guard": 1}) from exc
             raise
-        return cur.rowcount > 0
+        if cur.rowcount != 1:
+            return False
+        if audit_hook is not None:
+            audit_hook()
+        return True
+
+
+class PatientVersionConflict(Exception):
+    """Карточку изменили после того, как клиент её прочитал (409 STALE_PATIENT_VERSION)."""
+    code = "STALE_PATIENT_VERSION"
+
+    def __init__(self):
+        super().__init__(
+            "Карточка пациента уже изменена другим пользователем. Изменение не сохранено. "
+            "Обновите карточку и повторите правку.")
+
+
+def _patient_for_update(conn: sqlite3.Connection, patient_id: str,
+                        expected_version: Optional[int]) -> Optional[sqlite3.Row]:
+    """Строка карточки под блокировкой записи; устаревшая версия — PatientVersionConflict."""
+    if not conn.in_transaction:
+        raise RuntimeError("_patient_for_update must run inside the write transaction")
+    row = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
+    if row is None:
+        return None
+    if expected_version is not None and row["version"] != expected_version:
+        raise PatientVersionConflict()
+    return row
 
 
 def update_patient_field(conn: sqlite3.Connection, patient_id: str, field: str, value) -> bool:
     return update_patient_field_with_actor(conn, patient_id, field, value, actor_user_id=None)
 
 
-def update_patient_field_with_actor(
-    conn: sqlite3.Connection, patient_id: str, field: str, value, *, actor_user_id: str | None = None
-) -> bool:
+def _validated_field_value(field: str, value):
+    """Проверки значения, не зависящие от текущей строки карточки."""
     if field not in FIELD_COLUMN:
         raise ValueError("unknown field")
-    column = FIELD_COLUMN[field]
-
     if field == "age":
         try:
-            value = max(0, min(150, int(value)))
+            return max(0, min(150, int(value)))
         except (TypeError, ValueError):
             raise ValueError("age must be an integer")
-    elif field == "priority":
+    if field == "priority":
         if value not in PRIORITIES:
             raise ValueError(f"priority must be one of {PRIORITIES}")
-    elif field == "policyNumber":
-        value = normalize_policy_number(value)
-    elif field == "pgiResult":
-        if isinstance(value, dict):
-            result = value.get("result") or ""
-            pgi_date = normalize_pgi_result_date(result, value.get("date"))
-        else:
-            result = value or ""
-            row = conn.execute("SELECT pgi_result_date FROM patients WHERE id = ?", (patient_id,)).fetchone()
-            if row is None:
-                return False
-            pgi_date = normalize_pgi_result_date(result, row["pgi_result_date"])
-        value = pgi_result_to_db(result)
-    elif field == "pgiResultDate":
-        row = conn.execute("SELECT pgi_malignancy_confirmed FROM patients WHERE id = ?", (patient_id,)).fetchone()
-        if row is None:
-            return False
-        result = pgi_result_from_db(row["pgi_malignancy_confirmed"])
-        value = normalize_pgi_result_date(result, value)
-    elif field == "nosology":
-        row = conn.execute("SELECT diagnosis FROM patients WHERE id = ?", (patient_id,)).fetchone()
-        if row is None:
-            return False
-        value = validate_new_combination(str(value or ""), row["diagnosis"] or "")
-    elif field == "diagnosis":
-        value = "" if value is None else str(value)
-        limit = FIELD_MAX_LEN.get(field)
-        if limit and len(value) > limit:
-            raise ValueError(f"{field} exceeds max length {limit}")
-        value_nosology = validate_new_combination("", value)
-    else:
-        value = "" if value is None else str(value)
-        limit = FIELD_MAX_LEN.get(field)
-        if limit and len(value) > limit:
-            raise ValueError(f"{field} exceeds max length {limit}")
-        if field == "name" and not value.strip():
-            # Create и import требуют непустое ФИО — правка не должна его снимать.
-            raise ValueError("name must not be empty")
+        return value
+    if field == "policyNumber":
+        return normalize_policy_number(value)
+    if field in ("pgiResult", "pgiResultDate", "nosology"):
+        return value
+    value = "" if value is None else str(value)
+    limit = FIELD_MAX_LEN.get(field)
+    if limit and len(value) > limit:
+        raise ValueError(f"{field} exceeds max length {limit}")
+    if field == "name" and not value.strip():
+        # Create и import требуют непустое ФИО — правка не должна его снимать.
+        raise ValueError("name must not be empty")
+    return value
 
-    with conn:
-        previous = None
-        if field == "diagnosis":
-            row = conn.execute("SELECT diagnosis FROM patients WHERE id = ?", (patient_id,)).fetchone()
-            if row is None:
-                return False
-            previous = row["diagnosis"] or ""
-        if field == "diagnosis":
-            cur = conn.execute(
-                "UPDATE patients SET diagnosis = ?, nosology = ?, updated_at = ? WHERE id = ?",
-                (value, value_nosology, now_iso(), patient_id),
-            )
-        elif field == "pgiResult":
-            cur = conn.execute(
-                "UPDATE patients SET pgi_malignancy_confirmed = ?, pgi_result_date = ?, updated_at = ? WHERE id = ?",
-                (value, pgi_date, now_iso(), patient_id),
-            )
+
+def update_patient_field_with_actor(
+    conn: sqlite3.Connection, patient_id: str, field: str, value, *, actor_user_id: str | None = None,
+    expected_version: Optional[int] = None, audit_hook: Optional[Callable[[], None]] = None,
+) -> bool:
+    """Правка одного поля карточки (WP-C: AUD-06, AUD-09, AUD-11).
+
+    Чтение текущей строки, проверка версии, запись поля, запись истории диагноза
+    и обязательная запись аудита (audit_hook) — одна транзакция BEGIN IMMEDIATE.
+    Прежнее значение диагноза читается под той же блокировкой записи, поэтому
+    old_diagnosis всегда равен действительно предшествующему значению, а
+    параллельная правка не теряется: она либо ждет, либо получает конфликт версии."""
+    value = _validated_field_value(field, value)
+    column = FIELD_COLUMN[field]
+    with transaction(conn):
+        row = _patient_for_update(conn, patient_id, expected_version)
+        if row is None:
+            return False
+        now = now_iso()
+        if field == "pgiResult":
+            if isinstance(value, dict):
+                result = value.get("result") or ""
+                pgi_date = normalize_pgi_result_date(result, value.get("date"))
+            else:
+                result = value or ""
+                pgi_date = normalize_pgi_result_date(result, row["pgi_result_date"])
+            sets, params = "pgi_malignancy_confirmed = ?, pgi_result_date = ?", [pgi_result_to_db(result), pgi_date]
+        elif field == "pgiResultDate":
+            result = pgi_result_from_db(row["pgi_malignancy_confirmed"])
+            sets, params = "pgi_result_date = ?", [normalize_pgi_result_date(result, value)]
+        elif field == "nosology":
+            sets, params = "nosology = ?", [validate_new_combination(str(value or ""), row["diagnosis"] or "")]
+        elif field == "diagnosis":
+            sets, params = "diagnosis = ?, nosology = ?", [value, validate_new_combination("", value)]
         else:
-            cur = conn.execute(
-                f"UPDATE patients SET {column} = ?, updated_at = ? WHERE id = ?",  # nosec B608
-                (value, now_iso(), patient_id),
-            )
-        if field == "diagnosis" and cur.rowcount > 0 and previous != value:
+            sets, params = f"{column} = ?", [value]
+        cur = conn.execute(
+            f"UPDATE patients SET {sets}, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?",  # nosec B608 - fixed columns
+            (*params, now, patient_id, row["version"]),
+        )
+        if cur.rowcount != 1:
+            raise PatientVersionConflict()
+        previous = row["diagnosis"] or ""
+        if field == "diagnosis" and previous != value:
             conn.execute(
                 """INSERT INTO patient_diagnosis_history
                    (id, patient_id, changed_at, actor_user_id, old_diagnosis, new_diagnosis)
                    VALUES (?, ?, ?, ?, ?, ?)""",
-                (new_id(), patient_id, now_iso(), actor_user_id, previous, str(value or "")),
+                (new_id(), patient_id, now, actor_user_id, previous, str(value or "")),
             )
-        return cur.rowcount > 0
+        if audit_hook is not None:
+            audit_hook()
+        return True
 
 
 def _history_entry_id(conn: sqlite3.Connection, patient_id: str, occ_index: int) -> Optional[str]:
@@ -746,6 +814,77 @@ STAGE_REF_REQUIRED_MESSAGE = (
 STALE_STAGE_MESSAGE = "Этап пациента уже изменён другим пользователем. Обновите карточку пациента"
 
 
+FACT_IN_FUTURE_MESSAGE = (
+    "Фактическая дата события не может быть позже сегодняшней даты учреждения (Москва). "
+    "Плановую дату укажите в поле «Дата», факт — после того, как событие состоялось. Данные не изменены"
+)
+
+
+class FactInFuture(ValueError):
+    """Фактическая дата позже «сегодня» учреждения — это не факт, а план (422 FACT_DATE_IN_FUTURE)."""
+    code = "FACT_DATE_IN_FUTURE"
+
+    def __init__(self):
+        super().__init__(FACT_IN_FUTURE_MESSAGE)
+
+
+def require_fact_not_in_future(actual_date: Optional[str]) -> None:
+    """AUD-08: факт события — уже наступившая дата (календарь учреждения).
+
+    Плановые даты (date/time) этим правилом не ограничиваются."""
+    if actual_date and actual_date > clock.today_moscow().isoformat():
+        raise FactInFuture()
+
+
+FACT_COLUMNS = ("actual_date", "actual_time")
+
+
+def record_fact_change(conn: sqlite3.Connection, *, event_id: str, patient_id: str, column: str,
+                       old, new, source: str, actor_user_id: Optional[str]) -> Optional[str]:
+    """Записать изменение факта события в patient_event_fact_history (AUD-08).
+
+    Только в транзакции самого изменения. Тип: initial — первое внесение;
+    correction — замена одного значения другим; cleared — очистка (прежнее значение
+    сохраняется здесь); reentry — повторное внесение после очистки. Неизменное
+    значение не записывается. Возвращает тип или None."""
+    if not conn.in_transaction:
+        raise RuntimeError("record_fact_change must run inside the change's transaction")
+    if column not in FACT_COLUMNS:
+        raise ValueError("not a fact column")
+    old = old or None
+    new = new or None
+    if old == new:
+        return None
+    if old is None:
+        earlier = conn.execute(
+            "SELECT 1 FROM patient_event_fact_history WHERE event_id = ? AND field = ? LIMIT 1",
+            (event_id, column)).fetchone()
+        change_type = "reentry" if earlier else "initial"
+    elif new is None:
+        change_type = "cleared"
+    else:
+        change_type = "correction"
+    seq = conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM patient_event_fact_history WHERE event_id = ?",
+                       (event_id,)).fetchone()[0]
+    conn.execute(
+        """INSERT INTO patient_event_fact_history
+           (id, seq, event_id, patient_id, field, old_value, new_value, change_type, source, changed_at, actor_user_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (new_id(), seq, event_id, patient_id, column, old, new, change_type, source, now_iso(), actor_user_id),
+    )
+    return change_type
+
+
+def fact_history(conn: sqlite3.Connection, patient_id: str) -> list[dict]:
+    return [
+        {"eventId": r["event_id"], "seq": r["seq"], "field": "actualDate" if r["field"] == "actual_date" else "actualTime",
+         "oldValue": r["old_value"], "newValue": r["new_value"], "changeType": r["change_type"],
+         "source": r["source"], "changedAt": r["changed_at"], "actorUserId": r["actor_user_id"]}
+        for r in conn.execute(
+            "SELECT * FROM patient_event_fact_history WHERE patient_id = ? ORDER BY event_id, seq", (patient_id,))
+    ]
+
+
 def change_stage(
     conn: sqlite3.Connection,
     patient_id: str,
@@ -757,6 +896,7 @@ def change_stage(
     expected_stage: Optional[str] = None,
     expected_history_entry_id: Optional[str] = None,
     audit_hook: Optional[Callable[[dict], None]] = None,
+    actor_user_id: Optional[str] = None,
 ) -> bool:
     """Перевод пациента на новый этап с записью факта текущего события.
 
@@ -780,6 +920,8 @@ def change_stage(
     from . import config
     if last_event_update is not None and last_event_update.consiliumDecision:
         raise DecisionRequiresSeparateOperation(DECISION_SEPARATE_OPERATION_MESSAGE)
+    if last_event_update is not None and "actualDate" in last_event_update.model_fields_set:
+        require_fact_not_in_future(last_event_update.actualDate)
     with transaction(conn):
         p = conn.execute("SELECT stage FROM patients WHERE id = ?", (patient_id,)).fetchone()
         if p is None:
@@ -861,6 +1003,13 @@ def change_stage(
                     )
                     if cur.rowcount != 1:
                         raise EventConflict(STALE_EVENTS_MESSAGE)
+                    # AUD-08: внесение факта переводом этапа — в истории фактов.
+                    record_fact_change(conn, event_id=last["id"], patient_id=patient_id, column="actual_date",
+                                       old=last["actual_date"], new=fact_date, source="stage_change",
+                                       actor_user_id=actor_user_id)
+                    record_fact_change(conn, event_id=last["id"], patient_id=patient_id, column="actual_time",
+                                       old=last["actual_time"], new=fact_time, source="stage_change",
+                                       actor_user_id=actor_user_id)
             else:
                 if expected_event_id is not None:
                     # Клиент видел событие, которого среди активных уже нет.
@@ -877,6 +1026,9 @@ def change_stage(
                 next_seq = _next_event_seq(conn, current_entry_id)
                 outcome["event_id"] = insert_event(conn, current_entry_id, next_seq, ev)
                 outcome["fact"] = "set" if req_date else "none"
+                for column, value in (("actual_date", req_date), ("actual_time", req_time)):
+                    record_fact_change(conn, event_id=outcome["event_id"], patient_id=patient_id, column=column,
+                                       old=None, new=value, source="stage_change", actor_user_id=actor_user_id)
 
         now = now_iso()
         # Условие по прежнему этапу: два одновременных перевода не создадут
@@ -1065,7 +1217,14 @@ def restore_event(
 
 
 def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field: str, value: str, version: int,
-                 *, audit_hook: Optional[Callable[[sqlite3.Row], None]] = None) -> Optional[sqlite3.Row]:
+                 *, audit_hook: Optional[Callable[[sqlite3.Row], None]] = None,
+                 actor_user_id: Optional[str] = None) -> Optional[sqlite3.Row]:
+    """Правка поля события по id и версии.
+
+    WP-C (AUD-08): прежнее и новое значение фактической даты или времени
+    записываются в patient_event_fact_history в той же транзакции (BEGIN
+    IMMEDIATE), что и правка и обязательный аудит; фактическая дата в будущем
+    отклоняется (FactInFuture). Плановые поля в историю фактов не попадают."""
     if field not in EVENT_FIELD_COLUMN:
         raise ValueError("unknown event field")
     value = "" if value is None else str(value)
@@ -1074,8 +1233,10 @@ def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field
     validate_event_value(field, value)
     if field == "treatmentType" and value not in TREATMENT_TYPES:
         raise ValueError(f"treatmentType must be one of {TREATMENT_TYPES}")
+    if field == "actualDate":
+        require_fact_not_in_future(value)
     column = EVENT_FIELD_COLUMN[field]
-    with conn:
+    with transaction(conn):
         row = event_of_patient(conn, patient_id, event_id)
         if row is None:
             return None
@@ -1088,6 +1249,9 @@ def update_event(conn: sqlite3.Connection, patient_id: str, event_id: str, field
         if cur.rowcount != 1:
             _event_conflict(row, version, want_deleted=False)
             raise EventConflict("Событие уже изменено другим пользователем. Обновите карточку пациента")
+        if column in FACT_COLUMNS:
+            record_fact_change(conn, event_id=event_id, patient_id=patient_id, column=column, old=previous,
+                               new=value, source="event_update", actor_user_id=actor_user_id)
         # Перенос или факт визита: старое напоминание недействительно;
         # следующий generate-due создаст новое, если событие ещё актуально.
         # Правка, не меняющая время напоминания или активность, его не трогает.
@@ -1148,21 +1312,48 @@ def update_note(conn: sqlite3.Connection, patient_id: str, occ_index: int, note:
     return True
 
 
+class ChecklistConflict(EventConflict):
+    """Пункт чек-листа уже изменен другим пользователем (409 STALE_CHECKLIST_ITEM)."""
+    code = "STALE_CHECKLIST_ITEM"
+
+    def __init__(self):
+        super().__init__("Этот пункт чек-листа уже изменен другим пользователем. Изменение не сохранено. "
+                         "Обновите карточку пациента и повторите отметку")
+
+
 def update_checklist_item(conn: sqlite3.Connection, patient_id: str, occ_index: int, item: str, checked: bool,
-                          *, audit_hook: Optional[Callable[[], None]] = None) -> bool:
-    entry_id = _history_entry_id(conn, patient_id, occ_index)
-    if entry_id is None:
-        return False
-    row = conn.execute("SELECT checklist_json FROM history_entries WHERE id = ?", (entry_id,)).fetchone()
-    checklist = json.loads(row["checklist_json"]) if row["checklist_json"] else {}
+                          *, expected: Optional[bool] = None,
+                          audit_hook: Optional[Callable[[dict], None]] = None) -> bool:
+    """Отметка одного пункта чек-листа (WP-C, AUD-10).
+
+    Чтение JSON, изменение и запись — одна транзакция BEGIN IMMEDIATE, поэтому
+    одновременные отметки разных пунктов объединяются, а не затирают друг друга.
+    expected — состояние пункта, которое видел клиент (отсутствующий пункт = False):
+    если пункт успели изменить иначе — ChecklistConflict; если он уже в нужном
+    состоянии (повтор того же запроса) — успех без изменений. audit_hook получает
+    фактический исход (changed / unchanged) в той же транзакции."""
     if item in DANGEROUS_KEYS:
         raise ValueError("checklist contains disallowed keys")
-    if len(checklist) >= 100 and item not in checklist:
-        raise ValueError("too many checklist items")
-    checklist[item] = bool(checked)
-    with conn:
-        conn.execute("UPDATE history_entries SET checklist_json = ? WHERE id = ?", (json.dumps(checklist), entry_id))
-        touch_patient(conn, patient_id)
+    desired = bool(checked)
+    with transaction(conn):
+        entry_id = _history_entry_id(conn, patient_id, occ_index)
+        if entry_id is None:
+            return False
+        row = conn.execute("SELECT checklist_json FROM history_entries WHERE id = ?", (entry_id,)).fetchone()
+        checklist = json.loads(row["checklist_json"]) if row["checklist_json"] else {}
+        current = bool(checklist.get(item, False))
+        if current == desired:
+            outcome = "unchanged"            # повтор запроса или то же решение другого пользователя
+        elif expected is not None and bool(expected) != current:
+            raise ChecklistConflict()
+        else:
+            if len(checklist) >= 100 and item not in checklist:
+                raise ValueError("too many checklist items")
+            checklist[item] = desired
+            conn.execute("UPDATE history_entries SET checklist_json = ? WHERE id = ?",
+                         (json.dumps(checklist), entry_id))
+            touch_patient(conn, patient_id)
+            outcome = "changed"
         if audit_hook is not None:
-            audit_hook()
+            audit_hook({"outcome": outcome, "checked": desired})
     return True

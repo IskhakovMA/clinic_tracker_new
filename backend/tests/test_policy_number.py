@@ -1,7 +1,7 @@
 import json
 from backend.app import config
 
-from .conftest import make_patient_payload, current_schema_version, unsigned_import
+from .conftest import card_version, make_patient_payload, current_schema_version, unsigned_import
 
 
 def test_create_update_get_and_list_patient_policy_number(auth_client):
@@ -19,7 +19,7 @@ def test_create_update_get_and_list_patient_policy_number(auth_client):
 
     updated = auth_client.patch(
         f"/api/patients/{pid}",
-        json={"field": "policyNumber", "value": "7700 0000-0000 0002"},
+        json={"expectedVersion": card_version(pid), "field": "policyNumber", "value": "7700 0000-0000 0002"},
         headers=auth_client.csrf,
     )
     assert updated.status_code == 200, updated.text
@@ -85,7 +85,7 @@ def test_policy_number_not_written_to_audit(auth_client):
     ).json()
     auth_client.patch(
         f"/api/patients/{created['id']}",
-        json={"field": "policyNumber", "value": "7700000000000100"},
+        json={"expectedVersion": card_version(created['id']), "field": "policyNumber", "value": "7700000000000100"},
         headers=auth_client.csrf,
     )
 

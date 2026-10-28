@@ -59,7 +59,7 @@ def test_rescheduled_event_old_reminder_is_not_sent(auth_client):
 
 def test_completed_event_and_closed_patient_reminders_are_not_sent(auth_client):
     pid = _setup(auth_client)
-    r = event_patch(auth_client, pid, "actualDate", datetime.now(timezone.utc).date().isoformat())
+    r = event_patch(auth_client, pid, "actualDate", _clinic_today())
     assert r.status_code == 200
     conn = get_conn()
     _process(conn)
@@ -119,3 +119,10 @@ def test_history_entry_cap_is_enforced(auth_client, monkeypatch):
     assert auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "consult"}), headers=auth_client.csrf).status_code == 200
     r = auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "exam"}), headers=auth_client.csrf)
     assert r.status_code == 422
+
+
+def _clinic_today() -> str:
+    """WP-C: факт «событие выполнено сегодня» — дата учреждения (в тестах часы учреждения
+    закреплены, реальная дата может быть позже: такой «факт» был бы в будущем)."""
+    from backend.app import clock
+    return clock.today_moscow().isoformat()

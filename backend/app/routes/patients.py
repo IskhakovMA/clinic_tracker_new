@@ -360,9 +360,17 @@ def update_patient_field(
                             detail="duplicateConfirmation относится только к номеру полиса ОМС")
     if body.field == "policyNumber":
         # WP2.4-C: полис — в транзакции с проверкой возможных дублей в области сотрудника.
+        # WP-C: в той же транзакции — проверка версии карточки и обязательный аудит.
+        def policy_hook() -> None:
+            audit.record_required_or_fail(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+                                          detail="field=policyNumber", **audit.actor_ctx(user))
         try:
             result = patient_policy.update_policy_number(conn, user, patient_id, body.value,
-                                                         body.duplicateConfirmation)
+                                                         body.duplicateConfirmation,
+                                                         expected_version=body.expectedVersion,
+                                                         audit_hook=policy_hook)
+        except store.PatientVersionConflict as e:
+            return _stale_patient(e)
         except ValueError as e:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
         except patient_duplicates.PossibleDuplicate as e:
@@ -378,26 +386,42 @@ def update_patient_field(
             )
         except sqlite3.OperationalError as e:
             _card_write_busy(e, "Номер полиса не изменен")
-        audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
-                     detail="field=policyNumber", **audit.actor_ctx(user))
         return result
+
+    def hook() -> None:
+        # WP-C (AUD-06): обязательная запись в транзакции правки — без нее поле не
+        # меняется. Только имя поля, никогда значение (это данные пациента);
+        # диагноз и результат ПГИ — отдельные типы событий без detail.
+        if body.field == "diagnosis":
+            audit.record_required_or_fail(conn, audit.PATIENT_DIAGNOSIS_CHANGED, patient_id=patient_id,
+                                          **audit.actor_ctx(user))
+        elif body.field in {"pgiResult", "pgiResultDate"}:
+            audit.record_required_or_fail(conn, audit.PGI_RESULT_CHANGED, patient_id=patient_id,
+                                          **audit.actor_ctx(user))
+        else:
+            audit.record_required_or_fail(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+                                          detail=f"field={body.field}", **audit.actor_ctx(user))
+
     try:
-        ok = store.update_patient_field_with_actor(conn, patient_id, body.field, body.value, actor_user_id=user.id)
+        ok = store.update_patient_field_with_actor(conn, patient_id, body.field, body.value, actor_user_id=user.id,
+                                                   expected_version=body.expectedVersion, audit_hook=hook)
+    except store.PatientVersionConflict as e:
+        return _stale_patient(e)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Поле карточки не изменено")
+    except sqlite3.OperationalError as e:
+        _card_write_busy(e, "Поле карточки не изменено")
     if not ok:
         _not_found()
-    # Field *name* only — never the value, which is patient data. Diagnosis
-    # and physician-requested structured values get explicit safe event types
-    # without detail.
-    if body.field == "diagnosis":
-        audit.record(conn, audit.PATIENT_DIAGNOSIS_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
-    elif body.field in {"pgiResult", "pgiResultDate"}:
-        audit.record(conn, audit.PGI_RESULT_CHANGED, patient_id=patient_id, **audit.actor_ctx(user))
-    else:
-        audit.record(conn, audit.PATIENT_UPDATED, patient_id=patient_id,
-                     detail=f"field={body.field}", **audit.actor_ctx(user))
     return store.patient_to_dict(conn, patient_id)
+
+
+def _stale_patient(e: Exception) -> JSONResponse:
+    """409 устаревшей версии карточки: что перечитать — без значений полей пациента."""
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                        content={"detail": str(e), "code": store.PatientVersionConflict.code, "reload": "patient"})
 
 
 @router.put("/{patient_id}/treating-doctor", dependencies=[Depends(require_csrf)])
@@ -418,10 +442,21 @@ def change_treating_doctor(
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=error)
     else:
         doctor_user_id = None
-    if not store.set_treating_doctor(conn, patient_id, doctor_user_id):
+    def hook() -> None:
+        audit.record_required_or_fail(conn, audit.TREATING_DOCTOR_CHANGED, patient_id=patient_id,
+                                      target_user_id=doctor_user_id, **audit.actor_ctx(user))
+
+    try:
+        changed = store.set_treating_doctor(conn, patient_id, doctor_user_id,
+                                            expected_version=body.expectedVersion, audit_hook=hook)
+    except store.PatientVersionConflict as e:
+        return _stale_patient(e)
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Лечащий врач не изменен")
+    except sqlite3.OperationalError as e:
+        _card_write_busy(e, "Лечащий врач не изменен")
+    if not changed:
         _not_found()
-    audit.record(conn, audit.TREATING_DOCTOR_CHANGED, patient_id=patient_id,
-                 target_user_id=doctor_user_id, **audit.actor_ctx(user))
     return store.patient_to_dict(conn, patient_id)
 
 
@@ -432,18 +467,28 @@ def delete_patient(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
-    # Удаление карточки каскадом удалило бы записи консилиума, подписанные
-    # решения и удалённые (архивные) события; история ради удаления не
-    # уничтожается. Проверка и удаление — одна транзакция в store.
+    # WP-C (AUD-03): карточка с медицинской историей не удаляется физически —
+    # проверка зависимостей, DELETE и обязательная запись аудита — одна
+    # транзакция в store; триггер базы проверяет тот же перечень.
+
+    def hook() -> None:
+        audit.record_required_or_fail(conn, audit.PATIENT_DELETED, patient_id=patient_id, **audit.actor_ctx(user))
+
     try:
-        deleted = store.delete_patient(conn, patient_id)
+        deleted = store.delete_patient(conn, patient_id, audit_hook=hook)
     except store.PatientDeleteBlocked as e:
+        # Отказ ничего не меняет; его запись в журнал — по возможности (fail-open).
         audit.record(conn, audit.PATIENT_DELETED, result=audit.RESULT_DENIED, patient_id=patient_id,
-                     detail=f"{e.reason}={e.count}", **audit.actor_ctx(user))
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+                     detail=";".join(f"{code}={n}" for code, n in e.dependencies.items())[:200],
+                     **audit.actor_ctx(user))
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                            content={"detail": str(e), "code": e.code, "dependencies": sorted(e.dependencies)})
+    except audit.AuditWriteFailed:
+        _audit_unavailable("Карточка не удалена")
+    except sqlite3.OperationalError as e:
+        _card_write_busy(e, "Карточка не удалена")
     if not deleted:
         _not_found()
-    audit.record(conn, audit.PATIENT_DELETED, patient_id=patient_id, **audit.actor_ctx(user))
     return {"deleted": True}
 
 
@@ -467,7 +512,9 @@ def change_stage(
                                 expected_event_id=body.lastEventId, expected_event_version=body.lastEventVersion,
                                 expected_stage=body.expectedStage,
                                 expected_history_entry_id=body.expectedHistoryEntryId,
-                                audit_hook=hook)
+                                audit_hook=hook, actor_user_id=user.id)
+    except store.FactInFuture as e:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(e), "code": e.code})
     except store.FactConflict as e:
         # detail — текст для пользователя (его показывает действующий клиент), code — для программ.
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(e), "code": e.code})
@@ -528,9 +575,22 @@ def update_checklist(
     user: policy.CurrentUser = Depends(require_active_password),
 ):
     _require_writable(conn, user, patient_id)
+
+    def hook(outcome: dict) -> None:
+        # Итог отметки (changed / unchanged) и новое состояние — без названия пункта
+        # в журнале нет нужды: пункт виден в карточке; запись соответствует итогу.
+        audit.record_required_or_fail(
+            conn, audit.PATIENT_UPDATED, patient_id=patient_id,
+            detail=(f"history={occ_index};action=checklist;outcome={outcome['outcome']};"
+                    f"checked={int(outcome['checked'])}"),
+            **audit.actor_ctx(user))
+
     try:
         ok = store.update_checklist_item(conn, patient_id, occ_index, body.item, body.checked,
-                                         audit_hook=_history_audit_hook(conn, user, patient_id, occ_index, "checklist"))
+                                         expected=body.expected, audit_hook=hook)
+    except store.ChecklistConflict as e:
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT,
+                            content={"detail": str(e), "code": e.code, "reload": "patient"})
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except audit.AuditWriteFailed:
@@ -668,9 +728,12 @@ def update_event(
             **audit.actor_ctx(user))
 
     try:
-        row = store.update_event(conn, patient_id, event_id, body.field, body.value, body.version, audit_hook=hook)
+        row = store.update_event(conn, patient_id, event_id, body.field, body.value, body.version, audit_hook=hook,
+                                 actor_user_id=user.id)
     except store.EventConflict as e:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    except store.FactInFuture as e:
+        return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(e), "code": e.code})
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except audit.AuditWriteFailed:

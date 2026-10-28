@@ -100,7 +100,7 @@ def _preview(client, document):
 
 def _archived_patient(client, name="Архив Синтетический"):
     """Пациент с двумя событиями, первое из которых удалено (в архиве)."""
-    pid = _create(client, name=name, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(client, name=name, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first = _events(client, pid)[0]
     assert _delete(client, pid, first).status_code == 200
     return pid, first["id"]
@@ -110,7 +110,7 @@ def _assert_archive_intact(event_id, deleted_by):
     row = _row(event_id)
     assert row is not None, "удалённое событие физически уничтожено"
     assert row["deleted_at"] and row["deleted_by_user_id"] == deleted_by
-    assert row["date"] == "2030-01-10"
+    assert row["date"] == "2026-01-10"
 
 
 def _dev_id():
@@ -135,7 +135,7 @@ def test_update_of_patient_with_deleted_event_is_blocked_and_archive_survives(au
 
 
 def test_replace_is_blocked_while_any_patient_has_deleted_events(auth_client):
-    _create(auth_client, name="Без Архива", events=[{"date": "2030-03-01"}])
+    _create(auth_client, name="Без Архива", events=[{"date": "2026-03-01"}])
     pid, archived = _archived_patient(auth_client)
     # Файл даже не содержит пациента с архивом: replace удалил бы всех.
     document = {"schemaVersion": 20, "patients": [make_patient_payload(name="Новый Из Файла")]}
@@ -163,18 +163,18 @@ def test_add_with_id_of_archived_card_is_blocked_no_active_duplicate(auth_client
     pid, archived = _archived_patient(auth_client)
     old_export = legacy_export(_export(auth_client))
     # Старый экспорт до удаления содержал бы событие активным — моделируем его.
-    old_export["patients"][0]["history"][0]["events"].insert(0, {"date": "2030-01-10"})
+    old_export["patients"][0]["history"][0]["events"].insert(0, {"date": "2026-01-10"})
     before = _snapshot()
     r = _import(auth_client, old_export, "add")
     assert r.status_code == 409, r.text
     assert _snapshot() == before
     active = get_conn().execute(
-        "SELECT COUNT(*) FROM events WHERE date = '2030-01-10' AND deleted_at IS NULL").fetchone()[0]
+        "SELECT COUNT(*) FROM events WHERE date = '2026-01-10' AND deleted_at IS NULL").fetchone()[0]
     assert active == 0
 
 
 def test_old_export_does_not_revive_deleted_event_in_any_mode(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     old_export = _export(auth_client)                       # оба события ещё активны
     first = _events(auth_client, pid)[0]
     assert _delete(auth_client, pid, first).status_code == 200
@@ -183,7 +183,7 @@ def test_old_export_does_not_revive_deleted_event_in_any_mode(auth_client):
         assert _import(auth_client, old_export, mode).status_code == 409, mode
         assert _snapshot() == before, mode
     _assert_archive_intact(first["id"], _dev_id())
-    assert [e["date"] for e in _events(auth_client, pid)] == ["2030-02-10"]
+    assert [e["date"] for e in _events(auth_client, pid)] == ["2026-02-10"]
 
 
 def test_import_after_restore_follows_previous_rules(auth_client):
@@ -199,7 +199,7 @@ def test_import_after_restore_follows_previous_rules(auth_client):
     assert _import(auth_client, document, "update").status_code == 409
     card = _card(auth_client, pid)
     assert card["name"] != "После Восстановления"
-    assert [e["date"] for e in card["history"][0]["events"]] == ["2030-01-10", "2030-02-10"]
+    assert [e["date"] for e in card["history"][0]["events"]] == ["2026-01-10", "2026-02-10"]
 
 
 def test_repeated_blocked_import_changes_nothing(auth_client):
@@ -214,7 +214,7 @@ def test_repeated_blocked_import_changes_nothing(auth_client):
 
 def test_preview_reports_blocked_modes_with_counts_and_reasons(auth_client):
     pid, _ = _archived_patient(auth_client)
-    _create(auth_client, name="Без Архива", events=[{"date": "2030-03-01"}])
+    _create(auth_client, name="Без Архива", events=[{"date": "2026-03-01"}])
     document = _export(auth_client)
     report = _preview(auth_client, document)
     impact = report["archivedEventsImpact"]
@@ -225,7 +225,7 @@ def test_preview_reports_blocked_modes_with_counts_and_reasons(auth_client):
         assert impact[mode]["reason"] and impact[mode]["advice"]
     # В отчёте только числа и тексты правил — без медицинских данных.
     text = json.dumps(impact, ensure_ascii=False)
-    for secret in ("2030-01-10", "Архив Синтетический", "C34"):
+    for secret in ("2026-01-10", "Архив Синтетический", "C34"):
         assert secret not in text
 
 
@@ -238,7 +238,7 @@ def test_direct_commit_without_preview_is_checked_on_the_server(auth_client):
 
 
 def test_change_between_preview_and_commit_is_caught_at_commit(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     document = _export(auth_client)
     assert _preview(auth_client, document)["archivedEventsImpact"]["update"]["blocked"] is False
     first = _events(auth_client, pid)[0]
@@ -250,7 +250,7 @@ def test_change_between_preview_and_commit_is_caught_at_commit(auth_client):
 
 
 def test_mixed_import_is_all_or_nothing(auth_client):
-    clean = _create(auth_client, name="Чистая Карточка", events=[{"date": "2030-03-01"}])["id"]
+    clean = _create(auth_client, name="Чистая Карточка", events=[{"date": "2026-03-01"}])["id"]
     pid, archived = _archived_patient(auth_client)
     document = legacy_export(_export(auth_client))
     for p in document["patients"]:
@@ -265,8 +265,8 @@ def test_failure_in_the_middle_of_import_rolls_everything_back(auth_client, monk
     from backend.app import importexport, policy
 
     # WP2.4-B (U9): разные синтетические полисы — файл с одинаковыми полисами отклоняется до записи.
-    _create(auth_client, name="Первая", policyNumber="7700000000024111", events=[{"date": "2030-03-01"}])
-    _create(auth_client, name="Вторая", policyNumber="7700000000024112", events=[{"date": "2030-03-02"}])
+    _create(auth_client, name="Первая", policyNumber="7700000000024111", events=[{"date": "2026-03-01"}])
+    _create(auth_client, name="Вторая", policyNumber="7700000000024112", events=[{"date": "2026-03-02"}])
     document_json = _export(auth_client)
     document, errors = importexport.validate_import(json.dumps(document_json))
     assert not errors
@@ -310,8 +310,9 @@ def test_database_trigger_backs_up_the_import_check(auth_client, monkeypatch):
     with pytest.raises((importexport.ImportArchiveConflictError, importexport.ImportOverwriteError)):
         importexport.commit_import(conn, document, "update", policy.load_current_user(conn, _dev_id()))
     assert _snapshot() == before
-    # Прямой SQL тоже отклоняется.
-    with pytest.raises(sqlite3.IntegrityError, match="archived_event_delete_forbidden"):
+    # Прямой SQL тоже отклоняется (WP-C: срабатывает и защита истории карточки — порядок
+    # триггеров SQLite не определён, поэтому принимается сообщение любой из двух защит).
+    with pytest.raises(sqlite3.IntegrityError, match="archived_event_delete_forbidden|patient_has_clinical_history"):
         with conn:
             conn.execute("DELETE FROM patients WHERE id = ?", (pid,))
     _assert_archive_intact(archived, _dev_id())
@@ -363,7 +364,7 @@ def _stage(client, pid, body):
 
 
 def test_transition_without_expected_stage_is_rejected(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     before = _route_state(pid)
     r = auth_client.post(f"/api/patients/{pid}/stage", json={"newStage": "appointment"}, headers=auth_client.csrf)
     assert r.status_code == 409 and "Обновите страницу" in r.json()["detail"]
@@ -375,7 +376,7 @@ def test_concurrent_transitions_from_the_same_stage_apply_once(auth_client):
     import threading
     from backend.app import store
 
-    pid = _create(auth_client, events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     path = get_conn().execute("PRAGMA database_list").fetchone()["file"]
     results, barrier = [], threading.Barrier(2)
     entry_id = _card(auth_client, pid)["history"][-1]["id"]
@@ -413,10 +414,10 @@ def _route_state(pid):
 
 
 def test_fact_update_without_event_id_or_version_is_rejected(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     before = _route_state(pid)
-    update = {"actualDate": "2030-01-10", "matchedPlan": True}
+    update = {"actualDate": "2026-01-10", "matchedPlan": True}
     for body in (
         {"newStage": "appointment", "lastEventUpdate": update},
         {"newStage": "appointment", "lastEventUpdate": update, "lastEventId": event["id"]},
@@ -429,12 +430,12 @@ def test_fact_update_without_event_id_or_version_is_rejected(auth_client):
 
 
 def test_fact_update_with_stale_version_or_wrong_event_is_rejected(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
-    other = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
+    other = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     first, last = _events(auth_client, pid)
     foreign = _events(auth_client, other)[0]
     before = _route_state(pid)
-    update = {"actualDate": "2030-02-10"}
+    update = {"actualDate": "2026-02-10"}
     for ref in (
         {"lastEventId": last["id"], "lastEventVersion": last["version"] + 1},     # устаревшая версия
         {"lastEventId": first["id"], "lastEventVersion": first["version"]},       # не последнее событие
@@ -446,7 +447,7 @@ def test_fact_update_with_stale_version_or_wrong_event_is_rejected(auth_client):
 
 
 def test_transition_without_event_update_needs_no_version(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     _, events_before, _ = _route_state(pid)
     r = _stage(auth_client, pid, {"newStage": "appointment"})
     assert r.status_code == 200, r.text
@@ -455,29 +456,29 @@ def test_transition_without_event_update_needs_no_version(auth_client):
 
 
 def test_transition_when_all_events_are_deleted_inserts_a_new_one(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     assert _delete(auth_client, pid, event).status_code == 200
     archived_before = _row(event["id"])
-    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-01-11"}})
+    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-01-11"}})
     assert r.status_code == 200, r.text
     assert _row(event["id"]) == archived_before
     active = r.json()["history"][0]["events"]
-    assert len(active) == 1 and active[0]["actualDate"] == "2030-01-11" and active[0]["id"] != event["id"]
+    assert len(active) == 1 and active[0]["actualDate"] == "2026-01-11" and active[0]["id"] != event["id"]
     # Клиент, который видел удалённое событие, получает конфликт, а не запись в новое.
-    pid2 = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid2 = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     seen = _events(auth_client, pid2)[0]
     assert _delete(auth_client, pid2, seen).status_code == 200
-    stale = _stage(auth_client, pid2, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-01-11"},
+    stale = _stage(auth_client, pid2, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-01-11"},
                                        "lastEventId": seen["id"], "lastEventVersion": seen["version"]})
     assert stale.status_code == 409
 
 
 def test_two_transitions_from_the_same_card_conflict(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     card = _card(auth_client, pid)
     event = card["history"][0]["events"][0]
-    body = {"newStage": "appointment", "expectedStage": card["stage"], "lastEventUpdate": {"actualDate": "2030-01-10"},
+    body = {"newStage": "appointment", "expectedStage": card["stage"], "lastEventUpdate": {"actualDate": "2026-01-10"},
             "lastEventId": event["id"], "lastEventVersion": event["version"]}
     assert _stage(auth_client, pid, body).status_code == 200
     after_first = _route_state(pid)
@@ -491,25 +492,25 @@ def test_two_transitions_from_the_same_card_conflict(auth_client):
 
 
 def test_delete_or_restore_between_read_and_transition_is_a_conflict(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first, last = _events(auth_client, pid)
     assert _delete(auth_client, pid, last).status_code == 200            # кто-то удалил «последнее»
     before = _route_state(pid)
-    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-02-10"},
+    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-02-10"},
                                   "lastEventId": last["id"], "lastEventVersion": last["version"]})
     assert r.status_code == 409 and _route_state(pid) == before
     current_last = _events(auth_client, pid)[-1]                          # теперь последнее — first
     assert _restore(auth_client, pid, last["id"], _deleted(auth_client, pid)[0]["version"]).status_code == 200
     before = _route_state(pid)
-    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-01-10"},
+    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-01-10"},
                                   "lastEventId": current_last["id"], "lastEventVersion": current_last["version"]})
     assert r.status_code == 409 and _route_state(pid) == before
     # Повтор после обновления карточки проходит и меняет только последнее событие.
     fresh = _events(auth_client, pid)[-1]
-    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-02-10"},
+    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-02-10"},
                                   "lastEventId": fresh["id"], "lastEventVersion": fresh["version"]})
     assert r.status_code == 200
-    assert _row(fresh["id"])["actual_date"] == "2030-02-10" and _row(first["id"])["actual_date"] is None
+    assert _row(fresh["id"])["actual_date"] == "2026-02-10" and _row(first["id"])["actual_date"] is None
 
 
 # === F4. Версия схемы базы данных ==============================================
@@ -639,10 +640,10 @@ def test_patient_with_deleted_event_cannot_be_deleted(auth_client):
 
 
 def test_patient_without_archive_is_deleted_as_before_and_consilium_still_blocks(auth_client):
-    plain = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    plain = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     assert auth_client.delete(f"/api/patients/{plain}", headers=auth_client.csrf).status_code == 200
     assert auth_client.get(f"/api/patients/{plain}").status_code == 404
-    booked = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    booked = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     assert auth_client.post("/api/consilium/appointments", json=appointment_payload(booked),
                             headers=auth_client.csrf).status_code in (200, 201)
@@ -695,7 +696,7 @@ def _fail_audit_for(event_type):
 
 
 def test_delete_and_restore_are_audited_with_the_actor(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     assert _delete(auth_client, pid, event).status_code == 200
     assert _restore(auth_client, pid, event["id"], _deleted(auth_client, pid)[0]["version"]).status_code == 200
@@ -740,7 +741,7 @@ def _setup_with_reminder(client):
 
 
 def test_delete_restore_delete_chain_is_fully_audited(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     assert _delete(auth_client, pid, event).status_code == 200
     first_deletion = _row(event["id"])["deleted_at"]
@@ -761,7 +762,7 @@ def test_delete_restore_delete_chain_is_fully_audited(auth_client):
 
 
 def test_concurrent_deletes_produce_one_change_and_one_audit_row(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     results = [_delete(auth_client, pid, event).status_code for _ in range(2)]
     assert sorted(results) == [200, 409]
@@ -770,31 +771,40 @@ def test_concurrent_deletes_produce_one_change_and_one_audit_row(auth_client):
 
 def test_event_audit_has_no_personal_or_medical_values(auth_client):
     pid = _create(auth_client, name="Секретов Пациент", phone="+79990001122", diagnosis="C34.1",
-                  events=[{"date": "2030-01-10", "time": "10:00"}])["id"]
+                  events=[{"date": "2026-01-10", "time": "10:00"}])["id"]
     event = _events(auth_client, pid)[0]
     _delete(auth_client, pid, event)
     _restore(auth_client, pid, event["id"], _deleted(auth_client, pid)[0]["version"])
     text = json.dumps(_audit(pid), ensure_ascii=False)
-    for secret in ("Секретов", "+7999", "C34", "2030-01-10", "10:00", "Разработчиков"):
+    for secret in ("Секретов", "+7999", "C34", "2026-01-10", "10:00", "Разработчиков"):
         assert secret not in text, secret
 
 
 def test_audit_prune_keeps_event_deletion_history(auth_client):
     from backend.app import audit
 
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     assert _delete(auth_client, pid, event).status_code == 200
     assert _restore(auth_client, pid, event["id"], _deleted(auth_client, pid)[0]["version"]).status_code == 200
+    # WP-C (AUD-13): журнал только дополняется — состарить существующие строки нельзя.
+    # Правило срока хранения проверяется на состаренных копиях тех же типов событий.
     with get_conn() as conn:
-        conn.execute("UPDATE audit_events SET created_at = '2000-01-01T00:00:00+00:00'")
+        conn.execute("""INSERT INTO audit_events (created_at, event_type, patient_id, result, detail)
+                        SELECT '2000-01-01T00:00:00+00:00', event_type, patient_id, result, detail
+                        FROM audit_events WHERE patient_id = ?""", (pid,))
+    recent = get_conn().execute(
+        "SELECT COUNT(*) FROM audit_events WHERE patient_id = ? AND created_at NOT LIKE '2000-%'", (pid,)).fetchone()[0]
     audit.prune(get_conn(), retention_days=30)
-    kept = [r["event_type"] for r in _audit()]
-    assert kept == ["patient_event_deleted", "patient_event_restored"]
+    kept_old = [r[0] for r in get_conn().execute(
+        "SELECT event_type FROM audit_events WHERE patient_id = ? AND created_at LIKE '2000-%' ORDER BY id", (pid,))]
+    assert kept_old == ["patient_event_deleted", "patient_event_restored"]
+    assert get_conn().execute("SELECT COUNT(*) FROM audit_events WHERE patient_id = ? AND created_at NOT LIKE '2000-%'",
+                              (pid,)).fetchone()[0] == recent
 
 
 def test_database_busy_is_not_reported_as_audit_failure(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     path = get_conn().execute("PRAGMA database_list").fetchone()["file"]
     from backend.app import config
@@ -859,7 +869,7 @@ def test_deleted_event_rows_cannot_be_edited_while_deleted(auth_client):
     pid, archived = _archived_patient(auth_client)
     with pytest.raises(sqlite3.IntegrityError, match="archived_event_update_forbidden"):
         with get_conn() as conn:
-            conn.execute("UPDATE events SET actual_date = '2030-01-10' WHERE id = ?", (archived,))
+            conn.execute("UPDATE events SET actual_date = '2026-01-10' WHERE id = ?", (archived,))
     _assert_archive_intact(archived, _dev_id())
     assert _row(archived)["actual_date"] is None
     assert _restore(auth_client, pid, archived, _deleted(auth_client, pid)[0]["version"]).status_code == 200
@@ -921,7 +931,7 @@ def test_two_users_who_saw_an_empty_stage_create_one_event(auth_client):
 
 
 def test_intentional_second_event_and_stale_add(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     first = _active_ids(pid)
     r = _add(auth_client, pid, first)
     assert r.status_code == 200 and _active_ids(pid) == first + [r.json()["createdEventId"]]
@@ -932,7 +942,7 @@ def test_intentional_second_event_and_stale_add(auth_client):
 
 
 def test_add_after_delete_and_restore_uses_the_event_set_not_the_count(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     seen = _active_ids(pid)
     event = _events(auth_client, pid)[0]
     assert _delete(auth_client, pid, event).status_code == 200
@@ -1005,7 +1015,7 @@ def _enter(client, pid, stage):
 
 
 def test_returning_to_a_stage_with_the_same_name_does_not_validate_an_old_card(auth_client):
-    pid = _create(auth_client, stage="exam", events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     old_card = _card(auth_client, pid)
     _enter(auth_client, pid, "appointment")
     _enter(auth_client, pid, "exam")                                   # снова «exam», но другая запись
@@ -1022,7 +1032,7 @@ def test_returning_to_a_stage_with_the_same_name_does_not_validate_an_old_card(a
 
 
 def test_stage_change_requires_the_history_entry(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10", "actualDate": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10", "actualDate": "2026-01-10"}])["id"]
     before = _route_state(pid)
     r = auth_client.post(f"/api/patients/{pid}/stage", json={"newStage": "appointment", "expectedStage": "exam"},
                          headers=auth_client.csrf)
@@ -1031,23 +1041,23 @@ def test_stage_change_requires_the_history_entry(auth_client):
 
 
 def test_stale_history_entry_with_event_update_changes_nothing(auth_client):
-    pid = _create(auth_client, stage="exam", events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-01-10"}])["id"]
     old_card = _card(auth_client, pid)
     old_entry = old_card["history"][-1]["id"]
     event = old_card["history"][0]["events"][0]
     # Другой пользователь: exam → appointment → exam (факт первого события записан).
-    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-01-10"},
+    r = _stage(auth_client, pid, {"newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-01-10"},
                                   "lastEventId": event["id"], "lastEventVersion": event["version"]})
     assert r.status_code == 200
     _enter(auth_client, pid, "exam")
     before = _route_state(pid)
     # Старая карточка: тот же этап, то же «последнее событие», но другая запись маршрута.
-    for update in ({"actualDate": "2030-01-11"}, None):
+    for update in ({"actualDate": "2026-01-11"}, None):
         body = {"newStage": "consult", "expectedStage": "exam", "expectedHistoryEntryId": old_entry,
                 "lastEventUpdate": update, "lastEventId": event["id"], "lastEventVersion": event["version"] + 1}
         assert auth_client.post(f"/api/patients/{pid}/stage", json=body, headers=auth_client.csrf).status_code == 409
         assert _route_state(pid) == before
     # Новая запись exam пуста: свежая карточка записывает факт в новое событие.
-    fresh = _stage(auth_client, pid, {"newStage": "consult", "lastEventUpdate": {"actualDate": "2030-02-01"}})
+    fresh = _stage(auth_client, pid, {"newStage": "consult", "lastEventUpdate": {"actualDate": "2026-02-01"}})
     assert fresh.status_code == 200
-    assert _row(event["id"])["actual_date"] == "2030-01-10"
+    assert _row(event["id"])["actual_date"] == "2026-01-10"

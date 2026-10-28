@@ -3,6 +3,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from .. import audit, config, idempotency, policy, security, users
+from ..db import transaction
 from ..deps import get_db, require_csrf, require_user
 from ..models import ChangePasswordIn, LoginIn
 
@@ -166,11 +167,14 @@ def change_password(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     security.reset_attempts(reauth_key)
     try:
-        users.change_own_password(conn, user.id, body.newPassword)
+        # WP-C (AUD-06): новый пароль, завершение прежних сессий и запись аудита — одна
+        # транзакция; без записи аудита пароль не меняется (503).
+        with transaction(conn):
+            users.change_own_password(conn, user.id, body.newPassword)
+            users.terminate_sessions(conn, user.id, commit=False)
+            audit.record_required_or_fail(conn, audit.PASSWORD_CHANGED, **audit.actor_ctx(user))
     except security.WeakPasswordError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    users.terminate_sessions(conn, user.id)
     session_token, csrf_token, _expires = security.create_session(conn, user.id)
     _set_auth_cookies(response, session_token, csrf_token)
-    audit.record(conn, audit.PASSWORD_CHANGED, **audit.actor_ctx(user))
     return {"changed": True}

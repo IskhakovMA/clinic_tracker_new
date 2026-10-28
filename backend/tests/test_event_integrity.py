@@ -3,7 +3,7 @@
 import json
 import sqlite3
 
-from .conftest import (
+from .conftest import (strip_v28, 
     decision_doctor_id,
     event_add_body,
     mark_decision,
@@ -67,13 +67,13 @@ def _decision_patient(client):
 
     WP2.2-B: решение отмечается отдельной операцией (врач пациента), перевод его
     не записывает — поэтому две операции вместо прежнего совмещенного перевода."""
-    patient = _create(client, stage="consult", events=[{"date": "2030-01-10", "time": "10:00"}],
+    patient = _create(client, stage="consult", events=[{"date": "2026-01-10", "time": "10:00"}],
                       treatingDoctorUserId=decision_doctor_id())
     r = mark_decision(client, patient["id"], "treatment_strategy_defined")
     assert r.status_code == 200, r.text
     r = client.post(f"/api/patients/{patient['id']}/stage", json=stage_body(client, patient['id'], {
         "newStage": "treatment-prep",
-        "lastEventUpdate": {"actualDate": "2030-01-10", "actualTime": "10:00"},
+        "lastEventUpdate": {"actualDate": "2026-01-10", "actualTime": "10:00"},
     }), headers=client.csrf)
     assert r.status_code == 200, r.text
     return patient["id"]
@@ -82,8 +82,8 @@ def _decision_patient(client):
 # 1–6. Удаление и восстановление событий разного вида -------------------------
 
 def test_soft_delete_and_restore_keep_every_kind_of_event_intact(auth_client):
-    planned = _create(auth_client, events=[{"date": "2030-01-10", "time": "10:00"}])["id"]
-    actual = _create(auth_client, events=[{"date": "2030-01-10", "time": "10:00", "actualDate": "2030-01-10", "actualTime": "10:00"}])["id"]
+    planned = _create(auth_client, events=[{"date": "2026-01-10", "time": "10:00"}])["id"]
+    actual = _create(auth_client, events=[{"date": "2026-01-10", "time": "10:00", "actualDate": "2026-01-10", "actualTime": "10:00"}])["id"]
     decision = _decision_patient(auth_client)
     for pid in (planned, actual, decision):
         before = _events(auth_client, pid)[0]
@@ -115,7 +115,7 @@ def test_soft_delete_and_restore_keep_every_kind_of_event_intact(auth_client):
 
 
 def test_restore_returns_event_to_its_place_without_changing_the_stage(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}, {"date": "2030-03-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}, {"date": "2026-03-10"}])["id"]
     middle = _events(auth_client, pid)[1]
     _delete(auth_client, pid, middle["id"], middle["version"])
     r = auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {"newStage": "appointment"}), headers=auth_client.csrf)
@@ -123,14 +123,14 @@ def test_restore_returns_event_to_its_place_without_changing_the_stage(auth_clie
     version = _deleted(auth_client, pid)[0]["version"]
     restored = _restore(auth_client, pid, middle["id"], version).json()
     assert restored["stage"] == "appointment"                    # этап не меняется
-    assert [e["date"] for e in restored["history"][0]["events"]] == ["2030-01-10", "2030-02-10", "2030-03-10"]
+    assert [e["date"] for e in restored["history"][0]["events"]] == ["2026-01-10", "2026-02-10", "2026-03-10"]
     assert restored["history"][1]["events"] == []
 
 
 def test_signed_consilium_decision_is_untouched_by_event_deletion(client):
     create_account(DEV_USERNAME)
     login(client, DEV_USERNAME)
-    patient = _create(client, events=[{"date": "2030-01-10", "time": "10:00"}])
+    patient = _create(client, events=[{"date": "2026-01-10", "time": "10:00"}])
     consilium_grid(LEGACY_CONSILIUM_DATES)  # WP2.3-B2: запись только в слот председателя
     created = client.post("/api/consilium/appointments", json=appointment_payload(patient["id"]), headers=client.csrf).json()
     create_account("chair.events", "consilium_chair")
@@ -160,9 +160,9 @@ def test_event_operations_follow_patient_scope_and_write_rights(client):
     create_account("ev.caop", "caop_head")
     create_account("ev.chair", "consilium_chair")
     login(client, "ev.doc.a")
-    own = _create(client, events=[{"date": "2030-01-10"}])["id"]
+    own = _create(client, events=[{"date": "2026-01-10"}])["id"]
     login(client, "ev.doc.b")
-    other = _create(client, events=[{"date": "2030-01-10"}])["id"]
+    other = _create(client, events=[{"date": "2026-01-10"}])["id"]
     login(client, "ev.dev")
     event_id, version = event_ref(client, own)
     foreign_id, _ = event_ref(client, other)
@@ -171,7 +171,7 @@ def test_event_operations_follow_patient_scope_and_write_rights(client):
     for username, code in (("ev.doc.b", 404), ("ev.chair", 404), ("ev.deputy", 403), ("ev.caop", 403)):
         login(client, username)
         assert _delete(client, own, event_id, version).status_code == code, username
-        assert _patch(client, own, event_id, "date", "2030-02-02", version).status_code == code, username
+        assert _patch(client, own, event_id, "date", "2026-02-02", version).status_code == code, username
         assert _restore(client, own, event_id, version).status_code == code, username
         assert client.get(f"/api/patients/{own}/events/deleted").status_code == code, username
     assert _row(event_id)["deleted_at"] is None and _row(event_id)["version"] == version
@@ -179,7 +179,7 @@ def test_event_operations_follow_patient_scope_and_write_rights(client):
     # Событие другого пациента через своего пациента не находится.
     login(client, "ev.doc.a")
     assert _delete(client, own, foreign_id, 1).status_code == 404
-    assert _patch(client, own, foreign_id, "date", "2030-02-02", 1).status_code == 404
+    assert _patch(client, own, foreign_id, "date", "2026-02-02", 1).status_code == 404
     assert _restore(client, own, foreign_id, 1).status_code == 404
     assert _delete(client, own, "no-such-event", 1).status_code == 404
 
@@ -197,25 +197,25 @@ def test_event_operations_follow_patient_scope_and_write_rights(client):
 # 9–11. Стабильный id, устаревший индекс, одновременная правка ---------------
 
 def test_stale_card_cannot_change_another_event(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first, second = _events(auth_client, pid)
     # Старая адресация по позиции отключена — иначе после удаления первого
     # события «событие 0» стало бы вторым.
     assert auth_client.patch(f"/api/patients/{pid}/history/0/events/0",
-                             json={"field": "date", "value": "2030-03-03"}, headers=auth_client.csrf).status_code == 410
+                             json={"field": "date", "value": "2026-03-03"}, headers=auth_client.csrf).status_code == 410
     assert auth_client.delete(f"/api/patients/{pid}/history/0/events/0", headers=auth_client.csrf).status_code == 410
     assert _delete(auth_client, pid, first["id"], first["version"]).status_code == 200
     # Карточка, открытая до удаления, правит второе событие по его id.
-    r = _patch(auth_client, pid, second["id"], "date", "2030-04-04", second["version"])
+    r = _patch(auth_client, pid, second["id"], "date", "2026-04-04", second["version"])
     assert r.status_code == 200
-    assert _row(second["id"])["date"] == "2030-04-04" and _row(first["id"])["date"] == "2030-01-10"
+    assert _row(second["id"])["date"] == "2026-04-04" and _row(first["id"])["date"] == "2026-01-10"
     # Правка удалённого события из устаревшей карточки отклоняется.
-    stale = _patch(auth_client, pid, first["id"], "date", "2030-05-05", first["version"])
+    stale = _patch(auth_client, pid, first["id"], "date", "2026-05-05", first["version"])
     assert stale.status_code == 409 and "удалено" in stale.json()["detail"]
 
 
 def test_concurrent_edits_with_the_same_version_conflict(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10", "time": "10:00"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10", "time": "10:00"}])["id"]
     event = _events(auth_client, pid)[0]
     first = _patch(auth_client, pid, event["id"], "time", "11:00", event["version"])
     second = _patch(auth_client, pid, event["id"], "time", "12:00", event["version"])
@@ -228,14 +228,14 @@ def test_concurrent_edits_with_the_same_version_conflict(auth_client):
 
 
 def test_stage_change_updates_the_last_active_event_only(auth_client):
-    pid = _create(auth_client, stage="exam", events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first, last = _events(auth_client, pid)
     assert _delete(auth_client, pid, last["id"], last["version"]).status_code == 200
     r = auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {
-        "newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-01-10", "matchedPlan": True},
+        "newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-01-10", "matchedPlan": True},
     }), headers=auth_client.csrf)
     assert r.status_code == 200
-    assert _row(first["id"])["actual_date"] == "2030-01-10"
+    assert _row(first["id"])["actual_date"] == "2026-01-10"
     assert _row(last["id"])["actual_date"] is None and _row(last["id"])["deleted_at"]
 
 
@@ -280,14 +280,14 @@ def test_deleted_event_leaves_quality_and_analytics(auth_client):
 # 16. Экспорт и импорт ------------------------------------------------------
 
 def test_export_keeps_format_and_import_does_not_revive_deleted_events(auth_client):
-    pid = _create(auth_client, name="Экспорт События", events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, name="Экспорт События", events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first = _events(auth_client, pid)[0]
     _delete(auth_client, pid, first["id"], first["version"])
     export = auth_client.get("/api/export", headers=auth_client.csrf)
     assert export.status_code == 200
     patient = next(p for p in export.json()["patients"] if p["id"] == pid)
     events = patient["history"][0]["events"]
-    assert [e["date"] for e in events] == ["2030-02-10"]
+    assert [e["date"] for e in events] == ["2026-02-10"]
     # Подписанный формат: стабильные id есть, служебной версии нет.
     assert all("id" in e and "version" not in e for e in events) and "signature" in export.json()
     # Добавление записи с ID карточки, где есть удалённые события, отклоняется:
@@ -309,7 +309,7 @@ def test_export_keeps_format_and_import_does_not_revive_deleted_events(auth_clie
     copies = [p for p in auth_client.get("/api/patients").json() if p["name"] == "Экспорт События" and p["id"] != pid]
     assert len(copies) == 1
     copy = auth_client.get(f"/api/patients/{copies[0]['id']}").json()
-    assert [e["date"] for e in copy["history"][0]["events"]] == ["2030-02-10"]
+    assert [e["date"] for e in copy["history"][0]["events"]] == ["2026-02-10"]
     assert _deleted(auth_client, copies[0]["id"]) == []
     # Исходный пациент сохранил удалённое событие.
     assert [e["id"] for e in _deleted(auth_client, pid)] == [first["id"]]
@@ -387,6 +387,7 @@ def test_v19_database_migrates_keeping_events_active_and_reinit_is_safe(tmp_path
         conn.execute("INSERT INTO patients (id, name, priority, stage, arrival, created_at) VALUES ('p1', 'Синтетический', 'normal', 'exam', '2026-01-01', '2026-01-01')")
         conn.execute("INSERT INTO history_entries (id, patient_id, seq, stage, entered_at) VALUES ('h1', 'p1', 0, 'exam', '2026-01-01')")
         conn.execute("INSERT INTO events (id, history_entry_id, seq, date, actual_date) VALUES ('e1', 'h1', 0, '2026-01-10', '2026-01-10')")
+        strip_v28(conn)   # WP-C: объекты v28 ссылаются на столбцы, которых в v19 нет
         # Привести таблицу событий к виду v19: без новых колонок, индекса и триггера
         # (включая колонки и триггеры ручной отметки решения ОК v21).
         for trigger in ("trg_events_archived_not_deleted", "trg_events_archived_not_replaced",
@@ -452,20 +453,20 @@ def test_delete_and_restore_audit_is_distinct_and_has_no_phi(auth_client):
     assert "action=event_restore" in restored[0]["detail"]
     assert deleted[0]["actor_user_id"] and restored[0]["actor_user_id"]
     text = " ".join(r["detail"] or "" for r in rows)
-    for secret in ("2030-01-10", "treatment_strategy", "C34", "Тестов", "+7"):
+    for secret in ("2026-01-10", "treatment_strategy", "C34", "Тестов", "+7"):
         assert secret not in text, secret
 
 
 # Смена этапа: факт пишется только в то событие, которое видел пользователь -----
 
 def test_stage_change_with_stale_last_event_is_rejected(auth_client):
-    pid = _create(auth_client, stage="exam", events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first, last = _events(auth_client, pid)
     assert _delete(auth_client, pid, last["id"], last["version"]).status_code == 200
     _restore(auth_client, pid, last["id"], _deleted(auth_client, pid)[0]["version"])
     # Карточка видела «последнее» событие до восстановления — сейчас последнее другое.
     stale = auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {
-        "newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-01-10"},
+        "newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-01-10"},
         "lastEventId": first["id"], "lastEventVersion": first["version"],
     }), headers=auth_client.csrf)
     assert stale.status_code == 409
@@ -473,11 +474,11 @@ def test_stage_change_with_stale_last_event_is_rejected(auth_client):
     assert _row(first["id"])["actual_date"] is None and _row(last["id"])["actual_date"] is None
     current = _events(auth_client, pid)[-1]
     ok = auth_client.post(f"/api/patients/{pid}/stage", json=stage_body(auth_client, pid, {
-        "newStage": "appointment", "lastEventUpdate": {"actualDate": "2030-02-10"},
+        "newStage": "appointment", "lastEventUpdate": {"actualDate": "2026-02-10"},
         "lastEventId": current["id"], "lastEventVersion": current["version"],
     }), headers=auth_client.csrf)
     assert ok.status_code == 200
-    assert _row(current["id"])["actual_date"] == "2030-02-10"
+    assert _row(current["id"])["actual_date"] == "2026-02-10"
 
 
 def test_stage_change_does_not_write_into_an_event_deleted_concurrently(auth_client):
@@ -488,7 +489,7 @@ def test_stage_change_does_not_write_into_an_event_deleted_concurrently(auth_cli
     ждёт и получает отказ, а факт пишется в событие, которое видел клиент."""
     from backend.app import store
 
-    pid = _create(auth_client, stage="exam", events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, stage="exam", events=[{"date": "2026-01-10"}])["id"]
     event = _events(auth_client, pid)[0]
     entry_id = auth_client.get(f"/api/patients/{pid}").json()["history"][-1]["id"]
     path = get_conn().execute("PRAGMA database_list").fetchone()["file"]
@@ -522,7 +523,7 @@ def test_stage_change_does_not_write_into_an_event_deleted_concurrently(auth_cli
             return cursor
 
     try:
-        assert store.change_stage(RacingConnection(real), pid, "appointment", store.EventIn(actualDate="2030-01-10"),
+        assert store.change_stage(RacingConnection(real), pid, "appointment", store.EventIn(actualDate="2026-01-10"),
                                   expected_event_id=event["id"], expected_event_version=event["version"],
                                   expected_stage="exam",
                                   expected_history_entry_id=entry_id)
@@ -530,26 +531,26 @@ def test_stage_change_does_not_write_into_an_event_deleted_concurrently(auth_cli
         real.close()
     assert attempts == ["database is locked"]
     row = _row(event["id"])
-    assert row["deleted_at"] is None and row["actual_date"] == "2030-01-10"
+    assert row["deleted_at"] is None and row["actual_date"] == "2026-01-10"
     assert auth_client.get(f"/api/patients/{pid}").json()["stage"] == "appointment"
     # Удаление по версии, которую видел клиент до смены этапа, теперь устарело.
     assert _delete(auth_client, pid, event["id"], event["version"]).status_code == 409
 
 
 def test_oversized_version_is_rejected_without_server_error(auth_client):
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}])["id"]
     event_id, _ = event_ref(auth_client, pid)
     huge = 2 ** 70
     assert _delete(auth_client, pid, event_id, huge).status_code == 422
     assert _restore(auth_client, pid, event_id, huge).status_code == 422
-    assert _patch(auth_client, pid, event_id, "date", "2030-02-02", huge).status_code == 422
+    assert _patch(auth_client, pid, event_id, "date", "2026-02-02", huge).status_code == 422
 
 
 def test_event_limit_counts_active_events_and_restore_respects_it(auth_client, monkeypatch):
     from backend.app import config
 
     monkeypatch.setattr(config, "MAX_EVENTS_PER_HISTORY_ENTRY", 2)
-    pid = _create(auth_client, events=[{"date": "2030-01-10"}, {"date": "2030-02-10"}])["id"]
+    pid = _create(auth_client, events=[{"date": "2026-01-10"}, {"date": "2026-02-10"}])["id"]
     first = _events(auth_client, pid)[0]
     assert auth_client.post(f"/api/patients/{pid}/history/0/events", json=event_add_body(auth_client, pid, 0), headers=auth_client.csrf).status_code == 422
     _delete(auth_client, pid, first["id"], first["version"])

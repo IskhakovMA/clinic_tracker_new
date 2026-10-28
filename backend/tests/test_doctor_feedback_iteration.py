@@ -4,7 +4,7 @@ import re
 import sqlite3
 from pathlib import Path
 
-from .conftest import app_stopped, DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
+from .conftest import card_version, checklist_state, app_stopped, DEV_USERNAME, get_conn, login, make_patient_payload, current_schema_version, stage_body, unsigned_import
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -274,7 +274,7 @@ def test_histology_templates_are_targeted_and_checklist_marks_are_preserved(auth
     checked_item = "Пункция узла щитовидной железы и/или лимфоузла"
     marked = auth_client.patch(
         f"/api/patients/{patient['id']}/history/0/checklist",
-        json={"item": checked_item, "checked": True},
+        json={"expected": checklist_state(patient['id'], 0, checked_item), "item": checked_item, "checked": True},
         headers=auth_client.csrf,
     )
     assert marked.status_code == 200, marked.text
@@ -290,7 +290,7 @@ def test_diagnosis_change_history_and_audit_without_phi(auth_client):
     created = _create_patient(auth_client, diagnosis="D44.0", nosology="thyroidSuspected")
     response = auth_client.patch(
         f"/api/patients/{created['id']}",
-        json={"field": "diagnosis", "value": "C73"},
+        json={"expectedVersion": card_version(created['id']), "field": "diagnosis", "value": "C73"},
         headers=auth_client.csrf,
     )
     assert response.status_code == 200, response.text
@@ -315,13 +315,13 @@ def test_legacy_consilium_and_pgi_codes_are_preserved_but_not_active_fields(auth
 
     legacy_patch = auth_client.patch(
         f"/api/patients/{created['id']}",
-        json={"field": "consiliumCode", "value": "OK-999"},
+        json={"expectedVersion": card_version(created['id']), "field": "consiliumCode", "value": "OK-999"},
         headers=auth_client.csrf,
     )
     assert legacy_patch.status_code == 422
     legacy_patch = auth_client.patch(
         f"/api/patients/{created['id']}",
-        json={"field": "pgiCode", "value": "PGI-999"},
+        json={"expectedVersion": card_version(created['id']), "field": "pgiCode", "value": "PGI-999"},
         headers=auth_client.csrf,
     )
     assert legacy_patch.status_code == 422
@@ -523,7 +523,7 @@ def test_diagnosis_history_privacy_excludes_audit_notifications_and_ai(auth_clie
     created = _create_patient(auth_client, diagnosis="D44.0", nosology="thyroidSuspected", policyNumber="7700000000007777")
     auth_client.patch(
         f"/api/patients/{created['id']}",
-        json={"field": "diagnosis", "value": "C73"},
+        json={"expectedVersion": card_version(created['id']), "field": "diagnosis", "value": "C73"},
         headers=auth_client.csrf,
     )
     from backend.app import policy
@@ -567,7 +567,7 @@ def test_schema_v10_encrypted_backup_restore_preserves_doctor_feedback_fields(au
     )
     auth_client.patch(
         f"/api/patients/{patient['id']}",
-        json={"field": "diagnosis", "value": "C73"},
+        json={"expectedVersion": card_version(patient['id']), "field": "diagnosis", "value": "C73"},
         headers=auth_client.csrf,
     )
     db_path = Path(get_conn().execute("PRAGMA database_list").fetchone()["file"])
@@ -575,11 +575,18 @@ def test_schema_v10_encrypted_backup_restore_preserves_doctor_feedback_fields(au
     assert maintenance.inspect_backup(backup)["schema_version"] == current_schema_version()
     assert maintenance.verify_backup(backup)["authenticated"] is True
 
-    with get_conn():
-        get_conn().execute("DELETE FROM patients WHERE id = ?", (patient["id"],))
-    assert auth_client.get(f"/api/patients/{patient['id']}").status_code == 404
+    # WP-C (AUD-03): карточку с клинической историей удалить нельзя — потерю данных
+    # моделирует утраченный файл базы (приложение остановлено): restore возвращает
+    # карточку со всеми уточнениями врача.
     with app_stopped():
+        lost = tmp_path / "lost-clinic.db"
+        db_path.replace(lost)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                sidecar.replace(tmp_path / ("lost-clinic.db" + suffix))
         restore = maintenance.restore_database(backup, db_path, confirm_offline=True)
+    assert restore["previous_state"] == "missing"
     assert restore["schema_version"] == current_schema_version()
     # Restore revokes every session from the snapshot; sign in again.
     assert login(auth_client, DEV_USERNAME).status_code == 200

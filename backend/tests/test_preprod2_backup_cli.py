@@ -12,7 +12,7 @@ import sys
 
 import pytest
 
-from .conftest import app_stopped, make_patient_payload
+from .conftest import card_version, app_stopped, make_patient_payload
 
 KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 ESC = chr(27)
@@ -78,9 +78,9 @@ def test_backup_inspect_escapes_header_control_characters(auth_client, tmp_path,
 
 def test_patch_diagnosis_respects_length_cap(auth_client):
     pid = auth_client.post("/api/patients", json=make_patient_payload(), headers=auth_client.csrf).json()["id"]
-    r = auth_client.patch(f"/api/patients/{pid}", json={"field": "diagnosis", "value": "A" * 501}, headers=auth_client.csrf)
+    r = auth_client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "diagnosis", "value": "A" * 501}, headers=auth_client.csrf)
     assert r.status_code == 422
-    r = auth_client.patch(f"/api/patients/{pid}", json={"field": "diagnosis", "value": "C73"}, headers=auth_client.csrf)
+    r = auth_client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "diagnosis", "value": "C73"}, headers=auth_client.csrf)
     assert r.status_code == 200
 
 

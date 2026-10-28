@@ -208,6 +208,17 @@ def _fill_check_report(conn: sqlite3.Connection, report: dict) -> None:
             report["ok"] = False
             report["problems"].append(
                 f"structure of {table} differs from this build: {', '.join(differs)}")
+        # WP-C (AUD-14): определения триггеров сверяются с эталоном этой сборки по тексту,
+        # а не только по именам. Подмененная или отсутствующая защита — проблема;
+        # посторонний триггер — предупреждение (о нем сообщается, работа не блокируется).
+        drift = _db.trigger_drift(conn)
+        report["trigger_drift"] = {"missing": drift["missing"], "changed": drift["changed"]}
+        report["unknown_triggers"] = drift["unknown"]
+        if drift["missing"] or drift["changed"]:
+            report["ok"] = False
+            report["problems"].append(
+                "protective triggers differ from this build ("
+                + ", ".join(drift["missing"] + drift["changed"]) + "): run migrate-db --confirm-offline to restore")
 
     if "patients" in tables:
         report["patient_count"] = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
@@ -674,12 +685,32 @@ def _check_or_migrate_plaintext(plaintext: Path, metadata: dict) -> dict:
         finally:
             conn.close()
         migrated_from = stored
+    elif _trigger_drift_only(plaintext):
+        # WP-C (AUD-14): копия текущей схемы с подмененными или отсутствующими
+        # защитными триггерами (например, копия перед восстановлением защиты) —
+        # эталонные определения восстанавливаются на временной копии.
+        problems = _integrity_problems(plaintext)
+        if problems:
+            raise MaintenanceError("Резервная копия отклонена: " + "; ".join(problems))
+        conn = connect_readonly_check(plaintext)
+        try:
+            init_db(conn)
+        finally:
+            conn.close()
     report = check_database(plaintext)
     if not report["ok"]:
         raise MaintenanceError("Резервная копия отклонена: " + "; ".join(report["problems"]))
     report["migrated_from_schema_version"] = migrated_from
     report["source_build"] = build
     return report
+
+
+def _trigger_drift_only(path: Path) -> bool:
+    """Текущая схема, и единственная проблема копии — расхождение защитных триггеров."""
+    report = check_database(path)
+    drift = report.get("trigger_drift") or {}
+    other = [p for p in report["problems"] if not p.startswith("protective triggers differ")]
+    return report.get("schema_status") == "current" and bool(drift.get("missing") or drift.get("changed")) and not other
 
 
 def looks_like_sqlite(path: Path) -> bool:
@@ -1224,12 +1255,18 @@ def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool 
             report = check_database(plaintext)
             snapshot_version = None
             if not report["ok"]:
-                if not (allow_older_schema and report.get("schema_status") == "older"):
+                if allow_older_schema and _trigger_drift_only(plaintext):
+                    # Копия перед восстановлением защиты: схема текущая, триггеры подменены.
+                    problems = _integrity_problems(plaintext)
+                    if problems:
+                        raise MaintenanceError("Созданная SQLite-копия не прошла проверку: " + "; ".join(problems))
+                elif not (allow_older_schema and report.get("schema_status") == "older"):
                     raise MaintenanceError(
                         "Созданная SQLite-копия не прошла проверку: " + "; ".join(report["problems"]))
-                snapshot_version, problems = _older_snapshot_problems(plaintext)
-                if problems:
-                    raise MaintenanceError("Созданная SQLite-копия не прошла проверку: " + "; ".join(problems))
+                else:
+                    snapshot_version, problems = _older_snapshot_problems(plaintext)
+                    if problems:
+                        raise MaintenanceError("Созданная SQLite-копия не прошла проверку: " + "; ".join(problems))
             nonce = secrets.token_bytes(NONCE_BYTES)
             plaintext_bytes = plaintext.read_bytes()
             # AES-GCM appends a 16-byte authentication tag to the ciphertext.
@@ -1676,9 +1713,13 @@ def _migrate_locked(db_path: Path) -> dict:
         for path in list(temp_dir.glob("diagnose.sqlite*")):
             path.unlink(missing_ok=True)
     version = before.get("schema_version")
-    if before.get("schema_status") == "current":
+    drift = before.get("trigger_drift") or {}
+    drifted = sorted((drift.get("missing") or []) + (drift.get("changed") or []))
+    if before.get("schema_status") == "current" and not drifted:
         return {"status": "current", "schema_version": version, "pre_migration_backup": None,
                 "check": before}
+    # WP-C (AUD-14): текущая схема с подмененной защитой восстанавливается тем же
+    # путем, что и миграция: проверенная копия → init_db (эталонные триггеры) → проверка.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup = backup_database(
         db_path, config.BACKUP_DIR / f"pre_migrate_v{version}_{stamp}_{secrets.token_hex(4)}{DEFAULT_BACKUP_SUFFIX}",
@@ -1714,8 +1755,10 @@ def _migrate_locked(db_path: Path) -> dict:
         raise _migration_unverified(
             db_path, version, backup, "migrated_check_failed",
             "итоговая проверка нашла проблемы: " + "; ".join(after["problems"]))
-    return {"status": "migrated", "from_schema_version": version, "schema_version": after["schema_version"],
-            "pre_migration_backup": str(backup), "backup_verified": verified, "check": after}
+    status = "repaired" if version == config.SCHEMA_VERSION else "migrated"
+    return {"status": status, "from_schema_version": version, "schema_version": after["schema_version"],
+            "pre_migration_backup": str(backup), "backup_verified": verified, "check": after,
+            "repaired_triggers": drifted}
 
 
 def _file_schema_version(db_path: Path) -> int | None:

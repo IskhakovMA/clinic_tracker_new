@@ -5,7 +5,7 @@ backend/app/store.py:update_event+update_patient_field+update_checklist_item:imp
 PATCH could store an unknown treatmentType, an empty name, a 101st checklist
 item or a dangerous checklist key, and import then rejected the whole export.
 """
-from .conftest import event_patch, make_patient_payload
+from .conftest import card_version, event_patch, make_patient_payload
 
 
 def _new_patient(auth_client):
@@ -23,19 +23,19 @@ def test_event_treatment_type_is_restricted_to_the_known_values(auth_client):
 
 def test_patient_name_cannot_be_emptied(auth_client):
     pid = _new_patient(auth_client)
-    r = auth_client.patch(f"/api/patients/{pid}", json={"field": "name", "value": "  "}, headers=auth_client.csrf)
+    r = auth_client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "name", "value": "  "}, headers=auth_client.csrf)
     assert r.status_code == 422
 
 
 def test_checklist_cap_and_dangerous_keys_match_import(auth_client):
     pid = _new_patient(auth_client)
     url = f"/api/patients/{pid}/history/0/checklist"
-    r = auth_client.patch(url, json={"item": "__proto__", "checked": True}, headers=auth_client.csrf)
+    r = auth_client.patch(url, json={"item": "__proto__", "checked": True, "expected": False}, headers=auth_client.csrf)
     assert r.status_code == 422
     for i in range(100):
-        r = auth_client.patch(url, json={"item": f"item-{i}", "checked": True}, headers=auth_client.csrf)
+        r = auth_client.patch(url, json={"item": f"item-{i}", "checked": True, "expected": False}, headers=auth_client.csrf)
         assert r.status_code == 200, (i, r.text)
-    r = auth_client.patch(url, json={"item": "item-100", "checked": True}, headers=auth_client.csrf)
+    r = auth_client.patch(url, json={"item": "item-100", "checked": True, "expected": False}, headers=auth_client.csrf)
     assert r.status_code == 422
 
 

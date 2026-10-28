@@ -1,7 +1,7 @@
 """Full integration smoke: the entire operator workflow in one scenario."""
 import json
 
-from .conftest import DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, event_add_body, preserve_ids_confirmation
+from .conftest import card_version, DEV_USERNAME, TEST_PASSWORD, create_account, login, make_patient_payload, event_add_body, preserve_ids_confirmation
 
 
 def test_full_scenario(client):
@@ -29,7 +29,7 @@ def test_full_scenario(client):
     assert client.get(f"/api/patients/{pid}").json()["name"] == created["name"]
 
     # 5. Update
-    r = client.patch(f"/api/patients/{pid}", json={"field": "doctor", "value": "Др. Смоуков"}, headers=csrf)
+    r = client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "doctor", "value": "Др. Смоуков"}, headers=csrf)
     assert r.json()["doctor"] == "Др. Смоуков"
 
     # 6. Add event

@@ -130,7 +130,8 @@ def export(
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
-    audit.record(
+    # WP-C (AUD-06): запись аудита фиксируется до выдачи файла; без нее файл не выдается.
+    audit.record_committed_or_fail(
         conn,
         audit.ANALYTICS_REPORT_EXPORTED,
         detail=(

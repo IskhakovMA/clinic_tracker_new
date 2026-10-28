@@ -15,7 +15,7 @@ import uuid
 
 import pytest
 
-from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import pre_v28_rows, card_version, app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _parallel, _rows
 from .test_wp24a_patient_create import _db_path, _while_locked, _world
@@ -47,7 +47,7 @@ def _confirm(ids, reason=REASON):
 
 
 def _patch_policy(client, pid, value, confirm=None):
-    body = {"field": "policyNumber", "value": value}
+    body = {"field": "policyNumber", "value": value, "expectedVersion": card_version(pid)}
     if confirm is not None:
         body["duplicateConfirmation"] = confirm
     return client.patch(f"/api/patients/{pid}", json=body, headers=client.csrf)
@@ -388,7 +388,7 @@ def test_policy_edit_rules_do_not_open_foreign_cards(client):
     assert _patch_policy(client, foreign, X, confirm=_confirm([own])).status_code == 404
     response = _patch_policy(client, own, Y)                   # совпадение только вне области
     assert response.status_code == 200 and "Синтетик Чужой" not in response.text
-    other = client.patch(f"/api/patients/{own}", json={"field": "name", "value": "Новое Имя",
+    other = client.patch(f"/api/patients/{own}", json={"expectedVersion": card_version(own), "field": "name", "value": "Новое Имя",
                                                         "duplicateConfirmation": _confirm([own])}, headers=client.csrf)
     assert other.status_code == 422
     login(client, "deputy")
@@ -765,12 +765,12 @@ def test_v24_fixture_and_migration_to_v25(client, tmp_path):
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 24
     assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 2
     assert identify_backup_build(path, 24) == "wp24b-5f2c9c8"
-    before = {t: [tuple(r) for r in conn.execute(f"SELECT * FROM {t} ORDER BY rowid")] for t in TABLES}  # nosec
+    before = {t: pre_v28_rows(conn, t) for t in TABLES}
     db.init_db(conn)
     # WP2.4-D: цепочка доводит v24 до текущей схемы (v26), а не только до v25.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27   # combined-preaudit: v27 — мобильный доступ пациента
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
     for table in TABLES:
-        assert [tuple(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY rowid")] == before[table], table  # nosec
+        assert pre_v28_rows(conn, table) == before[table], table
     assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 0
     sql_before = sorted(tuple(r) for r in conn.execute("SELECT type, name, sql FROM sqlite_master"))
     statements = []
@@ -791,7 +791,7 @@ def test_restore_of_a_v24_backup_migrates_to_v25(auth_client, tmp_path, backup_k
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27   # combined-preaudit (v27); WP2.4-D: текущая схема
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit (v27); WP2.4-D: текущая схема
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 0
@@ -986,8 +986,9 @@ def test_l2_creation_paths_use_only_the_scoped_search():
     identity.policy_matches*, где условие области стоит в том же запросе; других
     обращений к полису других карточек и записи в какой-либо реестр нет."""
     app = PROJECT_ROOT / "backend" / "app"
-    allowed = {"SELECT policy_number FROM patients WHERE id = ?",            # своя карточка (правка полиса)
-               "UPDATE patients SET policy_number = ?, updated_at = ? WHERE id = ?"}
+    allowed = {"SELECT policy_number, version FROM patients WHERE id = ?",   # своя карточка (правка полиса)
+               # WP-C: правка полиса — с проверкой версии своей же карточки.
+               "UPDATE patients SET policy_number = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?"}
     for path in ("services/patient_create.py", "services/patient_duplicates.py", "services/patient_policy.py",
                  "services/import_operations.py", "routes/patients.py"):
         source = (app / path).read_text(encoding="utf-8")

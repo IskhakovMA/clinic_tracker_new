@@ -27,7 +27,9 @@ class PolicyUpdateForbidden(Exception):
 
 
 def update_policy_number(conn: sqlite3.Connection, actor: policy.CurrentUser, patient_id: str, value,
-                         confirmation) -> dict:
+                         confirmation, *, expected_version: int | None = None, audit_hook=None) -> dict:
+    """WP-C: проверка версии карточки (store.PatientVersionConflict), смена полиса и
+    обязательная запись аудита (audit_hook) — одна транзакция BEGIN IMMEDIATE."""
     new_value = normalize_policy_number(value)   # ValueError — 422, как прежде
     with transaction(conn):
         fresh = policy.reload_current_user(conn, actor)
@@ -37,16 +39,23 @@ def update_policy_number(conn: sqlite3.Connection, actor: policy.CurrentUser, pa
             raise PolicyUpdateNotFound()
         if not policy.can_write_patient(conn, fresh, patient_id):
             raise PolicyUpdateForbidden()
-        current = conn.execute("SELECT policy_number FROM patients WHERE id = ?", (patient_id,)).fetchone()
+        current = conn.execute("SELECT policy_number, version FROM patients WHERE id = ?", (patient_id,)).fetchone()
+        if expected_version is not None and current["version"] != expected_version:
+            raise store.PatientVersionConflict()
         confirmed: list[dict] = []
         if identity.canonical_policy(current["policy_number"]) != identity.canonical_policy(new_value):
             confirmed = patient_duplicates.check_policy(
                 conn, fresh, new_value, confirmation, exclude_patient_id=patient_id,
                 message=patient_duplicates.POLICY_MESSAGE)
-        conn.execute("UPDATE patients SET policy_number = ?, updated_at = ? WHERE id = ?",
-                     (new_value, now_iso(), patient_id))
+        cur = conn.execute(
+            "UPDATE patients SET policy_number = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?",
+            (new_value, now_iso(), patient_id, current["version"]))
+        if cur.rowcount != 1:
+            raise store.PatientVersionConflict()
         if confirmed:
             patient_duplicates.record_confirmation(conn, fresh, operation="policy_update", patient_id=patient_id,
                                                    matches=confirmed, reason=confirmation.reason)
+        if audit_hook is not None:
+            audit_hook()
         result = store.patient_to_dict(conn, patient_id)
     return result

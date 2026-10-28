@@ -3,6 +3,7 @@ import hashlib
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -11,6 +12,9 @@ from pathlib import Path
 
 from . import config
 
+# patients.version (v28, WP-C, AUD-11) — версия полей карточки для оптимистической
+# блокировки. Пояснения к столбцам не пишутся комментарием внутри CREATE TABLE: SQLite
+# хранит текст как есть, и ALTER TABLE … DROP COLUMN рядом с таким комментарием ломает DDL.
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -101,7 +105,8 @@ CREATE TABLE IF NOT EXISTS patients (
     treating_doctor_user_id TEXT REFERENCES users(id),
     created_by_user_id TEXT REFERENCES users(id),
     creation_source TEXT NOT NULL DEFAULT 'legacy'
-        CHECK (creation_source IN ('form', 'import', 'migration', 'legacy'))
+        CHECK (creation_source IN ('form', 'import', 'migration', 'legacy')),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1)
 );
 
 CREATE TABLE IF NOT EXISTS history_entries (
@@ -158,6 +163,25 @@ CREATE TABLE IF NOT EXISTS patient_diagnosis_history (
     actor_user_id TEXT REFERENCES users(id),
     old_diagnosis TEXT,
     new_diagnosis TEXT
+);
+
+-- v28 (WP-C, AUD-08): история фактических даты и времени событий. Только добавление
+-- (триггеры trg_fact_history_*): прежнее значение факта не теряется при исправлении
+-- или очистке. Без внешних ключей: строки переживают любые правки событий, а
+-- карточку с такой историей удалить нельзя (PATIENT_HISTORY_DEPENDENCIES).
+CREATE TABLE IF NOT EXISTS patient_event_fact_history (
+    id TEXT PRIMARY KEY,
+    seq INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    patient_id TEXT NOT NULL,
+    field TEXT NOT NULL CHECK (field IN ('actual_date', 'actual_time')),
+    old_value TEXT,
+    new_value TEXT,
+    change_type TEXT NOT NULL CHECK (change_type IN ('initial', 'correction', 'cleared', 'reentry')),
+    source TEXT NOT NULL CHECK (source IN ('event_update', 'stage_change')),
+    changed_at TEXT NOT NULL,
+    actor_user_id TEXT,
+    UNIQUE (event_id, seq)
 );
 
 CREATE TABLE IF NOT EXISTS future_plans (
@@ -569,6 +593,7 @@ CREATE INDEX IF NOT EXISTS idx_future_plans_patient ON future_plans(patient_id);
 CREATE INDEX IF NOT EXISTS idx_patients_name ON patients(name);
 CREATE INDEX IF NOT EXISTS idx_patients_policy_number ON patients(policy_number);
 CREATE INDEX IF NOT EXISTS idx_diagnosis_history_patient ON patient_diagnosis_history(patient_id, changed_at);
+CREATE INDEX IF NOT EXISTS idx_fact_history_patient ON patient_event_fact_history(patient_id, event_id, seq);
 CREATE INDEX IF NOT EXISTS idx_patients_head ON patients(head);
 CREATE INDEX IF NOT EXISTS idx_patients_stage ON patients(stage);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
@@ -2258,6 +2283,305 @@ def migrate_v26_to_v27(conn: sqlite3.Connection) -> None:
         _ensure_trigger(conn, *MOBILE_ACCESS_MARK_TRIGGER)
 
 
+
+# --- v28 (WP-C): сохранность медицинской истории -----------------------------
+
+# AUD-03. Зависимости, при которых карточку пациента нельзя удалить физически:
+# код → фрагмент «FROM … WHERE …» с {pid} вместо идентификатора пациента. Один
+# перечень используют и проверка в store.delete_patient (число и коды для ответа
+# 409), и триггер trg_patients_delete_requires_no_history (страховка базы: другой
+# путь кода или прямой DELETE карточку с историей тоже не удалит). Пустая карточка —
+# только первая запись маршрута без заметки и отметок чек-листа и плановые события
+# без фактов: её удаление ничего медицинского не уничтожает.
+_EVENTS_OF = ("FROM events e JOIN history_entries h ON h.id = e.history_entry_id "
+              "WHERE h.patient_id = {pid}")
+PATIENT_HISTORY_DEPENDENCIES: tuple[tuple[str, str], ...] = (
+    ("stage_transitions",
+     "FROM history_entries WHERE patient_id = {pid} AND seq > "
+     "(SELECT MIN(seq) FROM history_entries WHERE patient_id = {pid})"),
+    ("history_notes", "FROM history_entries WHERE patient_id = {pid} AND COALESCE(note, '') != ''"),
+    ("checklist_marks",
+     # Нечитаемый JSON чек-листа считается отметкой: удаление не должно зависеть от разбора.
+     "FROM history_entries h, json_each(CASE WHEN COALESCE(h.checklist_json, '') = '' THEN '{}' "
+     "WHEN json_valid(h.checklist_json) THEN h.checklist_json ELSE '[true]' END) j "
+     "WHERE h.patient_id = {pid} AND j.type = 'true'"),
+    ("performed_events", _EVENTS_OF + " AND (COALESCE(e.actual_date, '') != '' OR COALESCE(e.actual_time, '') != '')"),
+    ("consilium_decision_marks", _EVENTS_OF + " AND e.consilium_decision IS NOT NULL"),
+    ("archived_events", _EVENTS_OF + " AND e.deleted_at IS NOT NULL"),
+    ("diagnosis_history", "FROM patient_diagnosis_history WHERE patient_id = {pid}"),
+    ("fact_history", "FROM patient_event_fact_history WHERE patient_id = {pid}"),
+    ("consilium_records", "FROM oncology_consilium_appointments WHERE patient_id = {pid}"),
+    ("attention_issues", "FROM patient_attention_issues WHERE patient_id = {pid}"),
+    ("notification_consent",
+     "FROM patient_notification_preferences WHERE patient_id = {pid} AND "
+     "(consent_status != 'not_recorded' OR sms_enabled = 1 OR consent_recorded_at IS NOT NULL)"),
+    ("notification_history", "FROM notifications WHERE patient_id = {pid}"),
+    ("mobile_access", "FROM patient_portal_access WHERE patient_id = {pid}"),
+    ("duplicate_registry",
+     "FROM patient_duplicate_confirmations WHERE patient_id = {pid} "
+     "UNION ALL SELECT 1 FROM patient_duplicate_candidates WHERE {pid} IN (patient_a_id, patient_b_id) "
+     "UNION ALL SELECT 1 FROM patient_erroneous_marks WHERE patient_id = {pid}"),
+)
+PATIENT_HAS_HISTORY_ERROR = "patient_has_clinical_history"
+
+
+def patient_history_dependencies(conn: sqlite3.Connection, patient_id: str) -> dict[str, int]:
+    """Код → число строк по PATIENT_HISTORY_DEPENDENCIES (только ненулевые)."""
+    counts = {}
+    for code, fragment in PATIENT_HISTORY_DEPENDENCIES:
+        sql = "SELECT COUNT(*) FROM (SELECT 1 " + fragment.replace("{pid}", ":pid") + ")"
+        n = conn.execute(sql, {"pid": patient_id}).fetchone()[0]  # nosec B608 - fixed fragments
+        if n:
+            counts[code] = n
+    return counts
+
+
+def _patient_delete_guard_sql() -> str:
+    conditions = " OR ".join(
+        "EXISTS (SELECT 1 " + fragment.replace("{pid}", "OLD.id") + ")"
+        for _, fragment in PATIENT_HISTORY_DEPENDENCIES)
+    return f"""
+    CREATE TRIGGER IF NOT EXISTS trg_patients_delete_requires_no_history
+    BEFORE DELETE ON patients
+    WHEN {conditions}
+    BEGIN
+        SELECT RAISE(ABORT, '{PATIENT_HAS_HISTORY_ERROR}');
+    END;
+"""
+
+
+# AUD-13. Журнал аудита — только добавление. Удаление — только audit-prune по
+# сроку хранения: событие не из RETAINED (удаление и восстановление событий
+# медицинской истории) и старше AUDIT_DELETE_FLOOR_DAYS. Срок аудита задаётся
+# окружением (CLINIC_AUDIT_RETENTION_DAYS), триггер его не знает, поэтому в базе
+# закреплён нижний предел: ни одна запись моложе 30 дней не удаляется ни prune, ни
+# прямым SQL.
+AUDIT_DELETE_FLOOR_DAYS = 30
+AUDIT_APPEND_ONLY_ERROR = "audit_events_append_only"
+AUDIT_RETENTION_ERROR = "audit_events_retention"
+AUDIT_RETAINED_EVENT_TYPES = ("patient_event_deleted", "patient_event_restored")
+FACT_HISTORY_APPEND_ONLY_ERROR = "fact_history_append_only"
+DIAGNOSIS_HISTORY_APPEND_ONLY_ERROR = "diagnosis_history_append_only"
+HISTORY_ENTRY_IMMUTABLE_ERROR = "history_entry_immutable"
+EVENT_DIRECT_DELETE_ERROR = "event_direct_delete_forbidden"
+EVENT_RESTORE_CHANGES_FACTS_ERROR = "event_restore_must_not_change_facts"
+CONSILIUM_SIGNED_DELETE_ERROR = "consilium_signed_delete_forbidden"
+REVISION_HISTORY_DELETE_ERROR = "consilium_revision_history_immutable"
+
+# Столбцы события, которые восстановление из архива (deleted_at → NULL) не меняет.
+_EVENT_RESTORE_FIXED_COLUMNS = (
+    "history_entry_id", "seq", "date", "time", "treatment_type", "actual_date", "actual_time",
+    "matched_plan", "no_plan", "consilium_decision", "set_at",
+)
+
+
+def _wpc_triggers() -> tuple[tuple[str, str], ...]:
+    retained = ", ".join(f"'{t}'" for t in AUDIT_RETAINED_EVENT_TYPES)
+    restore_changed = " OR ".join(f"NEW.{c} IS NOT OLD.{c}" for c in _EVENT_RESTORE_FIXED_COLUMNS)
+    return (
+        ("trg_patients_delete_requires_no_history", _patient_delete_guard_sql()),
+        ("trg_audit_events_no_update", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_audit_events_no_update
+    BEFORE UPDATE ON audit_events
+    BEGIN
+        SELECT RAISE(ABORT, '{AUDIT_APPEND_ONLY_ERROR}');
+    END;
+"""),
+        ("trg_audit_events_delete_retention", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_audit_events_delete_retention
+    BEFORE DELETE ON audit_events
+    WHEN OLD.event_type IN ({retained})
+      OR OLD.created_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-{AUDIT_DELETE_FLOOR_DAYS} days')
+    BEGIN
+        SELECT RAISE(ABORT, '{AUDIT_RETENTION_ERROR}');
+    END;
+"""),
+        ("trg_fact_history_no_update", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_fact_history_no_update
+    BEFORE UPDATE ON patient_event_fact_history
+    BEGIN
+        SELECT RAISE(ABORT, '{FACT_HISTORY_APPEND_ONLY_ERROR}');
+    END;
+"""),
+        ("trg_fact_history_no_delete", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_fact_history_no_delete
+    BEFORE DELETE ON patient_event_fact_history
+    BEGIN
+        SELECT RAISE(ABORT, '{FACT_HISTORY_APPEND_ONLY_ERROR}');
+    END;
+"""),
+        ("trg_diagnosis_history_no_update", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_diagnosis_history_no_update
+    BEFORE UPDATE ON patient_diagnosis_history
+    BEGIN
+        SELECT RAISE(ABORT, '{DIAGNOSIS_HISTORY_APPEND_ONLY_ERROR}');
+    END;
+"""),
+        ("trg_diagnosis_history_no_delete", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_diagnosis_history_no_delete
+    BEFORE DELETE ON patient_diagnosis_history
+    BEGIN
+        SELECT RAISE(ABORT, '{DIAGNOSIS_HISTORY_APPEND_ONLY_ERROR}');
+    END;
+"""),
+        # Запись маршрута: заметка и чек-лист правятся, а принадлежность, порядок,
+        # этап и время входа — нет. Прямое удаление записи существующей карточки
+        # запрещено; каскад от удаления пустой карточки (её уже нет) разрешен.
+        ("trg_history_entries_identity_immutable", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_history_entries_identity_immutable
+    BEFORE UPDATE ON history_entries
+    WHEN NEW.patient_id IS NOT OLD.patient_id OR NEW.seq IS NOT OLD.seq
+      OR NEW.stage IS NOT OLD.stage OR NEW.entered_at IS NOT OLD.entered_at OR NEW.id IS NOT OLD.id
+    BEGIN
+        SELECT RAISE(ABORT, '{HISTORY_ENTRY_IMMUTABLE_ERROR}');
+    END;
+"""),
+        ("trg_history_entries_no_direct_delete", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_history_entries_no_direct_delete
+    BEFORE DELETE ON history_entries
+    WHEN EXISTS (SELECT 1 FROM patients WHERE id = OLD.patient_id)
+    BEGIN
+        SELECT RAISE(ABORT, '{HISTORY_ENTRY_IMMUTABLE_ERROR}');
+    END;
+"""),
+        # Событие удаляется только мягко (deleted_at). Физически — лишь каскадом
+        # пустой карточки; событие с фактом или решением ОК — никогда.
+        ("trg_events_no_direct_delete", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_no_direct_delete
+    BEFORE DELETE ON events
+    WHEN EXISTS (SELECT 1 FROM history_entries WHERE id = OLD.history_entry_id)
+      OR OLD.consilium_decision IS NOT NULL
+      OR COALESCE(OLD.actual_date, '') != '' OR COALESCE(OLD.actual_time, '') != ''
+    BEGIN
+        SELECT RAISE(ABORT, '{EVENT_DIRECT_DELETE_ERROR}');
+    END;
+"""),
+        # Восстановление из архива возвращает событие как было: одним UPDATE нельзя
+        # одновременно снять архив и переписать факт или план.
+        ("trg_events_restore_keeps_facts", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_events_restore_keeps_facts
+    BEFORE UPDATE ON events
+    WHEN OLD.deleted_at IS NOT NULL AND NEW.deleted_at IS NULL AND ({restore_changed})
+    BEGIN
+        SELECT RAISE(ABORT, '{EVENT_RESTORE_CHANGES_FACTS_ERROR}');
+    END;
+"""),
+        ("trg_consilium_signed_no_delete", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_consilium_signed_no_delete
+    BEFORE DELETE ON oncology_consilium_appointments
+    WHEN OLD.status = 'signed' OR OLD.signed_at IS NOT NULL
+    BEGIN
+        SELECT RAISE(ABORT, '{CONSILIUM_SIGNED_DELETE_ERROR}');
+    END;
+"""),
+        ("trg_consilium_revision_history_no_delete", f"""
+    CREATE TRIGGER IF NOT EXISTS trg_consilium_revision_history_no_delete
+    BEFORE DELETE ON consilium_revision_history
+    BEGIN
+        SELECT RAISE(ABORT, '{REVISION_HISTORY_DELETE_ERROR}');
+    END;
+"""),
+    )
+
+
+def migrate_v27_to_v28(conn: sqlite3.Connection) -> None:
+    """v27 → v28 (WP-C): версия карточки, история фактов, защита истории в базе.
+
+    Только добавляет: столбец patients.version (существующие карточки — 1),
+    таблицу patient_event_fact_history (из SCHEMA_SQL) и триггеры _wpc_triggers.
+    Ни одна существующая запись не меняется и не удаляется. Повтор не
+    дублирует ничего: столбец и таблица проверяются, триггеры сверяются по тексту."""
+    _add_column_if_missing(conn, "patients", "version",
+                           "version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1)")
+    for name, sql in _wpc_triggers():
+        _ensure_trigger(conn, name, sql)
+
+
+# AUD-14. Эталон определений триггеров — схема этой сборки, построенная init_db в
+# памяти. Наличие имени не доказывает защиту: подмененное определение с тем же
+# именем ранее оставалось навсегда (CREATE TRIGGER IF NOT EXISTS).
+_reference_triggers_cache: dict[str, str] | None = None
+_reference_lock = threading.Lock()
+# Признак «этот поток сейчас строит эталон» — у каждого потока свой: init_db эталонной
+# базы не должен сам запрашивать эталон и восстанавливать по нему триггеры.
+_reference_state = threading.local()
+
+
+def _building_reference() -> bool:
+    return getattr(_reference_state, "building", False)
+
+
+def reference_triggers() -> dict[str, str]:
+    global _reference_triggers_cache
+    if _reference_triggers_cache is None:
+        with _reference_lock:
+            if _reference_triggers_cache is None:
+                ref = sqlite3.connect(":memory:")
+                ref.row_factory = sqlite3.Row
+                _reference_state.building = True
+                try:
+                    init_db(ref)
+                    _reference_triggers_cache = {
+                        r["name"]: r["sql"] for r in ref.execute(
+                            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")}
+                finally:
+                    _reference_state.building = False
+                    ref.close()
+    return dict(_reference_triggers_cache)
+
+
+def _has_existing_schema(conn: sqlite3.Connection) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'patients'").fetchone() is not None
+
+
+def trigger_drift(conn: sqlite3.Connection) -> dict[str, list[str]]:
+    """Сверка триггеров с эталоном — только чтение.
+
+    missing: защитного триггера нет; changed: определение отличается от эталона;
+    unknown: триггер, которого эта сборка не создает (о нем сообщается, но это не
+    повод отказывать в работе — тесты и инструменты могут добавлять свои)."""
+    actual = {r[0]: r[1] for r in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'trigger'")}
+    reference = reference_triggers()
+    return {
+        "missing": sorted(n for n in reference if n not in actual),
+        "changed": sorted(n for n in reference if n in actual and _normalized_sql(actual[n]) != _normalized_sql(reference[n])),
+        "unknown": sorted(n for n in actual if n not in reference),
+    }
+
+
+def repair_triggers(conn: sqlite3.Connection) -> list[str]:
+    """Восстановить эталонные определения отсутствующих и измененных триггеров.
+
+    Только внутри транзакции init_db (migrate-db, временные копии restore)."""
+    drift = trigger_drift(conn)
+    reference = reference_triggers()
+    repaired = drift["missing"] + drift["changed"]
+    for name in repaired:
+        conn.execute(f"DROP TRIGGER IF EXISTS {name}")
+        conn.execute(reference[name])
+    return repaired
+
+
+def _require_no_trigger_drift(conn: sqlite3.Connection) -> None:
+    drift = trigger_drift(conn)
+    bad = drift["missing"] + drift["changed"]
+    if bad:
+        raise SchemaDriftError(
+            "Защитные триггеры базы отличаются от эталона этой сборки ("
+            + ", ".join(bad[:10]) + (" …" if len(bad) > 10 else "")
+            + "). Запуск остановлен, база не изменена. Проверка: python -m backend.cli check-db; "
+            "восстановление после остановки сервиса и проверенной копии: "
+            "python -m backend.cli migrate-db --confirm-offline.")
+
+
+class SchemaDriftError(SchemaVersionError):
+    """Защитные триггеры базы отличаются от эталона этой сборки (AUD-14).
+
+    Запуск останавливается до любых изменений: подмена защиты не исправляется
+    молча при старте. Восстановление — migrate-db --confirm-offline (с проверенной
+    копией), обнаружение — check-db."""
+
+
 def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
@@ -2279,11 +2603,15 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
     throw-away copies inside backup verification/restore migrate."""
     if conn.in_transaction:
         raise RuntimeError("init_db must not run inside an open transaction")
+    if not _building_reference():
+        reference_triggers()             # эталон строится отдельной базой в памяти, до блокировки
     conn.execute("BEGIN IMMEDIATE")
     try:
         _check_schema_version(conn)        # новая или повреждённая схема — отказ до любых изменений
         if not allow_upgrade:
             _require_no_upgrade(conn)      # старая схема — только явный migrate-db
+            if _has_existing_schema(conn):
+                _require_no_trigger_drift(conn)   # AUD-14: подмененная защита — отказ без изменений
         _execute_script(conn, SCHEMA_SQL)  # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
@@ -2310,6 +2638,7 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         _ensure_notification_schema(conn)
         migrate_v25_to_v26(conn)         # duplicate registry, erroneous marks (after notification rebuilds)
         migrate_v26_to_v27(conn)         # patient mobile access (Patient Portal stage 1)
+        migrate_v27_to_v28(conn)         # WP-C: card version, fact history, history protection
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -2402,6 +2731,8 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         # индексы пересобранной таблицы создаются заново (IF NOT EXISTS).
         migrate_v15_to_v16(conn)
         _execute_script(conn, INDEX_SQL)
+        if allow_upgrade and not _building_reference():
+            repair_triggers(conn)            # AUD-14: эталонные определения после миграции
         conn.commit()
     except BaseException:
         conn.rollback()

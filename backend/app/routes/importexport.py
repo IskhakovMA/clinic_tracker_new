@@ -409,6 +409,9 @@ def export_patients(
         # of the import/export patient record format. Historical attention
         # issues remain in the database and backups.
         row.pop("attention", None)
+        # Версия карточки (WP-C) — служебное значение блокировки правок, не часть
+        # формата файла: выгрузка и её повторный импорт остаются прежними.
+        row.pop("version", None)
         # Только активные события; стабильные id пациента, записей маршрута и
         # событий входят в подписанный файл (версия и сведения об авторе и времени
         # ручной отметки решения ОК — нет: формат файла прежний). Удалённые события
@@ -439,8 +442,10 @@ def export_patients(
         "patients": exported,
     }, key)
     body = json.dumps(payload, ensure_ascii=False, indent=2)
-    audit.record(conn, audit.EXPORT, detail=f"records={len(exported)} key_id={key.key_id}",
-                 **audit.actor_ctx(user))
+    # WP-C (AUD-06): выдача файла с ПДн не входит в транзакцию базы, поэтому запись
+    # аудита фиксируется ДО выдачи; без нее файл не выдается (503 AUDIT_UNAVAILABLE).
+    audit.record_committed_or_fail(conn, audit.EXPORT, detail=f"records={len(exported)} key_id={key.key_id}",
+                                   **audit.actor_ctx(user))
     return Response(
         content=body,
         media_type="application/json",

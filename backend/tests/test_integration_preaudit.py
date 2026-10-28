@@ -15,7 +15,7 @@ import shutil
 
 import pytest
 
-from .conftest import app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
+from .conftest import pre_v28_rows, app_stopped, DEV_USERNAME, PROJECT_ROOT, get_conn, login, make_patient_payload
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _rows
 from .test_wp24a_patient_create import _world
@@ -28,8 +28,7 @@ V26 = FIXTURES / "wp24d_v26_synthetic.sql"
 def _snapshot(conn, exclude=("schema_version",)):
     tables = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
-    return {t: [tuple(r) for r in conn.execute(f'SELECT * FROM "{t}" ORDER BY rowid')]  # nosec - names from sqlite_master
-            for t in tables if t not in exclude}
+    return {t: pre_v28_rows(conn, t) for t in tables if t not in exclude}
 
 
 def _open(path):
@@ -61,7 +60,7 @@ def test_portal_v10_database_migrates_to_v27_keeping_every_row(client, tmp_path)
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     before = _snapshot(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 28   # WP-C: текущая схема v28
     after = _snapshot(conn)
     reference = ("roles", "notification_templates")                     # справочники дополняются сидами
     for table, rows in before.items():
@@ -97,7 +96,7 @@ def test_v26_database_migrates_to_v27_keeping_registry_and_guards(client, tmp_pa
     conn = _open(path)
     before = _snapshot(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 28   # WP-C: текущая схема v28
     after = _snapshot(conn)
     assert {t: after[t] for t in before} == before
     assert after["patient_portal_access"] == []
@@ -117,7 +116,7 @@ def test_backups_of_both_lines_restore_to_v27(auth_client, tmp_path, backup_key,
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 28   # WP-C: текущая схема v28
     expected_portal = 2 if header == 10 else 0
     assert conn.execute("SELECT COUNT(*) FROM patient_portal_access").fetchone()[0] == expected_portal
     if header == 26:

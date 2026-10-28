@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from .conftest import DEV_USERNAME, create_account, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, stage_body
+from .conftest import checklist_state, DEV_USERNAME, create_account, decision_doctor_id, get_conn, login, make_patient_payload, mark_decision, stage_body
 from .test_consilium_appointments import appointment_payload
 from .test_consilium_security import DECISION, _make_state, _post
 
@@ -382,7 +382,7 @@ def test_rollback_history_writes_when_audit_fails(auth_client, operation):
             r = auth_client.patch(f"/api/patients/{p['id']}/history/0/note", json={"note": "Синтетическая заметка"}, headers=auth_client.csrf)
         else:
             r = auth_client.patch(f"/api/patients/{p['id']}/history/0/checklist",
-                                  json={"item": "КТ органов грудной клетки", "checked": True}, headers=auth_client.csrf)
+                                  json={"expected": checklist_state(p['id'], 0, "КТ органов грудной клетки"), "item": "КТ органов грудной клетки", "checked": True}, headers=auth_client.csrf)
         assert r.status_code == 503, r.text
         assert _snapshot(p["id"]) == before
     finally:
@@ -601,10 +601,15 @@ def test_current_audit_retention_policy_is_documented_by_test(auth_client):
     assert auth_client.delete(f"/api/patients/{p['id']}/events/{ev['id']}?version={ev['version']}",
                               headers=auth_client.csrf).status_code == 200
     conn = get_conn()
-    conn.execute("UPDATE audit_events SET created_at = '2000-01-01T00:00:00+00:00' WHERE patient_id = ?", (p["id"],))
+    # WP-C (AUD-13): журнал только дополняется — правило проверяется на состаренных копиях
+    # строк этого пациента (те же типы событий), свежие строки не трогаются.
+    conn.execute("""INSERT INTO audit_events (created_at, event_type, patient_id, result, detail)
+                    SELECT '2000-01-01T00:00:00+00:00', event_type, patient_id, result, detail
+                    FROM audit_events WHERE patient_id = ?""", (p["id"],))
     conn.commit()
     audit.prune(conn, 365)
-    left = {r[0] for r in conn.execute("SELECT event_type FROM audit_events WHERE patient_id = ?", (p["id"],))}
+    left = {r[0] for r in conn.execute(
+        "SELECT event_type FROM audit_events WHERE patient_id = ? AND created_at LIKE '2000-%'", (p["id"],))}
     assert left == {"patient_event_deleted"}
     assert audit.RETAINED_EVENT_TYPES == {"patient_event_deleted", "patient_event_restored"}
 

@@ -7,6 +7,18 @@ from datetime import timedelta
 from .conftest import TEST_PASSWORD, create_account, create_department, get_conn, login, make_patient_payload
 
 
+def _create_patient_at(created_at: str, doctor_id=None, **overrides):
+    """WP-C (AUD-13): время входа в этап неизменяемо — карточку «прошлого» создают в нужный
+    момент (время записи подставляет store.now_iso), а не правят задним числом."""
+    from backend.app import store
+    real = store.now_iso
+    store.now_iso = lambda: created_at
+    try:
+        return _create_patient(doctor_id, **overrides)
+    finally:
+        store.now_iso = real
+
+
 def _as_user(client, username: str):
     r = login(client, username, TEST_PASSWORD)
     assert r.status_code == 200, r.text
@@ -407,16 +419,14 @@ def test_stage_duration_median_even_odd_and_negative_intervals_excluded(client):
     create_account("analytics.duration.dev", "developer", "Разработчик Длительности")
     conn = get_conn()
     for idx, days in enumerate((1, 3, 5, 7)):
-        pid = _create_patient(name=f"Duration Even {idx}", events=[])
+        pid = _create_patient_at("2026-01-01T00:00:00+00:00", name=f"Duration Even {idx}", events=[])
         with conn:
-            conn.execute("UPDATE history_entries SET entered_at = '2026-01-01T00:00:00+00:00' WHERE patient_id = ?", (pid,))
             conn.execute(
                 "INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note) VALUES (?, ?, 1, 'consult', ?, NULL, '')",
                 (f"duration_even_{idx}", pid, f"2026-01-{1 + days:02d}T00:00:00+00:00"),
             )
-    bad = _create_patient(name="Duration Negative", events=[])
+    bad = _create_patient_at("2026-01-10T00:00:00+00:00", name="Duration Negative", events=[])
     with conn:
-        conn.execute("UPDATE history_entries SET entered_at = '2026-01-10T00:00:00+00:00' WHERE patient_id = ?", (bad,))
         conn.execute(
             "INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note) VALUES ('duration_bad', ?, 1, 'consult', '2026-01-01T00:00:00+00:00', NULL, '')",
             (bad,),
@@ -892,10 +902,10 @@ def test_quality_details_same_code_issues_have_distinguishing_context(client):
     create_account("context.dev", "developer", "Разработчик Контекста")
     _create_patient(None, name="Контекст События", stage="appointment",
                     events=[{"date": "2000-01-01"}, {"date": "2001-02-03"}])
-    route = _create_patient(None, name="Контекст Маршрута", phone="+7 (900) 111-22-33", stage="appointment", events=[])
+    route = _create_patient_at("2020-01-01T00:00:00+00:00", None, name="Контекст Маршрута", phone="+7 (900) 111-22-33",
+                               stage="appointment", events=[])
     conn = get_conn()
     with conn:
-        conn.execute("UPDATE history_entries SET entered_at = '2020-01-01T00:00:00+00:00' WHERE patient_id = ?", (route,))
         for seq, stage in ((1, "treatment"), (2, "exam"), (3, "appointment")):
             conn.execute(
                 """INSERT INTO history_entries (id, patient_id, seq, stage, entered_at, checklist_json, note)

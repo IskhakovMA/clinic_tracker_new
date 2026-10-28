@@ -135,7 +135,7 @@ def test_unresolved_patient_visibility_after_migration(migrated):
     assert {p["name"] for p in client.get("/api/patients").json()} == {"Стародавнев Пациент"}
     unresolved = client.get("/api/patients/unresolved").json()["patients"]
     assert unresolved == [{"id": "legacy1", "name": "Стародавнев Пациент",
-                           "legacyDoctor": "Легасиев Врач Текстович"}]
+                           "legacyDoctor": "Легасиев Врач Текстович", "version": 1}]
 
     # глобальная read-only роль видит
     create_account("ro.user", "deputy_chief_oncology", "Прочтёнов Только")

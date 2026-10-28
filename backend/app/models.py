@@ -228,6 +228,9 @@ class NoteIn(StrictRequestModel):
 class ChecklistItemIn(StrictRequestModel):
     item: str = Field(..., min_length=1, max_length=200)
     checked: bool
+    # WP-C (AUD-10): состояние пункта, которое видел клиент (нет пункта — false).
+    # Пункт, уже измененный иначе другим пользователем, — 409 STALE_CHECKLIST_ITEM.
+    expected: bool
 
 
 class EventFieldUpdateIn(StrictRequestModel):
@@ -320,6 +323,10 @@ class PatientFieldUpdateIn(StrictRequestModel):
         "complaint",
     ]
     value: str | int | dict[str, str]
+    # WP-C (AUD-11): версия карточки, которую видел клиент (поле version ответа).
+    # Обязательна: правка устаревшей карточки — 409 STALE_PATIENT_VERSION, без
+    # тихой перезаписи более позднего изменения.
+    expectedVersion: int = Field(..., ge=1, le=2**63 - 1)
     # WP2.4-C: подтверждение возможного дубля — только для field=policyNumber.
     duplicateConfirmation: Optional[DuplicateConfirmation] = None
 
@@ -1080,3 +1087,5 @@ class DepartmentDoctorIn(StrictRequestModel):
 
 class TreatingDoctorIn(StrictRequestModel):
     userId: Optional[str] = Field(None, max_length=100)
+    # WP-C (AUD-11): версия карточки, которую видел клиент.
+    expectedVersion: int = Field(..., ge=1, le=2**63 - 1)

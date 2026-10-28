@@ -15,7 +15,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from .conftest import (app_stopped, DEV_USERNAME, PROJECT_ROOT, create_account, create_department, get_conn, legacy_export,
+from .conftest import (card_version, app_stopped, DEV_USERNAME, PROJECT_ROOT, create_account, create_department, get_conn, legacy_export,
                        login, make_patient_payload, unsigned_import)
 from .test_restore_migration import _live, _sqlite_from_fixture, _v9_backup, backup_key  # noqa: F401
 from .test_wp23a_scheduling_integrity import _client_for, _fail_audit, _in_thread, _parallel, _rows
@@ -116,7 +116,9 @@ def _while_locked(fn, change_sql=None, params=()):
 def _clinical(conn, table, order="rowid"):
     """Rows of a table without the v23 service columns."""
     rows = [dict(r) for r in conn.execute(f"SELECT * FROM {table} ORDER BY {order}")]  # nosec - test constant
-    return [{k: v for k, v in row.items() if k not in PROVENANCE} for row in rows]
+    # WP-C: patients.version (v28) — тоже служебный столбец, появившийся миграцией.
+    skip = PROVENANCE | ({"version"} if table == "patients" else set())
+    return [{k: v for k, v in row.items() if k not in skip} for row in rows]
 
 
 CLINICAL_TABLES = ("patients", "history_entries", "events", "patient_diagnosis_history",
@@ -288,7 +290,7 @@ def test_chair_keeps_rights_on_a_legacy_card(client):
     assert (_patient(pid)["creation_source"], _patient(pid)["created_by_user_id"]) == ("legacy", None)
     login(client, "chair")
     assert client.get(f"/api/patients/{pid}").status_code == 200
-    r = client.patch(f"/api/patients/{pid}", json={"field": "complaint", "value": "Уточнено"}, headers=client.csrf)
+    r = client.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "complaint", "value": "Уточнено"}, headers=client.csrf)
     assert r.status_code == 200, r.text
     assert _patient(pid)["treating_doctor_user_id"] == ids["chair"]
 
@@ -462,7 +464,7 @@ def test_migration_v22_to_v23_keeps_every_clinical_row(client, tmp_path):
     before = {t: _clinical(conn, t) for t in CLINICAL_TABLES}
     _init(conn)
     # WP2.4-B/C/D: цепочка доводит v22 до текущей схемы (v26), а не только до v23.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 27   # combined-preaudit: v27 — мобильный доступ пациента
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
     for table in CLINICAL_TABLES:
         assert _clinical(conn, table) == before[table], table
     assert [tuple(r) for r in conn.execute("SELECT DISTINCT creation_source, created_by_user_id FROM patients")] == [
@@ -520,7 +522,7 @@ def test_restore_of_a_v22_backup_migrates_and_keeps_history(auth_client, tmp_pat
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
     conn.row_factory = sqlite3.Row
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 27   # combined-preaudit (v27); WP2.4-B/C/D: текущая схема
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit (v27); WP2.4-B/C/D: текущая схема
     assert [tuple(r) for r in conn.execute("SELECT DISTINCT creation_source, created_by_user_id FROM patients")] == [
         ("legacy", None)]
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1

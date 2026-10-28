@@ -95,10 +95,11 @@ def create_user(
                 password=body.password, must_change_password=body.mustChangePassword, commit=False,
             )
             _apply_departments(conn, uid, body.roleId, body.departmentIds)
+            # WP-C (AUD-06): учётная запись не создается без записи аудита.
+            audit.record_required_or_fail(conn, audit.USER_CREATED, detail=f"role={body.roleId}",
+                                          target_user_id=uid, **audit.actor_ctx(admin))
     except (users.UserError, security.WeakPasswordError) as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    audit.record(conn, audit.USER_CREATED, detail=f"role={body.roleId}",
-                 target_user_id=uid, **audit.actor_ctx(admin))
     return users.user_to_dict(conn, users.get_user(conn, uid))
 
 
@@ -153,18 +154,18 @@ def update_user(
             # в той же транзакции, что и само изменение.
             if role_changed or (status_changed and body.status in ("blocked", "deactivated")):
                 users.terminate_sessions(conn, user_id, commit=False)
+            # WP-C (AUD-06): смена роли, статуса и связей — только вместе с записями аудита.
+            ctx = audit.actor_ctx(admin)
+            if role_changed:
+                audit.record_required_or_fail(conn, audit.ROLE_CHANGED, detail=f"from={old_role} to={body.roleId}",
+                                              target_user_id=user_id, **ctx)
+            if status_changed:
+                event = {"blocked": audit.USER_BLOCKED, "deactivated": audit.USER_DEACTIVATED,
+                         "active": audit.USER_RESTORED}[body.status]
+                audit.record_required_or_fail(conn, event, target_user_id=user_id, **ctx)
+            audit.record_required_or_fail(conn, audit.USER_UPDATED, target_user_id=user_id, **ctx)
     except users.UserError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-
-    ctx = audit.actor_ctx(admin)
-    if role_changed:
-        audit.record(conn, audit.ROLE_CHANGED, detail=f"from={old_role} to={body.roleId}",
-                     target_user_id=user_id, **ctx)
-    if status_changed:
-        event = {"blocked": audit.USER_BLOCKED, "deactivated": audit.USER_DEACTIVATED,
-                 "active": audit.USER_RESTORED}[body.status]
-        audit.record(conn, event, target_user_id=user_id, **ctx)
-    audit.record(conn, audit.USER_UPDATED, target_user_id=user_id, **ctx)
     return users.user_to_dict(conn, users.get_user(conn, user_id))
 
 
@@ -177,12 +178,15 @@ def reset_user_password(
 ):
     _user_or_404(conn, user_id)
     try:
-        users.reset_password(conn, user_id, body.newPassword,
-                             must_change_password=body.mustChangePassword)
+        # WP-C (AUD-06): новый пароль, завершение сессий и запись аудита — одна транзакция.
+        with transaction(conn):
+            users.reset_password(conn, user_id, body.newPassword,
+                                 must_change_password=body.mustChangePassword)
+            users.terminate_sessions(conn, user_id, commit=False)
+            audit.record_required_or_fail(conn, audit.PASSWORD_RESET, target_user_id=user_id,
+                                          **audit.actor_ctx(admin))
     except (users.UserError, security.WeakPasswordError) as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
-    users.terminate_sessions(conn, user_id)
-    audit.record(conn, audit.PASSWORD_RESET, target_user_id=user_id, **audit.actor_ctx(admin))
     return {"reset": True}
 
 
@@ -193,7 +197,8 @@ def terminate_user_sessions(
     admin: policy.CurrentUser = Depends(require_user_admin),
 ):
     _user_or_404(conn, user_id)
-    count = users.terminate_sessions(conn, user_id)
-    audit.record(conn, audit.SESSIONS_TERMINATED, detail=f"count={count}",
-                 target_user_id=user_id, **audit.actor_ctx(admin))
+    with transaction(conn):
+        count = users.terminate_sessions(conn, user_id, commit=False)
+        audit.record_required_or_fail(conn, audit.SESSIONS_TERMINATED, detail=f"count={count}",
+                                      target_user_id=user_id, **audit.actor_ctx(admin))
     return {"terminated": count}

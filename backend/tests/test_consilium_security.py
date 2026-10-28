@@ -1,7 +1,7 @@
 """Regression tests for the consilium security fixes (integration stage 2)."""
 import pytest
 
-from .conftest import (
+from .conftest import (card_version,
     DEV_USERNAME, LEGACY_CONSILIUM_DATES, SLOT_DAY, consilium_grid, consilium_version, create_account, get_conn,
     legacy_consilium_schedule, legacy_export, login, stage_body, unsigned_import,
 )
@@ -192,7 +192,7 @@ def test_favorite_does_not_open_patient_card_or_its_subresources(client):
         assert response.status_code == 404, (path, response.status_code)
         assert FAVORITE_NAME not in response.text
     edit = client.patch(
-        f"/api/patients/{pid}", json={"field": "complaint", "value": "x"}, headers=client.csrf,
+        f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "complaint", "value": "x"}, headers=client.csrf,
     )
     assert edit.status_code == 404
 

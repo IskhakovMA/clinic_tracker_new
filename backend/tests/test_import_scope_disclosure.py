@@ -8,7 +8,7 @@
 Только синтетические данные."""
 import json
 
-from .conftest import (
+from .conftest import (card_version,
     DEV_USERNAME,
     create_account,
     create_department,
@@ -43,7 +43,7 @@ def _setup(client):
 
 def _move_to_b(client, ids):
     login(client, DEV_USERNAME)
-    r = client.put(f"/api/patients/{ids['pid']}/treating-doctor", json={"userId": ids["doc_b"]}, headers=client.csrf)
+    r = client.put(f"/api/patients/{ids['pid']}/treating-doctor", json={"expectedVersion": card_version(ids['pid']), "userId": ids["doc_b"]}, headers=client.csrf)
     assert r.status_code == 200, r.text
 
 
