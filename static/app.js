@@ -2193,15 +2193,12 @@ const app = {
     },
 
     rebuildAuthorizedWorkspace(user, fresh, allowed, doctors) {
-        const drafts = new Map([...(this.sessionFieldDrafts || [])].filter(([, draft]) => draft.owner === user.id && allowed.has(draft.patientId)));
+        const drafts = this.collectSessionFieldDrafts(user, fresh, allowed);
         const createDraft = !$('addModal').hidden && user.permissions.createPatients
             ? [...$('addForm').querySelectorAll('input, select, textarea')].map(node => [node.id, node.value, node.checked]) : null;
         const createKey = this.addPatientKey;
         const createSentBody = this.addPatientSentBody;
         const patientId = this.currentView === 'patient' && allowed.has(this.currentPatientId) ? this.currentPatientId : null;
-        const oldPatient = patientId ? this.getPatient(patientId) : null;
-        const panelDraft = patientId ? [...$('patientPanels').querySelectorAll('input, select, textarea')]
-            .map(node => ({tag: node.tagName, type: node.type, id: node.id, value: node.value, checked: node.checked})) : [];
         const tab = this.currentTab;
         const prompt = patientId && ui.openModals.includes('promptModal') ? $('promptModal') : null;
         const epoch = (this.sessionEpoch || 0) + 1;
@@ -2231,10 +2228,6 @@ const app = {
         this.refreshAIStatus();
         this.refreshInternalNotificationSummary();
         this.loadActivity();
-        if (oldPatient) {
-            const index = this.patients.findIndex(patient => patient.id === patientId);
-            if (index >= 0) this.patients[index] = oldPatient; // Исходные версии только доступной карточки с черновиком.
-        }
         this.sessionFieldDrafts = drafts;
         this.renderSessionFieldDrafts();
         if (patientId) {
@@ -2242,13 +2235,6 @@ const app = {
             this.currentTab = tab;
             this.showView('patient');
             this.renderPatientView();
-            [...$('patientPanels').querySelectorAll('input, select, textarea')].forEach((node, index) => {
-                const draft = panelDraft[index];
-                if (draft && draft.tag === node.tagName && draft.type === node.type && draft.id === node.id) {
-                    node.value = draft.value;
-                    node.checked = draft.checked;
-                }
-            });
         }
         if (prompt) {
             $('promptModal').replaceWith(prompt);
@@ -3953,7 +3939,7 @@ const app = {
     },
 
     patientInput(p, fieldName, type, value, transform) {
-        return el('input', {
+        const control = el('input', {
             class: 'input', type, value: value === null || value === undefined ? '' : value,
             on: {
                 change: (event) => this.updatePatientField(
@@ -3961,13 +3947,14 @@ const app = {
                 ),
             },
         });
+        return this.trackPatientControl(p, fieldName, control, () => transform ? transform(control.value) : control.value);
     },
 
     patientSelect(p, fieldName, optionNodes) {
-        return el('select', {
+        return this.trackPatientControl(p, fieldName, el('select', {
             class: 'select',
             on: { change: (event) => this.updatePatientField(p.id, fieldName, event.target.value) },
-        }, optionNodes);
+        }, optionNodes));
     },
 
     localizationForDiagnosis(code) {
@@ -3996,6 +3983,7 @@ const app = {
             class: 'select',
             on: { change: (event) => this.updatePatientField(p.id, 'diagnosis', event.target.value) },
         }, this.diagnosisOptionNodes(currentLocalization, '', p.diagnosis));
+        this.trackPatientControl(p, 'diagnosis', select);
         const status = el('div', {}, this.clientPathStatusNode(this.clientPathForLocalization(currentLocalization)));
         const syncOptions = () => {
             const selected = select.value || p.diagnosis;
@@ -4025,6 +4013,9 @@ const app = {
             value: p.pgiResultDate || '',
             'aria-label': 'Дата результата ПГИ',
         });
+        const readDraft = () => ({result: resultSelect.value, date: dateInput.value});
+        this.trackPatientControl(p, 'pgiResult', resultSelect, readDraft);
+        this.trackPatientControl(p, 'pgiResult', dateInput, readDraft);
         const save = () => {
             const result = resultSelect.value;
             const date = dateInput.value;
@@ -4098,11 +4089,11 @@ const app = {
     tabComplaints(p) {
         return el('div', { class: 'panel panel--pad' }, [
             el('h2', { class: 'section-title', text: 'Комментарии' }),
-            el('textarea', {
+            this.trackPatientControl(p, 'complaint', el('textarea', {
                 class: 'textarea', rows: '10', value: p.complaint || '',
                 'aria-label': 'Комментарии',
                 on: { change: (event) => this.updatePatientField(p.id, 'complaint', event.target.value) },
-            }),
+            })),
             el('p', { class: 'field__hint', text: 'Изменения сохраняются на сервере автоматически при выходе из поля.' }),
         ]);
     },
@@ -6611,6 +6602,37 @@ const app = {
 
     /* ================================================================ МУТАЦИИ */
 
+    trackPatientControl(patient, field, node, readValue = () => node.value) {
+        this.patientDraftControls = this.patientDraftControls || new WeakMap();
+        // Версия принадлежит отрисованной карточке, а не будущему ответу сервера.
+        const control = {patientId: patient.id, field, expectedVersion: patient.version,
+            readValue, initial: JSON.stringify(readValue()), touched: false};
+        this.patientDraftControls.set(node, control);
+        for (const event of ['input', 'change']) node.addEventListener(event, () => { control.touched = true; });
+        return node;
+    },
+
+    collectSessionFieldDrafts(user, fresh, allowed) {
+        const drafts = new Map(this.sessionFieldDrafts || []);
+        for (const node of $('patientPanels').querySelectorAll('input, select, textarea')) {
+            const control = this.patientDraftControls?.get(node);
+            if (!control || !control.touched || node.disabled) continue;
+            const value = control.readValue();
+            if (JSON.stringify(value) === control.initial) continue;
+            drafts.set(control.patientId + ':' + control.field, {patientId: control.patientId, owner: this.user.id,
+                body: {field: control.field, value, expectedVersion: control.expectedVersion}});
+        }
+        const current = new Map(fresh.map(patient => [patient.id, patient]));
+        return new Map([...drafts].filter(([, draft]) => {
+            if (draft.owner !== user.id || !allowed.has(draft.patientId)) return false;
+            const patient = current.get(draft.patientId);
+            const saved = draft.body.field === 'pgiResult'
+                ? {result: patient.pgiResult || '', date: patient.pgiResultDate || ''} : patient[draft.body.field];
+            // Ответ мог потеряться после успешной записи: уже сохраненное значение не черновик.
+            return JSON.stringify(saved ?? '') !== JSON.stringify(draft.body.value ?? '');
+        }));
+    },
+
     keepSessionFieldDraft(patientId, body) {
         this.sessionFieldDrafts = this.sessionFieldDrafts || new Map();
         const key = patientId + ':' + body.field;
@@ -6640,12 +6662,20 @@ const app = {
                     this.replacePatientInCache(updated);
                     this.renderSessionFieldDrafts();
                     this.refreshCurrent();
-                } catch (error) { ui.toast(error.message, 'warning'); }
-                finally { save.disabled = false; }
+                } catch (error) {
+                    if (this.isStaleRecord(error)) {
+                        await this.reloadAfterStaleRecord(draft.patientId, error);
+                        this.renderSessionFieldDrafts();
+                    }
+                    else ui.toast(error.message, 'warning');
+                }
+                finally { save.disabled = !this.can('editPatients'); }
             }}});
             save.disabled = !this.can('editPatients');
             banner.append(el('div', {}, [el('span', {text: 'Несохраненная правка (' + (labels[draft.body.field] || 'поле карточки') + '): ' +
-                    (draft.body.value && typeof draft.body.value === 'object' ? Object.values(draft.body.value).join(' / ') : String(draft.body.value ?? '')) + '. '}), save,
+                    (draft.body.value && typeof draft.body.value === 'object' ? Object.values(draft.body.value).join(' / ') : String(draft.body.value ?? '')) + '. '
+                    + 'Версия черновика: ' + draft.body.expectedVersion + '. Версия сервера: ' + (this.getPatient(draft.patientId)?.version ?? 'недоступна') + '. '
+                    + 'Поля карточки показывают данные сервера. '}), save,
                 el('button', {type: 'button', class: 'btn btn--ghost btn--sm', text: 'Отменить правку', on: {click: async () => {
                     if (!await ui.confirm({title: 'Отменить правку?', text: 'Несохраненное значение будет удалено.', okLabel: 'Удалить черновик'})) return;
                     if (this.sessionExpired) return;
