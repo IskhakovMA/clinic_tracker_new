@@ -633,7 +633,12 @@ const app = {
         invalid_phone: 'Некорректный телефон',
         missing_phone: 'Телефон отсутствует',
         patient_unavailable: 'Пациент недоступен',
-        template_disabled: 'Шаблон отключён',
+        template_disabled: 'Шаблон отключен',
+        template_invalid: 'Недопустимый шаблон',
+        event_passed: 'Время приема уже наступило',
+        event_already_sent: 'Напоминание уже отправлено',
+        event_removed: 'Событие удалено',
+        event_invalid: 'Некорректная дата или время события',
         provider_failed: 'Ошибка отправки в тестовом режиме',
         retry_scheduled: 'Повтор запланирован',
         event_inactive: 'Событие завершено или отменено',
@@ -2635,6 +2640,14 @@ const app = {
         const months = Math.floor(days / 30);
         if (months < 12) return `${months} мес`;
         return `${Math.floor(months / 12)} г`;
+    },
+
+    formatNotificationMoment(iso) {
+        if (!iso) return '—';
+        const moment = new Date(iso);
+        if (Number.isNaN(moment.getTime())) return '—';
+        return moment.toLocaleString('ru-RU', {timeZone: 'Europe/Moscow',
+            year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'}) + ' МСК';
     },
 
     formatDateTime(iso) {
@@ -5501,7 +5514,7 @@ const app = {
             ])),
             el('td', { class: 'cell-notification-template', text: item.template_name || item.template_code }),
             el('td', { class: 'cell-notification-source', text: this.NOTIFICATION_SOURCE_LABELS[item.source_type] || item.source_type }),
-            el('td', { class: 'cell-notification-scheduled', text: this.formatDateTime(item.scheduled_at) }),
+            el('td', { class: 'cell-notification-scheduled', text: this.formatNotificationMoment(item.scheduled_at) }),
             el('td', { class: 'cell-notification-status' }, this.notificationStatusChip(item.status)),
             el('td', { class: 'cell-notification-attempts', text: `${item.attempt_count || 0}/${item.max_attempts || 0}` }),
             el('td', { class: 'cell-notification-reason', text: this.notificationReasonText(item) }),
@@ -6289,9 +6302,9 @@ const app = {
                     el('div', { text: consentLabel }),
                     pref.consent_recorded_at ? el('div', { text: `Дата фиксации: ${this.formatDateTime(pref.consent_recorded_at)}` }) : null,
                     pref.consent_recorded_by_name ? el('div', { text: `Зафиксировал: ${pref.consent_recorded_by_name}` }) : null,
-                    data.upcoming ? el('div', { text: `Ближайшее уведомление: ${this.formatDateTime(data.upcoming.scheduled_at)}` }) : null,
+                    data.upcoming ? el('div', { text: `Ближайшее уведомление: ${this.formatNotificationMoment(data.upcoming.scheduled_at)}` }) : null,
                 ]),
-                canWrite ? this.patientNotificationActions(patientId, pref, templates) : el('p', {
+                canWrite ? this.patientNotificationActions(patientId, pref, templates, data.institution_now) : el('p', {
                     class: 'muted',
                     text: 'Режим просмотра — изменение данных недоступно',
                 }),
@@ -6300,7 +6313,7 @@ const app = {
                     ? el('div', { class: 'notification-list' }, data.notifications.map(item => el('div', { class: 'notification-row' }, [
                         el('div', {}, [
                             el('div', { class: 'person__name', text: item.template_name || item.template_code }),
-                            el('div', { class: 'person__meta', text: `${this.formatDateTime(item.scheduled_at)} · ${this.NOTIFICATION_SOURCE_LABELS[item.source_type] || item.source_type}` }),
+                            el('div', { class: 'person__meta', text: `${this.formatNotificationMoment(item.scheduled_at)} · ${this.NOTIFICATION_SOURCE_LABELS[item.source_type] || item.source_type}` }),
                             el('div', { class: 'muted', text: this.notificationReasonText(item) }),
                         ]),
                         this.notificationStatusChip(item.status),
@@ -6316,9 +6329,13 @@ const app = {
         }
     },
 
-    patientNotificationActions(patientId, pref, templates) {
-        const now = new Date(Date.now() + 60 * 60 * 1000);
-        const defaultDateTime = now.toISOString().slice(0, 16);
+    patientNotificationActions(patientId, pref, templates, institutionNow) {
+        const serverNow = new Date(institutionNow);
+        const now = new Date(serverNow.getTime() + 60 * 60 * 1000);
+        const defaultDateTime = Number.isNaN(now.getTime()) ? '' : new Intl.DateTimeFormat('sv-SE', {
+            timeZone: 'Europe/Moscow', year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+        }).format(now).replace(' ', 'T');
         return el('div', {}, [
             el('div', { class: 'pcard__actions' }, [
                 el('button', {
@@ -6344,7 +6361,7 @@ const app = {
                         : [option('', 'Нет включённых шаблонов', true)]),
                 ]),
                 el('div', { class: 'field' }, [
-                    el('label', { class: 'field__label', for: 'patientNotificationSchedule', text: 'Дата и время отправки' }),
+                    el('label', { class: 'field__label', for: 'patientNotificationSchedule', text: 'Дата и время отправки (МСК)' }),
                     el('input', {
                         class: 'input',
                         type: 'datetime-local',
@@ -6374,10 +6391,17 @@ const app = {
         if (!templateSelect || !scheduleInput || !preview) return;
         const template = (this.notifications.templates || []).find(t => t.code === templateSelect.value)
             || { body: 'Напоминаем о запланированном посещении {date} в {time}. Для уточнения информации свяжитесь с организацией.' };
-        const date = scheduleInput.value ? new Date(scheduleInput.value) : null;
-        const dateText = date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString('ru-RU') : 'дата';
-        const timeText = date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }) : 'время';
-        preview.value = template.body.replaceAll('{date}', dateText).replaceAll('{time}', timeText);
+        const parts = scheduleInput.value.split('T');
+        const dateText = parts[0] || 'дата';
+        const timeText = parts[1] || 'время';
+        const tokens = template.body.match(/\{\{|\}\}|\{(?:date|time)\}|[^{}]+/g) || [];
+        if (template.body.length > 500 || tokens.join('') !== template.body) {
+            preview.value = 'Недопустимый шаблон уведомления.';
+            return;
+        }
+        const values = {'{date}': dateText, '{time}': timeText, '{{': '{', '}}': '}'};
+        preview.value = tokens.map(token => Object.hasOwn(values, token) ? values[token] : token).join('');
+
     },
 
     async savePatientNotificationPreference(patientId, smsEnabled, consentStatus) {
@@ -6396,7 +6420,7 @@ const app = {
     async createPatientNotification(patientId) {
         const templateCode = $('patientNotificationTemplate').value;
         const scheduledValue = $('patientNotificationSchedule').value;
-        const scheduled = scheduledValue ? new Date(scheduledValue) : null;
+        const scheduled = scheduledValue ? new Date(scheduledValue + '+03:00') : null;
         if (!templateCode || !scheduled || Number.isNaN(scheduled.getTime())) {
             ui.toast('Укажите шаблон, дату и время отправки.', 'warning');
             return;

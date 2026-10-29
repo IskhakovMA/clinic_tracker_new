@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from pydantic import Field, ValidationError, field_validator
 
-from .. import policy, store
+from .. import clock, policy, store
 from ..analytics import service as analytics_service
 from ..analytics.filters import AnalyticsFilters, today_local
 from ..analytics.metrics import overdue_bucket, stage_label
@@ -128,6 +128,7 @@ def search_accessible_patients(conn: sqlite3.Connection, user: policy.CurrentUse
     return {"patients": [_patient_ref(row, summary.get(row["id"])) for row in rows]}
 
 
+@clock.consistent
 def get_patient_summary(conn: sqlite3.Connection, user: policy.CurrentUser, args: PatientIdArgs) -> dict:
     patient = _require_patient(conn, user, args.patientId)
     attention = patient_attention.list_for_patient(conn, user, args.patientId, limit=20)
@@ -286,6 +287,7 @@ def get_patient_attention(conn: sqlite3.Connection, user: policy.CurrentUser, ar
     }
 
 
+@clock.consistent
 def list_overdue_patients(conn: sqlite3.Connection, user: policy.CurrentUser, args: ListOverdueArgs) -> dict:
     quality = data_quality.evaluate(conn, user, today=today_local())
     patient_names = {patient["patient_id"]: patient["patient_name"] for patient in quality["patients"]}
@@ -311,6 +313,7 @@ def list_overdue_patients(conn: sqlite3.Connection, user: policy.CurrentUser, ar
     return {"patients": rows[:args.limit]}
 
 
+@clock.consistent
 def get_today_work(conn: sqlite3.Connection, user: policy.CurrentUser, args: EmptyArgs) -> dict:
     today = today_local().isoformat()
     cond, params = policy.patient_scope_filter(user)

@@ -13,13 +13,15 @@ def _future(month: int, day: int) -> str:
     """A distinct event date inside the reminder horizon (the queue skips
     past and far-future events)."""
     from datetime import date as _date, timedelta as _td
-    return (_date.today() + _td(days=month * 31 + day)).isoformat()
+    from backend.app import clock
+    return (clock.today_moscow() + _td(days=month * 31 + day)).isoformat()
 
-GOOD_EVENT = {"date": _future(1, 2), "time": "10:00", "treatmentType": "", "actualDate": None, "actualTime": None}
+def _good_event():
+    return {"date": _future(1, 2), "time": "10:00", "treatmentType": "", "actualDate": None, "actualTime": None}
 
 
 def test_event_patch_rejects_out_of_range_time(auth_client):
-    pid = _create_patient_direct(events=[dict(GOOD_EVENT)])
+    pid = _create_patient_direct(events=[_good_event()])
     for bad in ("25:00", "-1:00", "12:60", "7pm"):
         r = event_patch(auth_client, pid, "time", bad)
         assert r.status_code == 422, (bad, r.status_code)
@@ -31,7 +33,7 @@ def test_event_patch_rejects_out_of_range_time(auth_client):
 
 def test_create_rejects_out_of_range_event_time(auth_client):
     from .conftest import make_patient_payload
-    bad = dict(GOOD_EVENT, time="25:00")
+    bad = dict(_good_event(), time="25:00")
     r = auth_client.post("/api/patients", json=make_patient_payload(events=[bad]), headers=auth_client.csrf)
     assert r.status_code == 422
 
@@ -41,7 +43,7 @@ def test_generation_skips_poisoned_rows_and_continues(auth_client):
     conn = get_conn()
     poisoned = []
     for _ in range(2):
-        pid = _create_patient_direct(events=[dict(GOOD_EVENT)])
+        pid = _create_patient_direct(events=[_good_event()])
         _grant(auth_client, pid)
         poisoned.append(pid)
     # Rows written before validation existed (or by any other path).
@@ -49,7 +51,7 @@ def test_generation_skips_poisoned_rows_and_continues(auth_client):
     with conn:
         conn.execute("UPDATE events SET time = '25:00' WHERE id = ?", (ev_ids[0],))
         conn.execute("UPDATE events SET date = '0001-01-01', time = '09:00' WHERE id = ?", (ev_ids[1],))
-    healthy = _create_patient_direct(events=[dict(GOOD_EVENT)])
+    healthy = _create_patient_direct(events=[_good_event()])
     _grant(auth_client, healthy)
 
     r = auth_client.post("/api/notifications/generate-due", headers=auth_client.csrf)
@@ -65,4 +67,7 @@ def test_event_dt_rejects_out_of_range_values():
     from backend.app.services.notifications import event_dt
     assert event_dt("2099-01-02", "25:00") is None
     assert event_dt("2099-01-02", "10:61") is None
-    assert event_dt("2099-01-02", "10:30").hour == 10
+    from backend.app import clock
+    instant = event_dt("2099-01-02", "10:30")
+    assert instant.isoformat() == "2099-01-02T07:30:00+00:00"
+    assert instant.astimezone(clock.institution_tz()).hour == 10

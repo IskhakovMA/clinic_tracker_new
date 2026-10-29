@@ -8,9 +8,8 @@ import time
 import re
 from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .. import config, policy
+from .. import clock, config, policy
 from . import prompts, tools
 from .provider import AIProvider, AIProviderError, AIProviderUnavailable, default_provider
 from .schemas import AIChatIn
@@ -136,10 +135,7 @@ def _pluralize_ru(value: int, one: str, few: str, many: str) -> str:
 
 def _today_text() -> str:
     weekdays = ("понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье")
-    try:
-        now = datetime.now(ZoneInfo(config.APP_TIMEZONE))
-    except ZoneInfoNotFoundError:
-        now = datetime.now()
+    now = clock.now_moscow()
     return f"Сегодня {now.strftime('%d.%m.%Y')}, {weekdays[now.weekday()]}."
 
 

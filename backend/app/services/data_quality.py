@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Any
 
-from .. import identity, policy
+from .. import clock, identity, policy
 from ..db import in_chunks
 from ..models import STAGES, TERMINAL_STAGES
 from ..phone import normalize_phone as _normalize_phone
@@ -145,7 +145,7 @@ class PatientRecord:
 
 
 def _today() -> date:
-    return datetime.now(timezone.utc).date()
+    return clock.today_moscow()
 
 
 def _safe_date(value: str | None) -> date | None:
@@ -463,7 +463,7 @@ def _patient_findings(patient: PatientRecord, *, today: date, can_write: bool, c
                     field_name="actualDate", details={"occurrence_index": occ_index, "event_index": event_index},
                     suggested_action=_action("Проверить даты этапа", "events", can_write),
                 ))
-            if patient.nosology and planned and planned < today and not actual and not event.get("noPlan") and not route_closed:
+            if planned and planned < today and not actual and not event.get("noPlan") and not route_closed:
                 issues.append(_finding(
                     patient=patient, code="overdue_event", category="dates", severity="warning",
                     title="Плановое событие просрочено",
@@ -556,6 +556,7 @@ def _duplicate_groups(patients: list[PatientRecord], *, identity_signals: bool =
     return groups
 
 
+@clock.consistent
 def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date | None = None,
              identity_signals: bool = False) -> dict:
     today = today or _today()
@@ -636,7 +637,7 @@ def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date 
         "possible_duplicate_groups": len(duplicate_groups),
         "unresolved_patients": sum(1 for p in patients if not p.treating_doctor_user_id),
         "average_completeness": round(sum(p["completeness"]["score"] for p in patient_summaries) / len(patient_summaries)) if patient_summaries else 100,
-        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "computed_at": clock.current_moscow().astimezone(timezone.utc).isoformat(),
     }
     return {
         "summary": summary,

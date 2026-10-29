@@ -7,7 +7,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from .. import audit, config, policy
+from .. import audit, clock, config, policy
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf, search_text
 from ..models import NotificationCreateIn, NotificationPreferenceIn, NotificationTemplateUpdateIn
 from ..services import notifications
@@ -108,6 +108,7 @@ def patient_notifications(
         conn, user, patient_id=patient_id, status="pending", sort="scheduled_asc", limit=1
     )
     return {
+        "institution_now": notifications.utcnow().astimezone(clock.institution_tz()).isoformat(),
         "preference": pref,
         "notifications": queue["notifications"],
         "upcoming": upcoming["notifications"][0] if upcoming["notifications"] else None,
@@ -163,8 +164,8 @@ def update_template(
         return notifications.update_template(conn, code=code, body=body.body, enabled=body.enabled, user=user)
     except KeyError:
         _not_found()
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Недопустимый шаблон уведомления.") from None
 
 
 @router.get("/{notification_id}")

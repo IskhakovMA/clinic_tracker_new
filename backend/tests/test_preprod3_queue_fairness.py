@@ -12,12 +12,17 @@ from .conftest import create_account, get_conn
 from .test_notifications import _create_patient_direct, _grant
 
 
+def _notification_now():
+    from backend.app.services import notifications
+    return notifications.utcnow()
+
+
 def _iso(delta):
-    return (datetime.now(timezone.utc) + delta).isoformat()
+    return (_notification_now() + delta).isoformat()
 
 
 def _event(days=2, hour="10:00"):
-    d = (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+    d = (_notification_now() + timedelta(days=days)).date().isoformat()
     return {"date": d, "time": hour, "treatmentType": "", "actualDate": None, "actualTime": None}
 
 

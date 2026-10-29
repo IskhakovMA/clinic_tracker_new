@@ -12,6 +12,11 @@ from .conftest import event_patch, get_conn
 from .test_preprod2_reminders import _event, _queued, _setup
 
 
+def _notification_now():
+    from backend.app.services import notifications
+    return notifications.utcnow()
+
+
 def _pending(pid):
     return [q for q in _queued(get_conn(), pid) if q["status"] == "pending"]
 
@@ -103,7 +108,7 @@ def test_reminder_for_an_appointment_already_past_is_not_sent(auth_client):
     from .test_preprod2_reminders import _process
     pid = _setup(auth_client)
     conn = get_conn()
-    past = (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
+    past = (_notification_now() - timedelta(days=1)).date().isoformat()
     conn.execute("UPDATE events SET date = ? WHERE id IN (SELECT source_id FROM notifications WHERE patient_id = ?)",
                  (past, pid))
     conn.commit()

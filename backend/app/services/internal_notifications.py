@@ -1,18 +1,21 @@
 """Computed internal notification inbox with per-user read state.
 
 This is intentionally separate from the outbound/mock notification queue. The
-active conditions are derived from scoped domain data on every request; only the
-employee's read state is persisted.
+active conditions are derived from scoped domain data with commit/day/access
+invalidation; only the employee's notification lifecycle/read state is persisted.
 """
 from __future__ import annotations
 
 import hashlib
 import sqlite3
+from collections import OrderedDict
+from pathlib import Path
+from threading import RLock
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
-from .. import audit, config, policy
+from .. import audit, clock, config, db, policy, session_context
 from ..analytics.filters import app_timezone, today_local
 from ..db import in_chunks, now_iso, temp_id_table
 from . import data_quality, patient_attention
@@ -267,51 +270,91 @@ def _compute_conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> l
 
 def _sync_state(conn: sqlite3.Connection, user: policy.CurrentUser, conditions: list[Condition]) -> dict[str, sqlite3.Row]:
     now = now_iso()
-    active_keys = {c.stable_key for c in conditions}
-    with conn:
+    desired = {c.stable_key: c for c in conditions}
+
+    def read_states():
+        return {row["stable_key"]: row for row in conn.execute(
+            "SELECT * FROM internal_notification_state WHERE user_id = ?", (user.id,)).fetchall()}
+
+    def changed(c, state):
+        return state is None or state["resolved_at"] is not None or any(
+            state[key] != getattr(c, key) for key in ("patient_id", "notification_type", "source_type", "source_id"))
+
+    states = read_states()
+    if not any(changed(c, states.get(c.stable_key)) for c in conditions) and not any(
+            key not in desired and row["resolved_at"] is None for key, row in states.items()):
+        return {key: row for key, row in states.items() if key in desired}
+    # Только короткая синхронизация состояния под пишущей блокировкой.
+    # Конкурентное прочтение не затирается: read_at никогда не входит в upsert.
+    try:
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        states = read_states()
         for c in conditions:
-            sid = _state_id(user.id, c.stable_key)
+            if not changed(c, states.get(c.stable_key)):
+                continue
             conn.execute(
                 """INSERT INTO internal_notification_state
                    (id, user_id, stable_key, patient_id, notification_type, source_type, source_id,
                     first_seen_at, last_seen_at, read_at, resolved_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
                    ON CONFLICT(user_id, stable_key) DO UPDATE SET
-                       patient_id = excluded.patient_id,
-                       notification_type = excluded.notification_type,
-                       source_type = excluded.source_type,
-                       source_id = excluded.source_id,
-                       last_seen_at = excluded.last_seen_at,
-                       resolved_at = NULL""",
-                (sid, user.id, c.stable_key, c.patient_id, c.notification_type, c.source_type, c.source_id, now, now),
+                       patient_id = excluded.patient_id, notification_type = excluded.notification_type,
+                       source_type = excluded.source_type, source_id = excluded.source_id,
+                       last_seen_at = excluded.last_seen_at, resolved_at = NULL""",
+                (_state_id(user.id, c.stable_key), user.id, c.stable_key, c.patient_id,
+                 c.notification_type, c.source_type, c.source_id, now, now),
             )
-        if active_keys:
-            keys = temp_id_table(conn, sorted(active_keys))
-            conn.execute(
-                f"""UPDATE internal_notification_state
-                    SET resolved_at = COALESCE(resolved_at, ?)
-                    WHERE user_id = ? AND resolved_at IS NULL AND stable_key NOT IN (SELECT id FROM {keys})""",  # nosec B608 - generated identifier
-                [now, user.id],
-            )
-        else:
-            conn.execute(
-                """UPDATE internal_notification_state
-                   SET resolved_at = COALESCE(resolved_at, ?)
-                   WHERE user_id = ? AND resolved_at IS NULL""",
-                (now, user.id),
-            )
-    ids = [_state_id(user.id, c.stable_key) for c in conditions]
-    if not ids:
-        return {}
-    rows = []
-    for chunk in in_chunks(conn, ids):
-        marks = ",".join("?" for _ in chunk)
-        rows.extend(conn.execute(
-            f"""SELECT * FROM internal_notification_state
-                WHERE user_id = ? AND id IN ({marks})""",  # nosec B608 - ids are generated server-side and bound.
-            [user.id, *chunk],
-        ).fetchall())
-    return {row["stable_key"]: row for row in rows}
+        for key, row in states.items():
+            if key not in desired and row["resolved_at"] is None:
+                conn.execute(
+                    """UPDATE internal_notification_state SET resolved_at = ?
+                       WHERE user_id = ? AND stable_key = ? AND resolved_at IS NULL""", (now, user.id, key))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    return {key: row for key, row in read_states().items() if key in desired}
+
+
+# Только условия, не персональные состояния прочтения. Никаких TTL-окон свежести.
+# PRAGMA data_version существующего process-wide соединения замечает commit
+# любого другого соединения/процесса, включая SQL, API, CLI и restore после restart.
+_condition_cache: OrderedDict = OrderedDict()
+_condition_lock = RLock()
+_CACHE_USERS = 8
+_CACHE_CONDITIONS = 50000
+
+
+def _conditions(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[Condition]:
+    with _condition_lock:
+        caller_path = conn.execute("PRAGMA database_list").fetchone()["file"]
+        if not caller_path or Path(caller_path).resolve() != config.DB_PATH.resolve() or conn.in_transaction:
+            return _compute_conditions(conn, user)
+        monitor = db.get_connection()
+        eligible = conn is not monitor and not monitor.in_transaction
+        revision = (monitor, monitor.execute("PRAGMA data_version").fetchone()[0], monitor.total_changes)
+        key = (revision, today_local(), session_context.access_context(user), UPCOMING_DAYS)
+        if eligible and key in _condition_cache:
+            _condition_cache.move_to_end(key)
+            return _condition_cache[key]
+        owned = not conn.in_transaction
+        try:
+            if owned:
+                conn.execute("BEGIN")
+            result = _compute_conditions(conn, user)
+            if owned:
+                conn.commit()
+        except Exception:
+            if owned:
+                conn.rollback()
+            raise
+        after = (monitor, monitor.execute("PRAGMA data_version").fetchone()[0], monitor.total_changes)
+        if eligible and revision == after and len(result) <= _CACHE_CONDITIONS:
+            _condition_cache[key] = result
+            while len(_condition_cache) > _CACHE_USERS or sum(len(v) for v in _condition_cache.values()) > _CACHE_CONDITIONS:
+                _condition_cache.popitem(last=False)
+        return result
 
 
 def _type_label(kind: str) -> str:
@@ -348,18 +391,23 @@ def _to_item(condition: Condition, state: sqlite3.Row) -> dict:
     }
 
 
+@clock.consistent
 def _active_items(conn: sqlite3.Connection, user: policy.CurrentUser) -> list[dict]:
-    conditions = _compute_conditions(conn, user)
+    conditions = _conditions(conn, user)
     states = _sync_state(conn, user, conditions)
     items = [_to_item(c, states[c.stable_key]) for c in conditions if c.stable_key in states]
     return sorted(items, key=lambda x: (x["read"], x["event_at"] or "", x["patient_name"], x["id"]))
 
 
+@clock.consistent
 def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
-    items = _active_items(conn, user)
+    return _summary_items(user, _active_items(conn, user))
+
+
+def _summary_items(user, items):
     return {
-        "computed_at": now_iso(),
-        "timezone": config.APP_TIMEZONE,
+        "computed_at": clock.current_moscow().isoformat(),
+        "timezone": clock.INSTITUTION_TIMEZONE,
         "scope": user.scope_strategy,
         "upcoming_days": UPCOMING_DAYS,
         "total_count": len(items),
@@ -374,16 +422,17 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     }
 
 
+@clock.consistent
 def preview_summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     """Read-only summary for AI tools.
 
     Unlike summary()/list_items(), this deliberately does not synchronise
     internal_notification_state and therefore cannot mark anything seen/read.
     """
-    conditions = _compute_conditions(conn, user)
+    conditions = _conditions(conn, user)
     return {
-        "computed_at": now_iso(),
-        "timezone": config.APP_TIMEZONE,
+        "computed_at": clock.current_moscow().isoformat(),
+        "timezone": clock.INSTITUTION_TIMEZONE,
         "scope": user.scope_strategy,
         "upcoming_days": UPCOMING_DAYS,
         "total_count": len(conditions),
@@ -399,6 +448,7 @@ def preview_summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     }
 
 
+@clock.consistent
 def list_items(
     conn: sqlite3.Connection,
     user: policy.CurrentUser,
@@ -415,6 +465,7 @@ def list_items(
     if drawer_filter not in DRAWER_FILTERS:
         raise ValueError("unknown drawer filter")
     items = _active_items(conn, user)
+    all_items = items
     if unread_only or drawer_filter == "unread":
         items = [i for i in items if not i["read"]]
     if drawer_filter == "today":
@@ -434,10 +485,11 @@ def list_items(
         "total": total,
         "limit": limit,
         "offset": offset,
-        "summary": summary(conn, user),
+        "summary": _summary_items(user, all_items),
     }
 
 
+@clock.consistent
 def mark_read(conn: sqlite3.Connection, user: policy.CurrentUser, notification_id: str) -> dict | None:
     items = _active_items(conn, user)
     item = next((i for i in items if i["id"] == notification_id), None)
@@ -461,6 +513,7 @@ def mark_read(conn: sqlite3.Connection, user: policy.CurrentUser, notification_i
     return next((i for i in _active_items(conn, user) if i["id"] == notification_id), item)
 
 
+@clock.consistent
 def mark_all_read(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     items = _active_items(conn, user)
     unread_ids = [i["id"] for i in items if not i["read"]]

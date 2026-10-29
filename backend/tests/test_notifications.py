@@ -19,14 +19,17 @@ def _future(month: int, day: int) -> str:
     """A distinct event date inside the reminder horizon (the queue skips
     past and far-future events)."""
     from datetime import date as _date, timedelta as _td
-    return (_date.today() + _td(days=month * 31 + day)).isoformat()
+    from backend.app import clock
+    return (clock.today_moscow() + _td(days=month * 31 + day)).isoformat()
 
 def _now_plus(hours: int = 1) -> str:
-    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat()
+    from backend.app.services import notifications
+    return (notifications.utcnow() + timedelta(hours=hours)).isoformat()
 
 
 def _now_minus(hours: int = 1) -> str:
-    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    from backend.app.services import notifications
+    return (notifications.utcnow() - timedelta(hours=hours)).isoformat()
 
 
 def _create_patient_direct(name="Уведомлений Пациент", phone="+7 (999) 111-22-33", doctor_id=None, events=None):
@@ -57,8 +60,8 @@ def _manual(client, patient_id: str, scheduled_at: str | None = None, template="
 
 def _due_all(conn):
     with conn:
-        conn.execute("UPDATE notifications SET scheduled_at = ?, next_attempt_at = ? WHERE status = 'pending'",
-                     (_now_minus(1), _now_minus(1)))
+        conn.execute("UPDATE notifications SET next_attempt_at = ? WHERE status = 'pending'",
+                     (_now_minus(1),))
 
 
 def test_v2_like_database_migrates_to_v3_notifications_tables(auth_client):

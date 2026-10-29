@@ -46,9 +46,9 @@
   {
    "file": "backend/app/services/notifications.py",
    "test_id": "B608",
-   "fingerprint": "d2e3597fd8cf526f01b2ef195e696ebed37ed1901b4f1ba4a072fefdf9e14baa",
-   "statement": "f\"\"\"SELECT COUNT(*) AS c FROM notifications JOIN patients ON patients.id = notifications.patient_id WHERE {cond} AND notifications.status = 'pending' AND substr(notifications.scheduled_at, 1, 10) = ?\"\"\",",
-   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. Date bound as parameter. SEC-2026-004, re-reviewed WP-A."
+   "fingerprint": "c1125f8c5f78896c64de4528e2da9e5df153365b2ca0cdcf3f2ce0e5a71ebbb8",
+   "statement": "f\"\"\"SELECT COUNT(*) AS c FROM notifications JOIN patients ON patients.id = notifications.patient_id WHERE {cond} AND notifications.status = 'pending' AND notifications.scheduled_at >= ? AND notifications.scheduled_at < ?\"\"\",",
+   "reason": "WP-E: условие области cond строит policy.patient_scope_filter из серверной модели прав; id пользователя, отделения и UTC-границы дня Москвы передаются только параметрами SQLite. Строки даты и пользовательский ввод не интерполируются в SQL. Пересмотрен измененный диапазон scheduled_at, B608 остается включенным."
   },
   {
    "file": "backend/app/services/notifications.py",

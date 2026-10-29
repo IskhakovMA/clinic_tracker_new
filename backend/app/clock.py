@@ -12,6 +12,8 @@ There is no silent fallback to UTC.
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
+from contextvars import ContextVar
+from functools import wraps
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 INSTITUTION_TIMEZONE = "Europe/Moscow"
@@ -30,8 +32,29 @@ def now_moscow() -> datetime:
     return datetime.now(timezone.utc).astimezone(institution_tz())
 
 
+_calculation_now: ContextVar[datetime | None] = ContextVar("institution_calculation_now", default=None)
+
+
+def current_moscow() -> datetime:
+    """Один момент для связанных чтений, без изменения системных часов."""
+    return _calculation_now.get() or now_moscow()
+
+
+def consistent(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if _calculation_now.get() is not None:
+            return function(*args, **kwargs)
+        token = _calculation_now.set(now_moscow())
+        try:
+            return function(*args, **kwargs)
+        finally:
+            _calculation_now.reset(token)
+    return wrapped
+
+
 def today_moscow() -> date:
-    return now_moscow().date()
+    return current_moscow().date()
 
 
 def slot_moment(scheduled_date: str, scheduled_time: str) -> datetime | None:

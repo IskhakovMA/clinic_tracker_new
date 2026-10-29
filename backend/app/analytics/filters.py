@@ -4,13 +4,12 @@ from __future__ import annotations
 import re
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException, Query, status
 
-from .. import config
+from .. import clock
 from ..models import STAGES
 from ..services import data_quality, notifications, patient_attention
 
@@ -27,15 +26,12 @@ ORDER_FIELDS = ("asc", "desc")
 GROUP_BY_FIELDS = ("stage", "doctor", "department", "severity", "code", "status", "template", "source", "overdue_bucket")
 
 
-def app_timezone() -> ZoneInfo:
-    try:
-        return ZoneInfo(config.APP_TIMEZONE)
-    except ZoneInfoNotFoundError:
-        return ZoneInfo("UTC")
+def app_timezone():
+    return clock.institution_tz()
 
 
 def now_local() -> datetime:
-    return datetime.now(app_timezone())
+    return clock.current_moscow()
 
 
 def today_local() -> date:
@@ -56,8 +52,8 @@ def parse_date_param(value: str | None, field: str) -> date | None:
 
 def local_day_bounds(day: date) -> tuple[str, str]:
     tz = app_timezone()
-    start = datetime.combine(day, time.min, tzinfo=tz).astimezone(ZoneInfo("UTC"))
-    end = datetime.combine(day, time.max, tzinfo=tz).astimezone(ZoneInfo("UTC"))
+    start = datetime.combine(day, time.min, tzinfo=tz).astimezone(timezone.utc)
+    end = datetime.combine(day, time.max, tzinfo=tz).astimezone(timezone.utc)
     return start.isoformat(), end.isoformat()
 
 

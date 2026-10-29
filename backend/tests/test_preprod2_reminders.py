@@ -11,8 +11,13 @@ from .conftest import get_conn, make_patient_payload, event_delete, event_patch,
 from .test_notifications import _create_patient_direct, _due_all, _grant
 
 
+def _notification_now():
+    from backend.app.services import notifications
+    return notifications.utcnow()
+
+
 def _event(days=2, hour="10:00"):
-    d = (datetime.now(timezone.utc) + timedelta(days=days)).date().isoformat()
+    d = (_notification_now() + timedelta(days=days)).date().isoformat()
     return {"date": d, "time": hour, "treatmentType": "", "actualDate": None, "actualTime": None}
 
 

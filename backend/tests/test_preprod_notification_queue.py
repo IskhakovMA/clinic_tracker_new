@@ -9,8 +9,13 @@ from datetime import datetime, timedelta, timezone
 from .test_notifications import _create_patient_direct, _grant, _manual
 
 
+def _notification_now():
+    from backend.app.services import notifications
+    return notifications.utcnow()
+
+
 def _at(**delta) -> str:
-    return (datetime.now(timezone.utc) + timedelta(**delta)).isoformat()
+    return (_notification_now() + timedelta(**delta)).isoformat()
 
 
 def test_manual_create_rejects_far_future_schedule(auth_client):

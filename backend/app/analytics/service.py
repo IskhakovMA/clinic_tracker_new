@@ -14,7 +14,7 @@ from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from .. import config, policy
+from .. import clock, config, policy
 from ..db import in_chunks, temp_id_table
 from ..localization_catalog import ALL_LOCALIZATIONS
 from ..models import STAGES, TERMINAL_STAGES
@@ -44,8 +44,8 @@ SUMMARY_DEFINITIONS = {
 
 def _computed_meta(user: policy.CurrentUser, filters: AnalyticsFilters, definitions: dict[str, str] | None = None) -> dict:
     return {
-        "computed_at": datetime.now(app_timezone()).isoformat(),
-        "timezone": config.APP_TIMEZONE,
+        "computed_at": clock.current_moscow().isoformat(),
+        "timezone": clock.INSTITUTION_TIMEZONE,
         "scope": user.scope_strategy,
         "filters": filters.as_dict(),
         "definitions": definitions or {},
@@ -292,6 +292,7 @@ def _checklist_state(conn: sqlite3.Connection, patient_ids: set[str]) -> dict:
     return state
 
 
+@clock.consistent
 def summary(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
@@ -497,6 +498,7 @@ def _trend_rows(conn: sqlite3.Connection, patient_ids: set[str], filters: Analyt
     }
 
 
+@clock.consistent
 def dashboard(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
@@ -517,6 +519,7 @@ def dashboard(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analy
     }
 
 
+@clock.consistent
 def stages(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
@@ -585,6 +588,7 @@ def _overdue_state(conn: sqlite3.Connection, user: policy.CurrentUser, filters: 
     }
 
 
+@clock.consistent
 def overdue(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     state = _overdue_state(conn, user, filters)
     items = state["items"]
@@ -601,6 +605,7 @@ def overdue(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyti
     }
 
 
+@clock.consistent
 def stage_durations(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     patient_ids = _filtered_patient_ids(conn, user, filters)
     if not patient_ids:
@@ -679,6 +684,7 @@ def _safe_date(value: str | None) -> date | None:
         return None
 
 
+@clock.consistent
 def workload(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
@@ -735,6 +741,7 @@ def _notification_status_by_patient(conn: sqlite3.Connection, patient_ids: set[s
     return result
 
 
+@clock.consistent
 def data_quality_state(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     quality = _quality_context(conn, user)
     patient_ids = _filtered_patient_ids(conn, user, filters, quality)
@@ -760,6 +767,7 @@ def data_quality_state(conn: sqlite3.Connection, user: policy.CurrentUser, filte
     }
 
 
+@clock.consistent
 def checklists(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     patient_ids = _filtered_patient_ids(conn, user, filters)
     state = _checklist_state(conn, patient_ids)
@@ -800,6 +808,7 @@ def checklists(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Anal
     }
 
 
+@clock.consistent
 def notifications_state(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters) -> dict:
     patient_ids = _filtered_patient_ids(conn, user, filters)
     if not patient_ids:
@@ -916,6 +925,7 @@ def _quality_issue_context(issue: dict) -> dict:
     return context
 
 
+@clock.consistent
 def details(
     conn: sqlite3.Connection,
     user: policy.CurrentUser,
@@ -1019,6 +1029,7 @@ def _notification_details(conn: sqlite3.Connection, patient_ids: set[str], statu
     ]
 
 
+@clock.consistent
 def export(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters, sections: list[str] | None = None) -> dict:
     allowed = {"summary", "stages", "workload", "data_quality", "checklists", "notifications"}
     selected = [s for s in (sections or ["summary", "stages", "workload"]) if s in allowed]
@@ -1055,6 +1066,7 @@ CSV_DETAIL_LEVELS = {"aggregate", "details"}
 CSV_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r", "\n")
 
 
+@clock.consistent
 def csv_safe_cell(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -1064,12 +1076,14 @@ def csv_safe_cell(value: Any) -> Any:
     return value
 
 
+@clock.consistent
 def csv_filename(report_type: str, *, now: datetime | None = None) -> str:
     safe_type = report_type if report_type in CSV_REPORT_TYPES else "summary"
-    stamp = (now or datetime.now(app_timezone())).strftime("%Y%m%d_%H%M%S")
+    stamp = (now or clock.current_moscow()).strftime("%Y%m%d_%H%M%S")
     return f"analytics_{safe_type}_{stamp}.csv"
 
 
+@clock.consistent
 def export_csv(conn: sqlite3.Connection, user: policy.CurrentUser, filters: AnalyticsFilters, *, report_type: str, detail_level: str) -> dict:
     if report_type not in CSV_REPORT_TYPES:
         raise ValueError("unknown report_type")
