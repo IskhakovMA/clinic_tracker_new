@@ -19,7 +19,7 @@ const assert = require('node:assert/strict');
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const browser = await chromium.launch({headless: true, ...(process.env.BROWSER_EXECUTABLE ? {executablePath: process.env.BROWSER_EXECUTABLE} : {})});
     const origin = `http://127.0.0.1:${server.address().port}`;
-    const user = {id: 'synthetic-a', fullName: 'Синтетический Сотрудник', roleId: 'doctor', permissions: {createPatients: true}};
+    const user = {id: 'synthetic-a', username: 'synthetic-a', fullName: 'Синтетический Сотрудник', roleId: 'doctor', permissions: {createPatients: true}};
     async function fresh({authenticated = true, patientsStatus = 200} = {}) {
         const context = await browser.newContext();
         const page = await context.newPage();
@@ -104,6 +104,8 @@ const assert = require('node:assert/strict');
         await page.route('**/api/auth/login', r => r.fulfill({status: 500, json: {detail: 'PRIVATE'}}));
         await page.locator('#username').fill('synthetic-a'); await page.locator('#password').fill('synthetic'); await page.locator('#loginSubmit').click();
         await page.waitForFunction(() => document.getElementById('loginError').textContent.includes('Внутренняя ошибка'));
+        await page.route('**/api/patients', r => r.fulfill({json: [{id: 'synthetic', version: 7,
+            name: 'Синтетический пациент', stage: 'exam', priority: 'normal', history: [], nosology: 'lung34'}]}));
         await page.unroute('**/api/auth/login');
         await page.route('**/api/auth/login', r => r.fulfill({json: {user}}));
         await page.locator('#loginSubmit').click();
@@ -123,6 +125,7 @@ const assert = require('node:assert/strict');
         assert.equal(submitted.expectedVersion, 7); assert.equal(writes, 2);
         log('AUD-05: draft survives 401 and failed login; same owner resumes, no automatic write, WP-C version retained');
 
+        await page.unroute('**/api/patients');
         // Новый сотрудник получает новую страницу, без DOM/кэша первого сотрудника.
         await page.evaluate(() => app.expireSession());
         await page.unroute('**/api/auth/login');

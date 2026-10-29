@@ -6,7 +6,7 @@ from urllib.parse import unquote
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
-from . import audit, config, policy, security
+from . import audit, config, policy, security, session_context
 from .db import _connect, connect_live
 
 
@@ -36,10 +36,15 @@ def require_session(request: Request, conn: sqlite3.Connection = Depends(get_db)
         # Same response for missing, expired and forged sessions — nothing here
         # tells a caller which of the three it was.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    request.state.clinic_user = session["user_id"]
+    expected = request.headers.get(session_context.USER_HEADER)
+    if expected is not None and expected != session["user_id"]:
+        raise session_context.ContextChanged("SESSION_IDENTITY_CHANGED")
     return session
 
 
 def require_user(
+    request: Request,
     session: sqlite3.Row = Depends(require_session),
     conn: sqlite3.Connection = Depends(get_db),
 ) -> policy.CurrentUser:
@@ -54,6 +59,11 @@ def require_user(
             with conn:
                 conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    stamp = session_context.access_context(user)
+    request.state.clinic_access = stamp
+    expected = request.headers.get(session_context.ACCESS_HEADER)
+    if expected is not None and expected != stamp:
+        raise session_context.ContextChanged("ACCESS_CONTEXT_CHANGED")
     return user
 
 

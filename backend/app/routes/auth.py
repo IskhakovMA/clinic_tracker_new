@@ -2,7 +2,7 @@ import sqlite3
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from .. import audit, config, idempotency, policy, security, users
+from .. import audit, config, idempotency, policy, security, users, session_context
 from ..db import transaction
 from ..deps import get_db, require_csrf, require_user
 from ..models import ChangePasswordIn, LoginIn
@@ -39,6 +39,7 @@ def _profile_payload(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict
     dept_rows = users.user_department_rows(conn, user.id, user.role_id)
     return {
         "id": user.id,
+        "accessContext": session_context.access_context(user),
         "username": user.username,
         "fullName": user.full_name,
         "roleId": user.role_id,

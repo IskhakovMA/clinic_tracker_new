@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import audit, config, db_guard, idempotency, process_guard, security
+from . import audit, config, db_guard, idempotency, process_guard, security, session_context
 from .db import SchemaVersionError, get_connection
 from .db import reset_singleton_for_tests as reset_singleton
 from .routes import ai, analytics, audit_log, auth, consilium, data_quality, duplicate_review, importexport, internal_notifications, migrate, notifications, patients, staff, structure
@@ -201,6 +201,10 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+        if getattr(request.state, "clinic_user", None):
+            response.headers["X-Clinic-User"] = request.state.clinic_user
+        if getattr(request.state, "clinic_access", None):
+            response.headers["X-Clinic-Access"] = request.state.clinic_access
     if config.HTTPS:
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
@@ -212,6 +216,12 @@ def _is_erroneous_write(exc: BaseException) -> bool:
             return True
         exc = exc.__cause__ or exc.__context__
     return False
+
+
+@app.exception_handler(session_context.ContextChanged)
+async def session_context_changed_handler(request: Request, exc: session_context.ContextChanged):
+    return JSONResponse(status_code=409, content={
+        "code": exc.code, "detail": "Контекст входа или полномочия изменились. Обновите сеанс."})
 
 
 @app.exception_handler(RequestValidationError)

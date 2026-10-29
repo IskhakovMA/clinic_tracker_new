@@ -31,9 +31,9 @@ const assert = require('node:assert/strict');
         await page.evaluate(async patient => { await app.loadPatients(); app.openPatient(patient.id); app.currentTab = 'complaints'; app.renderTabs(); app.renderTabPanel(app.getPatient(patient.id)); }, patient);
         const textarea = page.getByRole('textbox', {name: 'Комментарии', exact: true});
         // Завершаем реальную сессию штатным API, не меняя SQLite из браузера.
-        await page.evaluate(() => apiPost(`/api/users/${app.user.id}/terminate-sessions`, {}));
         await textarea.fill('Синтетический несохраненный комментарий');
-        await textarea.press('Tab');
+        await page.evaluate(async () => { try { await apiPost(`/api/users/${app.user.id}/terminate-sessions`, {}); } catch (e) { if (e.status !== 401) throw e; } });
+        await page.locator('#patientPanels textarea[aria-label="Комментарии"]').evaluate(node => node.blur());
         await page.waitForFunction(() => app.sessionExpired);
         await page.locator('#password').fill('synthetic-browser-password');
         await page.locator('#loginSubmit').click();
@@ -56,8 +56,9 @@ const assert = require('node:assert/strict');
         await page.waitForFunction(() => document.getElementById('sessionFieldDrafts').hidden);
         // Новый черновик после новой потери сессии сохраняется только по кнопке.
         const textarea2 = page.getByRole('textbox', {name: 'Комментарии', exact: true});
-        await page.evaluate(() => apiPost(`/api/users/${app.user.id}/terminate-sessions`, {}));
-        await textarea2.fill('Синтетическая явная правка'); await textarea2.press('Tab');
+        await textarea2.fill('Синтетическая явная правка');
+        await page.evaluate(async () => { try { await apiPost(`/api/users/${app.user.id}/terminate-sessions`, {}); } catch (e) { if (e.status !== 401) throw e; } });
+        await page.locator('#patientPanels textarea[aria-label="Комментарии"]').evaluate(node => node.blur());
         await page.waitForFunction(() => app.sessionExpired);
         await page.locator('#password').fill('synthetic-browser-password'); await page.locator('#loginSubmit').click();
         await page.waitForFunction(() => !app.sessionExpired);
@@ -69,9 +70,10 @@ const assert = require('node:assert/strict');
         assert(audit.events.some(e => e.event_type === 'patient_updated' && e.patient_id === patient.id));
         console.log('PASS AUD-05 live browser: explicit save after reauthentication persists draft with audit');
         // Обычная явная новая правка того же поля также закрывает прежний черновик.
-        await page.evaluate(() => apiPost(`/api/users/${app.user.id}/terminate-sessions`, {}));
         const textarea3 = page.getByRole('textbox', {name: 'Комментарии', exact: true});
-        await textarea3.fill('Синтетический третий черновик'); await textarea3.press('Tab');
+        await textarea3.fill('Синтетический третий черновик');
+        await page.evaluate(async () => { try { await apiPost(`/api/users/${app.user.id}/terminate-sessions`, {}); } catch (e) { if (e.status !== 401) throw e; } });
+        await page.locator('#patientPanels textarea[aria-label="Комментарии"]').evaluate(node => node.blur());
         await page.waitForFunction(() => app.sessionExpired);
         await page.locator('#password').fill('synthetic-browser-password'); await page.locator('#loginSubmit').click();
         await page.waitForFunction(() => !app.sessionExpired);

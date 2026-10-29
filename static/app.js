@@ -103,6 +103,8 @@ function apiErrorMessage(status, data, path) {
     const codes = {
         STALE_PATIENT_VERSION: 'Карточка уже изменена. Обновите данные и проверьте правку перед сохранением.',
         STALE_CHECKLIST_ITEM: 'Пункт уже изменен. Обновите данные и повторите действие.',
+        SESSION_IDENTITY_CHANGED: 'Вход изменился в другой вкладке. Обновите страницу.',
+        ACCESS_CONTEXT_CHANGED: 'Полномочия изменились. Войдите повторно для проверки доступа.',
         AUDIT_UNAVAILABLE: 'Не удалось сохранить запись аудита. Изменение не сохранено. Повторите позже.',
         PATIENT_HAS_CLINICAL_HISTORY: 'Карточка содержит медицинскую историю и не может быть удалена.',
         FACT_DATE_IN_FUTURE: 'Фактическая дата не может быть позже сегодняшней.',
@@ -131,6 +133,7 @@ async function apiFetch(path, options) {
     options = options || {};
     const opts = Object.assign({ credentials: 'include' }, options);
     delete opts.rawResponse;
+    delete opts.reconcileUser;
     opts.headers = Object.assign({}, options.headers);
     const method = (opts.method || 'GET').toUpperCase();
     if (opts.body !== undefined) opts.headers['Content-Type'] = 'application/json';
@@ -139,7 +142,13 @@ async function apiFetch(path, options) {
         if (csrf) opts.headers['X-CSRF-Token'] = csrf;
     }
     const authRequest = path.startsWith('/api/auth/');
-    if (app.sessionExpired && !authRequest) {
+    const reconciling = options.reconcileUser && ['/api/patients', '/api/users/doctors'].includes(path) && method === 'GET';
+    const expectedUser = reconciling ? options.reconcileUser : app.user;
+    if (expectedUser && !['/api/auth/login', '/api/auth/me'].includes(path)) {
+        opts.headers['X-Clinic-User'] = expectedUser.id;
+        if (expectedUser.accessContext) opts.headers['X-Clinic-Access'] = expectedUser.accessContext;
+    }
+    if ((app.sessionExpired && !authRequest && !reconciling) || (app.sessionReconciling && !authRequest && method !== 'GET')) {
         const error = new Error(apiErrorMessage(401)); error.status = 401; throw error;
     }
     const epoch = app.sessionEpoch || 0;
@@ -149,25 +158,48 @@ async function apiFetch(path, options) {
     try {
         const response = await fetch(path, opts);
         if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
-            const error = new Error(apiErrorMessage(401)); error.status = 401; throw error;
+            const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
+        }
+        const responseUser = response.headers.get('X-Clinic-User');
+        if (!authRequest && expectedUser && responseUser && responseUser !== expectedUser.id) {
+            app.discardSessionAndReload();
+            const error = new Error(apiErrorMessage(401)); error.status = 409; error.obsolete = true; throw error;
         }
         if (!response.ok) {
             let data = null;
             try { data = await response.json(); } catch (e) { /* ответ без JSON */ }
             if (response.status === 401 && !authRequest) app.expireSession();
+            if (data && data.code === 'SESSION_IDENTITY_CHANGED') app.discardSessionAndReload();
+            if (data && data.code === 'ACCESS_CONTEXT_CHANGED') app.expireSession();
             const err = new Error(apiErrorMessage(response.status, data, path));
             err.status = response.status;
+            if (data && data.code === 'SESSION_IDENTITY_CHANGED') err.obsolete = true;
             err.data = data;   // code и сведения сервера для явного подтверждения (например, архивное решение ОК)
             throw err;
         }
-        if (response.status === 204) return null;
+        if (response.status === 204) {
+            if (!authRequest && !await app.checkSessionIdentity(epoch)) {
+                const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
+            }
+            return null;
+        }
         const contentType = response.headers.get('content-type') || '';
         if (!options.rawResponse && contentType.includes('application/json')) {
             const data = await response.json();
             if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
-                const error = new Error(apiErrorMessage(401)); error.status = 401; throw error;
+                const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
+            }
+            if (!authRequest && !reconciling && !await app.checkSessionIdentity(epoch)) {
+                const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
             }
             return data;
+        }
+        if (!authRequest && !reconciling) {
+            const blob = await response.blob();
+            if (!await app.checkSessionIdentity(epoch)) {
+                const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
+            }
+            return new Response(blob, {status: response.status, headers: response.headers});
         }
         return response;
     } catch (cause) {
@@ -2088,63 +2120,201 @@ const app = {
         $('loginForm').classList.remove('is-hidden');
         $('forcePasswordForm').classList.add('is-hidden');
         $('password').value = '';
+        $('username').value = this.user.username || $('username').value;
         $('loginError').textContent = apiErrorMessage(401);
         $('loginError').classList.remove('is-hidden');
         $('username').focus();
     },
 
+    async serverIdentity() {
+        try {
+            const response = await fetch('/api/auth/me', {credentials: 'include', cache: 'no-store', signal: AbortSignal.timeout(30000)});
+            if (!response.ok) {
+                const error = new Error(apiErrorMessage(response.status)); error.status = response.status; throw error;
+            }
+            return await response.json();
+        } catch (error) {
+            if (error.status) throw error;
+            throw new Error(['TimeoutError', 'AbortError'].includes(error.name)
+                ? 'Время ожидания проверки входа истекло. Повторите позже.' : 'Не удалось проверить вход. Проверьте соединение с сервером.');
+        }
+    },
+
+    accessSignature(user) {
+        return user.accessContext || JSON.stringify([user.id, user.roleId, user.permissions, user.departments]);
+    },
+
+    discardSessionAndReload() {
+        document.body.classList.add('session-locked');
+        this.sessionExpired = true;
+        this.sessionEpoch = (this.sessionEpoch || 0) + 1;
+        this.discardingSession = true;
+        location.reload();
+    },
+
+    async checkSessionIdentity(epoch) {
+        let me;
+        try { me = await this.serverIdentity(); }
+        catch (error) { this.expireSession(); throw error; }
+        if (epoch !== (this.sessionEpoch || 0)) return false;
+        if (!me.authenticated) { this.expireSession(); return false; }
+        if (me.user.id !== this.user.id) { this.discardSessionAndReload(); return false; }
+        if (this.accessSignature(me.user) !== this.accessSignature(this.user)) { this.expireSession(); return false; }
+        return !this.sessionExpired;
+    },
+
+    async resumeSession(expected) {
+        // До этого барьера DOM и данные остаются закрытыми, даже если cookie уже действительна.
+        const epoch = this.sessionEpoch || 0;
+        const me = await this.serverIdentity();
+        if (epoch !== (this.sessionEpoch || 0)) return;
+        if (!me.authenticated) { this.expireSession(); return; }
+        if (me.user.id !== expected.id || (this.draftOwnerId && me.user.id !== this.draftOwnerId)) {
+            this.discardSessionAndReload(); return;
+        }
+        const user = me.user;
+        const fresh = await apiFetch('/api/patients', {reconcileUser: user});
+        const doctors = user.permissions.createPatients && !['doctor', 'consilium_chair'].includes(user.roleId)
+            ? (await apiFetch('/api/users/doctors', {reconcileUser: user})).doctors || [] : [];
+        const final = await this.serverIdentity();
+        if (epoch !== (this.sessionEpoch || 0)) return;
+        if (!final.authenticated || final.user.id !== user.id || this.accessSignature(final.user) !== this.accessSignature(user)) {
+            throw new Error('Вход или полномочия снова изменились. Повторите вход.');
+        }
+        const allowed = new Set(fresh.map(patient => patient.id));
+        // Каждый повторный вход сбрасывает производные кэши, а не только текущий список.
+        const rebuiltEpoch = this.rebuildAuthorizedWorkspace(user, fresh, allowed, doctors);
+        if (this.sessionEpoch !== rebuiltEpoch || this.sessionExpired) return;
+        this.sessionReconciling = false;
+        document.body.classList.remove('session-locked');
+        $('loginScreen').classList.add('is-hidden');
+        $('appScreen').classList.remove('is-hidden');
+        ui.toast('Доступ проверен. Проверьте черновик и сохраните самостоятельно.', 'warning');
+    },
+
+    rebuildAuthorizedWorkspace(user, fresh, allowed, doctors) {
+        const drafts = new Map([...(this.sessionFieldDrafts || [])].filter(([, draft]) => draft.owner === user.id && allowed.has(draft.patientId)));
+        const createDraft = !$('addModal').hidden && user.permissions.createPatients
+            ? [...$('addForm').querySelectorAll('input, select, textarea')].map(node => [node.id, node.value, node.checked]) : null;
+        const createKey = this.addPatientKey;
+        const createSentBody = this.addPatientSentBody;
+        const patientId = this.currentView === 'patient' && allowed.has(this.currentPatientId) ? this.currentPatientId : null;
+        const oldPatient = patientId ? this.getPatient(patientId) : null;
+        const panelDraft = patientId ? [...$('patientPanels').querySelectorAll('input, select, textarea')]
+            .map(node => ({tag: node.tagName, type: node.type, id: node.id, value: node.value, checked: node.checked})) : [];
+        const tab = this.currentTab;
+        const prompt = patientId && ui.openModals.includes('promptModal') ? $('promptModal') : null;
+        const epoch = (this.sessionEpoch || 0) + 1;
+        clearInterval(this.internalNotifications.pollTimer);
+        this.globalControls.abort();
+        for (const key of ['pendingConfirmCancel', 'pendingPromptCancel', 'pendingChoiceCancel', 'pendingTextPromptCancel', 'pendingRegistryReasonCancel']) {
+            if (key === 'pendingPromptCancel' && prompt) continue;
+            if (ui[key]) ui[key]();
+            ui[key] = null;
+        }
+        ui.openModals = [];
+        // Новая копия исходной разметки не содержит данных, а старые узлы и слушатели отбрасываются.
+        document.body.replaceChildren(...pristineWorkspace.map(node => node.cloneNode(true)));
+        for (const [key, value] of Object.entries(this)) if (typeof value !== 'function') delete this[key];
+        Object.assign(this, structuredClone(pristineAppState), {user, sessionEpoch: epoch, sessionReconciling: true});
+        this.bindStaticControls();
+        this.patients = fresh;
+        this.doctors = doctors;
+        this.applyRoleUI();
+        this.fillStaticSelects();
+        this.showView('patients');
+        this.appReady = true;
+        this.internalNotifications.pollTimer = window.setInterval(() => {
+            if (document.visibilityState === 'visible' && this.user) this.refreshInternalNotificationSummary();
+        }, 30000);
+        // Обновление необязательных сводок не разрушает черновик при сетевой ошибке.
+        this.refreshAIStatus();
+        this.refreshInternalNotificationSummary();
+        this.loadActivity();
+        if (oldPatient) {
+            const index = this.patients.findIndex(patient => patient.id === patientId);
+            if (index >= 0) this.patients[index] = oldPatient; // Исходные версии только доступной карточки с черновиком.
+        }
+        this.sessionFieldDrafts = drafts;
+        this.renderSessionFieldDrafts();
+        if (patientId) {
+            this.currentPatientId = patientId;
+            this.currentTab = tab;
+            this.showView('patient');
+            this.renderPatientView();
+            [...$('patientPanels').querySelectorAll('input, select, textarea')].forEach((node, index) => {
+                const draft = panelDraft[index];
+                if (draft && draft.tag === node.tagName && draft.type === node.type && draft.id === node.id) {
+                    node.value = draft.value;
+                    node.checked = draft.checked;
+                }
+            });
+        }
+        if (prompt) {
+            $('promptModal').replaceWith(prompt);
+            ui.openModals.push('promptModal');
+            $('promptOkBtn').disabled = !this.can('editPatients');
+            prompt.querySelectorAll('input').forEach(node => { node.disabled = !this.can('editPatients'); });
+        }
+        if (createDraft) {
+            this.openAddModal();
+            this.addPatientKey = createKey;
+            this.addPatientSentBody = createSentBody;
+            for (const [id, value, checked] of createDraft) {
+                const node = $(id);
+                if (!node) continue;
+                node.value = value;
+                node.checked = checked;
+            }
+            this.updateStageFields();
+            this.updateClientPathStatus();
+        }
+        return epoch;
+    },
+
+    async reconcilePeerSession() {
+        if (!this.user || this.sessionReconciling) return;
+        this.expireSession();
+        try {
+            const me = await this.serverIdentity();
+            if (!me.authenticated) return;
+            if (me.user.id !== this.user.id) { this.discardSessionAndReload(); return; }
+            await this.resumeSession(me.user);
+        } catch (error) { this.showLoginFailure(error); }
+    },
+
     async login(username, password) {
-        const result = await apiPost('/api/auth/login', { username, password });
-        if (this.sessionExpired && result.user.id !== this.draftOwnerId) {
-            // Другому сотруднику никогда не открываем прежние DOM, кэш и черновики.
-            this.discardingSession = true;
-            location.reload();
-            return;
-        }
-        this.user = result.user;
-        if (this.sessionExpired && !this.user.mustChangePassword) {
-            this.sessionExpired = false;
-            this.draftOwnerId = null;
-            document.body.classList.remove('session-locked');
-            if (!this.appReady) { await this.enterApp(); return; }
-            $('loginScreen').classList.add('is-hidden');
-            $('appScreen').classList.remove('is-hidden');
-            this.applyRoleUI();
-            ui.toast('Вход выполнен. Проверьте черновик и сохраните его самостоятельно.', 'warning');
-            return;
-        }
-        if (this.user.mustChangePassword) this.showForcePasswordForm();
-        else await this.enterApp();
+        authChannel?.postMessage('changing');
+        let result;
+        try { result = await apiPost('/api/auth/login', { username, password }); }
+        finally { authChannel?.postMessage('changed'); }
+        if (this.sessionExpired && result.user.id !== this.draftOwnerId) { this.discardSessionAndReload(); return; }
+        if (result.user.mustChangePassword) { this.user = result.user; this.showForcePasswordForm(); return; }
+        if (this.sessionExpired) await this.resumeSession(result.user);
+        else { this.user = result.user; await this.enterApp(); }
     },
 
     async submitForcedPasswordChange(currentPassword, newPassword) {
-        await apiPost('/api/auth/change-password',
-            { currentPassword, newPassword });
-        const me = await apiGetJson('/api/auth/me');
-        this.user = me.user;
-        if (this.sessionExpired) {
-            if (this.user.id !== this.draftOwnerId) { location.reload(); return; }
-            this.sessionExpired = false;
-            this.draftOwnerId = null;
-            document.body.classList.remove('session-locked');
-            if (!this.appReady) { await this.enterApp(); return; }
-            $('loginScreen').classList.add('is-hidden');
-            $('appScreen').classList.remove('is-hidden');
-            this.applyRoleUI();
-            ui.toast('Пароль изменен. Проверьте черновик и сохраните самостоятельно.', 'warning');
-            return;
+        await apiPost('/api/auth/change-password', { currentPassword, newPassword });
+        const me = await this.serverIdentity();
+        if (this.sessionExpired) await this.resumeSession(me.user);
+        else {
+            this.user = me.user;
+            $('forcePasswordForm').classList.add('is-hidden');
+            $('loginForm').classList.remove('is-hidden');
+            await this.enterApp();
         }
-        $('forcePasswordForm').classList.add('is-hidden');
-        $('loginForm').classList.remove('is-hidden');
-        await this.enterApp();
     },
 
     async logout() {
+        authChannel?.postMessage('changing');
+        this.expireSession();
         try {
             await apiPost('/api/auth/logout');
         } catch (e) {
             // Даже при сетевой ошибке сбрасываем клиентское состояние.
         }
+        authChannel?.postMessage('changed');
         this.patients = [];
         this.ai.messages = [];
         this.ai.references = [];
@@ -6461,6 +6631,7 @@ const app = {
         for (const [key, draft] of this.sessionFieldDrafts) {
             const save = el('button', {type: 'button', class: 'btn btn--primary btn--sm', text: 'Сохранить правку', on: {click: async () => {
                 if (this.sessionExpired || this.user.id !== draft.owner) return;
+                if (!this.can('editPatients')) return;
                 save.disabled = true;
                 try {
                     // Сохраняется исходная версия: повторный вход не разрешает перезапись.
@@ -6472,6 +6643,7 @@ const app = {
                 } catch (error) { ui.toast(error.message, 'warning'); }
                 finally { save.disabled = false; }
             }}});
+            save.disabled = !this.can('editPatients');
             banner.append(el('div', {}, [el('span', {text: 'Несохраненная правка (' + (labels[draft.body.field] || 'поле карточки') + '): ' +
                     (draft.body.value && typeof draft.body.value === 'object' ? Object.values(draft.body.value).join(' / ') : String(draft.body.value ?? '')) + '. '}), save,
                 el('button', {type: 'button', class: 'btn btn--ghost btn--sm', text: 'Отменить правку', on: {click: async () => {
@@ -6504,7 +6676,8 @@ const app = {
                 this.refreshCurrent();
                 return;
             } catch (e) {
-                if (e.status === 401) {
+                if (e.obsolete && (!this.sessionExpired || this.discardingSession)) return;
+                if (e.status === 401 || e.data?.code === 'ACCESS_CONTEXT_CHANGED') {
                     this.keepSessionFieldDraft(patientId, body);
                     return;
                 }
@@ -10285,7 +10458,12 @@ const app = {
     },
     /* =============================================================== ПРИВЯЗКА */
 
+    listenGlobal(target, type, handler) {
+        target.addEventListener(type, handler, {signal: this.globalControls.signal});
+    },
+
     bindStaticControls() {
+        this.globalControls = new AbortController();
         const on = (id, event, handler) => {
             const node = $(id);
             if (node) node.addEventListener(event, handler);
@@ -10458,7 +10636,7 @@ const app = {
             this.renderConsiliumScheduleCalendar();
         });
         on('consiliumScheduleGroup', 'change', () => this.syncConsiliumScheduleDateForGroup());
-        document.addEventListener('click', (event) => {
+        this.listenGlobal(document, 'click', (event) => {
             ['consiliumChairGroupPicker', 'consiliumDoctorGroupPicker'].forEach(id => {
                 const picker = $(id);
                 if (picker.open && !picker.contains(event.target)) picker.removeAttribute('open');
@@ -10840,7 +11018,7 @@ const app = {
         on('duplicatesPrevBtn', 'click', () => this.moveDuplicatesPage(-1));
         on('duplicatesNextBtn', 'click', () => this.moveDuplicatesPage(1));
 
-        window.addEventListener('beforeunload', (event) => {
+        this.listenGlobal(window, 'beforeunload', (event) => {
             const dirtyForm = !$('addModal').hidden && this.addFormState() !== this.addFormBaseline;
             if (!this.discardingSession && (dirtyForm || (this.sessionFieldDrafts && this.sessionFieldDrafts.size))) {
                 event.preventDefault();
@@ -10860,7 +11038,7 @@ const app = {
             });
         }
 
-        document.addEventListener('keydown', (event) => {
+        this.listenGlobal(document, 'keydown', (event) => {
             if (event.defaultPrevented || this.sessionExpired) return;
             if (event.key === 'Escape') {
                 const top = ui.topModal();
@@ -10922,4 +11100,16 @@ const app = {
     },
 };
 
+// Только исходная пустая разметка и начальные настройки; медицинских данных здесь нет.
+const pristineWorkspace = [...document.body.children].filter(node => node.tagName !== 'SCRIPT').map(node => node.cloneNode(true));
+const pristineAppState = structuredClone(Object.fromEntries(Object.entries(app).filter(([, value]) => typeof value !== 'function')));
+const authChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('clinic-auth') : null;
+if (authChannel) authChannel.onmessage = event => {
+    if (event.data === 'changing') app.expireSession();
+    if (event.data === 'changed') app.reconcilePeerSession();
+};
+window.addEventListener('focus', () => { if (app.appReady && !app.sessionExpired) app.reconcilePeerSession(); });
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && app.appReady && !app.sessionExpired) app.reconcilePeerSession();
+});
 app.init();
