@@ -369,13 +369,29 @@ def test_expired_row_with_the_same_key_is_replaced_inside_the_transaction(client
     assert len(_keys()) == 1 and _keys()[0]["expires_at"] > "2026"
 
 
-def test_login_purges_expired_keys(client):
+def test_login_purges_expired_keys(client, monkeypatch):
     _world()
     login(client, "doc.a")
     _create(client, _key())
     _age_keys()
     login(client, "doc.a")
     assert _keys() == []
+
+    # Отдельно проверяем очистку при старте: UTC-часы управляемые, не календарные.
+    from backend.app import idempotency
+    monkeypatch.setattr(idempotency, "now_iso", lambda: "2030-01-01T00:00:00+00:00")
+    _create(client, _key(), name="Синтетик Истекший")
+    monkeypatch.setattr(idempotency, "now_iso", lambda: "2030-01-02T00:00:00+00:00")
+    _create(client, _key(), name="Синтетик Действующий")
+    keys_before = _keys()
+    assert len(keys_before) == 2
+    patients_before = _rows("SELECT * FROM patients ORDER BY id")
+    monkeypatch.setattr(idempotency, "now_iso", lambda: "2030-01-08T00:00:00+00:00")
+    with app_stopped():
+        assert _keys() == keys_before
+    assert _keys() == [row for row in keys_before if row["expires_at"] > "2030-01-08T00:00:00+00:00"]
+    assert len(_keys()) == 1
+    assert _rows("SELECT * FROM patients ORDER BY id") == patients_before
 
 
 # ================================================================ 10. no keys or medical data in logs

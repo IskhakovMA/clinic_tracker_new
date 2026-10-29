@@ -790,11 +790,16 @@ def test_restore_of_a_v24_backup_migrates_to_v25(auth_client, tmp_path, backup_k
     assert maintenance.validate_backup(backup)["source_build"] == "wp24b-5f2c9c8"
     with app_stopped():
         maintenance.restore_database(backup, live, confirm_offline=True)
+        # Проверяем restore до запуска lifespan: тот штатно очищает истекшие ключи.
+        conn = sqlite3.connect(str(live))
+        try:
+            assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 2
+        finally:
+            conn.close()
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 28   # WP-C: v28 (история фактов, защита истории); combined-preaudit (v27); WP2.4-D: текущая схема
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1
-    assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 2
     assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 0
     conn.close()
 
