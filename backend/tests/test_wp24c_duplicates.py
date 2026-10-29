@@ -935,9 +935,12 @@ METHODS
   process.stdout.write(JSON.stringify({ sent, errors, asked, opened }));
 })();
 """
+    # WP-D: исполняем настоящую карту сообщений, а не подменяем текст сервера.
+    start = js.index("function apiErrorMessage(")
+    error_messages = js[start:js.index("\nasync function apiFetch(", start)]
     script = (harness.replace("RESPONSES", json.dumps(responses)).replace("ANSWERS", json.dumps(answers))
               .replace("PRESSES", str(presses)).replace("METHODS", methods))
-    out = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30)
+    out = subprocess.run([node, "-e", error_messages + "\n" + script], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0, out.stderr
     return json.loads(out.stdout)
 

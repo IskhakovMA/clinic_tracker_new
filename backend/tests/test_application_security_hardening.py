@@ -181,7 +181,8 @@ def test_nested_import_models_forbid_unknown_fields(auth_client):
     r = auth_client.post("/api/import/preview", json={"raw": raw})
     assert r.status_code == 200
     assert r.json()["valid"] is False
-    assert any("extra" in err["message"].lower() or "forbidden" in err["message"].lower() for err in r.json()["errors"])
+    assert any(err.get("type") == "extra_forbidden" for err in r.json()["errors"])
+    assert "attacker" not in r.text
 
 
 def test_preview_endpoints_are_side_effect_free(auth_client):

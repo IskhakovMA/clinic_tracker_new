@@ -98,9 +98,39 @@ function searchHeaders(text) {
     return q ? { 'X-Search': encodeURIComponent(q) } : {};
 }
 
+// WP-D: тексты сервера не используются как пользовательские сообщения.
+function apiErrorMessage(status, data, path) {
+    const codes = {
+        STALE_PATIENT_VERSION: 'Карточка уже изменена. Обновите данные и проверьте правку перед сохранением.',
+        STALE_CHECKLIST_ITEM: 'Пункт уже изменен. Обновите данные и повторите действие.',
+        AUDIT_UNAVAILABLE: 'Не удалось сохранить запись аудита. Изменение не сохранено. Повторите позже.',
+        PATIENT_HAS_CLINICAL_HISTORY: 'Карточка содержит медицинскую историю и не может быть удалена.',
+        FACT_DATE_IN_FUTURE: 'Фактическая дата не может быть позже сегодняшней.',
+        POSSIBLE_DUPLICATE: 'Найден возможный дубль. Проверьте совпадения.',
+        DUPLICATE_MATCH_LIMIT_EXCEEDED: 'Совпадений слишком много. Неполный список подтверждать нельзя: требуется ручной разбор карточек.',
+    };
+    if (data && Object.hasOwn(codes, data.code)) return codes[data.code];
+    if (status === 422 && data && Array.isArray(data.detail)) {
+        const fields = {name: 'ФИО', phone: 'телефон', diagnosis: 'диагноз', policyNumber: 'полис ОМС',
+            actualDate: 'фактическая дата', date: 'дата', email: 'адрес почты', username: 'логин'};
+        const names = [...new Set(data.detail.flatMap(e => (Array.isArray(e.loc) ? e.loc : [])
+            .filter(key => Object.hasOwn(fields, key)).map(key => fields[key])))];
+        if (names.length) return 'Проверьте поля: ' + names.join(', ') + '.';
+    }
+    if (status === 401 && path === '/api/auth/login') return 'Неверный логин или пароль.';
+    return ({400: 'Не удалось обработать запрос. Проверьте данные.',
+        401: 'Сессия истекла. Войдите повторно. Черновик остается в этой вкладке.',
+        403: 'Недостаточно прав для этого действия.', 404: 'Запись не найдена или недоступна.',
+        409: 'Данные изменились. Обновите их и проверьте действие перед повторной отправкой.',
+        422: 'Проверьте заполнение полей формы.', 429: 'Слишком много запросов. Подождите и повторите действие.',
+        500: 'Внутренняя ошибка сервера. Повторите позже.',
+        503: 'Сервер временно недоступен. Повторите позже.'})[status] || 'Не удалось выполнить запрос. Повторите позже.';
+}
+
 async function apiFetch(path, options) {
     options = options || {};
     const opts = Object.assign({ credentials: 'include' }, options);
+    delete opts.rawResponse;
     opts.headers = Object.assign({}, options.headers);
     const method = (opts.method || 'GET').toUpperCase();
     if (opts.body !== undefined) opts.headers['Content-Type'] = 'application/json';
@@ -108,25 +138,44 @@ async function apiFetch(path, options) {
         const csrf = getCookie('clinic_csrf');
         if (csrf) opts.headers['X-CSRF-Token'] = csrf;
     }
-    const response = await fetch(path, opts);
-    if (!response.ok) {
-        let detail = `Ошибка запроса (${response.status})`;
-        let data = null;
-        try {
-            data = await response.json();
-            if (data && typeof data.detail === 'string') detail = data.detail;
-            else if (data && data.detail) detail = JSON.stringify(data.detail);
-            else if (data && data.error) detail = data.error;
-        } catch (e) { /* тело ответа не JSON */ }
-        const err = new Error(detail);
-        err.status = response.status;
-        err.data = data;   // code и сведения сервера для явного подтверждения (например, архивное решение ОК)
-        throw err;
+    const authRequest = path.startsWith('/api/auth/');
+    if (app.sessionExpired && !authRequest) {
+        const error = new Error(apiErrorMessage(401)); error.status = 401; throw error;
     }
-    if (response.status === 204) return null;
-    const contentType = response.headers.get('content-type') || '';
-    if (contentType.includes('application/json')) return response.json();
-    return response;
+    const epoch = app.sessionEpoch || 0;
+    const controller = options.signal ? null : new AbortController();
+    if (controller) opts.signal = controller.signal;
+    const timer = controller ? setTimeout(() => controller.abort(), 30000) : null;
+    try {
+        const response = await fetch(path, opts);
+        if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
+            const error = new Error(apiErrorMessage(401)); error.status = 401; throw error;
+        }
+        if (!response.ok) {
+            let data = null;
+            try { data = await response.json(); } catch (e) { /* ответ без JSON */ }
+            if (response.status === 401 && !authRequest) app.expireSession();
+            const err = new Error(apiErrorMessage(response.status, data, path));
+            err.status = response.status;
+            err.data = data;   // code и сведения сервера для явного подтверждения (например, архивное решение ОК)
+            throw err;
+        }
+        if (response.status === 204) return null;
+        const contentType = response.headers.get('content-type') || '';
+        if (!options.rawResponse && contentType.includes('application/json')) {
+            const data = await response.json();
+            if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
+                const error = new Error(apiErrorMessage(401)); error.status = 401; throw error;
+            }
+            return data;
+        }
+        return response;
+    } catch (cause) {
+        if (cause.status) throw cause;
+        throw new Error(cause.name === 'AbortError' ? 'Время ожидания ответа истекло. Проверьте результат перед повторной отправкой.'
+            : cause.name === 'SyntaxError' ? 'Не удалось прочитать ответ сервера. Повторите позже.'
+                : 'Нет связи с сервером. Проверьте соединение и повторите действие.');
+    } finally { if (timer) clearTimeout(timer); }
 }
 
 const apiGetJson = (path) => apiFetch(path);
@@ -1755,8 +1804,15 @@ const app = {
                 else await this.enterApp();
             }
         } catch (e) {
-            // Бэкенд недоступен — остаёмся на экране входа.
+            this.showLoginFailure(e);
         }
+    },
+
+    showLoginFailure(error) {
+        $('loginScreen').classList.remove('is-hidden');
+        $('appScreen').classList.add('is-hidden');
+        $('loginError').textContent = error.message;
+        $('loginError').classList.remove('is-hidden');
     },
 
     showForcePasswordForm() {
@@ -1775,6 +1831,7 @@ const app = {
         await this.loadActivity();
         await this.loadDoctors();
         this.fillStaticSelects();
+        await this.updateUnresolvedBanner();
         await this.refreshAIStatus();
         await this.refreshInternalNotificationSummary();
         if (!this.internalNotifications.pollTimer) {
@@ -1786,6 +1843,7 @@ const app = {
         }
         this.showView('patients');
         if (this.can('importData')) this.maybeOfferLegacyMigration();
+        this.appReady = true;
     },
 
     /** Скрыть недоступные разделы и действия по правам роли. Скрытие кнопок —
@@ -1900,11 +1958,13 @@ const app = {
     /* --------------------------------------------------------------- Данные */
 
     async loadPatients() {
+        const version = this.beginRead('patients');
         const params = new URLSearchParams();
         if (this.attentionFilter) params.set('attention', this.attentionFilter);
         if (this.attentionReasonFilter) params.set('attention_reason', this.attentionReasonFilter);
         const query = params.toString();
-        this.patients = await apiGetJson(`/api/patients${query ? '?' + query : ''}`);
+        const patients = await apiGetJson(`/api/patients${query ? '?' + query : ''}`);
+        if (this.isCurrentRead('patients', version)) this.patients = patients;
     },
 
     /** Журнал аудита даёт человекочитаемую подпись «что изменилось» в списке. */
@@ -2018,9 +2078,41 @@ const app = {
 
     /* ------------------------------------------------------------ Авторизация */
 
+    expireSession() {
+        if (this.sessionExpired || !this.user) return;
+        this.sessionExpired = true;
+        this.sessionEpoch = (this.sessionEpoch || 0) + 1;
+        this.draftOwnerId = this.user.id;
+        document.body.classList.add('session-locked');
+        $('loginScreen').classList.remove('is-hidden');
+        $('loginForm').classList.remove('is-hidden');
+        $('forcePasswordForm').classList.add('is-hidden');
+        $('password').value = '';
+        $('loginError').textContent = apiErrorMessage(401);
+        $('loginError').classList.remove('is-hidden');
+        $('username').focus();
+    },
+
     async login(username, password) {
         const result = await apiPost('/api/auth/login', { username, password });
+        if (this.sessionExpired && result.user.id !== this.draftOwnerId) {
+            // Другому сотруднику никогда не открываем прежние DOM, кэш и черновики.
+            this.discardingSession = true;
+            location.reload();
+            return;
+        }
         this.user = result.user;
+        if (this.sessionExpired && !this.user.mustChangePassword) {
+            this.sessionExpired = false;
+            this.draftOwnerId = null;
+            document.body.classList.remove('session-locked');
+            if (!this.appReady) { await this.enterApp(); return; }
+            $('loginScreen').classList.add('is-hidden');
+            $('appScreen').classList.remove('is-hidden');
+            this.applyRoleUI();
+            ui.toast('Вход выполнен. Проверьте черновик и сохраните его самостоятельно.', 'warning');
+            return;
+        }
         if (this.user.mustChangePassword) this.showForcePasswordForm();
         else await this.enterApp();
     },
@@ -2030,6 +2122,18 @@ const app = {
             { currentPassword, newPassword });
         const me = await apiGetJson('/api/auth/me');
         this.user = me.user;
+        if (this.sessionExpired) {
+            if (this.user.id !== this.draftOwnerId) { location.reload(); return; }
+            this.sessionExpired = false;
+            this.draftOwnerId = null;
+            document.body.classList.remove('session-locked');
+            if (!this.appReady) { await this.enterApp(); return; }
+            $('loginScreen').classList.add('is-hidden');
+            $('appScreen').classList.remove('is-hidden');
+            this.applyRoleUI();
+            ui.toast('Пароль изменен. Проверьте черновик и сохраните самостоятельно.', 'warning');
+            return;
+        }
         $('forcePasswordForm').classList.add('is-hidden');
         $('loginForm').classList.remove('is-hidden');
         await this.enterApp();
@@ -2791,9 +2895,9 @@ const app = {
     },
 
     renderPatients() {
+        if (this.sessionExpired) return;
         this.renderStats();
         this.updateFiltersButton();
-        this.updateUnresolvedBanner();
         const filtered = this.getFiltered();
         const body = $('patientsBody');
         const empty = $('patientsEmpty');
@@ -2866,6 +2970,7 @@ const app = {
     /* ========================================================== РЕНДЕР: КАРТОЧКА */
 
     renderPatientView() {
+        if (this.sessionExpired) return;
         const p = this.getPatient(this.currentPatientId);
         if (!p) {
             this.showView('patients');
@@ -4217,18 +4322,48 @@ const app = {
         return params.toString();
     },
 
-    async loadDataQuality() {
+    scheduleRead(key, render, immediate = false) {
+        this.readVersions = this.readVersions || {};
+        this.readTimers = this.readTimers || {};
+        this.readVersions[key] = (this.readVersions[key] || 0) + 1;
+        clearTimeout(this.readTimers[key]);
+        this.readTimers[key] = setTimeout(() => render.call(this), immediate ? 0 : 300);
+    },
+
+    beginRead(key) {
+        this.readVersions = this.readVersions || {};
+        this.readTimers = this.readTimers || {};
+        clearTimeout(this.readTimers[key]);
+        return this.readVersions[key] = (this.readVersions[key] || 0) + 1;
+    },
+
+    isCurrentRead(key, version) {
+        return !this.sessionExpired && this.readVersions[key] === version;
+    },
+
+    scheduleQualitySearch() {
+        this.qualityRequest = (this.qualityRequest || 0) + 1;
+        clearTimeout(this.qualitySearchTimer);
+        this.qualitySearchTimer = setTimeout(() => this.renderDataQuality(), this.quality.filters.query ? 300 : 0);
+    },
+
+    async loadDataQuality(requestId = this.qualityRequest) {
+        const search = this.quality.filters.query;
         const query = this.qualityParams();
         const summary = await apiGetJson('/api/data-quality/summary');
-        const issues = await apiFetch(`/api/data-quality/issues?${query}`, { headers: searchHeaders(this.quality.filters.query) });
+        const issues = await apiFetch(`/api/data-quality/issues?${query}`, { headers: searchHeaders(search) });
+        if (requestId !== this.qualityRequest) return false;
         this.quality.summary = summary;
         this.quality.issues = issues.issues || [];
         this.quality.patients = issues.patients || [];
         this.quality.duplicateGroups = issues.duplicate_groups || [];
         this.quality.rules = issues.rules || {};
+        return true;
     },
 
     async renderDataQuality() {
+        clearTimeout(this.qualitySearchTimer);
+        const requestId = this.qualityRequest = (this.qualityRequest || 0) + 1;
         this.updateQualityFiltersButton();
         const body = $('qualityBody');
         const empty = $('qualityEmpty');
@@ -4239,12 +4374,13 @@ const app = {
         dupPanel.replaceChildren();
 
         try {
-            await this.loadDataQuality();
+            if (!await this.loadDataQuality(requestId)) return;
             this.renderQualityFiltersOptions();
             this.renderQualityStats();
             this.renderQualityRows();
             this.renderQualityDuplicates();
         } catch (e) {
+            if (requestId !== this.qualityRequest) return;
             empty.classList.remove('is-hidden');
             empty.textContent = `Не удалось загрузить качество данных: ${e.message}`;
             $('qualityStatsRow').replaceChildren();
@@ -4783,9 +4919,10 @@ const app = {
             : 'Открыть уведомления');
     },
 
-    async loadInternalNotifications(target) {
+    async loadInternalNotifications(target, version) {
         const searchText = target === 'drawer' ? '' : (this.internalNotifications.filters || {}).query;
         const data = await apiFetch(`/api/internal-notifications?${this.internalNotificationParams(target)}`, { headers: searchHeaders(searchText) });
+        if (!this.isCurrentRead('internal-' + target, version)) return false;
         if (target === 'drawer') this.internalNotifications.drawerItems = data.items || [];
         else {
             this.internalNotifications.fullItems = data.items || [];
@@ -4869,6 +5006,7 @@ const app = {
     },
 
     async renderInternalNotificationsDrawer() {
+        const version = this.beginRead('internal-drawer');
         const list = $('internalNotificationsDrawerList');
         const summary = this.internalNotifications.summary || {};
         $('internalNotificationsSubtitle').textContent = summary.unread_count
@@ -4880,7 +5018,7 @@ const app = {
         }, false);
         list.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
         try {
-            await this.loadInternalNotifications('drawer');
+            if (!await this.loadInternalNotifications('drawer', version)) return;
             const rows = this.internalNotifications.drawerItems || [];
             $('internalNotificationsReadAllBtn').disabled = !((this.internalNotifications.summary || {}).unread_count);
             if (!rows.length) {
@@ -4889,6 +5027,7 @@ const app = {
             }
             list.replaceChildren(frag(rows.map(item => this.renderInternalNotificationCard(item, true))));
         } catch (e) {
+            if (!this.isCurrentRead('internal-drawer', version)) return;
             list.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить уведомления: ${e.message}` }));
         }
     },
@@ -4915,6 +5054,7 @@ const app = {
     },
 
     async renderInternalNotificationCenter() {
+        const version = this.beginRead('internal-full');
         this.renderInternalNotificationFiltersOptions();
         this.renderInternalNotificationTabs('internalNotificationsFullTabs', this.internalNotifications.fullTab, (value) => {
             this.internalNotifications.fullTab = value;
@@ -4924,7 +5064,7 @@ const app = {
         const list = $('internalNotificationsFullList');
         list.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
         try {
-            await this.loadInternalNotifications('full');
+            if (!await this.loadInternalNotifications('full', version)) return;
             const rows = this.internalNotifications.fullItems || [];
             if (!rows.length) {
                 list.replaceChildren(el('div', { class: 'empty', text: 'По выбранным условиям уведомлений нет.' }));
@@ -4939,6 +5079,7 @@ const app = {
             $('internalNotificationsPrevBtn').disabled = offset <= 0;
             $('internalNotificationsNextBtn').disabled = offset + limit >= total;
         } catch (e) {
+            if (!this.isCurrentRead('internal-full', version)) return;
             list.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить уведомления: ${e.message}` }));
             $('internalNotificationsPageInfo').textContent = '';
             $('internalNotificationsPrevBtn').disabled = true;
@@ -5057,15 +5198,19 @@ const app = {
         return params.toString();
     },
 
-    async loadNotifications() {
+    async loadNotifications(version) {
+        const query = this.notificationParams();
+        const search = this.notifications.filters.query;
         const summary = await apiGetJson('/api/notifications/summary');
         const templates = await apiGetJson('/api/notifications/templates');
-        const list = await apiFetch(`/api/notifications?${this.notificationParams()}`, { headers: searchHeaders(this.notifications.filters.query) });
+        const list = await apiFetch(`/api/notifications?${query}`, { headers: searchHeaders(search) });
+        if (!this.isCurrentRead('notifications', version)) return false;
         this.notifications.summary = summary;
         this.notifications.templates = templates.templates || [];
         this.notifications.placeholders = templates.placeholders || [];
         this.notifications.items = list.notifications || [];
         this.notifications.total = list.total || 0;
+        return true;
     },
 
     renderNotificationsPageTabs() {
@@ -5094,6 +5239,7 @@ const app = {
     },
 
     async renderNotifications() {
+        const version = this.beginRead('notifications');
         this.updateNotificationsFiltersButton();
         const body = $('notificationsBody');
         const empty = $('notificationsEmpty');
@@ -5103,13 +5249,14 @@ const app = {
         $('notificationsGenerateBtn').classList.toggle('is-hidden', !this.can('runNotificationWorker'));
         $('notificationsProcessBtn').classList.toggle('is-hidden', !this.can('runNotificationWorker'));
         try {
-            await this.loadNotifications();
+            if (!await this.loadNotifications(version)) return;
             $('notificationsMockBanner').classList.toggle('is-hidden', this.notifications.summary.provider !== 'mock');
             this.renderNotificationsFiltersOptions();
             this.renderNotificationsStats();
             this.renderNotificationsRows();
             this.renderNotificationTemplatesPanel();
         } catch (e) {
+            if (!this.isCurrentRead('notifications', version)) return;
             $('notificationsStatsRow').replaceChildren();
             $('notificationTemplatesPanel').classList.add('is-hidden');
             empty.classList.remove('is-hidden');
@@ -6294,6 +6441,54 @@ const app = {
 
     /* ================================================================ МУТАЦИИ */
 
+    keepSessionFieldDraft(patientId, body) {
+        this.sessionFieldDrafts = this.sessionFieldDrafts || new Map();
+        const key = patientId + ':' + body.field;
+        this.sessionFieldDrafts.set(key, { patientId, body, owner: this.draftOwnerId || this.user.id });
+        this.renderSessionFieldDrafts();
+    },
+
+    renderSessionFieldDrafts() {
+        let banner = $('sessionFieldDrafts');
+        if (!banner) {
+            banner = el('div', { id: 'sessionFieldDrafts', class: 'alert alert--warning', role: 'status' });
+            $('content').prepend(banner);
+        }
+        banner.replaceChildren();
+        const labels = {name: 'ФИО', age: 'возраст', phone: 'телефон', policyNumber: 'полис ОМС', diagnosis: 'диагноз',
+            pgiResult: 'результат ПГИ', pgiResultDate: 'дата ПГИ', nosology: 'клиентский путь', priority: 'приоритет',
+            doctor: 'лечащий врач', head: 'заведующий', complaint: 'комментарий'};
+        for (const [key, draft] of this.sessionFieldDrafts) {
+            const save = el('button', {type: 'button', class: 'btn btn--primary btn--sm', text: 'Сохранить правку', on: {click: async () => {
+                if (this.sessionExpired || this.user.id !== draft.owner) return;
+                save.disabled = true;
+                try {
+                    // Сохраняется исходная версия: повторный вход не разрешает перезапись.
+                    const updated = await apiPatch(`/api/patients/${draft.patientId}`, draft.body);
+                    this.sessionFieldDrafts.delete(key);
+                    this.replacePatientInCache(updated);
+                    this.renderSessionFieldDrafts();
+                    this.refreshCurrent();
+                } catch (error) { ui.toast(error.message, 'warning'); }
+                finally { save.disabled = false; }
+            }}});
+            banner.append(el('div', {}, [el('span', {text: 'Несохраненная правка (' + (labels[draft.body.field] || 'поле карточки') + '): ' +
+                    (draft.body.value && typeof draft.body.value === 'object' ? Object.values(draft.body.value).join(' / ') : String(draft.body.value ?? '')) + '. '}), save,
+                el('button', {type: 'button', class: 'btn btn--ghost btn--sm', text: 'Отменить правку', on: {click: async () => {
+                    if (!await ui.confirm({title: 'Отменить правку?', text: 'Несохраненное значение будет удалено.', okLabel: 'Удалить черновик'})) return;
+                    if (this.sessionExpired) return;
+                    try {
+                        await this.refreshPatientRecord(draft.patientId);
+                        this.sessionFieldDrafts.delete(key);
+                        this.renderSessionFieldDrafts();
+                        this.refreshCurrent();
+                    } catch (error) { ui.toast(error.message, 'warning'); }
+                }}}),
+            ]));
+        }
+        banner.hidden = this.sessionFieldDrafts.size === 0;
+    },
+
     async updatePatientField(patientId, fieldName, value) {
         // WP-C: версия карточки, которую видит пользователь; правка устаревшей карточки
         // получает 409 STALE_PATIENT_VERSION вместо тихой перезаписи чужого изменения.
@@ -6302,17 +6497,24 @@ const app = {
         for (;;) {
             try {
                 const updated = await apiPatch(`/api/patients/${patientId}`, body);
+                if (this.sessionFieldDrafts && this.sessionFieldDrafts.delete(patientId + ':' + fieldName)) {
+                    this.renderSessionFieldDrafts();
+                }
                 this.replacePatientInCache(updated);
                 this.refreshCurrent();
                 return;
             } catch (e) {
+                if (e.status === 401) {
+                    this.keepSessionFieldDraft(patientId, body);
+                    return;
+                }
                 // WP2.4-C: другой карточке вашей области принадлежит тот же номер полиса.
                 if (this.isStaleRecord(e)) {
                     await this.reloadAfterStaleRecord(patientId, e);
                     return;
                 }
                 if (fieldName === 'policyNumber' && this.isDuplicateLimitExceeded(e)) {
-                    ui.toast(e.data.detail || 'Номер полиса не изменен.', 'danger');
+                    ui.toast(e.message, 'danger');
                 } else if (fieldName === 'policyNumber' && this.isPossibleDuplicate(e)) {
                     const answer = await this.askDuplicateConfirmation(e.data, {
                         title: 'Номер полиса уже есть у другой карточки', confirmLabel: 'Сохранить номер',
@@ -6341,7 +6543,7 @@ const app = {
     },
 
     async reloadAfterStaleRecord(patientId, error) {
-        ui.toast((error.data && error.data.detail) || 'Карточка уже изменена другим пользователем. Обновите её.', 'warning');
+        ui.toast(error.message, 'warning');
         try {
             await this.refreshPatientRecord(patientId);
         } catch (e) { /* карточка недоступна — список обновится при следующей загрузке */ }
@@ -6624,11 +6826,29 @@ const app = {
     },
 
     refreshCurrent() {
+        if (this.sessionExpired) return;
         if (this.currentView === 'patient') this.renderPatientView();
         else if (this.currentView === 'patients') this.renderPatients();
     },
 
     /* ================================================== НОВЫЙ ПАЦИЕНТ (МОДАЛКА) */
+
+    addFormState() {
+        return JSON.stringify([...$('addForm').querySelectorAll('input, select, textarea')]
+            .map(node => [node.id, node.value, node.checked]));
+    },
+
+    async requestCloseAddModal() {
+        if (this.addPatientPending || this.addClosePending) return;
+        if (this.addFormState() !== this.addFormBaseline) {
+            this.addClosePending = true;
+            const discard = await ui.confirm({title: 'Закрыть форму?',
+                text: 'Несохраненные данные будут удалены. Продолжить?', okLabel: 'Удалить черновик'});
+            this.addClosePending = false;
+            if (!discard || this.sessionExpired) return;
+        }
+        ui.closeModal('addModal');
+    },
 
     openAddModal() {
         // WP2.4-B: новый ключ для новой формы; повтор той же отправки — с тем же ключом.
@@ -6641,6 +6861,7 @@ const app = {
         this.resetDiagnosisSelect();
         this.updateClientPathStatus();
         this.updateStageFields();
+        this.addFormBaseline = this.addFormState();
         ui.openModal('addModal');
     },
 
@@ -6735,7 +6956,9 @@ const app = {
     onDiagnosisSearchKeydown(event) {
         if (!['ArrowDown', 'ArrowUp', 'Enter', 'Escape'].includes(event.key)) return;
         if (event.key === 'Escape') {
+            if ($('diagnosisSearch').getAttribute('aria-expanded') !== 'true') return;
             event.preventDefault();
+            event.stopPropagation();
             this.setDiagnosisComboboxOpen(false);
             return;
         }
@@ -6892,7 +7115,7 @@ const app = {
                 // Введенные данные остаются в форме, кнопка снова доступна.
                 this.setAddPatientPending(false);
                 if (this.isDuplicateLimitExceeded(e)) {
-                    this.showFormError('Карточка не создана. ' + (e.data.detail || ''));
+                    this.showFormError('Карточка не создана. ' + apiErrorMessage(e.status, e.data));
                     return;
                 }
                 if (this.isPossibleDuplicate(e)) {
@@ -7590,7 +7813,7 @@ const app = {
         ]);
     },
 
-    async renderConsilium() {
+    async renderConsilium({ reuseData = false } = {}) {
         const body = $('consiliumBody');
         const empty = $('consiliumEmpty');
         const chair = this.can('consiliumChair');
@@ -7599,7 +7822,7 @@ const app = {
             body.replaceChildren(el('tr', {}, el('td', { colspan: '6', class: 'muted', text: 'Загрузка записей…' })));
         }
         try {
-            await this.loadConsilium();
+            if (!reuseData || !this.consilium.loaded) await this.loadConsilium();
         } catch (error) {
             body.replaceChildren();
             empty.textContent = `Не удалось загрузить записи: ${error.message}`;
@@ -9627,11 +9850,10 @@ const app = {
 
         try {
             const ids = Array.from(this.exportSelectedIds);
-            const response = await fetch('/api/export?ids=' + encodeURIComponent(ids.join(',')), {
-                credentials: 'include',
+            const response = await apiFetch('/api/export?ids=' + encodeURIComponent(ids.join(',')), {
+                rawResponse: true,
                 headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
             });
-            if (!response.ok) throw new Error(`сервер ответил ${response.status}`);
             const blob = await response.blob();
             const disposition = response.headers.get('content-disposition') || '';
             const match = disposition.match(/filename="([^"]+)"/);
@@ -10028,7 +10250,7 @@ const app = {
                     [mode]: { rows: [], matchedPatientIds: [], limitExceeded: true, limitExceededRows: e.data.rows || [] },
                 };
                 $('importDuplicateReason').value = '';
-                ui.toast('Импорт не выполнен. ' + (e.data.detail || ''), 'danger');
+                ui.toast('Импорт не выполнен. ' + apiErrorMessage(e.status, e.data), 'danger');
             } else if (this.isPossibleDuplicate(e) && this.importReport && e.data.rows) {
                 // WP2.4-C: набор совпадений изменился — окно показывает актуальный список
                 // от сервера, причину нужно указать заново для нового набора.
@@ -10080,9 +10302,7 @@ const app = {
                 await this.login($('username').value, $('password').value);
                 $('password').value = '';
             } catch (err) {
-                errorBox.textContent = err.status === 429
-                    ? 'Слишком много попыток входа. Подождите немного и попробуйте снова.'
-                    : 'Неверный логин или пароль.';
+                this.showLoginFailure(err);
                 errorBox.classList.remove('is-hidden');
                 $('password').focus();
             } finally {
@@ -10199,7 +10419,7 @@ const app = {
         });
         on('consiliumSearchInput', 'input', (event) => {
             this.consilium.search = event.target.value;
-            this.renderConsilium();
+            this.scheduleRead('consilium-search', () => this.renderConsilium({ reuseData: true }), !event.target.value);
         });
         on('consiliumDoctorDate', 'change', (event) => {
             this.consilium.doctorDate = event.target.value;
@@ -10353,7 +10573,7 @@ const app = {
         on('internalNotificationsSearchInput', 'input', (event) => {
             this.internalNotifications.filters.query = event.target.value;
             this.internalNotifications.filters.offset = 0;
-            this.renderInternalNotificationCenter();
+            this.scheduleRead('internal-full', this.renderInternalNotificationCenter, !event.target.value);
         });
         on('internalNotificationsTypeFilter', 'change', (event) => {
             this.internalNotifications.filters.type = event.target.value;
@@ -10381,7 +10601,8 @@ const app = {
         // Фильтры списка
         on('searchInput', 'input', (event) => {
             this.searchQuery = event.target.value;
-            this.renderPatients();
+            clearTimeout(this.patientSearchTimer);
+            this.patientSearchTimer = setTimeout(() => this.renderPatients(), this.searchQuery ? 300 : 0);
         });
         on('filterStage', 'change', (event) => {
             this.stageFilter = event.target.value || null;
@@ -10411,8 +10632,8 @@ const app = {
 
         // Новый пациент
         on('openAddBtn', 'click', () => this.openAddModal());
-        on('closeAddBtn', 'click', () => ui.closeModal('addModal'));
-        on('closeAddIconBtn', 'click', () => ui.closeModal('addModal'));
+        on('closeAddBtn', 'click', () => this.requestCloseAddModal());
+        on('closeAddIconBtn', 'click', () => this.requestCloseAddModal());
         $('addForm').addEventListener('submit', (event) => this.addPatient(event));
         $('addForm').addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && event.target.tagName !== 'TEXTAREA') event.preventDefault();
@@ -10464,7 +10685,7 @@ const app = {
         // Качество данных
         on('qualitySearchInput', 'input', (event) => {
             this.quality.filters.query = event.target.value;
-            this.renderDataQuality();
+            this.scheduleQualitySearch();
         });
         on('qualitySeverityFilter', 'change', (event) => {
             this.quality.filters.severity = event.target.value;
@@ -10504,7 +10725,7 @@ const app = {
         });
         on('notificationsSearchInput', 'input', (event) => {
             this.notifications.filters.query = event.target.value;
-            this.renderNotifications();
+            this.scheduleRead('notifications', this.renderNotifications, !event.target.value);
         });
         on('notificationsStatusFilter', 'change', (event) => {
             this.notifications.filters.status = event.target.value;
@@ -10619,6 +10840,14 @@ const app = {
         on('duplicatesPrevBtn', 'click', () => this.moveDuplicatesPage(-1));
         on('duplicatesNextBtn', 'click', () => this.moveDuplicatesPage(1));
 
+        window.addEventListener('beforeunload', (event) => {
+            const dirtyForm = !$('addModal').hidden && this.addFormState() !== this.addFormBaseline;
+            if (!this.discardingSession && (dirtyForm || (this.sessionFieldDrafts && this.sessionFieldDrafts.size))) {
+                event.preventDefault();
+                event.returnValue = '';
+            }
+        });
+
         // Закрытие модалок: клик по подложке и Escape
         for (const modal of document.querySelectorAll('.modal')) {
             let downOnBackdrop = false;
@@ -10632,6 +10861,7 @@ const app = {
         }
 
         document.addEventListener('keydown', (event) => {
+            if (event.defaultPrevented || this.sessionExpired) return;
             if (event.key === 'Escape') {
                 const top = ui.topModal();
                 if (top) {
@@ -10657,6 +10887,8 @@ const app = {
 
     /** Закрытие окна «крестиком»/Escape должно вести себя как «Отмена». */
     dismissModal(id) {
+        if (this.sessionExpired) return;
+        if (id === 'addModal') { this.requestCloseAddModal(); return; }
         if (id === 'registryReasonModal' && ui.pendingRegistryReasonCancel) {
             ui.pendingRegistryReasonCancel();
             return;

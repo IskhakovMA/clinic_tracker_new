@@ -283,11 +283,12 @@ def _validate_document(doc_dict: dict) -> tuple[Optional[ImportDocument], list[d
         document = ImportDocument.model_validate(doc_dict)
     except ValidationError as e:
         errors = []
-        for err in e.errors():
+        from .validation import safe_validation_errors
+        for err in safe_validation_errors(e.errors()):
             loc = err["loc"]
             index = loc[1] if len(loc) > 1 and isinstance(loc[1], int) else None
             field_name = ".".join(str(x) for x in loc[2:]) if len(loc) > 2 else (str(loc[-1]) if loc else "")
-            errors.append({"index": index, "field": field_name, "message": err["msg"]})
+            errors.append({"index": index, "field": field_name, "message": err["msg"], "type": err["type"]})
         return None, errors[:200]
 
     errors = []

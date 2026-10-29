@@ -457,10 +457,14 @@ def test_no_address_or_other_card_leaks_through_errors_audit_or_logs(client, cap
     assert "leak.case@example.test" not in json.dumps(shown)
 
 
-def test_validation_errors_elsewhere_are_unchanged(client):
+def test_validation_errors_elsewhere_also_exclude_input(client):
     ids, head, (pid, _) = _cards(client)
     response = head.patch(f"/api/patients/{pid}", json={"expectedVersion": card_version(pid), "field": "unknown", "value": "x"}, headers=head.csrf)
-    assert response.status_code == 422 and "input" in response.text
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["detail"] and all("input" not in error and "ctx" not in error for error in body["detail"])
+    assert any(error["loc"] == ["body", "field"] for error in body["detail"])
 
 
 # ================================================================ 3. mobile access and erroneous cards
