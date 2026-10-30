@@ -81,6 +81,10 @@ def _verified_files(directory: Path) -> list:
 def backup_cycle(directory: Path, *, retention_days: int | None = None, replica_directory: Path | None = None) -> dict:
     if retention_days is not None and (type(retention_days) is not int or retention_days < 1):
         raise ValueError("an explicit positive retention is required")
+    try:
+        retention = timedelta(days=retention_days) if retention_days is not None else None
+    except OverflowError as exc:
+        raise ValueError("retention exceeds timedelta range") from exc
     with serialized():
         directory = _directory(directory)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -94,11 +98,12 @@ def backup_cycle(directory: Path, *, retention_days: int | None = None, replica_
         files = _verified_files(directory)  # any unverifiable managed file aborts pruning
         removed = 0
         if retention_days is not None:
-            cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+            now = datetime.now(timezone.utc)
+            # Compare ages: subtracting a valid large duration from a date can underflow.
             # Always retain the newly verified artifact AND the last verified one.
             protected = {dest, files[-1][1]}
             for created, path in files:
-                if created < cutoff and path not in protected:
+                if now - created > retention and path not in protected:
                     path.unlink()
                     operations_state._sync_directory(directory)
                     removed += 1
@@ -107,11 +112,17 @@ def backup_cycle(directory: Path, *, retention_days: int | None = None, replica_
 
 
 def backup_status(directory: Path, *, max_age_hours: float) -> dict:
-    if not math.isfinite(max_age_hours) or max_age_hours <= 0:
-        raise ValueError("an explicit positive age is required")
+    try:
+        if not math.isfinite(max_age_hours) or max_age_hours <= 0:
+            raise ValueError("an explicit positive age is required")
+        max_age = timedelta(hours=max_age_hours)
+    except OverflowError as exc:
+        raise ValueError("age exceeds timedelta range") from exc
+    if max_age <= timedelta(0):
+        raise ValueError("age is below timedelta resolution")
     with serialized():
         files = _verified_files(_directory(directory))
-        fresh = bool(files) and datetime.now(timezone.utc) - files[-1][0] <= timedelta(hours=max_age_hours)
+        fresh = bool(files) and datetime.now(timezone.utc) - files[-1][0] <= max_age
         return {"status": "ok" if fresh else "stale", "verified_count": len(files)}
 
 

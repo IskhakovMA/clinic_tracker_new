@@ -75,12 +75,28 @@ def _read(name: str) -> dict:
             result[key] = value
         return result
 
-    value = json.loads(raw, object_pairs_hook=unique)
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise AdmissionRequired("invalid_admission") from exc
     if not isinstance(value, dict) or type(value.get("version")) is not int or value.get("version") != VERSION:
         raise AdmissionRequired("invalid_admission")
     generation = value.get("generation")
     if not isinstance(generation, str) or len(generation) != 32 or any(c not in "0123456789abcdef" for c in generation):
         raise AdmissionRequired("invalid_admission")
+    fields = {PENDING: {"version", "generation", "operation"},
+              GENERATION: {"version", "generation"},
+              PERMIT: {"version", "generation", "schema", "database"}}
+    if set(value) != fields.get(name, set()):
+        raise AdmissionRequired("invalid_admission")
+    if name == PENDING and (not isinstance(value["operation"], str) or value["operation"] not in {"restore", "migrate-db", "bootstrap", "verify-db"}):
+        raise AdmissionRequired("invalid_admission")
+    if name == PERMIT:
+        identity = value["database"]
+        if (type(value["schema"]) is not int or value["schema"] != config.SCHEMA_VERSION
+                or not isinstance(identity, dict) or set(identity) != {"device", "inode"}
+                or any(type(number) is not int or number < 0 for number in identity.values())):
+            raise AdmissionRequired("invalid_admission")
     return value
 
 

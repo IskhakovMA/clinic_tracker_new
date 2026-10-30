@@ -570,7 +570,8 @@ def cmd_verify_db(args):
     try:
         operations_state.verify_database(confirm_offline=args.confirm_offline)
     except (OSError, operations_state.AdmissionRequired, db_guard.DatabaseBusyError, maintenance.MaintenanceError) as exc:
-        print("Verification refused: " + (exc.code if isinstance(exc, operations_state.AdmissionRequired) else type(exc).__name__), file=sys.stderr)
+        print("Verification refused: " + (exc.code if isinstance(exc, operations_state.AdmissionRequired) else type(exc).__name__)
+              + ". Manual offline recovery required; see OPERATIONS.md (WP-F).", file=sys.stderr)
         return 1
     print("Database verified; startup permitted. Application was not started.")
     return 0
