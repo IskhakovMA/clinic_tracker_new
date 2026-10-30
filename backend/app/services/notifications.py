@@ -422,6 +422,7 @@ def create_notification(
     source_id: str,
     created_by_user_id: str | None,
     audit_user: policy.CurrentUser | None = None,
+    event_at: datetime | None = None,
 ) -> tuple[dict | None, str | None]:
     ensure_known_provider()
     scheduled = parse_dt(scheduled_at)
@@ -437,23 +438,33 @@ def create_notification(
     ok, reason = can_queue_for_patient(conn, patient_id)
     if not ok:
         return None, reason
+    # Only a verified canonical schedule receives the new durable provenance.
+    # Direct callers with historical schedules remain explicitly unverified.
+    if source_type == "event" and event_at is None:
+        ev = conn.execute("SELECT date, time FROM events WHERE id = ?", (source_id,)).fetchone()
+        candidate = event_dt(ev["date"], ev["time"]) if ev else None
+        if candidate and candidate - timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS) == scheduled:
+            event_at = candidate
+    event_iso = event_at.astimezone(timezone.utc).isoformat() if event_at else None
     now = now_iso()
     nid = store.new_id()
     scheduled_iso = scheduled.isoformat()
     idempotency_key = notification_idempotency_key(
         patient_id, source_type, source_id, template_code, scheduled_iso
     )
+    if event_iso:
+        idempotency_key = "event_msk_v1:" + idempotency_key
     try:
         with conn:
             conn.execute(
                 """INSERT INTO notifications
                    (id, patient_id, channel, template_id, template_code, template_version,
-                    source_type, source_id, scheduled_at, idempotency_key, status, attempt_count, max_attempts,
+                    source_type, source_id, scheduled_at, idempotency_key, event_at, status, attempt_count, max_attempts,
                     next_attempt_at, created_by_user_id, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
                 (
                     nid, patient_id, template["channel"], template["id"], template["code"], template["version"],
-                    source_type, source_id, scheduled_iso, idempotency_key, config.NOTIFICATION_MAX_ATTEMPTS,
+                    source_type, source_id, scheduled_iso, idempotency_key, event_iso, config.NOTIFICATION_MAX_ATTEMPTS,
                     scheduled_iso, created_by_user_id, now, now,
                 ),
             )
@@ -586,9 +597,8 @@ def _pending_event_rows_for_doctor(conn: sqlite3.Connection, doctor_id: str | No
 
 
 def _event_business_keys(patient_id: str, event_id: str, template_code: str, event_at: datetime) -> tuple[str, str]:
-    # Историческая формула узнается по живому событию, а не сдвигом всей очереди.
-    # Это защищает sent/failed/ручную отмену при исправлении часового пояса,
-    # но позволяет новое напоминание при настоящем изменении даты визита.
+    # Unversioned v28 rows have no reliable formula provenance. Aliases apply
+    # ONLY to those rows, conservatively; never to a new verified reminder.
     lead = timedelta(hours=config.NOTIFICATION_DEFAULT_REMINDER_HOURS)
     legacy = event_at.astimezone(clock.institution_tz()).replace(tzinfo=timezone.utc)
     return tuple(notification_idempotency_key(patient_id, "event", event_id, template_code, (at - lead).isoformat())
@@ -633,7 +643,7 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
                 """UPDATE notifications
                    SET status = 'cancelled', cancelled_at = ?, updated_at = ?, error_code = 'event_rescheduled'
                    WHERE patient_id = ? AND source_type = 'event' AND source_id = ?
-                     AND template_code = ? AND scheduled_at != ? AND status = 'pending'""",
+                     AND template_code = ? AND (scheduled_at != ? OR event_at IS NULL) AND status = 'pending'""",
                 (now_iso(), now_iso(), row["patient_id"], row["event_id"], template_code, scheduled.isoformat()),
             )
             cancelled += cur.rowcount
@@ -655,10 +665,11 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
         # обходить исчерпанные попытки или явную отмену сотрудника.
         blocked = conn.execute(
             """SELECT 1 FROM notifications WHERE patient_id = ? AND source_type = 'event'
-               AND source_id = ? AND template_code = ? AND idempotency_key IN (?, ?)
+               AND source_id = ? AND template_code = ?
+               AND (event_at = ? OR (event_at IS NULL AND idempotency_key IN (?, ?)))
                AND (status IN ('sent', 'processing', 'failed')
                     OR (status = 'cancelled' AND error_code IS NULL)) LIMIT 1""",
-            (row["patient_id"], row["event_id"], template_code,
+            (row["patient_id"], row["event_id"], template_code, event_at.isoformat(),
              *_event_business_keys(row["patient_id"], row["event_id"], template_code, event_at)),
         ).fetchone()
         if blocked:
@@ -673,6 +684,7 @@ def generate_due_reminders(conn: sqlite3.Connection, user: policy.CurrentUser | 
             source_id=row["event_id"],
             created_by_user_id=user.id if user else None,
             audit_user=user,
+            event_at=event_at,
         )
         if reason == "duplicate":
             duplicates += 1
@@ -822,11 +834,15 @@ def _current_event_time(conn: sqlite3.Connection, row) -> tuple[datetime | None,
         return None, "event_invalid"
     if event_at <= utcnow():
         return None, "event_passed"
+    if row["event_at"] is None:
+        return None, "event_schedule_unverified"
+    if parse_dt(row["event_at"]) != event_at:
+        return None, "event_rescheduled"
     already_sent = conn.execute(
         """SELECT 1 FROM notifications WHERE patient_id = ? AND source_type = 'event'
            AND source_id = ? AND template_code = ? AND status = 'sent' AND id != ?
-           AND idempotency_key IN (?, ?) LIMIT 1""",
-        (row["patient_id"], row["source_id"], row["template_code"], row["id"],
+           AND (event_at = ? OR (event_at IS NULL AND idempotency_key IN (?, ?))) LIMIT 1""",
+        (row["patient_id"], row["source_id"], row["template_code"], row["id"], event_at.isoformat(),
          *_event_business_keys(row["patient_id"], row["source_id"], row["template_code"], event_at)),
     ).fetchone()
     if already_sent:
@@ -885,10 +901,44 @@ def process_one(conn: sqlite3.Connection, provider: NotificationProvider | None 
         if reason:
             mark_skipped(conn, row, reason)
             return {"id": row["id"], "status": "skipped", "error_code": reason}
+    # A single read snapshot supplies both the validated consent and the actual
+    # recipient. No write transaction spans provider I/O. Mutations after this
+    # boundary still need provider-side coordination, which mock cannot promise.
+    target = conn.execute(
+        """SELECT p.phone, p.stage, pref.sms_enabled, pref.consent_status,
+                  e.date, e.time, e.actual_date, e.no_plan, e.deleted_at, h.patient_id AS event_patient_id
+           FROM patients p LEFT JOIN patient_notification_preferences pref ON pref.patient_id = p.id
+           LEFT JOIN events e ON e.id = ?
+           LEFT JOIN history_entries h ON h.id = e.history_entry_id
+           WHERE p.id = ?""", (row["source_id"] if row["source_type"] == "event" else None, row["patient_id"]),
+    ).fetchone()
+    if target is None:
+        reason = "patient_unavailable"
+    elif not target["sms_enabled"] or target["consent_status"] != "granted":
+        reason = "no_consent"
+    else:
+        ok, reason = phone_sendable(target["phone"])
+        if ok:
+            reason = None
+    if not reason and row["source_type"] == "event":
+        current = event_dt(target["date"], target["time"])
+        if target["event_patient_id"] != row["patient_id"] or target["deleted_at"] is not None:
+            reason = "event_removed"
+        elif target["actual_date"] or target["no_plan"] or target["stage"] in TERMINAL_STAGES:
+            reason = "event_inactive"
+        elif current is None:
+            reason = "event_invalid"
+        elif current <= utcnow():
+            reason = "event_passed"
+        elif current != event_at:
+            reason = "event_rescheduled"
+    if reason:
+        mark_skipped(conn, row, reason)
+        return {"id": row["id"], "status": "skipped", "error_code": reason}
     result = provider.send(NotificationContext(
         notification_id=row["id"],
         channel=row["channel"],
-        recipient=normalize_phone(patient["phone"]),
+        recipient=normalize_phone(target["phone"]),
         body=body,
     ))
     now = now_iso()

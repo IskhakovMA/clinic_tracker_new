@@ -251,6 +251,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     source_id TEXT NOT NULL,
     scheduled_at TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
+    event_at TEXT,
     status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'sent', 'failed', 'cancelled', 'skipped')),
     attempt_count INTEGER NOT NULL DEFAULT 0,
     max_attempts INTEGER NOT NULL DEFAULT 3,
@@ -623,7 +624,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_key ON notificat
     WHERE status IN ('pending', 'processing', 'sent', 'failed')
        OR (status = 'cancelled' AND error_code IS NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_notifications_idempotency_active
-    ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
+    ON notifications(patient_id, source_type, source_id, template_code, scheduled_at, COALESCE(event_at, 'unverified'))
     WHERE status IN ('pending', 'processing', 'sent');
 CREATE INDEX IF NOT EXISTS idx_internal_notifications_user_active
     ON internal_notification_state(user_id, resolved_at, read_at, last_seen_at);
@@ -2518,6 +2519,18 @@ def migrate_v27_to_v28(conn: sqlite3.Connection) -> None:
         _ensure_trigger(conn, name, sql)
 
 
+def migrate_v28_to_v29(conn: sqlite3.Connection) -> None:
+    """WP-E FIX1: durable visit instant for new reminders; old provenance stays unknown.
+
+    No inference from a three-hour arithmetic match, no history backfill. The
+    former uniqueness index conflated different visits sharing a queue instant.
+    The hash index still protects retries and manual cancellations.
+    """
+    if "event_at" not in _table_columns(conn, "notifications"):
+        _add_column_if_missing(conn, "notifications", "event_at", "event_at TEXT")
+        conn.execute("DROP INDEX IF EXISTS idx_notifications_idempotency_active")
+
+
 # AUD-14. Эталон определений триггеров — схема этой сборки, построенная init_db в
 # памяти. Наличие имени не доказывает защиту: подмененное определение с тем же
 # именем ранее оставалось навсегда (CREATE TRIGGER IF NOT EXISTS).
@@ -2660,6 +2673,7 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         migrate_v25_to_v26(conn)         # duplicate registry, erroneous marks (after notification rebuilds)
         migrate_v26_to_v27(conn)         # patient mobile access (Patient Portal stage 1)
         migrate_v27_to_v28(conn)         # WP-C: card version, fact history, history protection
+        migrate_v28_to_v29(conn)         # WP-E: original event schedule, explicit upgrade only
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)

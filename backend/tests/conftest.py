@@ -163,6 +163,14 @@ def strip_v28(conn) -> None:
     схемы: защитные триггеры v28, столбец patients.version и таблицу истории фактов.
     В настоящей базе v27 и старше этих объектов нет."""
     from backend.app import db
+    # A pre-v28 fixture must also remove the additive WP-E v29 metadata.
+    # Recreate the exact previous index, rather than weakening restore matching.
+    if "event_at" in {r[1] for r in conn.execute("PRAGMA table_info(notifications)")}:
+        conn.execute("DROP INDEX IF EXISTS idx_notifications_idempotency_active")
+        conn.execute("ALTER TABLE notifications DROP COLUMN event_at")
+        conn.execute("""CREATE UNIQUE INDEX idx_notifications_idempotency_active
+                        ON notifications(patient_id, source_type, source_id, template_code, scheduled_at)
+                        WHERE status IN ('pending', 'processing', 'sent')""")
     for name, _ in db._wpc_triggers():
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     conn.execute("DROP INDEX IF EXISTS idx_fact_history_patient")
@@ -176,7 +184,8 @@ def pre_v28_rows(conn, table: str) -> list[tuple]:
     (служебная версия карточки, у мигрированных карточек — 1). Остальные столбцы, в том
     числе версии событий и записей консилиума, сравниваются как есть."""
     columns = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')
-               if not (table == "patients" and r[1] == "version")]
+               if not ((table == "patients" and r[1] == "version") or
+                       (table == "notifications" and r[1] == "event_at"))]
     sql = f'SELECT {", ".join(chr(34) + c + chr(34) for c in columns)} FROM "{table}" ORDER BY rowid'  # nosec B608 - names from PRAGMA
     return [tuple(r) for r in conn.execute(sql)]
 

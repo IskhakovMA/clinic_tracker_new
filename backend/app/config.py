@@ -147,7 +147,8 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v28: WP-C medical integrity — patients.version (card version), patient_event_fact_history
 #      (history of actual dates/times), append-only audit and history triggers, delete guard
 #      for cards with clinical history; protective triggers are verified against this build.
-SCHEMA_VERSION = 28
+# v29: WP-E FIX1 — original event instant for verified reminders, no historical backfill.
+SCHEMA_VERSION = 29
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
