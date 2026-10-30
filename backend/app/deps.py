@@ -6,7 +6,7 @@ from urllib.parse import unquote
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
-from . import audit, config, policy, security, session_context
+from . import audit, config, policy, security, session_context, db_guard, operations_state
 from .db import _connect, connect_live
 
 
@@ -17,16 +17,18 @@ def get_db():
     # Схема и сиды проверяются один раз на путь в процессе (lifespan тоже
     # вызывает init_db), а не отдельной пишущей транзакцией на каждый запрос.
     # Старая схема не обновляется неявно (connect_live, AUD-02).
-    key = str(config.DB_PATH)
-    if key not in _initialized_db_paths:
-        conn = connect_live(config.DB_PATH)
-        _initialized_db_paths.add(key)
-    else:
-        conn = _connect(config.DB_PATH)
-    try:
-        yield conn
-    finally:
-        conn.close()
+    with db_guard.shared():
+        operations_state.require_permit()
+        key = str(config.DB_PATH)
+        if key not in _initialized_db_paths:
+            conn = connect_live(config.DB_PATH)
+            _initialized_db_paths.add(key)
+        else:
+            conn = _connect(config.DB_PATH)
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 
 def require_session(request: Request, conn: sqlite3.Connection = Depends(get_db)) -> sqlite3.Row:

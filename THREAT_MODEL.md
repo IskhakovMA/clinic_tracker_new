@@ -1,7 +1,9 @@
 # Threat Model
 
 Method: STRIDE-oriented white-box model for the local FastAPI + SQLite
-application at base commit `6019436b967ac26b1b106f445c4f83921ea6cb18`.
+application. Historical rows originated at `6019436b`; the WP-F scoped update
+below is verified against base `e05d1bb8` (schema v29). It does not claim a
+new full review of unrelated historical rows or repository hosting settings.
 
 ## Assets
 
@@ -9,15 +11,15 @@ Patient records, accounts, password hashes, server-side sessions, CSRF tokens,
 roles, department structure, audit events, SQLite database, WAL/SHM files,
 backups, CSV exports, notification queue, analytics aggregates, configuration,
 source code, GitHub repository, CI/CD baseline, patient mobile-access links
-(`patient_portal_access`, including the patient email address), future SMS
-provider boundary, and future local AI-server boundary.
+(`patient_portal_access`, including the patient email address), mock notification boundary, and the existing optional AI boundary (not reviewed
+or enabled by WP-F). Real delivery/email is a separate future scope.
 
 ## Trust Boundaries
 
 Browser user interface, static frontend assets, FastAPI process, SQLite,
 filesystem, CLI operator, notification worker, MockNotificationProvider,
 reverse proxy/TLS termination, administrator/operator, GitHub Actions,
-dependency ecosystem, future real SMS provider, and future local AI server.
+dependency ecosystem, future external delivery provider, and optional AI endpoint.
 
 ## Threats
 
@@ -41,7 +43,7 @@ dependency ecosystem, future real SMS provider, and future local AI server.
 | TM-012 | Tampering | Repository | Maintainer token | Direct push to main | Bypass PR review | Git history available | No branch protection/workflows visible | FAIL | Enable protected main, required reviews/checks | SEC-2026-004 |
 | TM-013 | Information Disclosure | Notification data | Scoped user | Queue/detail enumeration | Guess notification ID | Scoped queries and 404 on inaccessible ID | Future real provider delivery ambiguity remains | PASS | Add provider idempotency before real SMS | `NOTIFICATIONS.md`, tests `test_notifications.py` |
 | TM-014 | Information Disclosure | Analytics | Scoped user | Filter foreign doctor/department | Aggregate hidden patients | Scope before aggregation and pagination | No external BI integration yet | PASS | Keep aggregate scope tests on new reports | `backend/tests/test_analytics.py` |
-| TM-015 | Spoofing/Tampering | Future AI | Future integration | Local AI endpoint added | Prompt/data leakage | Out of scope; no AI code present | Future boundary unimplemented | N/A | Threat-model before implementation | Source inventory |
+| TM-015 | Spoofing/Tampering | Future AI | Future integration | Local AI endpoint added | Prompt/data leakage | Out of WP-F scope; optional AI code exists at e05d1bb | Requires separate current review | N/A | Threat-model before implementation | Source inventory |
 | TM-016 | Information disclosure | Patient mobile-access links | Staff member with patient-write rights | Authenticated session, write access to at least one patient | Probe `PUT /api/patients/{id}/portal-access` with a guessed address: 409 means the address belongs to some card, 200 means it does not — including cards outside the actor's scope | `UNIQUE` kept for integrity; rate limit `portal_access_link` 10/min per user and host; `portal_access_conflict` audit event on every conflict; response names neither patient nor address | One bit per probe still leaks to an authenticated, audited, rate-limited actor | PARTIAL | Revisit if a patient-facing eligibility endpoint is added in Stage 2 — there the same signal would be reachable unauthenticated and must not be | `backend/app/services/portal_access.py`, `backend/tests/test_portal_access.py` |
 | TM-017 | Elevation of privilege | Patient mobile-access links | Doctor or read-only role | Authenticated session | Attempt to grant mobile access outside the intended role set | `can_manage_portal_access` restricted to developer/department_head and re-checked per object; `can_revoke_portal_access` = `can_write_patient`; out-of-scope patient returns 404 | None identified; covered by negative tests across all five roles | OK | Keep the role check in `policy.py`, not in the route | `backend/app/policy.py`, `backend/tests/test_portal_access.py` |
 
@@ -54,7 +56,24 @@ Stage 2 will expose to unauthenticated callers is the point where the existence
 oracle described in TM-016 becomes materially more dangerous, and it must be
 designed so that the response does not depend on whether the address is known.
 
-Real SMS provider and local AI server are not active. They must be reviewed in
-separate stages before implementation. For SMS, the notable future risk is:
-provider accepts SMS, worker crashes before saving `sent`, then the lease
-recovery may resend. This is not exploitable against the current MockProvider.
+Real notification delivery remains mock-only. A real SMS provider is neither
+required nor planned in this roadmap. Email is a candidate for a separate future
+stage after business/recipient/privacy requirements; WP-F adds no provider/API.
+The optional AI implementation present at e05d1bb is outside this scoped update;
+historical claims of no AI code above are not evidence of current coverage.
+
+## WP-F scoped threats and residual assumptions
+
+| Threat | Control | Residual / evidence |
+| --- | --- | --- |
+| Supervisor starts unverified DB after exit 0/3 or reboot | Durable pending + generation anchor; explicit offline verified permit; every normal DB path gated | Real SIGKILL/fsync/permission/space tests; no physical power-cut experiment; requires honest filesystem fsync/rename/locks |
+| Old permit authorizes a replacement | Generation and device/inode binding; pending wins; missing/corrupt state denies | Storage relocation/identity change requires offline verification; root/service-account file or code changes outside boundary |
+| Partial permit publication | File fsync + atomic replace + directory fsync; pending removed last | Rename visibility is not durable publication; failed final pending-unlink sync reports failure and attempts conservative block |
+| Last backup deleted / same-host loss | Verify all managed copies before opt-in rotation; retain newest/new; verify encrypted replica | Off-host/account separation and retention/cadence unset; folder is not proof of independence or WORM |
+| Public health reveals internals | Minimal liveness/readiness reasons, no-store, no PHI/paths/raw exceptions | Readiness bounded metadata, full integrity at offline check/startup; monitor disk/quota separately |
+| Proxy spoof / insecure production | Explicit production policy, original-peer trust, checked loopback launcher, Secure cookies, HSTS | Owner must deploy TLS/proxy and preserve WP-D context headers; real infrastructure not configured/tested |
+| Dependency drift/tampering | Complete exact versions, binary-only SHA-256 locks, clean installs and audits | Python/OS/CA trust external; artifact integrity is not publisher trust; native Linux run separate from target resolution |
+
+See OPERATIONS.md, DEPENDENCIES.md and WP_F_OPERATIONS_REPORT.md for procedure,
+fault matrix, measured test results and unapproved owner decisions. Medical
+transaction/audit/version protections WP-C and notification v29 logic remain.

@@ -1,0 +1,6 @@
+# INACTIVE ALTERNATIVE to systemd timers. Do not use both schedulers.
+# Load the protected process environment explicitly in an owner-reviewed wrapper.
+# @BACKUP_CRON@ @VENV@/bin/python -m backend.cli backup-cycle --directory @APPROVED_BACKUP_DIRECTORY@
+# @CLEANUP_CRON@ @VENV@/bin/python -m backend.cli maintenance-cleanup
+# @MONITOR_CRON@ @VENV@/bin/python -m backend.cli backup-status --directory @APPROVED_BACKUP_DIRECTORY@ --max-age-hours @OWNER_APPROVED_RPO_HOURS@
+# Offline admission is NEVER a scheduled action.

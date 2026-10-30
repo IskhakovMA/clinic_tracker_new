@@ -1,0 +1,16 @@
+# TEMPLATE ONLY; no remote destination or retention deletion is enabled.
+[Unit]
+Description=Clinic Tracker verified encrypted backup
+
+[Service]
+Type=oneshot
+User=@SERVICE_ACCOUNT@
+WorkingDirectory=@APPLICATION_DIRECTORY@
+EnvironmentFile=@PROTECTED_ENV_FILE@
+UMask=0077
+ExecStart=@VENV_DIRECTORY@/bin/python -m backend.cli backup-cycle --directory @APPROVED_LOCAL_BACKUP_DIRECTORY@
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@DATA_DIRECTORY@ @APPROVED_LOCAL_BACKUP_DIRECTORY@

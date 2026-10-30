@@ -1,5 +1,10 @@
 # Pilot Runbook
 
+WP-F admission and transport instructions in OPERATIONS.md govern all examples.
+After restore/migrate, even exit 0, run explicit offline verify-db before start.
+New setup requires bootstrap-db then verify-db; existing setup needs one-time
+offline adoption. No automatic confirmation from service managers is permitted.
+
 This runbook is for a limited controlled pilot of "Система планирования". It is not a production operations manual and does not replace organisational security, privacy, legal, or incident-response procedures.
 
 ## Start
@@ -9,7 +14,7 @@ This runbook is for a limited controlled pilot of "Система планиро
 3. Confirm `CLINIC_DATA_DIR` points to the intended application data directory.
 4. Confirm HTTPS termination is active before setting `CLINIC_HTTPS=true`.
    Settings come only from the process environment (systemd `EnvironmentFile=`,
-   `uvicorn --env-file`, or `set -a; . backend/.env; set +a`); the app does not
+   `set -a; . backend/.env; set +a`); the app does not
    read `.env` itself and refuses to start if `backend/.env` holds values the
    process did not receive. After start, check the log line
    `clinic-tracker backend starting: … https=… debug=… env=… data_dir=…`.
@@ -17,11 +22,13 @@ This runbook is for a limited controlled pilot of "Система планиро
    schema, follow OPERATIONS.md «Database Operations: Safe Order»
    (backup → backup-verify → `migrate-db --confirm-offline`); the app does not
    upgrade the schema by itself and refuses to start on an older one.
-6. Start the FastAPI app by the approved local service manager or command:
+6. On first adoption/new setup or after any restore/migrate, an operator must
+   complete `verify-db --confirm-offline` offline (OPERATIONS.md WP-F).
+   check-db cannot authorize startup. Then start the FastAPI app by the approved local service manager or command:
 
 ```bash
 source .venv/bin/activate
-python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8420
+python -m backend.server --host 127.0.0.1 --port 8420
 ```
 
 Run exactly one process. The request and login limiters keep their counters in
@@ -34,19 +41,15 @@ For production-like pilot deployment, run behind a reverse proxy and do not expo
 
 ### Reverse proxy requirements
 
-The login limiter keys on the client address that uvicorn reports. uvicorn
-trusts `X-Forwarded-For` from `127.0.0.1` by default, so the proxy decides
-what that address is:
+Production requires CLINIC_ENV=production, HTTPS=true, DEBUG=false, an explicit
+public CLINIC_HOST and CLINIC_TRUSTED_PROXY_IPS (no all-address networks).
+The checked backend.server launcher disables uvicorn proxy-header rewriting;
+application middleware validates the original socket peer before trusting headers.
+Direct production uvicorn is refused. See OPERATIONS.md WP-F.
 
-- The proxy must **overwrite** `X-Forwarded-For` with the real peer address
-  and must not pass a client-supplied value through. nginx:
-  `proxy_set_header X-Forwarded-For $remote_addr;` (not `$http_x_forwarded_for`).
-  Caddy: keep `trusted_proxies` empty so client headers are replaced.
-- If the proxy sends no `X-Forwarded-For`, every user shares one login
-  limiter bucket (`127.0.0.1`) and five failed logins from anyone slow down
-  all logins. Always send it.
-- Start uvicorn with an explicit trust list:
-  `--proxy-headers --forwarded-allow-ips=127.0.0.1`.
+- Overwrite X-Forwarded-For with ONE real peer address and X-Forwarded-Proto=https;
+  do not pass client values or header lists through. Missing metadata is refused.
+- Preserve Host, X-Clinic-User and X-Clinic-Access. Restrict direct backend access.
 - The proxy access log must not record query strings. The application no
   longer sends patient-name search text in URLs (it uses the `X-Search`
   request header, which default access-log formats do not record), but keep
@@ -89,9 +92,9 @@ low; rising queue depth means it is not.
 python -m backend.cli audit-prune --days <retention>   # per retention policy
 ```
 
-Schedule it with the service account, and alert on free space for the volume
-that holds `CLINIC_DATA_DIR`. A full volume stops clinical writes and silently
-drops later audit events.
+Do not activate schedules or retention before owner approval. See inactive
+deploy/examples templates and OPERATIONS.md WP-F. Alert on storage and command
+failures; critical medical writes fail closed if their audit cannot be recorded.
 
 ## Stop
 
@@ -385,8 +388,8 @@ Do not put personal contact details in Git unless approved.
 Run through this list once before the pilot starts; each item is outside the
 repository and cannot be verified from source.
 
-1. Proxy overwrites `X-Forwarded-For`; uvicorn started with
-   `--proxy-headers --forwarded-allow-ips=127.0.0.1`.
+1. Proxy overwrites forwarded headers; use the checked backend.server launcher
+   and explicit CLINIC_TRUSTED_PROXY_IPS (OPERATIONS.md WP-F).
 2. Proxy rate-limits `/api/auth/login` (per-IP and global).
 3. `CLINIC_HTTPS=true`, TLS terminated at the proxy, `CLINIC_HOST` set to the
    public hostname, security headers preserved end to end.
@@ -398,7 +401,8 @@ repository and cannot be verified from source.
    (the application data directory) are on the same encrypted volume.
 8. Backup key stored outside the repository and outside `CLINIC_DATA_DIR`,
    mode `0600`; restores tested from a copy.
-9. `audit-prune` scheduled; free-space alerting configured for the data volume.
+9. Owner-approved retention/schedules and free-space alerting reviewed; inactive
+   WP-F examples are not installed and must not be enabled without approval.
 10. Notification queue limits reviewed against the clinic's real volume, and
     queue depth monitored.
 

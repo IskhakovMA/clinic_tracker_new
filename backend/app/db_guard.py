@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -52,7 +53,12 @@ class LockUnavailableError(DatabaseBusyError):
 def _open_lock(name: str) -> int:
     try:
         config.DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        return os.open(str(_lock_path(name)), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(str(_lock_path(name)), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_nlink != 1:
+            os.close(fd)
+            raise LockUnavailableError("Unsafe database lock")
+        return fd
     except OSError as exc:
         raise LockUnavailableError(
             f"Файл блокировки {name} в {config.DATA_DIR} недоступен ({type(exc).__name__}): "

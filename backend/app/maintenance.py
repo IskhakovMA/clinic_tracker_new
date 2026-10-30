@@ -24,7 +24,7 @@ from pathlib import Path
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from . import config, db_guard
+from . import config, db_guard, operations_state
 from . import db as _db
 from .db import REQUIRED_TABLES, connect_readonly_check, init_db
 
@@ -997,18 +997,15 @@ def _validate_input_path(path: Path) -> Path:
 
 def _ensure_private_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
-    try:
-        path.chmod(0o700)
-    except (OSError, NotImplementedError):
-        pass
+    path.chmod(0o700)
+    info = path.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise MaintenanceError("Private directory permissions are not confirmed")
 
 
 def _fsync_file(path: Path) -> None:
-    try:
-        with open(path, "rb") as f:
-            os.fsync(f.fileno())
-    except OSError:
-        pass
+    with open(path, "rb") as f:
+        os.fsync(f.fileno())
 
 
 def _fsync_dir(path: Path) -> None:
@@ -1281,7 +1278,7 @@ def backup_database(db_path: Path, dest: Path | None = None, *, overwrite: bool 
             except FileExistsError as exc:
                 raise MaintenanceError("Файл уже существует") from exc
             _restrict_permissions(dest)
-            _fsync_dir(dest.parent)
+            _fsync_dir_strict(dest.parent)
         finally:
             plaintext.unlink(missing_ok=True)
             tmp_output.unlink(missing_ok=True)
@@ -1363,6 +1360,8 @@ def restore_database(backup_path: Path, db_path: Path, *, confirm_offline: bool 
     db_path = _check_target_path(db_path)
     try:
         with db_guard.exclusive_maintenance("Restore"):
+            from . import operations_state
+            _begin_admission("restore")
             return _restore_locked(backup_path, db_path, replace_damaged=replace_damaged)
     except db_guard.DatabaseBusyError as exc:
         raise MaintenanceError(str(exc)) from exc
@@ -1690,6 +1689,8 @@ def migrate_database(db_path: Path, *, confirm_offline: bool = False) -> dict:
     db_path = _check_target_path(db_path)
     try:
         with db_guard.exclusive_maintenance("migrate-db"):
+            from . import operations_state
+            _begin_admission("migrate-db")
             return _migrate_locked(db_path)
     except db_guard.DatabaseBusyError as exc:
         raise MaintenanceError(str(exc)) from exc
@@ -1937,3 +1938,29 @@ def _reconcile_account_security(staging: Path, live: sqlite3.Connection) -> int:
     finally:
         conn.close()
     return changed
+
+
+def record_maintenance_audit(event_type: str, *, result="success", detail="") -> None:
+    """Narrow technical audit path while normal database admission is blocked.
+
+    No init_db, bootstrap or permit publication. No arbitrary SQL callback.
+    Exclusive locks keep this path unavailable to a running application.
+    """
+    from . import audit
+    if event_type not in {audit.RESTORE_PERFORMED, audit.SCHEMA_MIGRATED}:
+        raise ValueError("unsupported maintenance audit event")
+    with db_guard.exclusive_maintenance("maintenance audit"):
+        conn = sqlite3.connect(config.DB_PATH.as_uri() + "?mode=rw", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA foreign_keys=ON")
+            audit.record(conn, event_type, result=result, detail=detail)
+        finally:
+            conn.close()
+
+
+def _begin_admission(operation: str) -> None:
+    try:
+        operations_state.begin(operation)
+    except (OSError, operations_state.AdmissionRequired) as exc:
+        raise MaintenanceError("Журнал допуска недоступен: " + type(exc).__name__ + ". Файлы базы не изменены.") from exc

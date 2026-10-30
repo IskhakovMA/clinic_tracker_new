@@ -31,8 +31,8 @@ def _set_auth_cookies(response: Response, session_token: str, csrf_token: str) -
 
 
 def _clear_auth_cookies(response: Response) -> None:
-    response.delete_cookie(config.SESSION_COOKIE_NAME, path="/")
-    response.delete_cookie(config.CSRF_COOKIE_NAME, path="/")
+    response.delete_cookie(config.SESSION_COOKIE_NAME, path="/", secure=config.HTTPS, httponly=True, samesite="lax")
+    response.delete_cookie(config.CSRF_COOKIE_NAME, path="/", secure=config.HTTPS, samesite="lax")
 
 
 def _profile_payload(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:

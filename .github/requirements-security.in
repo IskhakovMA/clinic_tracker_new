@@ -1,0 +1,5 @@
+pip-audit==2.7.3
+bandit==1.8.6
+PyYAML==6.0.2
+pytest==9.0.3
+pip==26.2.2

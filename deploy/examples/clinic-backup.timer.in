@@ -1,0 +1,11 @@
+# TEMPLATE ONLY: RPO/cadence NOT approved. Do not install as an active timer.
+[Unit]
+Description=Clinic Tracker backup cadence (owner decision required)
+
+[Timer]
+OnCalendar=@OWNER_APPROVED_BACKUP_CALENDAR@
+Persistent=true
+Unit=clinic-backup.service
+
+[Install]
+WantedBy=timers.target

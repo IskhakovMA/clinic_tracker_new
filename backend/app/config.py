@@ -216,3 +216,26 @@ AI_RATE_LIMIT_REQUESTS = max(1, min(int(os.environ.get("CLINIC_AI_RATE_LIMIT_REQ
 # общего пула, который нужен и остальным запросам (включая вход).
 AI_MAX_CONCURRENT_REQUESTS = max(1, min(int(os.environ.get("CLINIC_AI_MAX_CONCURRENT_REQUESTS", "4")), 32))
 AI_RATE_LIMIT_WINDOW_SECONDS = max(60, min(int(os.environ.get("CLINIC_AI_RATE_LIMIT_WINDOW_SECONDS", "300")), 3600))
+
+# WP-F: production may only use the checked launcher. This is process state,
+# never an environment-variable bypass. The application owns proxy parsing.
+TRUSTED_PROXY_IPS = os.environ.get('CLINIC_TRUSTED_PROXY_IPS', '').strip()
+_transport_validated = False
+
+
+def validate_deployment(*, check_launcher=True):
+    import ipaddress
+    if APP_ENV not in {'local', 'test', 'demo', 'production'}:
+        raise ConfigError('CLINIC_ENV is invalid')
+    if APP_ENV != 'production':
+        return
+    if not HTTPS or DEBUG or not HOST or HOST == '*' or '/' in HOST:
+        raise ConfigError('Production requires CLINIC_HTTPS=true, CLINIC_DEBUG=false and an explicit CLINIC_HOST')
+    try:
+        networks = [ipaddress.ip_network(value.strip()) for value in TRUSTED_PROXY_IPS.split(',')]
+        if not networks or any(network.prefixlen == 0 for network in networks):
+            raise ValueError('unrestricted proxy')
+    except ValueError as exc:
+        raise ConfigError('Production requires an explicit restricted CLINIC_TRUSTED_PROXY_IPS') from exc
+    if check_launcher and not _transport_validated:
+        raise ConfigError('Production must start with python -m backend.server')

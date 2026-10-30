@@ -1108,6 +1108,8 @@ def _other_database(client, monkeypatch, tmp_path, label, now):
         monkeypatch.setattr(config, "DATA_DIR", data.resolve())
         monkeypatch.setattr(config, "DB_PATH", data.resolve() / "clinic.db")
         monkeypatch.setattr(config, "BACKUP_DIR", data.resolve() / "backups")
+        from .conftest import prepare_test_database
+        prepare_test_database()
     set_moscow_now(monkeypatch, now)
     assert _count("SELECT COUNT(*) FROM patients") == 0
     create_account(DEV_USERNAME, "developer", DEV_FULL_NAME)
@@ -1744,6 +1746,8 @@ def v28_db(tmp_path, monkeypatch):
         if mod.startswith("backend."):
             del sys.modules[mod]
     from backend.app import db
+    from .conftest import prepare_test_database
+    prepare_test_database()
     conn = db.connect_live(data / "clinic.db")
     conn.execute("INSERT INTO patients (id, name, priority, stage, arrival, created_at) "
                  "VALUES ('p-syn', 'Синтетик Проверочный', 'normal', 'exam', 't', 't')")
@@ -1862,6 +1866,10 @@ def test_v27_database_is_migrated_explicitly_and_keeps_history(tmp_path, monkeyp
         if mod.startswith("backend."):
             del sys.modules[mod]
     from backend.app import db, store
+    # New operational protocol: migration success does not itself grant startup.
+    assert _cli(data, "purge-sessions").returncode == 1
+    (data / "clinic.db").chmod(0o600)  # operator fixes legacy file permissions explicitly
+    assert _cli(data, "verify-db", "--confirm-offline").returncode == 0
     live = db.connect_live(data / "clinic.db")
     try:
         full = live.execute("SELECT id FROM patients WHERE name LIKE 'Историев%'").fetchone()[0]

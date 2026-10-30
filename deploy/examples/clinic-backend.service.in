@@ -1,0 +1,26 @@
+# TEMPLATE ONLY. Owner must fill every @...@ value. Never invokes verify-db.
+[Unit]
+Description=Clinic Tracker backend
+After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=@SERVICE_ACCOUNT@
+WorkingDirectory=@APPLICATION_DIRECTORY@
+EnvironmentFile=@PROTECTED_ENV_FILE@
+UMask=0077
+ExecStartPre=@VENV_DIRECTORY@/bin/python -m backend.cli readiness
+ExecStart=@VENV_DIRECTORY@/bin/python -m backend.server --host 127.0.0.1 --port @BACKEND_PORT@
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@DATA_DIRECTORY@
+
+[Install]
+WantedBy=multi-user.target

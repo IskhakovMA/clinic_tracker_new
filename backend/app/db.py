@@ -785,9 +785,9 @@ def _harden_permissions(db_path: Path) -> None:
     _hardened_paths.add(key)
 
 
-def _connect(db_path: Path, *, enable_wal: bool = True) -> sqlite3.Connection:
+def _connect(db_path: Path, *, enable_wal: bool = True, factory=sqlite3.Connection) -> sqlite3.Connection:
     _harden_permissions(db_path)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    conn = sqlite3.connect(str(db_path), check_same_thread=False, factory=factory)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     # Wait instead of failing immediately when another writer (a CLI backup,
@@ -798,19 +798,46 @@ def _connect(db_path: Path, *, enable_wal: bool = True) -> sqlite3.Connection:
     return conn
 
 
+class _LeasedConnection(sqlite3.Connection):
+    """A normal connection cannot outlive its shared maintenance exclusion."""
+    _admission_lock_fd = None
+
+    def close(self):
+        from . import db_guard
+        try:
+            super().close()
+        finally:
+            fd, self._admission_lock_fd = self._admission_lock_fd, None
+            db_guard.release(fd)
+
+    def __del__(self):
+        try:
+            self.close()
+        except (AttributeError, ImportError, OSError, sqlite3.Error):
+            pass
+
+
 def connect_live(db_path: Path) -> sqlite3.Connection:
     """Connection to the live DB that never upgrades it implicitly (AUD-02).
 
     The schema is checked first (init_db with allow_upgrade=False) and only
     then the file is switched to WAL: a refused older file must stay byte for
     byte as it was, and switching the journal mode rewrites its header."""
-    conn = _connect(db_path, enable_wal=False)
+    from . import operations_state, db_guard
+    lock = db_guard.acquire_shared()
+    conn = None
     try:
+        operations_state.require_permit(db_path)
+        conn = _connect(db_path, enable_wal=False, factory=_LeasedConnection)
+        conn._admission_lock_fd, lock = lock, None
         init_db(conn, allow_upgrade=False)
         _enable_wal(conn)
     except BaseException:
-        conn.close()
+        if conn is not None:
+            conn.close()
         raise
+    finally:
+        db_guard.release(lock)
     return conn
 
 
@@ -2781,6 +2808,8 @@ def get_connection() -> sqlite3.Connection:
     """Process-wide connection to the configured DB path (used by the app).
     Tests should build their own via `_connect` + `init_db` against a temp path."""
     global _singleton_conn
+    from . import operations_state
+    operations_state.require_permit()
     if _singleton_conn is None:
         # Рабочая база никогда не обновляется неявно (AUD-02): старая схема —
         # отказ без изменений, обновление только командой migrate-db. При отказе

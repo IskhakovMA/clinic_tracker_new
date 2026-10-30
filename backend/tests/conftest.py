@@ -64,6 +64,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LOGIN_RATE_LIMIT_MAX_BUCKETS", 1_000)
     monkeypatch.setattr(config, "REQUEST_RATE_LIMIT_MAX_BUCKETS", 1_000)
 
+    prepare_test_database()
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
         _running_apps.append(c)
         try:
@@ -95,8 +96,23 @@ def app_stopped():
         yield
     finally:
         db.reset_singleton_for_tests()
+        from backend.app import operations_state, config
+        if stopped and (config.DATA_DIR / operations_state.PENDING).exists():
+            # Explicit operator step in the synthetic maintenance scenario:
+            # first prove startup is blocked; check-db alone never permits it.
+            with pytest.raises(operations_state.AdmissionRequired):
+                operations_state.require_permit()
+            operations_state.verify_database(confirm_offline=True)
         for c in stopped:
             c.__enter__()
+
+
+def prepare_test_database():
+    """Explicit NEW synthetic installation (never a production bypass flag)."""
+    from backend.app import operations_state, config
+    if not config.DB_PATH.exists():
+        operations_state.bootstrap_database(confirm_new=True)
+    operations_state.verify_database(confirm_offline=True)
 
 
 def current_schema_version() -> int:

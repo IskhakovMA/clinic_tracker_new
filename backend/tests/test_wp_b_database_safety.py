@@ -51,7 +51,11 @@ def data_dir(tmp_path, monkeypatch):
     for mod in list(sys.modules):
         if mod.startswith("backend."):
             del sys.modules[mod]
-    return data
+    try:
+        yield data
+    finally:
+        from backend.app import db
+        db.reset_singleton_for_tests()
 
 
 def _digest(path: Path):
@@ -89,6 +93,8 @@ def _cli(data: Path, *args, env_extra=None, timeout=120):
 def _current_db(data: Path, patients=("Синтетик Первый",)):
     """A current-schema DB created the way the application creates it."""
     from backend.app import db
+    from .conftest import prepare_test_database
+    prepare_test_database()
     conn = db.connect_live(data / "clinic.db")
     try:
         for i, name in enumerate(patients):
@@ -747,6 +753,8 @@ def test_app_and_cli_refuse_unapplied_env_file(data_dir, tmp_path, monkeypatch):
             pass
     assert not (data_dir / "clinic.db").exists()
     monkeypatch.setenv("CLINIC_HTTPS", "true")
+    from .conftest import prepare_test_database
+    prepare_test_database()
     with TestClient(app, base_url="http://127.0.0.1") as c:
         assert c.get("/api/auth/me").status_code == 200
 
@@ -940,8 +948,11 @@ def test_failure_before_replace_still_reports_unchanged(data_dir, tmp_path, monk
     backup = maintenance.backup_database(live, tmp_path / "b.cbk")
     before = _files(data_dir)
 
-    def no_space(*_args, **_kwargs):
-        raise OSError(errno.ENOSPC, "No space left on device")
+    real_replace = os.replace
+    def no_space(src, dst):
+        if Path(dst) == live:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst)
 
     with monkeypatch.context() as m:
         m.setattr(maintenance.os, "replace", no_space)
@@ -960,8 +971,11 @@ def test_failed_put_back_after_failed_replace_is_not_reported_as_unchanged(data_
     live.write_bytes(os.urandom(8192))
     real_rename = os.rename
 
-    def no_space(*_args, **_kwargs):
-        raise OSError(errno.ENOSPC, "No space left on device")
+    real_replace = os.replace
+    def no_space(src, dst):
+        if Path(dst) == live:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return real_replace(src, dst)
 
     def rename(src, dst):
         if "quarantine" in str(src):                  # putting the damaged file back fails

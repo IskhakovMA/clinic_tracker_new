@@ -1,0 +1,11 @@
+# TEMPLATE ONLY. No real system schedule is installed or enabled.
+[Unit]
+Description=Clinic Tracker service-record maintenance
+
+[Timer]
+OnCalendar=@OWNER_APPROVED_CLEANUP_CALENDAR@
+Persistent=true
+Unit=clinic-cleanup.service
+
+[Install]
+WantedBy=timers.target

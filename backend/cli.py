@@ -33,7 +33,7 @@ import json
 import sys
 from pathlib import Path
 
-from .app import audit, config, db, db_guard, maintenance, security, users
+from .app import audit, config, db, db_guard, maintenance, security, users, operations_state
 from .app.services import notifications
 
 
@@ -236,6 +236,7 @@ def cmd_migrate_db(args: argparse.Namespace) -> int:
     except maintenance.MaintenanceError as e:
         print(str(e), file=sys.stderr)
         return 1
+    print("Запуск заблокирован: выполните verify-db --confirm-offline вручную.")
     if result["status"] == "current":
         print(f"Схема уже текущая (v{result['schema_version']}). База не изменена.")
         return 0
@@ -247,8 +248,7 @@ def cmd_migrate_db(args: argparse.Namespace) -> int:
     print(f"  копия до миграции (проверена): {Path(result['pre_migration_backup']).name}")
     print("  check-db после миграции: OK")
     try:
-        with db_guard.shared():
-            audit.record(db.get_connection(), audit.SCHEMA_MIGRATED,
+        maintenance.record_maintenance_audit(audit.SCHEMA_MIGRATED,
                          detail=f"via=cli from=v{result['from_schema_version']} to=v{result['schema_version']}")
     except Exception as e:  # журнал не отменяет выполненную миграцию, но оператор должен знать
         print(f"Предупреждение: событие аудита не записано ({type(e).__name__}).", file=sys.stderr)
@@ -292,8 +292,8 @@ def cmd_backup(args: argparse.Namespace) -> int:
     try:
         dest = maintenance.backup_database(config.DB_PATH, args.dest, overwrite=args.overwrite)
         report = maintenance.inspect_backup(dest)
-    except maintenance.MaintenanceError as e:
-        print(str(e), file=sys.stderr)
+    except (maintenance.MaintenanceError, OSError) as e:
+        print(str(e) if isinstance(e, maintenance.MaintenanceError) else "Backup failed: " + type(e).__name__, file=sys.stderr)
         return 1
     audit.record(
         db.get_connection(),
@@ -386,9 +386,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        with db_guard.shared():
-            audit.record(
-                db.get_connection(),
+        maintenance.record_maintenance_audit(
                 audit.RESTORE_PERFORMED,
                 detail=(
                     f"via=cli format=v{result['format_version']} key_id={result['key_id']} "
@@ -401,7 +399,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         print(f"Предупреждение: событие аудита не записано ({type(e).__name__}).", file=sys.stderr)
     finally:
         db.reset_singleton_for_tests()
-    print("Восстановление завершено.")
+    print("Восстановление завершено. Запуск заблокирован: выполните verify-db --confirm-offline вручную.")
     print(f"  backup filename:             {result['restored_from']}")
     print(f"  прежняя база:                {result['previous_state']}")
     print(f"  recovery copy:               {Path(result['pre_restore_backup']).name if result['pre_restore_backup'] else '-'}")
@@ -525,8 +523,7 @@ def _report_unverified(e: maintenance.CommittedButUnverifiedError, event_type: s
         if value is not None:
             print(f"  {key}: {_safe(value)}", file=sys.stderr)
     try:
-        with db_guard.shared():
-            audit.record(db.get_connection(), event_type, result=audit.RESULT_ERROR,
+        maintenance.record_maintenance_audit(event_type, result=audit.RESULT_ERROR,
                          detail=f"via=cli state={e.state}"[:200])
     except Exception as exc:  # файловая система уже сбоит — событие может не записаться
         print(f"Событие аудита не записано ({type(exc).__name__}).", file=sys.stderr)
@@ -535,9 +532,53 @@ def _report_unverified(e: maintenance.CommittedButUnverifiedError, event_type: s
     return EXIT_COMMITTED_UNVERIFIED
 
 
+def cmd_operations(args):
+    from .app import operations
+    try:
+        if args.command == "backup-cycle":
+            result = operations.backup_cycle(Path(args.directory), retention_days=args.retain_days,
+                                              replica_directory=Path(args.replica_directory) if args.replica_directory else None)
+        elif args.command == "backup-status":
+            result = operations.backup_status(Path(args.directory), max_age_hours=args.max_age_hours)
+        else:
+            result = operations.cleanup(audit_days=args.audit_days)
+    except (OSError, ValueError, operations_state.AdmissionRequired, db_guard.DatabaseBusyError, maintenance.MaintenanceError) as exc:
+        print(json.dumps({"status": "error", "reason": type(exc).__name__}), file=sys.stderr)
+        return 1
+    print(json.dumps(result))
+    return 0 if result["status"] in {"verified", "ok"} else 1
+
+
+def cmd_readiness(_args):
+    from .app.health import readiness
+    result = readiness()
+    print(json.dumps(result))
+    return 0 if result["status"] == "ready" else 1
+
+
+def cmd_bootstrap_db(args):
+    try:
+        result = operations_state.bootstrap_database(confirm_new=args.confirm_new)
+    except (OSError, operations_state.AdmissionRequired, db_guard.DatabaseBusyError) as exc:
+        print("Bootstrap refused: " + type(exc).__name__, file=sys.stderr)
+        return 1
+    print(result["status"] + "; run verify-db --confirm-offline manually")
+    return 0
+
+
+def cmd_verify_db(args):
+    try:
+        operations_state.verify_database(confirm_offline=args.confirm_offline)
+    except (OSError, operations_state.AdmissionRequired, db_guard.DatabaseBusyError, maintenance.MaintenanceError) as exc:
+        print("Verification refused: " + (exc.code if isinstance(exc, operations_state.AdmissionRequired) else type(exc).__name__), file=sys.stderr)
+        return 1
+    print("Database verified; startup permitted. Application was not started.")
+    return 0
+
+
 # Команды, которые сами берут нужные блокировки или не открывают рабочую базу.
 SELF_LOCKING_COMMANDS = frozenset({
-    "check-db", "migrate-db", "restore", "backup-inspect", "backup-verify", "backup-keygen",
+    "check-db", "migrate-db", "restore", "backup-inspect", "backup-verify", "backup-keygen", "bootstrap-db", "verify-db", "readiness", "backup-cycle", "backup-status", "maintenance-cleanup",
 })
 
 
@@ -591,6 +632,20 @@ def main() -> int:
     p_prune = sub.add_parser("audit-prune", help="Удалить старые события аудита")
     p_prune.add_argument("--days", type=int, default=None, help="Срок хранения в днях")
 
+    sub.add_parser("readiness", help="Safe readiness probe; no admission granted")
+    p_cycle = sub.add_parser("backup-cycle", help="Create and verify; no retention deletion unless explicitly supplied")
+    p_cycle.add_argument("--directory", required=True)
+    p_cycle.add_argument("--retain-days", type=int)
+    p_cycle.add_argument("--replica-directory")
+    p_status = sub.add_parser("backup-status", help="Verify backup age against explicit owner policy")
+    p_status.add_argument("--directory", required=True)
+    p_status.add_argument("--max-age-hours", type=float, required=True)
+    p_clean = sub.add_parser("maintenance-cleanup", help="Only expired sessions/keys; audit pruning opt-in")
+    p_clean.add_argument("--audit-days", type=int)
+    p_bootstrap = sub.add_parser("bootstrap-db", help="Create a NEW database; leaves startup blocked")
+    p_bootstrap.add_argument("--confirm-new", action="store_true")
+    p_verify = sub.add_parser("verify-db", help="Explicit operator offline verification and admission")
+    p_verify.add_argument("--confirm-offline", action="store_true")
     sub.add_parser("purge-sessions", help="Удалить истёкшие сессии")
     sub.add_parser("notifications-generate", help="Сформировать pending-напоминания из плановых событий")
     sub.add_parser("notifications-run-once", help="Обработать одно due-уведомление тестовым provider")
@@ -604,6 +659,12 @@ def main() -> int:
         print(str(e), file=sys.stderr)
         return 2
     handlers = {
+        "backup-cycle": cmd_operations,
+        "backup-status": cmd_operations,
+        "maintenance-cleanup": cmd_operations,
+        "readiness": cmd_readiness,
+        "bootstrap-db": cmd_bootstrap_db,
+        "verify-db": cmd_verify_db,
         "create-developer": cmd_create_developer,
         "import-structure": cmd_import_structure,
         "check-db": cmd_check_db,
@@ -632,7 +693,7 @@ def main() -> int:
     except db_guard.DatabaseBusyError as e:
         print(str(e), file=sys.stderr)
         return 1
-    except db.SchemaVersionError as e:
+    except (db.SchemaVersionError, operations_state.AdmissionRequired) as e:
         print(str(e), file=sys.stderr)
         return 1
 

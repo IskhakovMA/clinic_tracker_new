@@ -14,7 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import audit, config, db_guard, idempotency, process_guard, security, session_context
+from . import audit, config, db_guard, idempotency, process_guard, security, session_context, operations_state, health
 from .db import SchemaVersionError, get_connection
 from .db import reset_singleton_for_tests as reset_singleton
 from .routes import ai, analytics, audit_log, auth, consilium, data_quality, duplicate_review, importexport, internal_notifications, migrate, notifications, patients, staff, structure
@@ -65,6 +65,8 @@ CSP = (
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    _app.state.operational_ready = False
+    config.validate_deployment()
     # Лимитеры запросов и входа хранят счётчики в памяти процесса: второй
     # процесс на тех же данных молча удвоил бы лимиты, поэтому он не стартует.
     try:
@@ -87,6 +89,7 @@ async def lifespan(_app: FastAPI):
             logger.critical("refusing to start: %s", exc)
             raise
         try:
+            health.startup_check()
             conn = get_connection()   # init_db(allow_upgrade=False): старая схема — отказ
         except SchemaVersionError as exc:
             logger.critical("refusing to start: %s", exc)
@@ -105,8 +108,10 @@ async def lifespan(_app: FastAPI):
             config.APP_ENV,
             config.DATA_DIR,
         )
+        _app.state.operational_ready = True
         yield
     finally:
+        _app.state.operational_ready = False
         try:
             reset_singleton()   # соединение закрывается до снятия блокировок
         finally:
@@ -121,6 +126,34 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+
+app.state.operational_ready = False
+
+
+@app.get("/api/health", include_in_schema=False)
+def liveness():
+    return {"status": "alive"}
+
+
+@app.get("/api/ready", include_in_schema=False)
+def readiness():
+    result = health.readiness()
+    if not app.state.operational_ready and result["status"] == "ready":
+        result = {"status": "not_ready", "reason": "startup_incomplete"}
+    return JSONResponse(result, status_code=200 if result["status"] == "ready" else 503)
+
+
+@app.middleware("http")
+async def operational_admission(request: Request, call_next):
+    if request.url.path not in {"/api/health", "/api/ready"}:
+        try:
+            if not app.state.operational_ready:
+                raise operations_state.AdmissionRequired("startup_incomplete")
+            operations_state.require_permit()
+        except operations_state.AdmissionRequired:
+            return JSONResponse({"error": "Service unavailable"}, status_code=503)
+    return await call_next(request)
+
 
 class _BodyTooLarge(Exception):
     pass
@@ -190,6 +223,8 @@ class BodySizeLimitMiddleware:
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=[config.HOST, "127.0.0.1", "localhost"])
 app.add_middleware(BodySizeLimitMiddleware)
+from .transport import ProductionTransport
+app.add_middleware(ProductionTransport)
 
 
 @app.middleware("http")
@@ -216,6 +251,12 @@ def _is_erroneous_write(exc: BaseException) -> bool:
             return True
         exc = exc.__cause__ or exc.__context__
     return False
+
+
+@app.exception_handler(operations_state.AdmissionRequired)
+async def admission_error_handler(request: Request, exc):
+    logger.warning("database admission denied: %s", exc.code)
+    return JSONResponse({"error": "Service unavailable"}, status_code=503)
 
 
 @app.exception_handler(session_context.ContextChanged)

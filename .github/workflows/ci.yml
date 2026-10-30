@@ -59,6 +59,9 @@ jobs:
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r backend/requirements-dev.txt
 
+      - name: Verify locked dependency declarations
+        run: python tools/ci/check_dependency_locks.py --profile dev
+
       # Collects twice (deterministic node ids), checks that the shard plan partitions
       # every test file, and exports the collection's count and SHA-256 as job outputs.
       # No artifact storage is used: the gate must not depend on the account's quota.
@@ -173,10 +176,14 @@ jobs:
 
       - name: Check temporary database
         run: |
-          mkdir -p "$CLINIC_DATA_DIR"
+          mkdir -p -m 700 "$CLINIC_DATA_DIR"
           python - <<'PY'
           from backend.app.db import get_connection, init_db
+          from backend.app import operations_state
 
+          # Explicit installation/verification of this NEW CI-only synthetic DB.
+          operations_state.bootstrap_database(confirm_new=True)
+          operations_state.verify_database(confirm_offline=True)
           conn = get_connection()
           init_db(conn)
           conn.close()
@@ -241,7 +248,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install policy test dependencies
-        run: python -m pip install --disable-pip-version-check PyYAML==6.0.2 pytest==8.3.4
+        run: python -m pip install --disable-pip-version-check -r .github/requirements-security.txt
 
       - name: Validate workflow policy
         run: python -m pytest security-audit/tests -q
@@ -263,7 +270,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install pip-audit
-        run: python -m pip install --disable-pip-version-check pip-audit==2.7.3
+        run: python -m pip install --disable-pip-version-check -r .github/requirements-security.txt
 
       - name: Audit backend dependencies
         run: pip-audit -r backend/requirements.txt
@@ -285,7 +292,7 @@ jobs:
           python-version: "3.13"
 
       - name: Install Bandit
-        run: python -m pip install --disable-pip-version-check bandit==1.8.6
+        run: python -m pip install --disable-pip-version-check -r .github/requirements-security.txt
 
       # Negative control: with the real Bandit, a reviewed statement that only moved
       # still passes, while a new injectable query or an edited reviewed one fails.

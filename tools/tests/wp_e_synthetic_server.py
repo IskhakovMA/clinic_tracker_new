@@ -24,6 +24,9 @@ def main():
     from backend.app import clock, db, users
     import uvicorn
     clock.now_moscow = lambda: moment.astimezone(clock.institution_tz())
+    from backend.app import operations_state
+    operations_state.bootstrap_database(confirm_new=True)
+    operations_state.verify_database(confirm_offline=True)
     conn = db.get_connection()
     users.create_user(conn, username='synthetic.browser', full_name='Синтетический Сотрудник',
                       role_id='developer', password='synthetic-browser-password', must_change_password=False)

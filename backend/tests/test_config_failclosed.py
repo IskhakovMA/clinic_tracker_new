@@ -18,6 +18,8 @@ def test_login_impossible_before_first_developer(tmp_path, monkeypatch):
     from backend.app.main import app
     from backend.app import db
 
+    from .conftest import prepare_test_database
+    prepare_test_database()
     with TestClient(app, base_url="http://127.0.0.1") as client:
         conn = db.get_connection()
         assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0

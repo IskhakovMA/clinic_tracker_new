@@ -64,6 +64,7 @@ def build_v1_db(path: Path) -> None:
     )
     conn.commit()
     conn.close()
+    path.chmod(0o600)  # explicit operator correction before offline adoption
 
 
 @pytest.fixture()
@@ -88,6 +89,10 @@ def migrated(tmp_path, monkeypatch):
     result = maintenance.migrate_database(app_config.DB_PATH, confirm_offline=True)
     assert result["status"] == "migrated" and result["from_schema_version"] == 1
     assert maintenance.inspect_backup(Path(result["pre_migration_backup"]))["schema_version"] == 1
+    from backend.app import operations_state
+    with pytest.raises(operations_state.AdmissionRequired):
+        operations_state.require_permit()
+    operations_state.verify_database(confirm_offline=True)
     security._failed_attempts.clear()
     with TestClient(app, base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
         yield c, tmp_path

@@ -1,3 +1,4 @@
+from pathlib import Path
 import base64
 from backend.app import config
 import json
@@ -510,8 +511,11 @@ def test_failed_final_replace_keeps_live_db_and_verified_recovery(auth_client, t
     auth_client.post("/api/patients", json=make_patient_payload(name="После сбоя"), headers=auth_client.csrf)
     db.reset_singleton_for_tests()
 
+    real_replace = maintenance.os.replace
     def fail_replace(_src, _dst):
-        raise OSError("forced replace failure")
+        if Path(_dst) == db_path:
+            raise OSError("forced replace failure")
+        return real_replace(_src, _dst)
 
     monkeypatch.setattr(maintenance.os, "replace", fail_replace)
     with pytest.raises(maintenance.MaintenanceError, match="заменить"):
@@ -612,6 +616,9 @@ def test_cli_create_inspect_verify_and_restore(tmp_path):
         cwd=PROJECT_ROOT, env=env, text=True, capture_output=True,
     )
     assert missing.returncode == 1 and not (tmp_path / "clinic.db").exists()
+    for step in (["bootstrap-db", "--confirm-new"], ["verify-db", "--confirm-offline"]):
+        subprocess.run([sys.executable, "-m", "backend.cli", *step],
+                       cwd=PROJECT_ROOT, env=env, text=True, capture_output=True, check=True)
     subprocess.run([sys.executable, "-m", "backend.cli", "purge-sessions"],
                    cwd=PROJECT_ROOT, env=env, text=True, capture_output=True, check=True)
     check = subprocess.run(

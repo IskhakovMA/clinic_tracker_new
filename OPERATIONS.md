@@ -1,5 +1,166 @@
 # Operations
 
+## WP-F: current mandatory admission protocol (schema v29)
+
+This section governs every startup/maintenance instruction below. Historical
+v24-v28 examples describe medical migrations, not permission to start the server.
+WP-F changes operational sidecars, not SQLite schema v29 or CTBK v1.
+
+### Operator procedure
+
+Use the intended service account and explicitly loaded protected environment.
+Stop the server AND all workers; the commands take both nonblocking exclusive
+locks themselves. DATA_DIR must be an owned real directory mode 0700; database,
+WAL/SHM and admission files must be owned regular single-link files with no
+other-user access (normally 0600). Investigate ownership/permission differences;
+never recursively chmod an unknown path. Only an authorized operator corrects
+permissions after inspecting the installation.
+
+New, empty installation (never an automatic startup action):
+
+```
+python -m backend.cli bootstrap-db --confirm-new
+python -m backend.cli check-db
+python -m backend.cli verify-db --confirm-offline
+python -m backend.cli create-developer
+```
+
+Existing installation adopting WP-F: stop every process, inspect files and
+permissions, run check-db, explicitly migrate an older schema if needed, then
+run verify-db --confirm-offline once. Absence of admission files DENIES access;
+it never means that adoption succeeded. Ordinary restarts after admission need
+no new confirmation. A planned backup alone does not revoke admission.
+
+Every restore/migrate-db, including a no-op current-schema migration:
+
+1. Stop server/workers; retain and verify a suitable encrypted recovery copy.
+2. Run restore FILE --confirm-offline or migrate-db --confirm-offline.
+3. Regardless of exit 0, 1 or 3, do not start if maintenance began. Investigate
+   failures, disk health/space/permissions and retain diagnostics/quarantine.
+4. Run check-db (diagnostic only). When the result is understood and correct,
+   the operator runs verify-db --confirm-offline. A failed check keeps the block.
+5. Only after successful explicit verification run readiness and start service.
+
+verify-db validates SQLite integrity/FK, current schema, exact protective trigger
+SQL, main/WAL/SHM/journal state, owner/modes, stable files, generation and fsync
+barriers. It diagnoses a private copy, performs no hidden migration, medical
+repair or checkpoint of the live database. check-db never issues a permit.
+Do NOT put verify-db in systemd, cron, reboot scripts or automatic recovery.
+There is no environment variable/CLI switch to bypass admission.
+
+### States and durability
+
+```mermaid
+stateDiagram-v2
+    [*] --> Unadmitted: no permit / existing installation
+    Unadmitted --> Pending: explicit bootstrap or offline verification
+    Admitted --> Pending: durable intent before restore/migrate
+    Pending --> Pending: exit 0/1/3, SIGKILL or failed verification
+    Pending --> Admitted: operator verifies + syncs DB + durable permit
+    Admitted --> Admitted: ordinary restart / backup
+    Admitted --> Unadmitted: missing, corrupt or mismatched admission
+```
+
+.clinic-pending.json is published and file+directory synced before the first DB
+mutation. A new .clinic-generation.json anchor and revocation of any old permit
+precede mutation too. Pending ALWAYS wins. .clinic-permit.json binds schema v29,
+maintenance generation and main-file device/inode; a copied/replaced database or
+changed storage identity needs operator verification. These files contain only
+technical metadata, never medical drafts, records or keys. They are not portable
+backup credentials. Do not copy old admission files to authorize a restored DB.
+
+Publication uses a private exclusive temp file, file fsync, atomic replace and
+parent-directory fsync. Rename visibility is NOT proof of durable publication.
+The permit is synced only after all verification and DB fsync; pending is removed
+last and its removal synced. If this last sync fails, the command reports failure
+and attempts to retain pending. A crash can retain the conservative block; the
+already verified durable permit never precedes verification. No automatic retry.
+
+Failure before durable intent means NO DB mutation and an old valid permit may
+remain valid. A partial intent/anchor write can require a new explicit maintenance
+attempt after I/O repair to establish a consistent generation. Never edit/delete
+markers to bypass this state. Retain evidence, diagnose offline, repeat the
+appropriate explicit restore/migrate operation using a verified recovery copy,
+then verify. Malformed protocol files require operator incident review; code does
+not silently repair them. Manual restoration of permission files is prohibited.
+
+The gate covers lifespan, HTTP even with lifespan off, normal DB connections,
+cached request dependencies, CLI and workers. Connections retain a shared lease;
+maintenance needs exclusive locks. Only narrow diagnosis/recovery and technical
+RESTORE_PERFORMED/SCHEMA_MIGRATED audit paths may open a blocked DB. Medical audit
+WP-C remains transactional and fail-closed. Direct sqlite3/private Python APIs or
+file/code changes by root/the service account are outside the application trust
+boundary; restrict that account and prohibit external SQLite writers.
+
+Full raw WAL validation is offline/startup only, never during live requests.
+Conservatively rejected torn/stale tails require operator review, not deletion or
+hidden recovery. Advisory locks cannot control arbitrary noncooperating tools.
+SIGKILL tests prove process-crash behavior; a physical power-cut/controller-cache
+experiment has not been performed. Filesystem fsync guarantees remain a deployment
+assumption. Do not use storage lacking required atomic rename/fsync/locking.
+
+### Health, scheduling and backup policy
+
+GET /api/health reports only process liveness; GET /api/ready reports readiness or
+one bounded reason (pending, missing/damaged database, migration required,
+startup incomplete, storage unavailable). No paths, PHI, exception messages or
+configuration values are returned. Both use no-store. Readiness does not run a
+full integrity scan per request; startup/offline verification do. A full disk
+check detects zero free bytes, not every future quota/reservation failure; monitor
+storage externally and inspect nonzero CLI exits. Production probes obey proxy
+transport checks too. The CLI readiness command never grants admission.
+
+Optional explicit commands (no policy activated):
+
+```
+python -m backend.cli backup-cycle --directory /OWNER_APPROVED_PRIVATE_PATH
+python -m backend.cli backup-status --directory /OWNER_APPROVED_PRIVATE_PATH --max-age-hours OWNER_VALUE
+python -m backend.cli maintenance-cleanup
+```
+
+backup-cycle creates unique encrypted copies, verifies AEAD, integrity/FK/schema
+and trial restoration/migration. Optional --replica-directory copies encrypted
+bytes with fsync and independently verifies the replica before any pruning.
+Optional --retain-days must be a positive explicit owner decision; by default
+NOTHING is deleted. Only scheduled_*.cbk managed copies rotate, all are verified
+first, the new and newest verified copy are protected, and any disk/permission/
+space/verification error aborts the cycle before subsequent pruning. Manual and
+pre_restore/pre_migrate copies are not rotated. Audit failure is reported even
+if the already verified backup exists; inspect before repeating an operation.
+
+A second directory is not proof of off-host, immutable or independent storage.
+The owner must arrange a separate failure/account boundary and recovery drills.
+No real data is transferred by this task. Cleanup serializes with backup cycles
+and conflicts with offline maintenance; it removes expired sessions/idempotency
+keys. Audit pruning is opt-in and retains existing WP-C protections. Templates
+in deploy/examples are inactive and contain unfilled owner placeholders.
+
+Required owner decisions remain UNSET: RPO, RTO, backup cadence, retention,
+external storage/account/key custody, alert thresholds/destination, responsible
+operators and recovery drill frequency. Do not enable deletion/schedules until
+approved. The existing notification mock stays; no SMS/SMTP/email API is added.
+Email business requirements and privacy policy belong to a future separate task.
+
+### Production transport and dependencies
+
+Set CLINIC_ENV=production, CLINIC_HTTPS=true, CLINIC_DEBUG=false, an explicit
+CLINIC_HOST and non-wildcard CLINIC_TRUSTED_PROXY_IPS. Load the environment first;
+start with python -m backend.server --host 127.0.0.1 --port 8420. Direct production
+uvicorn is refused because its prior proxy-header rewriting hides the original
+socket peer. The checked launcher disables uvicorn proxy rewriting, binds only
+loopback and keeps one worker. Application middleware validates the ORIGINAL
+peer against the trust list, a single real X-Forwarded-For address and exactly
+X-Forwarded-Proto=https. Missing/forged metadata fails closed. The real proxy
+must overwrite forwarded headers, preserve Host and X-Clinic-User/X-Clinic-Access,
+restrict direct backend access and terminate valid TLS. No proxy/certificate is
+installed here. Secure session/CSRF cookies (including deletion), HSTS and WP-D
+identity/access headers are retained. local/test/demo synthetic HTTP remains
+available; it is not a production configuration.
+
+Use the complete hashed requirements and clean-environment procedure in
+DEPENDENCIES.md. Linux target wheel/hash verification is distinct from native
+Linux execution. Host Python, OS and filesystem remain external trust roots.
+
 ## Configuration Source (WP-B, AUD-19)
 
 The backend and the CLI read settings **only from the process environment**.
@@ -20,7 +181,7 @@ file format is `NAME=value` per line, `#` comments, optional `export ` prefix,
 optional surrounding quotes; no inline comments.
 
 The listening address and port are the uvicorn `--host`/`--port` arguments.
-`CLINIC_HOST` is the trusted Host header (and must match `--host`);
+`CLINIC_HOST` is the public trusted Host header; the backend binds loopback;
 `CLINIC_PORT` is informational. The start-up log line prints the effective
 non-secret settings: `trusted_host`, `https`, `debug`, `env`, `data_dir`.
 
@@ -66,7 +227,7 @@ unchanged. Safe order for every upgrade, restore and rollback:
    `python -m backend.cli restore <file> --confirm-offline`. It keeps an
    encrypted, verified `backups/pre_restore_*.cbk` of the current DB first.
 6. **Check**: `python -m backend.cli check-db` must print `Результат: OK`.
-7. **Start** the service.
+7. **Admit offline**: `python -m backend.cli verify-db --confirm-offline`, then start the service.
 8. **Rollback** of a failed upgrade or restore: stop the service and restore
    the `pre_migrate_*`/`pre_restore_*` copy with the **previous** build
    (`restore … --confirm-offline`), then `check-db`. Data entered after that
@@ -298,7 +459,7 @@ backup upload are outside the current implementation.
 
 Обновление v27 → v28 — только явной командой после остановки сервиса и проверенной
 копии (порядок — раздел «Database Operations: Safe Order»):
-`backup` → `backup-verify` → `migrate-db --confirm-offline` → `check-db` → запуск.
+`backup` → `backup-verify` → `migrate-db --confirm-offline` → `check-db` → `verify-db --confirm-offline` → запуск.
 Миграция только добавляет: столбец `patients.version` (у существующих карточек — 1),
 таблицу `patient_event_fact_history` и защитные триггеры. Существующие записи не
 меняются и не удаляются; повторный `migrate-db` ничего не дублирует. Резервные копии
@@ -414,7 +575,7 @@ v9…v27 восстанавливаются как прежде (миграци�
 подменённый — проблема, посторонний — предупреждение. Сервер при подменённой
 защите не стартует (база не меняется). Восстановление — тем же путём, что и
 миграция: остановка сервиса → `migrate-db --confirm-offline` (проверенная копия
-`pre_migrate_v28_*.cbk`, затем эталонные определения) → `check-db` → запуск.
+`pre_migrate_v28_*.cbk`, затем эталонные определения) → `check-db` → `verify-db --confirm-offline` → запуск.
 
 ## Schema Upgrades And Rollback
 

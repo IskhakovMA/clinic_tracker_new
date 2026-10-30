@@ -1,3 +1,15 @@
+> WP-F operational update: every restore/migrate first durably records pending;
+> even successful exit 0 leaves startup blocked until an operator completes
+> verify-db --confirm-offline. check-db is diagnostic only. See OPERATIONS.md
+> "WP-F: current mandatory admission protocol" for authoritative startup order,
+> generation/permit durability, fault recovery and inactive scheduling policy.
+> The SQLite schema stays v29 and encrypted CTBK format stays v1. Admission
+> sidecars are local technical state, not portable authorization in a backup.
+> backup-cycle supports verified encrypted copies, opt-in retention and encrypted
+> replica directories; no cadence/retention/off-host destination is approved or
+> enabled. Monthly drills below are historical guidance, not an approved policy.
+> No off-host transfer, cloud/provider selection or real medical data use occurs.
+
 # Backup Security
 
 This project uses encrypted application backups for portable backup files. The

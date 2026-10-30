@@ -1,0 +1,16 @@
+# TEMPLATE ONLY; expired service records only. No audit retention is selected.
+[Unit]
+Description=Clinic Tracker expired sessions and idempotency keys
+
+[Service]
+Type=oneshot
+User=@SERVICE_ACCOUNT@
+WorkingDirectory=@APPLICATION_DIRECTORY@
+EnvironmentFile=@PROTECTED_ENV_FILE@
+UMask=0077
+ExecStart=@VENV_DIRECTORY@/bin/python -m backend.cli maintenance-cleanup
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@DATA_DIRECTORY@

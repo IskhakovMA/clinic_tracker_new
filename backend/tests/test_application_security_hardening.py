@@ -60,6 +60,8 @@ def test_docs_and_openapi_registration_by_debug_mode(tmp_path, monkeypatch):
     assert "/openapi.json" in debug_paths
     assert "/api/docs" in debug_paths
     assert "/redoc" not in debug_paths
+    from .conftest import prepare_test_database
+    prepare_test_database()
     with TestClient(debug_app, base_url="http://127.0.0.1", raise_server_exceptions=False) as debug_client:
         assert debug_client.get("/api/docs").status_code == 200
         assert debug_client.get("/docs").status_code == 404
@@ -78,6 +80,7 @@ def test_docs_and_openapi_registration_by_debug_mode(tmp_path, monkeypatch):
     assert "/api/docs" not in prod_paths
     assert "/docs" not in prod_paths
     assert "/redoc" not in prod_paths
+    prepare_test_database()
     with TestClient(prod_app, base_url="http://127.0.0.1", raise_server_exceptions=False) as prod_client:
         assert prod_client.get("/api/docs").status_code == 404
         assert prod_client.get("/docs").status_code == 404

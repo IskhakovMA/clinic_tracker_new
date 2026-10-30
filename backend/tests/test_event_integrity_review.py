@@ -568,7 +568,7 @@ def test_application_refuses_to_start_on_a_newer_schema(client, tmp_path, monkey
 
     # Отдельный каталог данных: блокировку единственного процесса держит client.
     other = tmp_path / "other-release"
-    other.mkdir()
+    other.mkdir(mode=0o700)
     conn = _fresh_db(other / "clinic.db")
     with conn:
         conn.execute("UPDATE schema_version SET version = 99")
