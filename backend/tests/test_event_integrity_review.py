@@ -719,6 +719,7 @@ def test_audit_failure_rolls_the_change_back(auth_client, operation):
     event = _events(auth_client, pid)[0]
     if operation == "restore":
         assert _delete(auth_client, pid, event).status_code == 200
+        restore_version = _deleted(auth_client, pid)[0]["version"]
         _fail_audit_for("patient_event_restored")
     else:
         _fail_audit_for("patient_event_deleted")
@@ -727,7 +728,7 @@ def test_audit_failure_rolls_the_change_back(auth_client, operation):
     if operation == "delete":
         r = _delete(auth_client, pid, event)
     else:
-        r = _restore(auth_client, pid, event["id"], _deleted(auth_client, pid)[0]["version"])
+        r = _restore(auth_client, pid, event["id"], restore_version)
     assert r.status_code == 503, r.text
     assert "не изменено" in r.json()["detail"]
     assert _snapshot() == before                                  # событие, версия и напоминания прежние
@@ -738,7 +739,7 @@ def test_audit_failure_rolls_the_change_back(auth_client, operation):
     if operation == "delete":
         assert _delete(auth_client, pid, event).status_code == 200
     else:
-        assert _restore(auth_client, pid, event["id"], _deleted(auth_client, pid)[0]["version"]).status_code == 200
+        assert _restore(auth_client, pid, event["id"], restore_version).status_code == 200
 
 
 def _setup_with_reminder(client):

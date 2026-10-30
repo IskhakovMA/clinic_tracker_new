@@ -69,6 +69,7 @@ def _create_patient(doctor_id=None, **overrides):
 
 def _enable_ai(monkeypatch):
     from backend.app import config
+    monkeypatch.setattr(config, "AI_DATA_MODE", "synthetic")
 
     monkeypatch.setattr(config, "AI_MODE", "")
     monkeypatch.setattr(config, "AI_ENABLED", True)
@@ -152,6 +153,7 @@ def test_ai_status_configured_but_provider_unreachable(auth_client, monkeypatch)
 
 def test_ai_local_autodiscovery_available_and_explicit_disabled(monkeypatch):
     from backend.app import config
+    monkeypatch.setattr(config, "AI_DATA_MODE", "synthetic")
     from backend.app.ai import provider
     from backend.app.ai.provider import AIProviderHealth, AIProviderSettings
 
@@ -181,6 +183,7 @@ def test_ai_local_autodiscovery_available_and_explicit_disabled(monkeypatch):
 
 def test_ai_configured_provider_overrides_local_default(monkeypatch):
     from backend.app import config
+    monkeypatch.setattr(config, "AI_DATA_MODE", "synthetic")
     from backend.app.ai import provider
 
     provider.clear_health_cache()
@@ -197,6 +200,7 @@ def test_ai_configured_provider_overrides_local_default(monkeypatch):
 
 def test_ai_provider_health_cache_and_refresh(monkeypatch):
     from backend.app import config
+    monkeypatch.setattr(config, "AI_DATA_MODE", "synthetic")
     from backend.app.ai import provider
     from backend.app.ai.provider import AIProviderHealth
 
@@ -225,6 +229,7 @@ def test_ai_provider_health_cache_and_refresh(monkeypatch):
 
 def test_ai_local_autodiscovery_model_missing_and_timeout(monkeypatch):
     from backend.app import config
+    monkeypatch.setattr(config, "AI_DATA_MODE", "synthetic")
     from backend.app.ai import provider
     from backend.app.ai.provider import AIProviderHealth
 
@@ -263,6 +268,7 @@ def test_ai_local_autodiscovery_model_missing_and_timeout(monkeypatch):
 
 def test_ai_default_provider_recovers_after_local_provider_comes_online(monkeypatch):
     from backend.app import config
+    monkeypatch.setattr(config, "AI_DATA_MODE", "synthetic")
     from backend.app.ai import provider
     from backend.app.ai.provider import AIProviderHealth, AIProviderUnavailable
 
@@ -981,7 +987,7 @@ def test_ai_schema_has_no_ai_tables(auth_client):
     # v26 (WP2.4-D) — только таблицы реестра возможных дублей и пометок карточек;
     # v27 (Patient Portal, этап 1) — только таблица мобильного доступа пациента;
     # v28 (WP-C) — только история фактов событий и версия карточки.
-    assert config.SCHEMA_VERSION == 29
+    assert config.SCHEMA_VERSION == 30
     tables = {
         row["name"]
         for row in get_conn().execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()

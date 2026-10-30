@@ -86,7 +86,7 @@ APP_TIMEZONE = os.environ.get("APP_TIMEZONE", "Europe/Moscow").strip() or "Europ
 # эксплуатации: вход возможен только по персональной учётной записи,
 # первый Разработчик создаётся через `python -m backend.cli create-developer`.
 
-SESSION_TTL_SECONDS = int(os.environ.get("CLINIC_SESSION_TTL_SECONDS", str(8 * 60 * 60)))  # 8h idle/absolute
+SESSION_TTL_SECONDS = int(os.environ.get("CLINIC_SESSION_TTL_SECONDS", str(8 * 60 * 60)))  # 8h absolute
 SESSION_COOKIE_NAME = "clinic_session"
 CSRF_COOKIE_NAME = "clinic_csrf"
 
@@ -97,7 +97,7 @@ BUSY_TIMEOUT_MS = int(os.environ.get("CLINIC_BUSY_TIMEOUT_MS", "5000"))
 AUDIT_RETENTION_DAYS = int(os.environ.get("CLINIC_AUDIT_RETENTION_DAYS", "365"))
 AUDIT_PAGE_LIMIT_MAX = 200
 
-MIN_PASSWORD_LENGTH = 8
+MIN_PASSWORD_LENGTH = 15
 WEAK_PASSWORDS = frozenset(
     {
         "password",
@@ -148,7 +148,7 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 #      (history of actual dates/times), append-only audit and history triggers, delete guard
 #      for cards with clinical history; protective triggers are verified against this build.
 # v29: WP-E FIX1 — original event instant for verified reminders, no historical backfill.
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
@@ -202,7 +202,7 @@ AI_MODEL = os.environ.get("CLINIC_AI_MODEL", "").strip()
 AI_LOCAL_BASE_URL = os.environ.get("CLINIC_AI_LOCAL_BASE_URL", "http://127.0.0.1:1234/v1").strip().rstrip("/")
 AI_LOCAL_MODEL = os.environ.get("CLINIC_AI_LOCAL_MODEL", "qwen3-8b").strip()
 AI_API_KEY = os.environ.get("CLINIC_AI_API_KEY", "")
-# Разрешить http:// к неloopback-хосту ИИ (PHI и ключ пойдут открытым текстом).
+# Legacy setting is parsed for compatibility only; WP-G transport ignores it.
 AI_ALLOW_INSECURE_TRANSPORT = os.environ.get("CLINIC_AI_ALLOW_INSECURE_TRANSPORT", "").strip().lower() in ("1", "true", "yes")
 AI_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_TIMEOUT_SECONDS", "45")), 120))
 AI_HEALTH_TIMEOUT_SECONDS = max(1, min(int(os.environ.get("CLINIC_AI_HEALTH_TIMEOUT_SECONDS", "2")), 10))
@@ -239,3 +239,11 @@ def validate_deployment(*, check_launcher=True):
         raise ConfigError('Production requires an explicit restricted CLINIC_TRUSTED_PROXY_IPS') from exc
     if check_launcher and not _transport_validated:
         raise ConfigError('Production must start with python -m backend.server')
+
+# WP-G pilot: shared cookie-session idle policy; polling never touches activity.
+SESSION_IDLE_SECONDS = 15 * 60
+AI_DATA_MODE = os.environ.get('CLINIC_AI_DATA_MODE', 'disabled').strip().lower()
+
+# Exact local synthetic origins+prefixes; empty means no network destinations.
+# Adding remote URLs here cannot enable external data transfer in this phase.
+AI_SYNTHETIC_ALLOWLIST = tuple(value.strip() for value in os.environ.get('CLINIC_AI_SYNTHETIC_ALLOWLIST', '').split(',') if value.strip())

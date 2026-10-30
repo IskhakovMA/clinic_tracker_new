@@ -432,6 +432,8 @@ def export_patients(
         selected = [p for p in scoped if p["id"] in wanted]
     else:
         selected = scoped
+    from ..request_security import aggregate_patients
+    aggregate_patients((patient['id'] for patient in selected), resources=('/api/export',))
     exported = []
     for patient in selected:
         row = dict(patient)

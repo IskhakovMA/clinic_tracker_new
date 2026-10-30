@@ -405,6 +405,8 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
 
 
 def _summary_items(user, items):
+    from ..request_security import aggregate_patients
+    aggregate_patients((item['patient_id'] for item in items), resources=('/api/internal-notifications',))
     return {
         "computed_at": clock.current_moscow().isoformat(),
         "timezone": clock.INSTITUTION_TIMEZONE,
@@ -430,6 +432,8 @@ def preview_summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
     internal_notification_state and therefore cannot mark anything seen/read.
     """
     conditions = _conditions(conn, user)
+    from ..request_security import aggregate_patients
+    aggregate_patients((item.patient_id for item in conditions), resources=('/api/ai/chat',))
     return {
         "computed_at": clock.current_moscow().isoformat(),
         "timezone": clock.INSTITUTION_TIMEZONE,

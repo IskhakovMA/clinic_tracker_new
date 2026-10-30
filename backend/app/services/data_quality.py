@@ -561,6 +561,8 @@ def evaluate(conn: sqlite3.Connection, user: policy.CurrentUser, *, today: date 
              identity_signals: bool = False) -> dict:
     today = today or _today()
     patients = _load_scoped_patients(conn, user)
+    from ..request_security import aggregate_patients
+    aggregate_patients((p.id for p in patients), resources=('/api/data-quality/summary',))
     can_write = _can_write_visible_patients(user)
     can_change_doctor = policy.can_change_treating_doctor(user)
 

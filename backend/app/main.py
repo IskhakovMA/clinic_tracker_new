@@ -5,6 +5,7 @@ process on the same origin, so there is nothing to allow-list. If this is
 ever split into separate origins, CORS must be added back restrictively.
 """
 import logging
+import re
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,16 +32,56 @@ class _DropQueryStringFilter(logging.Filter):
     содержать ФИО пациента (поиск в списках), поэтому она отбрасывается —
     в журнал попадает только путь."""
 
+    clinic_privacy_filter = True
+
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
-        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str) and "?" in args[2]:
-            record.args = args[:2] + (args[2].split("?", 1)[0],) + args[3:]
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2].split('?', 1)[0]
+            parts = path.split('/')
+            families = {'patients', 'notifications', 'internal-notifications', 'analytics',
+                        'consilium', 'data-quality', 'audit', 'auth', 'users', 'departments',
+                        'export', 'import', 'migrate', 'health', 'ready', 'ai', 'duplicates'}
+            safe = '/api/' + parts[2] if len(parts) > 2 and parts[1] == 'api' and parts[2] in families else '/'
+            record.args = args[:2] + (safe,) + args[3:]
         return True
 
 
 _access_logger = logging.getLogger("uvicorn.access")
-if not any(isinstance(f, _DropQueryStringFilter) for f in _access_logger.filters):
+if not any(getattr(f, "clinic_privacy_filter", False) for f in _access_logger.filters):
     _access_logger.addFilter(_DropQueryStringFilter())
+
+
+class _SafeServerErrorFilter(logging.Filter):
+    clinic_error_privacy_filter = True
+
+    def filter(self, record):
+        if record.levelno >= logging.ERROR or record.exc_info:
+            original = record.getMessage()
+            error_type = record.exc_info[0].__name__ if record.exc_info else 'server_error'
+            codes = {'maintenance_pending', 'invalid_admission', 'unsafe_permissions',
+                     'database_unavailable', 'database_identity_changed', 'generation_mismatch',
+                     'database_check_required', 'database_changed_during_check',
+                     'offline_confirmation_required', 'new_installation_confirmation_required'}
+            reason = None
+            if record.exc_info:
+                code = getattr(record.exc_info[1], 'code', None)
+                if code in codes:
+                    reason = code
+            if reason is None:
+                match = re.search(r'AdmissionRequired: ([a-z_]+)', original)
+                if match and match[1] in codes:
+                    reason = match[1]
+            if 'Production must start with python -m backend.server' in original:
+                reason = 'checked_launcher_required: python -m backend.server'
+            record.msg, record.args = 'ASGI failure; type=%s; reason=%s', (error_type, reason or 'request_error')
+            record.exc_info = record.exc_text = record.stack_info = None
+        return True
+
+
+_server_logger = logging.getLogger('uvicorn.error')
+if not any(getattr(f, 'clinic_error_privacy_filter', False) for f in _server_logger.filters):
+    _server_logger.addFilter(_SafeServerErrorFilter())
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 FRONTEND_HTML = PROJECT_ROOT / "index.html"
@@ -128,6 +169,9 @@ app = FastAPI(
 )
 
 app.state.operational_ready = False
+
+from . import read_access
+read_access.install(app)  # security_headers is registered outside this coordinator
 
 
 @app.get("/api/health", include_in_schema=False)
@@ -236,6 +280,9 @@ async def security_headers(request: Request, call_next):
     response.headers["Permissions-Policy"] = "geolocation=(), camera=(), microphone=()"
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+        if getattr(request.state, 'clinic_idle_deadline', None):
+            response.headers['X-Clinic-Idle-Deadline'] = request.state.clinic_idle_deadline
+            response.headers['X-Clinic-Idle-Remaining'] = str(request.state.clinic_idle_remaining)
         if getattr(request.state, "clinic_user", None):
             response.headers["X-Clinic-User"] = request.state.clinic_user
         if getattr(request.state, "clinic_access", None):
@@ -261,6 +308,7 @@ async def admission_error_handler(request: Request, exc):
 
 @app.exception_handler(session_context.ContextChanged)
 async def session_context_changed_handler(request: Request, exc: session_context.ContextChanged):
+    request.state.context_refused = True
     return JSONResponse(status_code=409, content={
         "code": exc.code, "detail": "Контекст входа или полномочия изменились. Обновите сеанс."})
 
@@ -276,7 +324,7 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 @app.exception_handler(audit.AuditWriteFailed)
 async def audit_write_failed_handler(request: Request, exc: audit.AuditWriteFailed):
     """WP-C (AUD-06): обязательная запись аудита не сохранена — изменение откатано."""
-    logger.warning("required audit write failed on %s %s; change rolled back", request.method, request.url.path)
+    logger.warning("required audit write failed; method=%s", request.method)
     return JSONResponse(status_code=503, content={
         "detail": "Не удалось сохранить изменение вместе с записью журнала аудита. Данные не изменены, "
                   "повторите попытку позже",
@@ -287,10 +335,10 @@ async def audit_write_failed_handler(request: Request, exc: audit.AuditWriteFail
 async def database_busy_handler(request: Request, exc: sqlite3.OperationalError):
     """Блокировка записи не дождалась своей очереди: изменение откатано (503), не 500."""
     if "locked" in str(exc).lower() or "busy" in str(exc).lower():
-        logger.info("database busy on %s %s", request.method, request.url.path)
+        logger.info("database busy; method=%s", request.method)
         return JSONResponse(status_code=503, content={
             "detail": "База данных временно занята. Данные не изменены, повторите попытку", "code": "DATABASE_BUSY"})
-    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    logger.error("Unhandled database/request error; type=%s", type(exc).__name__)
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
@@ -299,18 +347,18 @@ async def integrity_error_handler(request: Request, exc: sqlite3.IntegrityError)
     """WP2.4-D: запись в карточку, помеченную ошибочной, отклонила база (гонка с
     пометкой). Ответ тот же, что у карточки вне области: 404 без подробностей."""
     if _is_erroneous_write(exc):
-        logger.info("Write to an erroneous patient card rejected on %s %s", request.method, request.url.path)
+        logger.info("Write to an erroneous patient card rejected; method=%s", request.method)
         return JSONResponse(status_code=404, content={"detail": "Patient not found"})
-    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    logger.error("Unhandled database/request error; type=%s", type(exc).__name__)
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception):
     if _is_erroneous_write(exc):
-        logger.info("Write to an erroneous patient card rejected on %s %s", request.method, request.url.path)
+        logger.info("Write to an erroneous patient card rejected; method=%s", request.method)
         return JSONResponse(status_code=404, content={"detail": "Patient not found"})
-    logger.exception("Unhandled error on %s %s", request.method, request.url.path)
+    logger.error("Unhandled database/request error; type=%s", type(exc).__name__)
     return JSONResponse(status_code=500, content={"error": "Internal server error"})
 
 

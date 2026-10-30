@@ -671,6 +671,11 @@ def analytics_summary(
              AND (? IS NULL OR scheduled_date >= ?) AND (? IS NULL OR scheduled_date <= ?)""",
         (date_from, date_from, date_to, date_to),
     ).fetchall()
+    from ..request_security import current
+    state = current.get()
+    if state is not None and state.resource.startswith('/api/consilium/analytics'):
+        state.aggregate_objects.update(('appointment', row['id']) for row in rows)
+        state.aggregate_objects.update(('patient', row['patient_id']) for row in rows)
     total = len(rows)
     signed = sum(row["status"] == "signed" for row in rows)
     in_review = sum(row["status"] == "in_review" for row in rows)

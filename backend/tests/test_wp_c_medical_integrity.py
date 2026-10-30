@@ -73,8 +73,8 @@ def _patch(client, pid, field, value, version=None):
     }, headers=client.csrf)
 
 
-def _set_fact(client, pid, value, field="actualDate", idx=0):
-    ev = _card(client, pid)["history"][0]["events"][idx]
+def _set_fact(client, pid, value, field="actualDate", idx=0, event=None):
+    ev = event if event is not None else _card(client, pid)["history"][0]["events"][idx]
     return client.patch(f"/api/patients/{pid}/events/{ev['id']}",
                         json={"field": field, "value": value, "version": ev["version"]}, headers=client.csrf)
 
@@ -838,9 +838,10 @@ def test_concurrent_fact_edits_with_same_version_record_one_change(auth_client):
 def test_fact_history_survives_audit_failure_only_with_the_change(auth_client):
     c = auth_client
     pid = _create(c, stage="exam", events=[{"date": "2026-08-20"}])["id"]
+    event = _card(c, pid)["history"][0]["events"][0]
     _break_audit()
     try:
-        assert _set_fact(c, pid, "2026-08-20").status_code == 503
+        assert _set_fact(c, pid, "2026-08-20", event=event).status_code == 503
     finally:
         _restore_audit()
     assert _facts(pid) == []
@@ -1854,7 +1855,7 @@ def test_v27_database_is_migrated_explicitly_and_keeps_history(tmp_path, monkeyp
     assert _cli(data, "check-db").returncode == 1 and _digest(data / "clinic.db") == sha      # только диагностика
     r = _cli(data, "migrate-db", "--confirm-offline")
     assert r.returncode == 0, r.stderr
-    assert "v27 → v29" in r.stdout
+    assert "v27 → v30" in r.stdout
     conn = sqlite3.connect(str(data / "clinic.db"))
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in before}  # nosec B608
     conn.close()
@@ -1915,4 +1916,4 @@ def test_v27_backup_restores_into_v28(tmp_path, monkeypatch):
     result = maintenance.restore_database(backup, data / "clinic.db", confirm_offline=True)
     assert result["migrated_from_schema_version"] == 27          # schema_version результата — версия самой копии
     restored = maintenance.diagnose_database(data / "clinic.db")
-    assert restored["ok"] is True and restored["schema_version"] == 29
+    assert restored["ok"] is True and restored["schema_version"] == 30

@@ -54,7 +54,8 @@ def validate_password_strength(plain: str) -> None:
         raise WeakPasswordError(
             f"Пароль должен быть не короче {config.MIN_PASSWORD_LENGTH} символов."
         )
-    if plain.strip().lower() in config.WEAK_PASSWORDS:
+    canonical = plain.strip().casefold()
+    if not canonical or len(set(canonical)) == 1 or canonical in config.WEAK_PASSWORDS or canonical in PASSWORD_BLOCKLIST:
         raise WeakPasswordError("Этот пароль слишком очевидный, выберите другой.")
 
 
@@ -88,7 +89,7 @@ def create_session(
     создаётся — иначе она пережила бы уже выполненный отзыв сессий."""
     raw_token = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     expires_at = now + timedelta(seconds=config.SESSION_TTL_SECONDS)
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -109,21 +110,46 @@ def create_session(
     return raw_token, csrf_token, expires_at
 
 
-def validate_session(conn: sqlite3.Connection, raw_token: str | None) -> sqlite3.Row | None:
+def validate_session(conn: sqlite3.Connection, raw_token: str | None, *, remove_expired: bool = True) -> sqlite3.Row | None:
     if not raw_token:
         return None
     token_hash = _hash_token(raw_token)
     row = conn.execute("SELECT * FROM sessions WHERE token_hash = ?", (token_hash,)).fetchone()
     if row is None:
         return None
-    expires_at = datetime.fromisoformat(row["expires_at"])
-    if expires_at.tzinfo is None:
-        expires_at = expires_at.replace(tzinfo=timezone.utc)
-    if datetime.now(timezone.utc) >= expires_at:
-        with conn:
-            conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+    try:
+        now = utc_now()
+        expires = datetime.fromisoformat(row['expires_at'])
+        seen = datetime.fromisoformat(row['last_seen_at'])
+        created = datetime.fromisoformat(row['created_at'])
+        valid = all(t.tzinfo is not None for t in (expires, seen, created))
+        valid = valid and created <= seen <= now < expires and now < seen + timedelta(seconds=config.SESSION_IDLE_SECONDS)
+    except (ValueError, TypeError, OverflowError):
+        valid = False
+    if not valid:
+        if remove_expired and not conn.in_transaction:
+            with conn:
+                conn.execute('DELETE FROM sessions WHERE token_hash = ?', (token_hash,))
         return None
     return row
+
+
+def utc_now():
+    """Injectable server UTC clock, shared by issue/validate/activity."""
+    return datetime.now(timezone.utc)
+
+
+def touch_activity(conn, raw_token):
+    from fastapi import HTTPException
+    from .db import transaction
+    with transaction(conn):
+        session = validate_session(conn, raw_token, remove_expired=False)
+        if session is None:
+            raise HTTPException(status_code=401, detail='Not authenticated')
+        conn.execute('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?',
+                     (utc_now().isoformat(), session['token_hash']))
+        return min(datetime.fromisoformat(session['expires_at']),
+                   utc_now() + timedelta(seconds=config.SESSION_IDLE_SECONDS)).isoformat()
 
 
 def revoke_session(conn: sqlite3.Connection, raw_token: str | None) -> None:
@@ -316,3 +342,21 @@ def revoke_session_hash(conn: sqlite3.Connection, token_hash: str | None) -> Non
         return
     with conn:
         conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+# Local-only contextual/common passphrases; never queries a breach service.
+PASSWORD_BLOCKLIST = frozenset({
+    'passwordpassword', 'password123456789', '123456789012345',
+    '1234567890123456', 'qwertyuiopasdfgh', 'qwertyuiop123456',
+    'adminadminadmin', 'administrator123', 'changemechangeme',
+    'letmeinletmein123', 'clinictracker123', 'clinictracker2026',
+    'парольпарольпароль', 'йцукенгшщзхъфыва', 'aaaaaaaaaaaaaaa',
+})
+
+
+def session_deadline(session):
+    return min(datetime.fromisoformat(session['expires_at']),
+               datetime.fromisoformat(session['last_seen_at']) + timedelta(seconds=config.SESSION_IDLE_SECONDS)).isoformat()
+
+
+def remaining_seconds(session):
+    return max(0, (datetime.fromisoformat(session_deadline(session)) - utc_now()).total_seconds())

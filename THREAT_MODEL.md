@@ -77,3 +77,12 @@ historical claims of no AI code above are not evidence of current coverage.
 See OPERATIONS.md, DEPENDENCIES.md and WP_F_OPERATIONS_REPORT.md for procedure,
 fault matrix, measured test results and unapproved owner decisions. Medical
 transaction/audit/version protections WP-C and notification v29 logic remain.
+
+
+## WP-G phase 1 (v30)
+
+Remote AI transfer is denied; local synthetic transport needs a separate data mode and exact origin/prefix allowlist. Direct pinned peer + TLS verification, no redirects/proxy; wire DTO has session/access-bound aliases and no clinical/free-text categories. This does not authorize PHI processing by a local model. Read release is fail-closed with immutable exact response manifests and contributing aggregate IDs; denied access is coordinated without duplicating existing denial events. Read retention/capacity requires approval; no automatic cleanup.
+
+Server idle is 15 minutes for pilot, absolute TTL defaults to 8 hours, background polling cannot renew activity; interactive input uses authenticated CSRF-protected activity, with WP-D draft/version behavior preserved. New/changed passwords require 15 characters and a local blocklist; legacy hashes continue working. MFA is absent and AUD-28 remains partial.
+
+Live DB/WAL/SHM/temp/swap/client exports still require verified infrastructure encryption and service-account controls. Logical deletion is not physical erasure; protected WP-C history is not purgeable. CTBK does not prove live-volume encryption. Crash temp residues are private but can survive SIGKILL. See docs/WP_G_PRIVACY_OPERATIONS.md; no infrastructure activation is claimed.

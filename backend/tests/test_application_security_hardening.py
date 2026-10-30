@@ -196,7 +196,7 @@ def test_preview_endpoints_are_side_effect_free(auth_client):
     def snapshot():
         return {
             "patients": conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0],
-            "audit": conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0],
+            "audit": conn.execute("SELECT COUNT(*) FROM audit_events WHERE event_type NOT IN ('medical_read_release', 'medical_read_denied')").fetchone()[0],
             "sessions": [
                 dict(row) for row in conn.execute("SELECT * FROM sessions ORDER BY token_hash").fetchall()
             ],
@@ -208,7 +208,10 @@ def test_preview_endpoints_are_side_effect_free(auth_client):
     assert auth_client.post("/api/import/preview", json={"raw": raw}).status_code == 200
     assert auth_client.post("/api/migrate/localstorage/preview", json={"raw": raw}).status_code == 200
     after = snapshot()
-    assert after == before
+    assert after == before  # all original medical/session/file state remains identical
+    releases=conn.execute("SELECT id, detail FROM audit_events WHERE event_type='medical_read_release' ORDER BY id").fetchall()
+    assert [r['detail'] for r in releases]==['operation=POST /api/import/preview','operation=POST /api/migrate/localstorage/preview']
+    assert all(conn.execute('SELECT COUNT(*) FROM read_access_manifests WHERE audit_event_id=?',(r['id'],)).fetchone()[0]==1 for r in releases)
 
 
 def test_abuse_limits_return_429_with_retry_after(auth_client):

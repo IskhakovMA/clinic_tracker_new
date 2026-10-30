@@ -1,10 +1,11 @@
 # Operations
 
-## WP-F: current mandatory admission protocol (schema v29)
+## Mandatory admission protocol (WP-F; current schema v30)
 
 This section governs every startup/maintenance instruction below. Historical
 v24-v28 examples describe medical migrations, not permission to start the server.
-WP-F changes operational sidecars, not SQLite schema v29 or CTBK v1.
+WP-F introduced the operational sidecars at schema v29. WP-G explicitly migrates
+to v30; the admission protocol and CTBK v1 remain unchanged.
 
 ### Operator procedure
 
@@ -63,7 +64,7 @@ stateDiagram-v2
 
 .clinic-pending.json is published and file+directory synced before the first DB
 mutation. A new .clinic-generation.json anchor and revocation of any old permit
-precede mutation too. Pending ALWAYS wins. .clinic-permit.json binds schema v29,
+precede mutation too. Pending ALWAYS wins. .clinic-permit.json binds the current schema (v30),
 maintenance generation and main-file device/inode; a copied/replaced database or
 changed storage identity needs operator verification. These files contain only
 technical metadata, never medical drafts, records or keys. They are not portable
@@ -901,9 +902,10 @@ Owner decision (Audit 3): удаление пациента в приложен�
 Поэтому сроки хранения и окончательное уничтожение данных задаются отдельной
 операционной политикой: срок хранения резервных копий и их уничтожение,
 периодический `VACUUM` рабочей базы при необходимости, вывод носителей из
-эксплуатации. Если требуется гарантированное удаление конкретного пациента,
-оно выполняется как процедура: удаление в приложении, затем `VACUUM`, затем
-пересоздание резервных копий и уничтожение старых.
+эксплуатации. Логическая очистка подконтрольных экземпляров не гарантирует физического стирания
+SSD, snapshots и резервных копий. Основание удаления и удержание медицинской
+истории утверждаются отдельно. Проверяемая процедура списания и пределы
+secure_delete/checkpoint/VACUUM: [WP-G privacy operations](docs/WP_G_PRIVACY_OPERATIONS.md).
 
 ## Audit Log Growth
 
@@ -1008,3 +1010,11 @@ localStorage/sessionStorage. После будущего обновления п
 в памяти вкладки без автоматической отправки. Клиническое подтверждение
 продолжает использовать прежние ссылки и версии события, поэтому изменение
 маршрута другим сотрудником может дать штатный 409.
+
+
+## WP-G этап 1
+
+Текущая схема v30: явная миграция и обязательный offline verify по WP-F.
+Аудит выдачи + точный manifest, пилотный idle 15 минут, новые пароли ≥15 символов;
+remote AI выключен, MFA не реализован. [Регламент и production checklist](docs/WP_G_PRIVACY_OPERATIONS.md).
+Новая автоматическая очистка read-audit не активирована; требуется решение о емкости/удержании.

@@ -88,9 +88,9 @@
   {
    "file": "backend/app/services/notifications.py",
    "test_id": "B608",
-   "fingerprint": "ed672fc72bbd6e9f02cabf1d98018e559efce3f3cffaa35a4981447c63aa10ce",
-   "statement": "for row in conn.execute(f\"SELECT phone FROM patients WHERE {cond}\", params).fetchall():",
-   "reason": "Condition `cond` comes from policy.patient_scope_filter(): fixed SQL fragments with ? placeholders chosen by role; all values (ids, department ids) are bound through `params`. No user text reaches the SQL. SEC-2026-004, re-reviewed WP-A."
+   "fingerprint": "880b2e8812e4e4a8f8f25f8bf86d1b915200e4a6a7b86a8e55bf8152e9a9bf3b",
+   "statement": "phone_rows = conn.execute(f\"SELECT id, phone FROM patients WHERE {cond}\", params).fetchall()",
+   "reason": "WP-G review: cond is generated exclusively by policy.patient_scope_filter; params are bound. Only literal id was added to SELECT phone to capture the same aggregate source IDs, without a second query. No caller SQL fragments."
   },
   {
    "file": "backend/app/users.py",

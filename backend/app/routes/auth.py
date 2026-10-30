@@ -1,10 +1,11 @@
 import sqlite3
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
 from .. import audit, config, idempotency, policy, security, users, session_context
 from ..db import transaction
-from ..deps import get_db, require_csrf, require_user
+from ..deps import get_db, require_csrf, require_user, require_active_password, abuse_rate_limit
 from ..models import ChangePasswordIn, LoginIn
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -108,7 +109,8 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
         actor=audit.actor_from_token_hash(security.hash_token(session_token)),
         request_id=request_id, **audit.actor_ctx(user),
     )
-    return {"authenticated": True, "user": _profile_payload(conn, user)}
+    issued = conn.execute('SELECT * FROM sessions WHERE token_hash = ?', (security.hash_token(session_token),)).fetchone()
+    return {"authenticated": True, "user": _profile_payload(conn, user), "idleDeadline": security.session_deadline(issued), "idleRemainingSeconds": security.remaining_seconds(issued)}
 
 
 @router.post("/logout")
@@ -133,7 +135,7 @@ def me(request: Request, conn: sqlite3.Connection = Depends(get_db)):
     user = policy.load_current_user(conn, session["user_id"])
     if user is None or user.status != "active":
         return {"authenticated": False}
-    return {"authenticated": True, "user": _profile_payload(conn, user)}
+    return {"authenticated": True, "user": _profile_payload(conn, user), "idleDeadline": security.session_deadline(session), "idleRemainingSeconds": security.remaining_seconds(session)}
 
 
 @router.post("/change-password", dependencies=[Depends(require_csrf)])
@@ -179,3 +181,10 @@ def change_password(
     session_token, csrf_token, _expires = security.create_session(conn, user.id)
     _set_auth_cookies(response, session_token, csrf_token)
     return {"changed": True}
+
+
+@router.post('/activity', dependencies=[Depends(require_csrf), Depends(abuse_rate_limit('session_activity', 60, 60))])
+def activity(request: Request, conn: sqlite3.Connection = Depends(get_db),
+             user: policy.CurrentUser = Depends(require_active_password)):
+    deadline = security.touch_activity(conn, request.cookies.get(config.SESSION_COOKIE_NAME))
+    return {'idleDeadline': deadline, 'idleRemainingSeconds': min(config.SESSION_IDLE_SECONDS, max(0, (datetime.fromisoformat(deadline) - security.utc_now()).total_seconds()))}

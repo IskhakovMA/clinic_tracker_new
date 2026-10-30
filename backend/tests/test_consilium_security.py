@@ -960,7 +960,7 @@ def _data_digest():
     conn = get_conn()
     tables = [r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' "
-        "AND name NOT IN ('audit_events', 'sessions', 'sqlite_sequence') ORDER BY name"
+        "AND name NOT IN ('audit_events', 'read_access_manifests', 'sessions', 'sqlite_sequence') ORDER BY name"
     )]
     digest = hashlib.sha256()
     for table in tables:

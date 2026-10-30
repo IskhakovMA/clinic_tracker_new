@@ -36,7 +36,9 @@ def test_loopback_and_https_providers_are_accepted(url):
 
 def test_explicit_override_allows_plaintext(monkeypatch):
     monkeypatch.setattr(ai_provider.config, "AI_ALLOW_INSECURE_TRANSPORT", True)
-    assert _build("http://internal-ai-host:1234/v1").base_url.startswith("http://")
+    # WP-G deliberately retires the insecure override; the historical test ID remains.
+    with pytest.raises(ai_provider.AIProviderUnavailable):
+        _build("http://internal-ai-host:1234/v1")
 
 
 def test_unknown_scheme_is_refused():

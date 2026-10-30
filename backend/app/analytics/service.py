@@ -160,6 +160,8 @@ def _filtered_patient_ids(conn: sqlite3.Connection, user: policy.CurrentUser, fi
         ids &= matched
     if filters.attention_reason:
         ids &= patient_attention.active_patient_ids(conn, ids, filters.attention_reason)
+    from ..request_security import aggregate_patients
+    aggregate_patients(ids, resources=('/api/analytics/', '/api/ai/chat'))
     return ids
 
 

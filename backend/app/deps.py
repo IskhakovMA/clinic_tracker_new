@@ -6,7 +6,7 @@ from urllib.parse import unquote
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
-from . import audit, config, policy, security, session_context, db_guard, operations_state
+from . import request_security, audit, config, policy, security, session_context, db_guard, operations_state
 from .db import _connect, connect_live
 
 
@@ -38,6 +38,17 @@ def require_session(request: Request, conn: sqlite3.Connection = Depends(get_db)
         # Same response for missing, expired and forged sessions — nothing here
         # tells a caller which of the three it was.
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    state = request_security.current.get()
+    if state is not None:
+        state.token = token
+        state.patient_id = request.path_params.get('patient_id')
+        state.write_request = request.method not in {'GET', 'HEAD'}
+        route = request.scope.get('route')
+        if route is not None:
+            state.resource = route.path
+        state.protect_commit = request.url.path.startswith(('/api/patients', '/api/consilium', '/api/import', '/api/migrate', '/api/notifications'))
+    request.state.clinic_idle_deadline = security.session_deadline(session)
+    request.state.clinic_idle_remaining = security.remaining_seconds(session)
     request.state.clinic_user = session["user_id"]
     expected = request.headers.get(session_context.USER_HEADER)
     if expected is not None and expected != session["user_id"]:
@@ -55,13 +66,25 @@ def require_user(
     немедленно, без ожидания истечения сессии."""
     user_id = session["user_id"]
     user = policy.load_current_user(conn, user_id) if user_id else None
+    state = request_security.current.get()
+    if state is not None:
+        state.user = user
     if user is None or user.status != "active":
         # Сессия неактивного пользователя удаляется — блокировка окончательна.
         if user_id:
-            with conn:
-                conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            # This narrow security cleanup must be able to revoke its own
+            # session; it cannot authorize a medical operation after the 401.
+            guard = request_security.current.set(None)
+            try:
+                with conn:
+                    conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            finally:
+                request_security.current.reset(guard)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     stamp = session_context.access_context(user)
+    state = request_security.current.get()
+    if state is not None:
+        state.user, state.access = user, stamp
     request.state.clinic_access = stamp
     expected = request.headers.get(session_context.ACCESS_HEADER)
     if expected is not None and expected != stamp:

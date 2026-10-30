@@ -141,7 +141,7 @@ async function apiFetch(path, options) {
         const csrf = getCookie('clinic_csrf');
         if (csrf) opts.headers['X-CSRF-Token'] = csrf;
     }
-    const authRequest = path.startsWith('/api/auth/');
+    const authRequest = path.startsWith('/api/auth/') && path !== '/api/auth/activity';
     const reconciling = options.reconcileUser && ['/api/patients', '/api/users/doctors'].includes(path) && method === 'GET';
     const expectedUser = reconciling ? options.reconcileUser : app.user;
     if (expectedUser && !['/api/auth/login', '/api/auth/me'].includes(path)) {
@@ -155,6 +155,7 @@ async function apiFetch(path, options) {
     const controller = options.signal ? null : new AbortController();
     if (controller) opts.signal = controller.signal;
     const timer = controller ? setTimeout(() => controller.abort(), 30000) : null;
+    const requestStarted = performance.now();
     try {
         const response = await fetch(path, opts);
         if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
@@ -177,6 +178,8 @@ async function apiFetch(path, options) {
             err.data = data;   // code и сведения сервера для явного подтверждения (например, архивное решение ОК)
             throw err;
         }
+        const idleDeadline = response.headers.get('X-Clinic-Idle-Deadline');
+        if (idleDeadline) app.setIdleDeadline(idleDeadline, Math.max(0, Number(response.headers.get('X-Clinic-Idle-Remaining')) - (performance.now() - requestStarted) / 1000));
         if (response.status === 204) {
             if (!authRequest && !await app.checkSessionIdentity(epoch)) {
                 const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
@@ -192,6 +195,7 @@ async function apiFetch(path, options) {
             if (!authRequest && !reconciling && !await app.checkSessionIdentity(epoch)) {
                 const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
             }
+            if (data && data.idleDeadline) app.setIdleDeadline(data.idleDeadline, Math.max(0, data.idleRemainingSeconds - (performance.now() - requestStarted) / 1000));
             return data;
         }
         if (!authRequest && !reconciling) {
@@ -1830,7 +1834,28 @@ const app = {
         return this.can('readOnly');
     },
 
+    setIdleDeadline(value, remaining) {
+        const deadline = Date.now() + (Number.isFinite(remaining) ? remaining * 1000 : Date.parse(value) - Date.now());
+        if (!Number.isFinite(deadline)) return;
+        clearTimeout(this.idleTimer);
+        this.idleTimer = setTimeout(() => { if (this.user && !this.sessionExpired) this.expireSession(); }, Math.max(0, deadline - Date.now()));
+    },
+
+    async reportInteractiveActivity(event) {
+        if (!event.isTrusted || !this.user || this.sessionExpired || this.sessionReconciling) return;
+        const now = performance.now();
+        if (this.activityPending || (this.lastActivitySent !== undefined && now - this.lastActivitySent < 30000)) return;
+        this.activityPending = true;
+        this.lastActivitySent = now;
+        try { await apiPost('/api/auth/activity', {}); }
+        catch (error) { /* apiFetch applies the existing session/context lock; drafts stay in memory. */ }
+        finally { this.activityPending = false; }
+    },
+
     async init() {
+        for (const type of ['input', 'keydown', 'pointerdown']) {
+            document.addEventListener(type, event => { void this.reportInteractiveActivity(event); }, {capture: true, passive: true});
+        }
         this.applyTheme(localStorage.getItem('theme') || 'dark');
         this.bindStaticControls();
         try {
@@ -9640,7 +9665,7 @@ const app = {
                 ui.toast('Данные сотрудника обновлены.', 'good');
             } else {
                 if (!$('staffPassword').value) {
-                    errorBox.textContent = 'Задайте временный пароль (не короче 8 символов).';
+                    errorBox.textContent = 'Задайте временный пароль (не короче 15 символов).';
                     errorBox.classList.remove('is-hidden');
                     return;
                 }

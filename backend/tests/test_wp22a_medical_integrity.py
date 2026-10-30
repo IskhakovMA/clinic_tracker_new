@@ -29,6 +29,9 @@ def _snapshot(pid):
     """Все, что не должно меняться при отказе: этап, история, события и журнал аудита."""
     conn = get_conn()
     try:
+        # Excluded read events must still have their atomic manifest; do not
+        # hide orphaned audit rows when comparing medical rollback snapshots.
+        assert conn.execute("SELECT COUNT(*) FROM audit_events a WHERE event_type IN ('medical_read_release', 'medical_read_denied') AND NOT EXISTS (SELECT 1 FROM read_access_manifests m WHERE m.audit_event_id=a.id)").fetchone()[0] == 0
         return {
             "stage": conn.execute("SELECT stage, updated_at FROM patients WHERE id = ?", (pid,)).fetchone()[:],
             "history": [tuple(r) for r in conn.execute(
@@ -39,7 +42,9 @@ def _snapshot(pid):
                           e.consilium_decision, e.set_at, e.deleted_at, e.version
                    FROM events e JOIN history_entries h ON h.id = e.history_entry_id
                    WHERE h.patient_id = ? ORDER BY h.seq, e.seq""", (pid,))],
-            "audit": conn.execute("SELECT COUNT(*) FROM audit_events").fetchone()[0],
+            # UI-context GETs now add required read events. Preserve the exact
+            # count of all pre-existing clinical/security event types.
+            "audit": conn.execute("SELECT COUNT(*) FROM audit_events WHERE event_type NOT IN ('medical_read_release', 'medical_read_denied')").fetchone()[0],
             "notifications": [tuple(r) for r in conn.execute(
                 "SELECT id, status FROM notifications WHERE patient_id = ? ORDER BY id", (pid,))],
         }

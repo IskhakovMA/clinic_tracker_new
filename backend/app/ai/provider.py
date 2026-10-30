@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from .. import config
+from .transport import DirectOpener, normalize
 
 MAX_PROVIDER_RESPONSE_BYTES = 1_000_000
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
@@ -70,25 +71,17 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 def _require_safe_transport(base_url: str) -> None:
-    """Вне loopback провайдер доступен только по https: иначе ключ и данные
-    пациентов уходят открытым текстом. Явное разрешение —
-    CLINIC_AI_ALLOW_INSECURE_TRANSPORT=true (только для изолированного канала)."""
-    parsed = urllib.parse.urlsplit(base_url)
-    if parsed.scheme == "https":
-        return
-    if parsed.scheme != "http":
-        raise AIProviderUnavailable("ИИ-помощник не настроен: поддерживаются только http(s).")
-    host = (parsed.hostname or "").lower()
-    if host in LOOPBACK_HOSTS or host.startswith("127."):
-        return
-    if config.AI_ALLOW_INSECURE_TRANSPORT:
-        return
-    raise AIProviderUnavailable(
-        "ИИ-помощник отключён: адрес провайдера вне loopback требует https."
-    )
+    """Canonical transport syntax; no insecure remote override."""
+    try:
+        destination = normalize(base_url)
+        if destination.scheme != 'https' and destination.host not in {'localhost', '127.0.0.1', '::1'}:
+            raise ValueError('insecure_transport')
+    except ValueError as exc:
+        raise AIProviderUnavailable('ИИ-помощник не настроен: недопустимый адрес.') from exc
 
 
 class OpenAICompatibleAIProvider(AIProvider):
+    requires_minimized_dto = True
     def __init__(self, *, base_url: str, model: str, api_key: str = "", timeout: int = 45):
         if not base_url or not model:
             raise AIProviderUnavailable("ИИ-помощник не настроен.")
@@ -97,7 +90,7 @@ class OpenAICompatibleAIProvider(AIProvider):
         self.model = model
         self.api_key = api_key
         self.timeout = timeout
-        self._opener = urllib.request.build_opener(_NoRedirectHandler)
+        self._opener = DirectOpener(base_url)
 
     def _messages_for_provider(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         prepared = [dict(message) for message in messages]
@@ -178,6 +171,8 @@ def _local_development_allowed() -> bool:
 
 
 def resolve_provider_settings() -> AIProviderSettings | None:
+    if config.AI_DATA_MODE != 'synthetic' or config.APP_ENV not in {'local', 'test'}:
+        return None
     mode = config.AI_MODE or ""
     enabled = _explicit_bool(config.AI_ENABLED_RAW)
     explicit_provider = bool(config.AI_MODEL or config.AI_MODEL_EXPLICIT or config.AI_BASE_URL_EXPLICIT)
@@ -211,6 +206,10 @@ def _probe_provider(settings: AIProviderSettings, *, timeout: float) -> AIProvid
             reason="not_configured",
             settings=settings,
         )
+    try:
+        _require_safe_transport(settings.base_url)
+    except AIProviderUnavailable:
+        return AIProviderHealth('unavailable', False, 'ИИ-помощник временно недоступен', 'destination_refused')
     headers = {"Accept": "application/json"}
     if settings.api_key:
         headers["Authorization"] = f"Bearer {settings.api_key}"
@@ -219,7 +218,7 @@ def _probe_provider(settings: AIProviderSettings, *, timeout: float) -> AIProvid
         headers=headers,
         method="GET",
     )
-    opener = urllib.request.build_opener(_NoRedirectHandler)
+    opener = DirectOpener(settings.base_url)
     try:
         with opener.open(request, timeout=timeout) as response:
             raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)

@@ -394,7 +394,10 @@ def summary(conn: sqlite3.Connection, user: policy.CurrentUser) -> dict:
         params,
     ).fetchone()["c"]
     invalid = 0
-    for row in conn.execute(f"SELECT phone FROM patients WHERE {cond}", params).fetchall():
+    phone_rows = conn.execute(f"SELECT id, phone FROM patients WHERE {cond}", params).fetchall()
+    from ..request_security import aggregate_patients
+    aggregate_patients((row['id'] for row in phone_rows), resources=('/api/notifications/summary',))
+    for row in phone_rows:
         ok, reason = phone_sendable(row["phone"])
         if not ok and reason == "invalid_phone":
             invalid += 1

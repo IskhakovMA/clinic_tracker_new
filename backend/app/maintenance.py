@@ -398,7 +398,7 @@ def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
 # которые срабатывают на таблице или ссылаются на нее. Удаленное, измененное или
 # постороннее правило дает другую структуру. Для мобильного доступа это отличает
 # проверенную сборку portal-a3fbe00 от ранней или измененной таблицы.
-STRICT_TABLES = ("patient_portal_access",)
+STRICT_TABLES = ("patient_portal_access", "read_access_manifests")
 
 _SQL_TOKEN = re.compile(
     r"""(?P<skip>\s+|--[^\n]*(?:\n|$)|/\*.*?(?:\*/|$))

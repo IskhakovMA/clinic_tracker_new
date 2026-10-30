@@ -785,7 +785,39 @@ def _harden_permissions(db_path: Path) -> None:
     _hardened_paths.add(key)
 
 
-def _connect(db_path: Path, *, enable_wal: bool = True, factory=sqlite3.Connection) -> sqlite3.Connection:
+class _ClinicConnection(sqlite3.Connection):
+    def execute(self, sql, parameters=()):
+        result = super().execute(sql, parameters)
+        if sql.strip().upper() == 'BEGIN IMMEDIATE':
+            from .request_security import require_live_session
+            try:
+                require_live_session(self, check_access=True, check_object=True)
+            except BaseException:
+                self.rollback()
+                raise
+        return result
+
+    def commit(self):
+        from .request_security import require_live_session
+        try:
+            require_live_session(self, check_access=True)
+            return super().commit()
+        except BaseException:
+            self.rollback()
+            raise
+
+    def __exit__(self, typ, value, tb):
+        if typ is None:
+            from .request_security import require_live_session
+            try:
+                require_live_session(self, check_access=True)
+            except BaseException:
+                self.rollback()
+                raise
+        return super().__exit__(typ, value, tb)
+
+
+def _connect(db_path: Path, *, enable_wal: bool = True, factory=_ClinicConnection) -> sqlite3.Connection:
     _harden_permissions(db_path)
     conn = sqlite3.connect(str(db_path), check_same_thread=False, factory=factory)
     conn.row_factory = sqlite3.Row
@@ -798,7 +830,7 @@ def _connect(db_path: Path, *, enable_wal: bool = True, factory=sqlite3.Connecti
     return conn
 
 
-class _LeasedConnection(sqlite3.Connection):
+class _LeasedConnection(_ClinicConnection):
     """A normal connection cannot outlive its shared maintenance exclusion."""
     _admission_lock_fd = None
 
@@ -2568,6 +2600,23 @@ _reference_lock = threading.Lock()
 _reference_state = threading.local()
 
 
+
+def migrate_v29_to_v30(conn):
+    """WP-G: technical read snapshots. No medical schema/data rewrite."""
+    _execute_script(conn, """
+    CREATE TABLE IF NOT EXISTS read_access_manifests (
+        audit_event_id INTEGER PRIMARY KEY REFERENCES audit_events(id),
+        objects_json TEXT NOT NULL CHECK(json_valid(objects_json) AND json_type(objects_json) = 'array'),
+        object_count INTEGER NOT NULL CHECK(object_count >= 0 AND json_array_length(objects_json) = object_count),
+        snapshot_sha256 TEXT NOT NULL CHECK(length(snapshot_sha256) = 64),
+        access_context TEXT NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS trg_read_manifest_immutable
+    BEFORE UPDATE ON read_access_manifests BEGIN SELECT RAISE(ABORT, 'read_manifest_immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS trg_read_manifest_retained
+    BEFORE DELETE ON read_access_manifests BEGIN SELECT RAISE(ABORT, 'read_manifest_retained'); END;
+    """)
+
 def _building_reference() -> bool:
     return getattr(_reference_state, "building", False)
 
@@ -2701,6 +2750,7 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         migrate_v26_to_v27(conn)         # patient mobile access (Patient Portal stage 1)
         migrate_v27_to_v28(conn)         # WP-C: card version, fact history, history protection
         migrate_v28_to_v29(conn)         # WP-E: original event schedule, explicit upgrade only
+        migrate_v29_to_v30(conn)         # WP-G: atomic release manifest, explicit upgrade only
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)

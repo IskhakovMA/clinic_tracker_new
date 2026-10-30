@@ -179,6 +179,9 @@ def strip_v28(conn) -> None:
     схемы: защитные триггеры v28, столбец patients.version и таблицу истории фактов.
     В настоящей базе v27 и старше этих объектов нет."""
     from backend.app import db
+    # A historical fixture must remove the additive technical WP-G v30 table.
+    # This operates only on synthetic fixture construction, never live history.
+    conn.execute("DROP TABLE IF EXISTS read_access_manifests")
     # A pre-v28 fixture must also remove the additive WP-E v29 metadata.
     # Recreate the exact previous index, rather than weakening restore matching.
     if "event_at" in {r[1] for r in conn.execute("PRAGMA table_info(notifications)")}:

@@ -55,7 +55,7 @@ import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from . import config
+from . import config, request_security
 from .db import AUDIT_DELETE_FLOOR_DAYS, now_iso
 
 logger = logging.getLogger("clinic.audit")
@@ -225,6 +225,14 @@ def record(
     """Append one audit row. `detail` must be non-sensitive metadata only
     (counts, modes, field names) — never values of patient fields.
     RBAC-поля содержат только идентификаторы и код роли — без ФИО."""
+    state = request_security.current.get()
+    if state is not None and result == RESULT_DENIED and state.resource.startswith('/api/') and not state.resource.startswith('/api/auth/'):
+        # The outer coordinator owns this denial, atomically with its manifest.
+        state.denial = {'event_type': event_type, 'detail': detail, 'patient_id': patient_id,
+                        'actor_user_id': actor_user_id, 'actor_role': actor_role,
+                        'actor_department_id': actor_department_id,
+                        'target_user_id': target_user_id, 'target_department_id': target_department_id}
+        return
     try:
         with conn:
             conn.execute(
@@ -235,6 +243,9 @@ def record(
                 (now_iso(), event_type, actor, patient_id, result, request_id, detail,
                  actor_user_id, actor_role, actor_department_id, target_user_id, target_department_id),
             )
+        state = request_security.current.get()
+        if state is not None and result == RESULT_DENIED:
+            state.denied_recorded = True
     except Exception:
         # Fail-open, and deliberately without the payload in the message.
         logger.warning("audit write failed for event_type=%s", event_type)
@@ -298,6 +309,9 @@ def record_committed_or_fail(conn: sqlite3.Connection, event_type: str, **kwargs
         conn.execute("BEGIN IMMEDIATE")
         record_required(conn, event_type, **kwargs)
         conn.commit()
+        state = request_security.current.get()
+        if state is not None and event_type in {'export', 'analytics_report_exported', 'consilium_registry_exported'}:
+            state.export_recorded = True
     except sqlite3.Error as exc:
         conn.rollback()
         raise AuditWriteFailed() from exc
@@ -340,10 +354,10 @@ def prune(conn: sqlite3.Connection, retention_days: int | None = None) -> int:
     # Удаление и восстановление событий медицинской истории — единственный
     # след прошлых удалений (восстановление очищает deleted_at/deleted_by),
     # поэтому эти записи хранятся столько же, сколько сами события.
-    kept = tuple(RETAINED_EVENT_TYPES)
+    kept = tuple(RETAINED_EVENT_TYPES) + ('medical_read_release', 'medical_read_denied')
     with conn:
         cur = conn.execute(
-            f"DELETE FROM audit_events WHERE created_at < ? AND event_type NOT IN ({','.join('?' * len(kept))})",  # nosec B608
+            f"DELETE FROM audit_events WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM read_access_manifests WHERE audit_event_id = audit_events.id) AND event_type NOT IN ({','.join('?' * len(kept))})",  # nosec B608
             (cutoff, *kept),
         )
         return cur.rowcount

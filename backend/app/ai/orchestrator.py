@@ -528,6 +528,14 @@ def answer(
             return known_intent_answer
         raise
 
+    if getattr(provider, 'requires_minimized_dto', False):
+        from ..request_security import current
+        from .dto import MinimizedProvider
+        state = current.get()
+        if state is None or not state.token:
+            raise AIProviderUnavailable('ИИ-помощник временно недоступен.')
+        provider = MinimizedProvider(provider, conn, state.token, body.patientContextId)
+
     if not followup_context:
         general_answer = _general_builtin_answer(body.message)
         if general_answer:
