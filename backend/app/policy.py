@@ -391,7 +391,9 @@ def can_import(user: CurrentUser, mode: str = "add") -> bool:
     # оба режима шире любого частичного scope и остаются за Разработчиком.
     if mode != "add":
         return False
-    return user.scope_strategy in (SCOPE_BY_DEPARTMENT, SCOPE_BY_TREATING_DOCTOR)
+    if user.scope_strategy == SCOPE_BY_DEPARTMENT:
+        return bool(user.department_ids)  # no managed departments means no import scope
+    return user.scope_strategy == SCOPE_BY_TREATING_DOCTOR
 
 
 def can_export(user: CurrentUser) -> bool:
