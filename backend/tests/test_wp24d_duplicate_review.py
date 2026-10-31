@@ -1086,7 +1086,7 @@ def test_v25_fixture_migrates_to_v26_without_touching_rows(client, tmp_path):
     before = {t: pre_v28_rows(conn, t) for t in tables}
     signed = conn.execute("SELECT * FROM oncology_consilium_appointments WHERE status = 'signed'").fetchall()
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 30   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 31   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
     for t in tables:
         assert pre_v28_rows(conn, t) == before[t], t
     assert [tuple(r) for r in conn.execute("SELECT * FROM oncology_consilium_appointments WHERE status = 'signed'")] == [
@@ -1115,7 +1115,7 @@ def test_restore_of_a_v25_backup_migrates_to_v26(auth_client, tmp_path, backup_k
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 30   # WP-E FIX1: v29; WP-C: v28 (история фактов, защита истории); combined-preaudit: текущая схема v27
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 31   # WP-E FIX1: v29; WP-C: v28 (история фактов, защита истории); combined-preaudit: текущая схема v27
     assert conn.execute("SELECT COUNT(*) FROM patient_duplicate_confirmations").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1
     conn.close()

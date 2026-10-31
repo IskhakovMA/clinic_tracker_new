@@ -35,6 +35,10 @@ def test_explicit_v29_migration_requires_operator_and_preserves_medical_data(dat
     c.execute("INSERT INTO history_entries (id,patient_id,seq,stage,entered_at,note) VALUES ('v29-history','v29-patient',0,'exam','2026-01-01','synthetic history marker')")
     c.execute("INSERT INTO events (id,history_entry_id,seq,date) VALUES ('v29-event','v29-history',0,'2026-01-02')")
     expected={table:[tuple(row) for row in c.execute('SELECT * FROM '+table+' ORDER BY id')] for table in ('patients','history_entries','events')}
+    # Remove only v31 technical storage when reconstructing the historical v29 fixture.
+    from backend.app.mfa_schema import TABLES
+    for table in reversed(TABLES):
+        c.execute('DROP TABLE '+table)
     c.execute('DROP TRIGGER trg_read_manifest_immutable');c.execute('DROP TRIGGER trg_read_manifest_retained')
     c.execute('DROP TABLE read_access_manifests');c.execute('UPDATE schema_version SET version=29');c.commit();c.close()
     assert maintenance.identify_backup_build(config.DB_PATH,29)=='wpf-4042eba'
@@ -45,7 +49,7 @@ def test_explicit_v29_migration_requires_operator_and_preserves_medical_data(dat
     assert _cli(data_dir,'verify-db','--confirm-offline').returncode==0
     operations_state.require_permit()
     c=db.connect_live(config.DB_PATH)
-    assert c.execute('SELECT version FROM schema_version').fetchone()[0]==30
+    assert c.execute('SELECT version FROM schema_version').fetchone()[0]==config.SCHEMA_VERSION
     assert c.execute("SELECT COUNT(*) FROM sqlite_master WHERE name='read_access_manifests'").fetchone()[0]==1
     assert {table:[tuple(row) for row in c.execute('SELECT * FROM '+table+' ORDER BY id')] for table in expected}==expected
     assert c.execute('PRAGMA integrity_check').fetchone()[0]=='ok'

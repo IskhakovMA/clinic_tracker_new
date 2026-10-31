@@ -179,6 +179,10 @@ def strip_v28(conn) -> None:
     схемы: защитные триггеры v28, столбец patients.version и таблицу истории фактов.
     В настоящей базе v27 и старше этих объектов нет."""
     from backend.app import db
+    # Remove v31 technical storage when reconstructing a pre-v28 database.
+    from backend.app.mfa_schema import TABLES
+    for table in reversed(TABLES):
+        conn.execute('DROP TABLE IF EXISTS '+table)
     # A historical fixture must remove the additive technical WP-G v30 table.
     # This operates only on synthetic fixture construction, never live history.
     conn.execute("DROP TABLE IF EXISTS read_access_manifests")

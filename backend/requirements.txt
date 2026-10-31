@@ -22,6 +22,8 @@ cryptography==50.0.0 \
     --hash=sha256:06a32a980526a6ab9a4b9bf8f7385800791e2bb960903cb6b530e4817509a3b7
 fastapi==0.141.1 \
     --hash=sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3
+fido2==2.2.1 \
+    --hash=sha256:ed397da981b9ab133da6ead7309e41f924b566b749956129efe286fae097749f
 h11==0.16.0 \
     --hash=sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86
 httptools==0.9.0 \

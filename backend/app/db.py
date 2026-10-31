@@ -677,6 +677,7 @@ ROLE_SEED = (
 )
 
 REQUIRED_TABLES = (
+    "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance",
     "schema_version",
     "app_login",
     "roles",
@@ -2601,6 +2602,17 @@ _reference_state = threading.local()
 
 
 
+def migrate_v30_to_v31(conn):
+    """Technical MFA storage only; no activation, medical rewrite or legacy assurance."""
+    from .mfa_schema import SQL
+    version = conn.execute('SELECT version FROM schema_version').fetchone()
+    _execute_script(conn, SQL)
+    if version is None or version[0] < 31:
+        conn.execute("INSERT OR IGNORE INTO mfa_policy VALUES(1,1,'stage1_compatibility','[]',NULL,NULL)")
+        for row in conn.execute('SELECT id FROM users').fetchall():
+            conn.execute("INSERT OR IGNORE INTO mfa_user_state VALUES(?,?,0,'ENROLLMENT_REQUIRED')", (row[0],os.urandom(32)))
+
+
 def migrate_v29_to_v30(conn):
     """WP-G: technical read snapshots. No medical schema/data rewrite."""
     _execute_script(conn, """
@@ -2751,6 +2763,7 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         migrate_v27_to_v28(conn)         # WP-C: card version, fact history, history protection
         migrate_v28_to_v29(conn)         # WP-E: original event schedule, explicit upgrade only
         migrate_v29_to_v30(conn)         # WP-G: atomic release manifest, explicit upgrade only
+        migrate_v30_to_v31(conn)         # MFA storage; explicit offline upgrade only
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)

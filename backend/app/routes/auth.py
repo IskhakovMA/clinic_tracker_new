@@ -3,7 +3,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
-from .. import audit, config, idempotency, policy, security, users, session_context
+from .. import audit, config, idempotency, policy, security, users, session_context, mfa
 from ..db import transaction
 from ..deps import get_db, require_csrf, require_user, require_active_password, abuse_rate_limit
 from ..models import ChangePasswordIn, LoginIn
@@ -91,6 +91,22 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     security.release_login_attempt(client_host)
     security.purge_expired_sessions(conn)
     idempotency.purge_expired(conn)   # WP2.4-B: только истекшие ключи
+    # Switching accounts consumes the old limited flow as well as rotating cookies.
+    previous = request.cookies.get(mfa.PREAUTH_COOKIE)
+    if previous:
+        with transaction(conn):
+            conn.execute("UPDATE mfa_flows SET state='FAILED' WHERE token_hash=? AND state IN ('PENDING','CLAIMED')",
+                         (security.hash_token(previous),))
+    response.delete_cookie(mfa.PREAUTH_COOKIE,path='/api/auth',secure=config.HTTPS,httponly=True,samesite='strict')
+    response.delete_cookie(mfa.PREAUTH_CSRF_COOKIE,path='/',secure=config.HTTPS,samesite='strict')
+    if mfa.required(conn, row["id"]):
+        token, csrf, options = mfa.begin(conn, row["id"], row["password_hash"])
+        _clear_auth_cookies(response)
+        response.set_cookie(mfa.PREAUTH_COOKIE, token, httponly=True, secure=config.HTTPS,
+                            samesite='strict', path='/api/auth', max_age=mfa.FLOW_SECONDS)
+        response.set_cookie(mfa.PREAUTH_CSRF_COOKIE, csrf, httponly=False, secure=config.HTTPS,
+                            samesite='strict', path='/', max_age=mfa.FLOW_SECONDS)
+        return {"authenticated": False, "stage": "webauthn", "publicKey": options['publicKey']}
     try:
         session_token, csrf_token, _expires = security.create_session(
             conn, row["id"], verified_password_hash=row["password_hash"]
@@ -178,6 +194,9 @@ def change_password(
             audit.record_required_or_fail(conn, audit.PASSWORD_CHANGED, **audit.actor_ctx(user))
     except security.WeakPasswordError as e:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
+    if mfa.required(conn, user.id):
+        _clear_auth_cookies(response)
+        return {"changed": True, "authenticated": False, "reauthenticationRequired": True}
     session_token, csrf_token, _expires = security.create_session(conn, user.id)
     _set_auth_cookies(response, session_token, csrf_token)
     return {"changed": True}
@@ -188,3 +207,61 @@ def activity(request: Request, conn: sqlite3.Connection = Depends(get_db),
              user: policy.CurrentUser = Depends(require_active_password)):
     deadline = security.touch_activity(conn, request.cookies.get(config.SESSION_COOKIE_NAME))
     return {'idleDeadline': deadline, 'idleRemainingSeconds': min(config.SESSION_IDLE_SECONDS, max(0, (datetime.fromisoformat(deadline) - security.utc_now()).total_seconds()))}
+
+
+def require_pre_auth_csrf(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    """Explicit limited-flow CSRF, independent of full-session dependencies.
+
+    claim repeats these checks under the write lock before consuming the flow.
+    """
+    import secrets
+    token=request.cookies.get(mfa.PREAUTH_COOKIE)
+    flow=conn.execute('SELECT * FROM mfa_flows WHERE token_hash=?',
+                      (security.hash_token(token or ''),)).fetchone()
+    if flow is None:
+        raise HTTPException(401,'MFA_FLOW_UNAVAILABLE')
+    csrf=request.headers.get('x-csrf-token')
+    if not csrf or not secrets.compare_digest(flow['csrf_hash'],security.hash_token(csrf)):
+        raise HTTPException(403,'CSRF validation failed')
+    if request.headers.get('origin')!=mfa.load_policy(conn)['origin']:
+        raise HTTPException(403,'MFA_ORIGIN_MISMATCH')
+
+
+@router.post('/mfa/authenticate', dependencies=[Depends(require_pre_auth_csrf)])
+def mfa_authenticate(request: Request, response: Response, body: dict,
+                     conn: sqlite3.Connection = Depends(get_db)):
+    host = request.client.host if request.client else 'unknown'
+    wait = security.check_request_rate_limit('mfa_finish:' + host, 20, 60)
+    if wait > 0:
+        raise HTTPException(429, 'Too many attempts', headers={'Retry-After': str(int(wait)+1)})
+    if len(str(body)) > 32768:
+        raise HTTPException(422, 'MFA_RESPONSE_TOO_LARGE')
+    token, csrf, _ = mfa.finish(conn, request.cookies.get(mfa.PREAUTH_COOKIE),
+        request.headers.get('x-csrf-token'), request.headers.get('origin'), body)
+    _set_auth_cookies(response, token, csrf)
+    response.delete_cookie(mfa.PREAUTH_COOKIE, path='/api/auth', secure=config.HTTPS, httponly=True, samesite='strict')
+    response.delete_cookie(mfa.PREAUTH_CSRF_COOKIE, path='/', secure=config.HTTPS, samesite='strict')
+    session = security.validate_session(conn, token)
+    if session is None:
+        raise HTTPException(401, 'MFA_SESSION_UNAVAILABLE')
+    user = policy.load_current_user(conn, session['user_id'])
+    return {'authenticated': True, 'user': _profile_payload(conn, user),
+            'idleDeadline': security.session_deadline(session), 'idleRemainingSeconds': security.remaining_seconds(session)}
+
+
+@router.post('/mfa/register/options')
+def mfa_register_options(response: Response, session: sqlite3.Row = Depends(require_csrf),
+                         user: policy.CurrentUser = Depends(require_user), conn: sqlite3.Connection = Depends(get_db)):
+    row=users.get_user(conn,user.id)
+    token,csrf,options=mfa.begin(conn,user.id,row['password_hash'],purpose='register',parent=session['token_hash'])
+    response.set_cookie(mfa.PREAUTH_COOKIE,token,httponly=True,secure=config.HTTPS,samesite='strict',path='/api/auth',max_age=mfa.FLOW_SECONDS)
+    response.set_cookie(mfa.PREAUTH_CSRF_COOKIE,csrf,secure=config.HTTPS,samesite='strict',path='/',max_age=mfa.FLOW_SECONDS)
+    return options
+
+
+@router.post('/mfa/register', dependencies=[Depends(require_csrf), Depends(abuse_rate_limit('mfa_register',20,60))])
+def mfa_register(request: Request,body: dict,conn: sqlite3.Connection = Depends(get_db)):
+    if len(str(body))>32768:
+        raise HTTPException(422,'MFA_RESPONSE_TOO_LARGE')
+    return mfa.finish_registration(conn,request.cookies.get(mfa.PREAUTH_COOKIE),
+        request.headers.get('x-mfa-csrf-token'),request.headers.get('origin'),body)

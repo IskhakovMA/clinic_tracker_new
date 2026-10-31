@@ -95,6 +95,8 @@ def create_user(
             (uid, username, full_name, role_id, security.hash_password(password),
              int(must_change_password), now, now, now),
         )
+        from . import mfa
+        mfa.initialize_user(conn, uid)
     return uid
 
 
@@ -165,6 +167,8 @@ def touch_last_login(conn: sqlite3.Connection, user_id: str) -> None:
 
 def terminate_sessions(conn: sqlite3.Connection, user_id: str, *, commit: bool = True) -> int:
     with _write_scope(conn, commit):
+        conn.execute("UPDATE mfa_user_state SET auth_epoch=auth_epoch+1 WHERE user_id=?", (user_id,))
+        conn.execute("UPDATE mfa_flows SET state='FAILED' WHERE user_id=? AND state IN ('PENDING','CLAIMED')", (user_id,))
         return conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,)).rowcount
 
 

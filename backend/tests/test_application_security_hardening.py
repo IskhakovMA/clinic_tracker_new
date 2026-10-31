@@ -38,7 +38,12 @@ def test_write_endpoint_csrf_inventory_is_explicit():
     for route in _iter_api_routes(app.routes):
         for method in sorted(route.methods & {"POST", "PUT", "PATCH", "DELETE"}):
             names = _dependency_names(route.dependant)
-            discovered[(method, route.path)] = "require_csrf" in names
+            key = (method, route.path)
+            if key == ("POST", "/api/auth/mfa/authenticate"):
+                assert "require_pre_auth_csrf" in names
+                discovered[key] = True  # independently regression-tested limited-flow CSRF
+            else:
+                discovered[key] = "require_csrf" in names
 
     assert len(discovered) >= 35
     missing = {key: has_csrf for key, has_csrf in discovered.items() if not has_csrf and key not in csrf_na}

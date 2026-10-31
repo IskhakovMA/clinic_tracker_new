@@ -138,7 +138,7 @@ async function apiFetch(path, options) {
     const method = (opts.method || 'GET').toUpperCase();
     if (opts.body !== undefined) opts.headers['Content-Type'] = 'application/json';
     if (method !== 'GET' && method !== 'HEAD') {
-        const csrf = getCookie('clinic_csrf');
+        const csrf = getCookie(path === '/api/auth/mfa/authenticate' ? 'clinic_pre_auth_csrf' : 'clinic_csrf');
         if (csrf) opts.headers['X-CSRF-Token'] = csrf;
     }
     const authRequest = path.startsWith('/api/auth/') && path !== '/api/auth/activity';
@@ -2302,7 +2302,25 @@ const app = {
     async login(username, password) {
         authChannel?.postMessage('changing');
         let result;
-        try { result = await apiPost('/api/auth/login', { username, password }); }
+        try {
+            result = await apiPost('/api/auth/login', { username, password });
+            if (result.stage === 'webauthn') {
+                const epoch = this.sessionEpoch || 0;
+                const decode = value => Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+                const encode = value => value == null ? null : btoa(String.fromCharCode(...new Uint8Array(value))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+                const publicKey = {...result.publicKey, challenge: decode(result.publicKey.challenge),
+                    allowCredentials: result.publicKey.allowCredentials.map(c => ({...c, id: decode(c.id)}))};
+                const credential = await navigator.credentials.get({publicKey});
+                if (!credential || epoch !== (this.sessionEpoch || 0)) throw new Error('Повторите вход.');
+                result = await apiPost('/api/auth/mfa/authenticate', {
+                    id: credential.id, rawId: encode(credential.rawId), type: credential.type,
+                    response: {clientDataJSON: encode(credential.response.clientDataJSON),
+                        authenticatorData: encode(credential.response.authenticatorData),
+                        signature: encode(credential.response.signature), userHandle: encode(credential.response.userHandle)},
+                    clientExtensionResults: credential.getClientExtensionResults()
+                });
+            }
+        }
         finally { authChannel?.postMessage('changed'); }
         if (this.sessionExpired && result.user.id !== this.draftOwnerId) { this.discardSessionAndReload(); return; }
         if (result.user.mustChangePassword) { this.user = result.user; this.showForcePasswordForm(); return; }
@@ -2311,7 +2329,8 @@ const app = {
     },
 
     async submitForcedPasswordChange(currentPassword, newPassword) {
-        await apiPost('/api/auth/change-password', { currentPassword, newPassword });
+        const changed = await apiPost('/api/auth/change-password', { currentPassword, newPassword });
+        if (changed.reauthenticationRequired) { this.expireSession(); return; }
         const me = await this.serverIdentity();
         if (this.sessionExpired) await this.resumeSession(me.user);
         else {

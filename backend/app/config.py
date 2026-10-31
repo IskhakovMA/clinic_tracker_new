@@ -148,7 +148,8 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 #      (history of actual dates/times), append-only audit and history triggers, delete guard
 #      for cards with clinical history; protective triggers are verified against this build.
 # v29: WP-E FIX1 — original event instant for verified reminders, no historical backfill.
-SCHEMA_VERSION = 30
+# v31: technical MFA core; no production activation or WP-F v1 change.
+SCHEMA_VERSION = 31
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 

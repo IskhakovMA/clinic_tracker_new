@@ -1,11 +1,11 @@
 # Operations
 
-## Mandatory admission protocol (WP-F; current schema v30)
+## Mandatory admission protocol (WP-F; current schema v31)
 
 This section governs every startup/maintenance instruction below. Historical
 v24-v28 examples describe medical migrations, not permission to start the server.
 WP-F introduced the operational sidecars at schema v29. WP-G explicitly migrates
-to v30; the admission protocol and CTBK v1 remain unchanged.
+to v31; the admission protocol and CTBK v1 remain unchanged.
 
 ### Operator procedure
 
@@ -64,7 +64,7 @@ stateDiagram-v2
 
 .clinic-pending.json is published and file+directory synced before the first DB
 mutation. A new .clinic-generation.json anchor and revocation of any old permit
-precede mutation too. Pending ALWAYS wins. .clinic-permit.json binds the current schema (v30),
+precede mutation too. Pending ALWAYS wins. .clinic-permit.json binds the current schema (v31),
 maintenance generation and main-file device/inode; a copied/replaced database or
 changed storage identity needs operator verification. These files contain only
 technical metadata, never medical drafts, records or keys. They are not portable
@@ -1014,7 +1014,7 @@ localStorage/sessionStorage. После будущего обновления п
 
 ## WP-G этап 1
 
-Текущая схема v30: явная миграция и обязательный offline verify по WP-F.
+Текущая схема v31: явная миграция и обязательный offline verify по WP-F.
 Аудит выдачи + точный manifest, пилотный idle 15 минут, новые пароли ≥15 символов;
-remote AI выключен, MFA не реализован. [Регламент и production checklist](docs/WP_G_PRIVACY_OPERATIONS.md).
+remote AI выключен. Локальное ядро MFA Stage 2A подготовлено, production-активация, bootstrap и recovery заблокированы; см. [MFA_CORE.md](MFA_CORE.md). [Регламент и production checklist](docs/WP_G_PRIVACY_OPERATIONS.md).
 Новая автоматическая очистка read-audit не активирована; требуется решение о емкости/удержании.
