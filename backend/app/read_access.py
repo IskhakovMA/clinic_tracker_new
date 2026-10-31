@@ -79,7 +79,7 @@ def _persist(state, route, raw, params, denied):
     objects = attempted_manifest(params) if denied else manifest(payload, params)
     if not denied:
         objects = [{'type': kind, 'id': identity} for kind, identity in sorted(
-            {(o['type'], o['id']) for o in objects} | state.aggregate_objects)]
+            {(o['type'], o['id']) for o in objects} | state.aggregate_objects | set(state.export_objects))]
     encoded = json.dumps(objects, ensure_ascii=False, separators=(',', ':'))
     with closing(db.connect_live(config.DB_PATH)) as conn:
         conn.execute('BEGIN IMMEDIATE')
@@ -93,6 +93,11 @@ def _persist(state, route, raw, params, denied):
                     raise HTTPException(status_code=401, detail='Not authenticated')
                 if session_context.access_context(fresh) != state.access:
                     raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
+                if state.export_recorded:
+                    allowed = (policy.can_manage_consilium(fresh) if route.startswith('GET /api/consilium/registries/')
+                               else policy.can_export(fresh) if route.startswith('GET /api/export') else True)
+                    if not allowed:
+                        raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
                 # A card can leave scope without a user-role/departments change.
                 # Recheck only routes governed by card scope; consilium/registry
                 # have their own distinct permissions and are not broadened here.
@@ -104,9 +109,6 @@ def _persist(state, route, raw, params, denied):
                         if not policy.can_read_patient(conn, fresh, identity):
                             raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
 
-            if state.export_recorded and not denied:
-                conn.commit()
-                return
             # The only limit is SQLite's actual storage bound, not an API page cap.
             if len(encoded.encode('utf-8')) + 4096 >= conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH):
                 raise audit.AuditWriteFailed()
@@ -114,7 +116,7 @@ def _persist(state, route, raw, params, denied):
             if denied and actor is None and state.token:
                 session = security.validate_session(conn, state.token, remove_expired=False)
                 actor = policy.load_current_user(conn, session['user_id']) if session else None
-            metadata = dict(state.denial) if denied and state.denial else {
+            metadata = dict(state.export_event) if state.export_recorded and not denied else dict(state.denial) if denied and state.denial else {
                 'event_type': DENIED if denied else RELEASE,
                 'detail': 'operation=' + route,
                 **(audit.actor_ctx(actor) if actor is not None else {})}
@@ -159,6 +161,8 @@ def install(app):
                     except Exception:
                         code = 503
                 body = {'detail': 'Not authenticated' if code == 401 else 'Read audit unavailable'}
+                if code == 503 and state.export_recorded:
+                    body['code'] = 'AUDIT_UNAVAILABLE'
                 if changed and code == 409:
                     body = {'detail': 'Access changed', 'code': 'ACCESS_CONTEXT_CHANGED'}
                 return JSONResponse(body, status_code=code)

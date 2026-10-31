@@ -473,9 +473,10 @@ def export_patients(
         "patients": exported,
     }, key)
     body = json.dumps(payload, ensure_ascii=False, indent=2)
+    from ..read_access import manifest
     # WP-C (AUD-06): выдача файла с ПДн не входит в транзакцию базы, поэтому запись
     # аудита фиксируется ДО выдачи; без нее файл не выдается (503 AUDIT_UNAVAILABLE).
-    audit.record_committed_or_fail(conn, audit.EXPORT, detail=f"records={len(exported)} key_id={key.key_id}",
+    audit.record_committed_or_fail(conn, audit.EXPORT, release_objects=manifest(payload), detail=f"records={len(exported)} key_id={key.key_id}",
                                    **audit.actor_ctx(user))
     return Response(
         content=body,

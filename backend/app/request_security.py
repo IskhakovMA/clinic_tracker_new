@@ -13,6 +13,8 @@ class RequestState:
     denied_recorded: bool = False
     denial: dict | None = None
     export_recorded: bool = False
+    export_event: dict | None = None
+    export_objects: tuple = ()
     protect_commit: bool = False
     patient_id: str | None = None
     write_request: bool = False

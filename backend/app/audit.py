@@ -297,21 +297,31 @@ def record_required_or_fail(conn: sqlite3.Connection, event_type: str, **kwargs)
         raise AuditWriteFailed() from exc
 
 
-def record_committed_or_fail(conn: sqlite3.Connection, event_type: str, **kwargs) -> None:
+def record_committed_or_fail(conn: sqlite3.Connection, event_type: str, *, release_objects=(), **kwargs) -> None:
     """Обязательная запись аудита для операции, которую нельзя включить в транзакцию
     базы (выдача файла экспорта): запись фиксируется отдельной транзакцией ДО того,
     как данные покидают сервер. Сбой — AuditWriteFailed, и вызывающий не выдаёт
-    данные (503). Модель «аудит, затем выдача»: журнал может показать экспорт,
+    данные (503). Для HTTP-экспорта координатор откладывает эту запись до
+    сериализации и фиксирует ее атомарно с manifest перед выдачей.
+    Вызов вне HTTP сохраняет прежнюю отдельную транзакцию.
+    Модель «аудит, затем выдача»: журнал может показать экспорт,
     ответ на который не дошёл до клиента, но никогда — выданные данные без записи."""
     if conn.in_transaction:
         raise RuntimeError("record_committed_or_fail must not run inside another transaction")
+    state = request_security.current.get()
+    if state is not None and event_type in {'export', 'analytics_report_exported', 'consilium_registry_exported'}:
+        # HTTP coordinator owns the atomic event+manifest transaction, after
+        # serialization and a fresh authorization check, before any body release.
+        if state.export_event is not None:
+            raise RuntimeError("one export event per response")
+        state.export_event = {'event_type': event_type, **kwargs}
+        state.export_objects = tuple((obj['type'], str(obj['id'])) for obj in release_objects)
+        state.export_recorded = True
+        return
     try:
         conn.execute("BEGIN IMMEDIATE")
         record_required(conn, event_type, **kwargs)
         conn.commit()
-        state = request_security.current.get()
-        if state is not None and event_type in {'export', 'analytics_report_exported', 'consilium_registry_exported'}:
-            state.export_recorded = True
     except sqlite3.Error as exc:
         conn.rollback()
         raise AuditWriteFailed() from exc

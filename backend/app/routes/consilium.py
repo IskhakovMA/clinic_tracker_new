@@ -729,6 +729,10 @@ def _registry_xlsx(
     # WP-C (AUD-06): запись аудита фиксируется до выдачи файла с ПДн.
     audit.record_committed_or_fail(
         conn, audit.CONSILIUM_REGISTRY_EXPORTED,
+        release_objects=[obj for item in items for obj in (
+            {'type': 'patient', 'id': item['patientId']},
+            {'type': 'appointment', 'id': item['id']},
+        )],
         detail=f"registry={registry};date={suffix};row_count={len(items)};format=xlsx",
         **audit.actor_ctx(user),
     )

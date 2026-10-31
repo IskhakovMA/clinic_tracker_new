@@ -67,12 +67,17 @@ def test_denial_recorded_once_without_foreign_card_disclosure(auth_client):
 
 
 def test_existing_export_has_no_second_read_event(auth_client):
-    card(auth_client);c=get_conn()
+    patient=card(auth_client);c=get_conn()
     n=c.execute('SELECT COUNT(*) FROM audit_events').fetchone()[0]
     r=auth_client.get('/api/export',headers=auth_client.csrf)
     assert r.status_code==200
     assert c.execute('SELECT COUNT(*) FROM audit_events').fetchone()[0]==n+1
     assert c.execute('SELECT event_type FROM audit_events ORDER BY id DESC LIMIT 1').fetchone()[0]=='export'
+    row = latest_manifest()
+    assert row['event_type'] == 'export'
+    assert {'type': 'patient', 'id': patient['id']} in json.loads(row['objects_json'])
+    assert row['snapshot_sha256'] == hashlib.sha256(r.content).hexdigest()
+    assert c.execute('SELECT COUNT(*) FROM read_access_manifests WHERE audit_event_id=?', (row['audit_event_id'],)).fetchone()[0] == 1
 
 
 @pytest.mark.parametrize('seconds,status',[(899,200),(900,401),(901,401)])
