@@ -33,3 +33,13 @@ The localhost-only tools/tests/wp_g_mfa_synthetic_server.py explicitly substitut
 Final report, exact commit SHA, complete diff and raw evidence are delivered outside the worktree as WP_G_STAGE2A_IMPLEMENTATION_REPORT.md and the review package. No automatic activation instructions are provided.
 
 References: [python-fido2 server API](https://developers.yubico.com/python-fido2/API_Documentation/autoapi/fido2/server/index.html), [WebAuthn Level 3](https://www.w3.org/TR/2026/REC-webauthn-3-20260825/).
+
+## Stage 2A FIX1: browser sessions and bounded flow admission
+
+A correct-password transition to another identity retires exactly the full-session token presented by that browser, plus its pending registration flows. This and the new limited flow (or compatible full session) share a transaction and required audit. Wrong password, S1, exhausted capacity or audit failure do not commit a switch: the response is an error, old cookies and prior flows remain intact. Other sessions/devices of the old employee are not revoked. The existing read-release/commit guards still revalidate before medical data is released.
+
+Registration completion must present the exact parent full-session hash AND its owner. The same check runs at claim, after crypto and under the final write lock. A different session even of the same owner is not interchangeable. Mismatch is safely audited; no PENDING credential is created. Activation remains unavailable.
+
+Resource admission uses existing v31 rows under BEGIN IMMEDIATE: at most **2 unexpired PENDING/CLAIMED flows per user**, **128 total rows per user**, and **4096 total flow rows**. All purposes and terminal states count toward row capacity. Expiry (unchanged 120 seconds) frees an active slot only. Restarting cannot reset these SQL-backed budgets. Already oversized stores deny new allocation without deleting anything. There is no new migration, cleanup job, automatic row recycling or retention change.
+
+These are conservative technical ceilings for the non-activated core, not a production capacity/retention policy. **Storage exhaustion deliberately remains fail-closed until a separately approved capacity/retention procedure exists.** It is not resolved by waiting 120 seconds, so storage-capacity responses have no Retry-After. Active-slot responses identify the temporary limit. Do not manually erase history or raise a limit as an unreviewed recovery shortcut. Before activation the owner must approve sustainable expiry/history retention, capacity, monitoring and recovery; this FIX1 does not pretend to provide indefinite service while retaining all history in bounded space.

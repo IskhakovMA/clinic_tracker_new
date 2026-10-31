@@ -91,16 +91,10 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
     security.release_login_attempt(client_host)
     security.purge_expired_sessions(conn)
     idempotency.purge_expired(conn)   # WP2.4-B: только истекшие ключи
-    # Switching accounts consumes the old limited flow as well as rotating cookies.
     previous = request.cookies.get(mfa.PREAUTH_COOKIE)
-    if previous:
-        with transaction(conn):
-            conn.execute("UPDATE mfa_flows SET state='FAILED' WHERE token_hash=? AND state IN ('PENDING','CLAIMED')",
-                         (security.hash_token(previous),))
-    response.delete_cookie(mfa.PREAUTH_COOKIE,path='/api/auth',secure=config.HTTPS,httponly=True,samesite='strict')
-    response.delete_cookie(mfa.PREAUTH_CSRF_COOKIE,path='/',secure=config.HTTPS,samesite='strict')
+    browser_token = request.cookies.get(config.SESSION_COOKIE_NAME)
     if mfa.required(conn, row["id"]):
-        token, csrf, options = mfa.begin(conn, row["id"], row["password_hash"])
+        token, csrf, options = mfa.begin(conn, row["id"], row["password_hash"], browser_token=browser_token, previous_flow=previous)
         _clear_auth_cookies(response)
         response.set_cookie(mfa.PREAUTH_COOKIE, token, httponly=True, secure=config.HTTPS,
                             samesite='strict', path='/api/auth', max_age=mfa.FLOW_SECONDS)
@@ -109,7 +103,8 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
         return {"authenticated": False, "stage": "webauthn", "publicKey": options['publicKey']}
     try:
         session_token, csrf_token, _expires = security.create_session(
-            conn, row["id"], verified_password_hash=row["password_hash"]
+            conn, row["id"], verified_password_hash=row["password_hash"],
+            browser_token=browser_token, previous_flow=previous
         )
     except security.CredentialChanged:
         audit.record(
@@ -117,6 +112,8 @@ def login(body: LoginIn, request: Request, response: Response, conn: sqlite3.Con
             target_user_id=row["id"],
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    response.delete_cookie(mfa.PREAUTH_COOKIE,path='/api/auth',secure=config.HTTPS,httponly=True,samesite='strict')
+    response.delete_cookie(mfa.PREAUTH_CSRF_COOKIE,path='/',secure=config.HTTPS,samesite='strict')
     users.touch_last_login(conn, row["id"])
     _set_auth_cookies(response, session_token, csrf_token)
     user = policy.load_current_user(conn, row["id"])
@@ -260,8 +257,9 @@ def mfa_register_options(response: Response, session: sqlite3.Row = Depends(requ
 
 
 @router.post('/mfa/register', dependencies=[Depends(require_csrf), Depends(abuse_rate_limit('mfa_register',20,60))])
-def mfa_register(request: Request,body: dict,conn: sqlite3.Connection = Depends(get_db)):
+def mfa_register(request: Request,body: dict,session: sqlite3.Row = Depends(require_csrf),
+                 conn: sqlite3.Connection = Depends(get_db)):
     if len(str(body))>32768:
         raise HTTPException(422,'MFA_RESPONSE_TOO_LARGE')
     return mfa.finish_registration(conn,request.cookies.get(mfa.PREAUTH_COOKIE),
-        request.headers.get('x-mfa-csrf-token'),request.headers.get('origin'),body)
+        request.headers.get('x-mfa-csrf-token'),request.headers.get('origin'),body,parent=session['token_hash'])

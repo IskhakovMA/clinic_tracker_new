@@ -13,6 +13,10 @@ from .db import transaction
 PREAUTH_COOKIE = 'clinic_pre_auth'
 PREAUTH_CSRF_COOKIE = 'clinic_pre_auth_csrf'
 FLOW_SECONDS = 120
+# Admission budgets, not retention: no history is deleted or silently recycled.
+MAX_ACTIVE_FLOWS_PER_USER = 2
+MAX_FLOWS_PER_USER = 128
+MAX_FLOWS_TOTAL = 4096
 
 
 class NoticeState(str, Enum):
@@ -73,7 +77,33 @@ def new_challenge():
     return secrets.token_bytes(32)
 
 
-def begin(conn,user_id,password_revision,*,purpose='authenticate',parent=None):
+def retire_browser_context(conn,user_id,browser_token=None,previous_flow=None):
+    """Caller-owned transaction; affect only tokens presented by this browser."""
+    if not conn.in_transaction:raise RuntimeError('browser transition requires transaction')
+    if previous_flow:
+        conn.execute("UPDATE mfa_flows SET state='FAILED' WHERE token_hash=? AND state IN ('PENDING','CLAIMED')",
+                     (security.hash_token(previous_flow),))
+    if browser_token:
+        token_hash=security.hash_token(browser_token)
+        old=conn.execute('SELECT user_id FROM sessions WHERE token_hash=?',(token_hash,)).fetchone()
+        if old and old['user_id']!=user_id:
+            conn.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash,))
+            conn.execute("UPDATE mfa_flows SET state='FAILED' WHERE parent_session=? AND state IN ('PENDING','CLAIMED')",(token_hash,))
+            audit.record_required_or_fail(conn,'mfa_browser_session_revoked',actor_user_id=old['user_id'],target_user_id=user_id)
+
+
+def allocation_budget(conn,user_id):
+    now=security.utc_now().isoformat()
+    active=conn.execute("SELECT COUNT(*) FROM mfa_flows WHERE user_id=? AND state IN ('PENDING','CLAIMED') AND expires_at>?",(user_id,now)).fetchone()[0]
+    count=conn.execute('SELECT COUNT(*) FROM mfa_flows WHERE user_id=?',(user_id,)).fetchone()[0]
+    total=conn.execute('SELECT COUNT(*) FROM mfa_flows').fetchone()[0]
+    if count>=MAX_FLOWS_PER_USER or total>=MAX_FLOWS_TOTAL:
+        raise HTTPException(429,'MFA_FLOW_STORAGE_CAPACITY_REACHED')
+    if active>=MAX_ACTIVE_FLOWS_PER_USER:
+        raise HTTPException(429,'MFA_FLOW_ACTIVE_LIMIT',headers={'Retry-After':str(FLOW_SECONDS)})
+
+
+def begin(conn,user_id,password_revision,*,purpose='authenticate',parent=None,browser_token=None,previous_flow=None):
     with transaction(conn):
         p,user,state,access,generation=current(conn,user_id)
         if user['password_hash']!=password_revision:deny('MFA_ACCOUNT_CHANGED',401)
@@ -81,8 +111,10 @@ def begin(conn,user_id,password_revision,*,purpose='authenticate',parent=None):
             # First enrollment/bootstrap/independent notices are not implemented.
             # No password-only or admin path may turn this into factor activation.
             parent_row=conn.execute('SELECT * FROM sessions WHERE token_hash=?',(parent,)).fetchone()
-            if parent_row is None or parent_row['user_id']!=user_id or not session_allowed(conn,parent_row):
+            if parent_row is None or parent_row['user_id']!=user_id or not session_allowed(conn,parent_row) or security.remaining_seconds(parent_row)<=0:
                 deny('MFA_ENROLLMENT_AUTHORITY_UNAVAILABLE')
+        retire_browser_context(conn,user_id,browser_token,previous_flow)
+        allocation_budget(conn,user_id)
         factors=conn.execute("SELECT * FROM mfa_credentials WHERE user_id=? AND state='ACTIVE'",(user_id,)).fetchall()
         if not factors:deny('MFA_ENROLLMENT_OR_REVIEW_REQUIRED')
         token=secrets.token_urlsafe(32);csrf=secrets.token_urlsafe(32);challenge=new_challenge()
@@ -95,26 +127,28 @@ def begin(conn,user_id,password_revision,*,purpose='authenticate',parent=None):
     return token,csrf,opts
 
 
-def check_flow(conn,f):
+def check_flow(conn,f,*,parent=None):
     p,user,state,access,generation=current(conn,f['user_id'])
     if (security.utc_now().isoformat()>=f['expires_at'] or f['epoch']!=state['auth_epoch']
         or f['password_revision']!=user['password_hash'] or f['access_context']!=access
         or f['generation']!=generation or f['policy_digest']!=p['digest']):deny('MFA_FLOW_EXPIRED_OR_CHANGED',401)
-    if f['parent_session']:
-        parent=conn.execute('SELECT * FROM sessions WHERE token_hash=?',(f['parent_session'],)).fetchone()
-        if parent is None or not session_allowed(conn,parent) or security.remaining_seconds(parent)<=0:
+    if f['purpose']=='register':
+        if not parent or parent!=f['parent_session']:
+            deny('MFA_PARENT_SESSION_MISMATCH',403)
+        parent_row=conn.execute('SELECT * FROM sessions WHERE token_hash=?',(parent,)).fetchone()
+        if parent_row is None or parent_row['user_id']!=f['user_id'] or not session_allowed(conn,parent_row) or security.remaining_seconds(parent_row)<=0:
             deny('MFA_PARENT_SESSION_CHANGED',401)
     return p,user,state
 
 
-def claim(conn,token,csrf,origin,*,purpose='authenticate'):
+def claim(conn,token,csrf,origin,*,purpose='authenticate',parent=None):
     with transaction(conn):
         f=conn.execute('SELECT * FROM mfa_flows WHERE token_hash=?',(security.hash_token(token or ''),)).fetchone()
         if f is None:deny('MFA_FLOW_UNAVAILABLE',401)
         if f['purpose']!=purpose:deny('MFA_FLOW_UNAVAILABLE',401)
         if f['state']!='PENDING':deny('MFA_FLOW_UNAVAILABLE',409)
         if not csrf or not secrets.compare_digest(f['csrf_hash'],security.hash_token(csrf)):deny('CSRF validation failed')
-        p,_,_=check_flow(conn,f)
+        p,_,_=check_flow(conn,f,parent=parent)
         if origin!=p['origin']:deny('MFA_ORIGIN_MISMATCH')
         owner=secrets.token_hex(32)
         conn.execute("UPDATE mfa_flows SET state='CLAIMED',owner=? WHERE token_hash=?",(owner,f['token_hash']))
@@ -164,15 +198,29 @@ def session_allowed(conn,session):
     except HTTPException:return False
 
 
-def finish_registration(conn,token,csrf,origin,response):
-    f,owner=claim(conn,token,csrf,origin,purpose='register')
+def finish_registration(conn,token,csrf,origin,response,*,parent=None):
     try:
-        p,_,_=check_flow(conn,f)
+        return _finish_registration(conn,token,csrf,origin,response,parent=parent)
+    except HTTPException as exc:
+        if exc.detail in {'MFA_PARENT_SESSION_MISMATCH','MFA_PARENT_SESSION_CHANGED'}:
+            with transaction(conn):
+                f=conn.execute('SELECT user_id FROM mfa_flows WHERE token_hash=?',(security.hash_token(token or ''),)).fetchone()
+                actor=conn.execute('SELECT user_id FROM sessions WHERE token_hash=?',(parent or '',)).fetchone()
+                audit.record_required_or_fail(conn,'mfa_registration_parent_denied',
+                    actor_user_id=actor[0] if actor else None,target_user_id=f[0] if f else None,
+                    result=audit.RESULT_DENIED,detail='parent_session_mismatch')
+        raise
+
+
+def _finish_registration(conn,token,csrf,origin,response,*,parent):
+    f,owner=claim(conn,token,csrf,origin,purpose='register',parent=parent)
+    try:
+        p,_,_=check_flow(conn,f,parent=parent)
         data=mfa_webauthn.registration(p['rp_id'],p['origin'],f['library_state'],response)
     except (ValueError,TypeError,KeyError):
         deny('MFA_VERIFICATION_FAILED',401)
     with transaction(conn):
-        check_flow(conn,f)
+        check_flow(conn,f,parent=parent)
         fresh=conn.execute('SELECT * FROM mfa_flows WHERE token_hash=?',(f['token_hash'],)).fetchone()
         if fresh['state']!='CLAIMED' or fresh['owner']!=owner:deny('MFA_FLOW_UNAVAILABLE',409)
         if conn.execute('SELECT 1 FROM mfa_credentials WHERE credential_id=?',(data.credential_data.credential_id,)).fetchone():

@@ -13,6 +13,7 @@ def main():
         from backend.app import db,operations_state,users,mfa,mfa_webauthn as w,mfa_continuity
         operations_state.bootstrap_database(confirm_new=True);operations_state.verify_database(confirm_offline=True)
         c=db.get_connection();uid=users.create_user(c,username='synthetic.mfa',full_name='Синтетический Сотрудник',role_id='developer',password='synthetic-browser-password',must_change_password=False)
+        users.create_user(c,username='synthetic.switch.a',full_name='Синтетический Другой',role_id='developer',password='synthetic-browser-password',must_change_password=False)
         origin=f'http://localhost:{a.port}';handle=secrets.token_bytes(32);challenge=secrets.token_bytes(32);proof_challenge=secrets.token_bytes(32)
         options,state=w.options('localhost',origin,handle,challenge,[],True);used=[False]
         from backend.app.main import app

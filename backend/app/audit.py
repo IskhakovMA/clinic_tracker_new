@@ -364,7 +364,7 @@ def prune(conn: sqlite3.Connection, retention_days: int | None = None) -> int:
     # Удаление и восстановление событий медицинской истории — единственный
     # след прошлых удалений (восстановление очищает deleted_at/deleted_by),
     # поэтому эти записи хранятся столько же, сколько сами события.
-    kept = tuple(RETAINED_EVENT_TYPES) + ('medical_read_release', 'medical_read_denied', 'mfa_pre_auth_created', 'mfa_challenge_claimed', 'mfa_assertion_denied', 'mfa_login_success', 'mfa_factor_registered_pending', 'mfa_factor_revoked')
+    kept = tuple(RETAINED_EVENT_TYPES) + ('medical_read_release', 'medical_read_denied', 'mfa_pre_auth_created', 'mfa_challenge_claimed', 'mfa_assertion_denied', 'mfa_login_success', 'mfa_factor_registered_pending', 'mfa_factor_revoked', 'mfa_browser_session_revoked', 'mfa_registration_parent_denied')
     with conn:
         cur = conn.execute(
             f"DELETE FROM audit_events WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM read_access_manifests WHERE audit_event_id = audit_events.id) AND event_type NOT IN ({','.join('?' * len(kept))})",  # nosec B608

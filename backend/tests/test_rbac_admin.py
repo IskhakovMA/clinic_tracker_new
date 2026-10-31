@@ -118,10 +118,17 @@ def test_terminate_sessions_endpoint(client):
     login(client, "term.target")
     target_cookies = dict(client.cookies)
 
-    login(client, "dev.admin")
-    r = client.post(f"/api/users/{uid}/terminate-sessions", headers=client.csrf)
-    assert r.status_code == 200
-    assert r.json()["terminated"] == 1
+    # A different administrative device, not an identity switch on the target's
+    # browser (which now correctly revokes that browser session immediately).
+    from fastapi.testclient import TestClient
+    admin = TestClient(client.app, base_url="http://127.0.0.1", raise_server_exceptions=False)
+    try:
+        login(admin, "dev.admin")
+        r = admin.post(f"/api/users/{uid}/terminate-sessions", headers=admin.csrf)
+        assert r.status_code == 200
+        assert r.json()["terminated"] == 1
+    finally:
+        admin.close()
 
     client.cookies.clear()
     for k, v in target_cookies.items():

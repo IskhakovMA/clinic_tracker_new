@@ -78,7 +78,8 @@ class CredentialChanged(Exception):
 
 
 def create_session(
-    conn: sqlite3.Connection, user_id: str, *, verified_password_hash: str | None = None
+    conn: sqlite3.Connection, user_id: str, *, verified_password_hash: str | None = None,
+    browser_token: str | None = None, previous_flow: str | None = None
 ) -> tuple[str, str, datetime]:
     """Returns (raw_session_token, csrf_token, expires_at). Every session
     belongs to a concrete user account — there are no anonymous sessions.
@@ -96,6 +97,7 @@ def create_session(
             row = conn.execute("SELECT password_hash, status FROM users WHERE id = ?", (user_id,)).fetchone()
             if row is None or row["status"] != "active" or row["password_hash"] != verified_password_hash:
                 raise CredentialChanged()
+        mfa.retire_browser_context(conn,user_id,browser_token,previous_flow)
         issued = _insert_session(conn, user_id)
         conn.commit()
     except BaseException:

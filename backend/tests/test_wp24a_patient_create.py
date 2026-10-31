@@ -98,18 +98,45 @@ class _AfterCommit:
 
 
 def _while_locked(fn, change_sql=None, params=()):
-    """Run fn while another connection holds the write lock; optionally commit
-    a change from that connection before releasing it."""
+    """Change state only once SQLite attempts a write behind our held lock.
+
+    A timed delay could revoke rights before require_user ran (401), rather
+    than during the intended transaction wait (fresh authorization must be 403).
+    """
+    import threading
+    from unittest.mock import patch
+    from backend.app import db
+    reached, acquired = threading.Event(), threading.Event()
+    original = db._ClinicConnection.execute
+    prefixes = ("BEGIN IMMEDIATE", "INSERT", "UPDATE", "DELETE", "REPLACE")
+
+    def execute(conn, sql, parameters=()):
+        if not sql.strip().upper().startswith(prefixes):
+            return original(conn, sql, parameters)
+        conn.set_trace_callback(lambda statement: reached.set()
+                                if statement.strip().upper().startswith(prefixes) else None)
+        try:
+            result = original(conn, sql, parameters)
+            acquired.set()
+            return result
+        finally:
+            conn.set_trace_callback(None)
+
     raw = sqlite3.connect(_db_path(), timeout=10, isolation_level=None)
     raw.execute("BEGIN IMMEDIATE")
-    box, done, thread = _in_thread(fn)
-    time.sleep(0.6)
-    waited = not done.is_set()
-    if change_sql:
-        raw.execute(change_sql, params)
-    raw.execute("COMMIT")
-    raw.close()
-    thread.join(15)
+    with patch.object(db._ClinicConnection, "execute", execute):
+        box, done, thread = _in_thread(fn)
+        try:
+            assert reached.wait(15), "request did not attempt its SQLite write"
+            waited = not acquired.is_set() and not done.is_set()
+            assert waited and raw.in_transaction, "request did not meet the held writer"
+            if change_sql:
+                raw.execute(change_sql, params)
+            raw.execute("COMMIT")
+        finally:
+            raw.close()
+            thread.join(15)
+        assert not thread.is_alive(), "request did not finish after writer release"
     return box["response"], waited
 
 

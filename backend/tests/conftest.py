@@ -46,7 +46,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.delenv("CLINIC_EXPORT_VERIFY_KEYS", raising=False)
 
     for mod in list(sys.modules):
-        if mod.startswith("backend."):
+        # Parent-package attributes can otherwise retain a stale backend.cli
+        # even after child entries are removed from sys.modules.
+        if mod == "backend" or mod.startswith("backend."):
             del sys.modules[mod]
 
     from fastapi.testclient import TestClient
