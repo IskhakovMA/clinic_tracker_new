@@ -18,7 +18,7 @@ const assert = require('node:assert/strict');
                 const p = await apiPost('/api/patients', {name: 'Синтетический WP-E ' + zone, phone: '+79990000001', diagnosis: 'C34.1', nosology: 'lung34', priority: 'normal', stage: 'exam', head: 'Синтетический Заведующий'});
                 await apiPut(`/api/notifications/patients/${p.id}/preferences`, {smsEnabled: true, consentStatus: 'granted'});
                 await apiPut('/api/notifications/templates/custom_reminder', {body: 'Прием {date} в {time}. {{дата}}', enabled: true});
-                await app.loadPatients(); app.openPatient(p.id);
+                await app.loadPatients(); await app.openPatient(p.id);
                 return p;
             }, timezoneId);
             await page.getByRole('tab', {name: 'Уведомления', exact: true}).click();

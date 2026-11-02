@@ -469,8 +469,13 @@ def test_diagnosis_not_confirmed_lifecycle_search_filter_attention_and_quality(a
     assert {"stage_sequence_violation", "overdue_event", "planned_date_in_past", "incomplete_required_checklist"}.isdisjoint(codes)
 
     app_js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
-    assert "!this.stageFilter && !this.searchQuery" in app_js
-    assert "filtered.filter(p => !this.terminalStages.includes(p.stage))" in app_js
+    # Whole-set filtering now belongs to the server, rather than the loaded page.
+    default_page = auth_client.get('/api/patients?view=page').json()
+    assert patient['id'] not in {p['id'] for p in default_page['patients']}
+    by_stage = auth_client.get('/api/patients', params={'view':'page','stage':'diagnosis-not-confirmed'}).json()
+    assert patient['id'] in {p['id'] for p in by_stage['patients']}
+    by_search = auth_client.get('/api/patients', params={'view':'page','q':patient['name']}).json()
+    assert [p['id'] for p in by_search['patients']] == [patient['id']]
     assert "'diagnosis-not-confirmed': 'Диагноз не подтверждён'" in app_js
 
     dashboard = auth_client.get("/api/analytics/dashboard").json()

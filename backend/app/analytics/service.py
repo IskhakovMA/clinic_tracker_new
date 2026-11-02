@@ -11,6 +11,7 @@ import sqlite3
 import csv
 import io
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -212,7 +213,7 @@ def _notification_counts(conn: sqlite3.Connection, patient_ids: set[str]) -> dic
     return counts
 
 
-def _checklist_state(conn: sqlite3.Connection, patient_ids: set[str]) -> dict:
+def _checklist_state(conn: sqlite3.Connection, patient_ids: set[str], *, include_completed: bool = False) -> dict:
     if not patient_ids:
         return {
             "total_required": 0,
@@ -279,7 +280,7 @@ def _checklist_state(conn: sqlite3.Connection, patient_ids: set[str]) -> dict:
             dept_bucket["total"] += total
             dept_bucket["completed"] += completed
             dept_bucket["incomplete"] += incomplete
-        if incomplete:
+        if incomplete or (include_completed and total):
             state["patients"].append({
                 "patient_id": row["patient_id"],
                 "patient_name": row["name"],
@@ -515,7 +516,7 @@ def dashboard(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analy
         "route_state": _route_state_rows(rows, quality, ids),
         "data_quality": {**_quality_code_rows(quality, ids), "summary": _quality_summary(quality, rows)},
         "trend": _trend_rows(conn, ids, filters),
-        "workload": workload(conn, user, filters),
+        "workload": workload(conn, user, replace(filters, order="desc")),
         "attention": patient_attention.active_reason_breakdown(conn, ids),
         "operations": _attention_rows(rows, quality, ids, checklist),
     }
@@ -699,7 +700,7 @@ def workload(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyt
     buckets: dict[str, dict] = {}
     for row in rows:
         doctor = row["treating_doctor_name"] or row["doctor"] or "Не назначен"
-        bucket = buckets.setdefault(doctor, {
+        bucket = buckets.setdefault(row["treating_doctor_user_id"] or ("legacy:"+doctor), {
             "doctor_user_id": row["treating_doctor_user_id"],
             "doctor_name": doctor,
             "department_ids": [x for x in (row["department_ids"] or "").split(",") if x],
@@ -720,9 +721,9 @@ def workload(conn: sqlite3.Connection, user: policy.CurrentUser, filters: Analyt
         bucket["pending_notifications"] += notif[row["id"]]["pending"]
         bucket["failed_notifications"] += notif[row["id"]]["failed"]
     order_key = filters.sort if filters.sort in {"count", "workload"} else "active_patients"
-    rows_out = sorted(buckets.values(), key=lambda x: (-x[order_key] if order_key in x else -x["active_patients"], x["doctor_name"]))
+    rows_out = sorted(buckets.values(), key=lambda x: (-x[order_key] if order_key in x else -x["active_patients"], x["doctor_name"],x["doctor_user_id"] or ""))
     if filters.order == "asc":
-        rows_out = sorted(buckets.values(), key=lambda x: (x[order_key] if order_key in x else x["active_patients"], x["doctor_name"]))
+        rows_out = sorted(buckets.values(), key=lambda x: (x[order_key] if order_key in x else x["active_patients"], x["doctor_name"],x["doctor_user_id"] or ""))
     return {"meta": _computed_meta(user, filters), "title": "Распределение рабочей нагрузки", "rows": rows_out[:filters.limit]}
 
 

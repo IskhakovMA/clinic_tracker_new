@@ -20,7 +20,7 @@ const assert = require('node:assert/strict');
         const admin=await browser.newContext(); await api(admin,'POST','/api/auth/login',{username:'synthetic.browser',password});
         const patient=await api(admin,'POST','/api/patients',{name:'Синтетический idle пациент',diagnosis:'C34.1',priority:'normal',stage:'exam',head:'Синтетический Заведующий',complaint:'Исходное значение'});
         const context=await browser.newContext(), page=await context.newPage(); await page.goto(origin);await login(page);
-        await page.evaluate(id => {app.openPatient(id);app.currentTab='complaints';app.renderTabs();app.renderTabPanel(app.getPatient(id));},patient.id);
+        await page.evaluate(async id => {await app.openPatient(id);app.currentTab='complaints';app.renderTabs();app.renderTabPanel(app.getPatient(id));},patient.id);
         let writes=0;
         page.on('request',r=>{if(r.method()==='PATCH' && r.url().includes('/api/patients/')) writes++;});
         await api(admin,'POST','/synthetic/clock',{seconds:14*60});

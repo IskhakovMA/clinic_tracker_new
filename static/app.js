@@ -142,7 +142,7 @@ async function apiFetch(path, options) {
         if (csrf) opts.headers['X-CSRF-Token'] = csrf;
     }
     const authRequest = path.startsWith('/api/auth/') && path !== '/api/auth/activity';
-    const reconciling = options.reconcileUser && ['/api/patients', '/api/users/doctors'].includes(path) && method === 'GET';
+    const reconciling = options.reconcileUser && ['/api/patients', '/api/patients/resolve', '/api/patients/head-options', '/api/users/doctors'].includes(path.split('?')[0]) && method === 'GET';
     const expectedUser = reconciling ? options.reconcileUser : app.user;
     if (expectedUser && !['/api/auth/login', '/api/auth/me'].includes(path)) {
         opts.headers['X-Clinic-User'] = expectedUser.id;
@@ -168,13 +168,14 @@ async function apiFetch(path, options) {
         }
         if (!response.ok) {
             let data = null;
-            try { data = await response.json(); } catch (e) { /* ответ без JSON */ }
+            try { data = await response.json();if(data?.detail?.code)data=data.detail; } catch (e) { /* ответ без JSON */ }
             if (response.status === 401 && !authRequest) app.expireSession();
             if (data && data.code === 'SESSION_IDENTITY_CHANGED') app.discardSessionAndReload();
             if (data && data.code === 'ACCESS_CONTEXT_CHANGED') app.expireSession();
             const err = new Error(apiErrorMessage(response.status, data, path));
             err.status = response.status;
             if (data && data.code === 'SESSION_IDENTITY_CHANGED') err.obsolete = true;
+            if (data && data.detail && typeof data.detail === 'object' && !Array.isArray(data.detail)) data = data.detail;
             err.data = data;   // code и сведения сервера для явного подтверждения (например, архивное решение ОК)
             throw err;
         }
@@ -268,9 +269,11 @@ async function apiPostIdempotent(path, body, key) {
 
 const ui = {
     openModals: [],
+    returnFocusTargets: new Map(),
 
     openModal(id) {
         const modal = $(id);
+        this.returnFocusTargets.set(id, document.activeElement);
         modal.hidden = false;
         modal.dataset.returnFocus = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
         this.openModals.push(id);
@@ -284,7 +287,10 @@ const ui = {
         modal.hidden = true;
         this.openModals = this.openModals.filter(m => m !== id);
         const returnId = modal.dataset.returnFocus;
-        if (returnId && $(returnId)) $(returnId).focus();
+        const target=this.returnFocusTargets.get(id);this.returnFocusTargets.delete(id);
+        if(target?.isConnected && !target.closest('[hidden],.is-hidden,[inert]')) target.focus();
+        else if (returnId && $(returnId)) $(returnId).focus();
+        else document.querySelector('#patientTabs [aria-selected="true"],#openAddBtn')?.focus();
     },
 
     topModal() {
@@ -448,7 +454,13 @@ const ui = {
    -------------------------------------------------------------------------- */
 
 const app = {
-    patients: [],
+    patientRows: [],
+    patientDetails: new Map(),
+    patientPage: null,
+    pageTrail: [null],
+    pageIndex: 0,
+    headOptions: [],
+    candidateRows: [],
     activityByPatient: {},
     user: null,          // профиль из /api/auth/me; серверные права первичны
     doctors: [],         // врачи, доступные для назначения лечащим
@@ -1798,16 +1810,6 @@ const app = {
         'diagnosis-not-confirmed': 'Не подтверждён',
     },
 
-    HEAD_OPTIONS: [
-        'Шашолин Михаил Аркадьевич',
-        'Глашева Зарина Муссаевна',
-        'Иванюк Мария Алексеевна',
-        'Крылова Виктория Сергеевна',
-        'Салпагаров Магомет Хасанович',
-        'Мехтиев Вадим Николаевич',
-        'Крамская Людмила Викторовна',
-        'Хацаюк Владимир Викторович',
-    ],
 
     PRIORITY_LABELS: { urgent: 'Срочно', high: 'Высокий', normal: 'Обычный' },
     TREATMENT_LABELS: { surgery: 'Хирургическое лечение', radiation: 'Лучевая терапия', chemo: 'Химиотерапия', hormone: 'Гормонотерапия' },
@@ -1892,6 +1894,7 @@ const app = {
         await this.loadPatients();
         await this.loadActivity();
         await this.loadDoctors();
+        await this.loadHeadOptions();
         this.fillStaticSelects();
         await this.updateUnresolvedBanner();
         await this.refreshAIStatus();
@@ -2019,14 +2022,77 @@ const app = {
 
     /* --------------------------------------------------------------- Данные */
 
-    async loadPatients() {
+    patientPageQuery(cursor = null, extra = {}) {
+        const p = new URLSearchParams({view: 'page', limit: '50', sort: this.sortOrder || 'updated-newest', ...extra});
+        for (const [key, value] of Object.entries({q: this.searchQuery, stage: this.stageFilter, head: this.headFilter, deadline: this.deadlineFilter, attention: this.attentionFilter, attention_reason: this.attentionReasonFilter})) if (value) p.set(key, value);
+        if (cursor) p.set('cursor', cursor);
+        return p;
+    },
+
+    async loadPatients(cursor = null) {
         const version = this.beginRead('patients');
-        const params = new URLSearchParams();
-        if (this.attentionFilter) params.set('attention', this.attentionFilter);
-        if (this.attentionReasonFilter) params.set('attention_reason', this.attentionReasonFilter);
-        const query = params.toString();
-        const patients = await apiGetJson(`/api/patients${query ? '?' + query : ''}`);
-        if (this.isCurrentRead('patients', version)) this.patients = patients;
+        const path = '/api/patients?' + this.patientPageQuery(cursor);
+        let data;
+        try { data = await apiGetJson(path); }
+        catch (error) {
+            if (!this.isCurrentRead('patients', version)) return;
+            if (cursor && [409, 410].includes(error.status) && ['PATIENT_QUERY_CHANGED', 'CURSOR_EXPIRED'].includes(error.data?.code)) {
+                ui.toast('Список изменился. Выдача обновлена; фильтры, выбранная карточка и черновики сохранены.', 'warning');
+                // Exactly one controlled restart, never a retry loop.
+                data = await apiGetJson('/api/patients?' + this.patientPageQuery());
+                await this.reconcileSelectedDetails(version);
+                if (this.isCurrentRead('patients', version)) { this.pageTrail = [null]; this.pageIndex = 0; }
+            } else throw error;
+        }
+        if (!this.isCurrentRead('patients', version)) return;
+        if (!cursor) { this.pageTrail = [null]; this.pageIndex = 0; }
+        this.patientRows = data.patients; this.patientPage = data; this.patientListDirty=false;
+        this.renderPatientPagination();
+    },
+
+    async reconcileSelectedDetails(version) {
+        const ids=[...new Set([this.currentPatientId,...[...(this.sessionFieldDrafts||new Map()).values()].map(d=>d.patientId)].filter(Boolean))];
+        const fresh=[];
+        for(let i=0;i<ids.length;i+=50){const data=await apiGetJson('/api/patients/resolve?ids='+encodeURIComponent(ids.slice(i,i+50).join(',')));fresh.push(...data.patients);}
+        if(!this.isCurrentRead('patients',version))return;
+        const allowed=new Set(fresh.map(p=>p.id));
+        this.sessionFieldDrafts=this.collectSessionFieldDrafts(this.user,fresh,allowed);
+        this.patientDetails=new Map(fresh.map(p=>[p.id,p]));
+        if(this.currentPatientId&&!allowed.has(this.currentPatientId)){this.currentPatientId=null;if(this.currentView==='patient')this.showView('patients');}
+        this.renderSessionFieldDrafts();
+    },
+
+    async changePatientPage(direction) {
+        if (this.pageLoading || !this.patientPage) return;
+        let index = this.pageIndex + direction;
+        if (index < 0 || (direction > 0 && !this.patientPage.page.hasNext)) return;
+        if (direction > 0) this.pageTrail[index] = this.patientPage.page.nextCursor;
+        this.pageLoading = true;
+        try {
+            const cursor = this.pageTrail[index];
+            await this.loadPatients(cursor);
+            if (this.patientPage?.page.offset === index * 50) this.pageIndex = index;
+            this.renderPatients(); this.renderPatientPagination();
+            $('patientPageStatus')?.focus();
+        } catch (error) { ui.toast(error.message, 'danger'); }
+        finally { this.pageLoading = false; }
+    },
+
+    renderPatientPagination() {
+        if (!$('patientsTable') || !this.patientPage) return;
+        let host = $('patientPagination');
+        if (!host) { host = el('div', {id:'patientPagination', class:'pagination', 'aria-label':'Страницы пациентов'}); $('patientsTable').closest('.table-wrap').after(host); }
+        const page = this.patientPage.page;
+        host.replaceChildren(frag([
+            el('button', {type:'button', class:'btn btn--ghost', text:'Предыдущая страница', disabled:this.pageIndex===0, on:{click:()=>this.changePatientPage(-1)}}),
+            el('span', {id:'patientPageStatus', tabindex:'-1', role:'status', 'aria-live':'polite', text:page.total ? `${page.offset+1}–${Math.min(page.offset+page.limit,page.total)} из ${page.total}` : 'Нет результатов'}),
+            el('button', {type:'button', class:'btn btn--ghost', text:'Следующая страница', disabled:!page.hasNext, on:{click:()=>this.changePatientPage(1)}}),
+        ]));
+    },
+
+    async loadHeadOptions(options = {}) {
+        const data = await apiFetch('/api/patients/head-options', options);
+        this.headOptions = data.heads || [];
     },
 
     /** Журнал аудита даёт человекочитаемую подпись «что изменилось» в списке. */
@@ -2057,14 +2123,16 @@ const app = {
 
     replacePatientInCache(updated) {
         if (!updated) return;
-        const index = this.patients.findIndex(x => x.id === updated.id);
-        if (index === -1) this.patients.push(updated);
-        else this.patients[index] = updated;
+        this.patientDetails.set(updated.id, updated);
+        const needed=new Set([this.currentPatientId,updated.id,$('consiliumPatient')?.value]);
+        for(const id of this.patientDetails.keys())if(!needed.has(id))this.patientDetails.delete(id);
+        this.patientListDirty=true;
+        // A detail response is never appended as another page or counted as a registry.
         if (this.user) this.refreshInternalNotificationSummary();
     },
 
     getPatient(id) {
-        return this.patients.find(p => p.id === id) || null;
+        return this.patientDetails.get(id) || null;
     },
 
     /* ------------------------------------------------------------ Навигация */
@@ -2086,7 +2154,7 @@ const app = {
         $('sidebarScrim').hidden = true;
         $('sidebarToggle').setAttribute('aria-expanded', 'false');
 
-        if (view === 'patients') this.renderPatients();
+        if (view === 'patients') {this.renderPatients();if(this.patientListDirty)this.reloadPatientsAndRender();}
         if (view === 'consilium') {
             if (previousView !== 'consilium' && !this.can('consiliumChair')) {
                 this.consilium.loaded = false;
@@ -2109,11 +2177,17 @@ const app = {
         window.scrollTo(0, 0);
     },
 
-    openPatient(id) {
-        this.currentPatientId = id;
-        this.currentTab = 'overview';
-        this.showView('patient');
-        this.renderPatientView();
+    async openPatient(id) {
+        const version = this.beginRead('patient-detail');
+        try {
+            const patient = await apiGetJson('/api/patients/' + encodeURIComponent(id));
+            if (!this.isCurrentRead('patient-detail', version)) return;
+            const retained = new Map(); retained.set(id, patient);
+            this.patientDetails = retained;
+            this.currentPatientId = id;
+            this.currentTab = 'overview';
+            this.showView('patient'); this.renderPatientView();
+        } catch (error) { if (!error.obsolete) ui.toast(error.message, 'danger'); }
     },
 
     /* ----------------------------------------------------------------- Тема */
@@ -2203,7 +2277,16 @@ const app = {
             this.discardSessionAndReload(); return;
         }
         const user = me.user;
-        const fresh = await apiFetch('/api/patients', {reconcileUser: user});
+        const page = await apiFetch('/api/patients?' + this.patientPageQuery(), {reconcileUser: user});
+        const wanted = [...new Set([this.currentPatientId, ...[...(this.sessionFieldDrafts || new Map()).values()].map(d => d.patientId)].filter(Boolean))];
+        const fresh = [];
+        for (let i=0; i<wanted.length; i+=50) {
+            const resolved = await apiFetch('/api/patients/resolve?ids=' + encodeURIComponent(wanted.slice(i,i+50).join(',')), {reconcileUser:user});
+            fresh.push(...resolved.patients);
+        }
+        const heads = await apiFetch('/api/patients/head-options', {reconcileUser:user});
+        if(!Array.isArray(page.patients)||!page.page||!page.summary||!Array.isArray(heads.heads))throw new Error('Не удалось проверить структуру рабочего пространства. Повторите вход.');
+        const listSettings = Object.fromEntries(['searchQuery','stageFilter','headFilter','deadlineFilter','attentionFilter','attentionReasonFilter','sortOrder'].map(k=>[k,this[k]]));
         const doctors = user.permissions.createPatients && !['doctor', 'consilium_chair'].includes(user.roleId)
             ? (await apiFetch('/api/users/doctors', {reconcileUser: user})).doctors || [] : [];
         const final = await this.serverIdentity();
@@ -2213,7 +2296,7 @@ const app = {
         }
         const allowed = new Set(fresh.map(patient => patient.id));
         // Каждый повторный вход сбрасывает производные кэши, а не только текущий список.
-        const rebuiltEpoch = this.rebuildAuthorizedWorkspace(user, fresh, allowed, doctors);
+        const rebuiltEpoch = this.rebuildAuthorizedWorkspace(user, fresh, allowed, doctors, page, heads.heads, listSettings);
         if (this.sessionEpoch !== rebuiltEpoch || this.sessionExpired) return;
         this.sessionReconciling = false;
         document.body.classList.remove('session-locked');
@@ -2222,7 +2305,7 @@ const app = {
         ui.toast('Доступ проверен. Проверьте черновик и сохраните самостоятельно.', 'warning');
     },
 
-    rebuildAuthorizedWorkspace(user, fresh, allowed, doctors) {
+    rebuildAuthorizedWorkspace(user, fresh, allowed, doctors, page, heads, listSettings) {
         const drafts = this.collectSessionFieldDrafts(user, fresh, allowed);
         const createDraft = !$('addModal').hidden && user.permissions.createPatients
             ? [...$('addForm').querySelectorAll('input, select, textarea')].map(node => [node.id, node.value, node.checked]) : null;
@@ -2239,16 +2322,19 @@ const app = {
             if (ui[key]) ui[key]();
             ui[key] = null;
         }
-        ui.openModals = [];
+        ui.openModals = []; ui.returnFocusTargets.clear();
         // Новая копия исходной разметки не содержит данных, а старые узлы и слушатели отбрасываются.
         document.body.replaceChildren(...pristineWorkspace.map(node => node.cloneNode(true)));
         for (const [key, value] of Object.entries(this)) if (typeof value !== 'function') delete this[key];
         Object.assign(this, structuredClone(pristineAppState), {user, sessionEpoch: epoch, sessionReconciling: true});
         this.bindStaticControls();
-        this.patients = fresh;
+        this.patientRows = page.patients; this.patientPage = page;
+        this.patientDetails = new Map(fresh.map(p=>[p.id,p]));
+        this.headOptions = heads; Object.assign(this, listSettings);
         this.doctors = doctors;
         this.applyRoleUI();
         this.fillStaticSelects();
+        for(const [id,value] of Object.entries({searchInput:this.searchQuery,filterStage:this.stageFilter,filterHead:this.headFilter,filterDeadline:this.deadlineFilter,filterAttention:this.attentionFilter,filterAttentionReason:this.attentionReasonFilter,sortOrderSelect:this.sortOrder}))$(id).value=value||'';
         this.showView('patients');
         this.appReady = true;
         this.internalNotifications.pollTimer = window.setInterval(() => {
@@ -2350,7 +2436,7 @@ const app = {
             // Даже при сетевой ошибке сбрасываем клиентское состояние.
         }
         authChannel?.postMessage('changed');
-        this.patients = [];
+        this.patientRows = []; this.patientDetails.clear(); this.patientPage = null;
         this.ai.messages = [];
         this.ai.references = [];
         this.ai.patientContextId = null;
@@ -2361,7 +2447,7 @@ const app = {
     /* ------------------------------------------- Перенос старых данных браузера */
 
     maybeOfferLegacyMigration() {
-        if (this.patients.length > 0) return;
+        if (!this.patientPage || this.patientPage.summary.total > 0) return;
         let legacy;
         try {
             legacy = JSON.parse(localStorage.getItem('patients') || 'null');
@@ -2523,6 +2609,7 @@ const app = {
     },
 
     getCurrentStageLabel(p) {
+        if (Object.hasOwn(p, 'currentFact')) return p.stage === 'appointment' && p.currentFact ? 'Приём врача' : this.stageNames[p.stage] || p.stage;
         return this.getStageLabel(this.getCurrentOccurrence(p)) || this.stageNames[p.stage] || p.stage;
     },
 
@@ -2743,54 +2830,7 @@ const app = {
     },
 
     getFiltered() {
-        let filtered = this.patients.slice();
-        if (!this.stageFilter && !this.searchQuery) {
-            filtered = filtered.filter(p => !this.terminalStages.includes(p.stage));
-        }
-        if (this.stageFilter) filtered = filtered.filter(p => p.stage === this.stageFilter);
-        if (this.headFilter) filtered = filtered.filter(p => p.head === this.headFilter);
-        if (this.deadlineFilter) {
-            filtered = filtered.filter(p => {
-                const days = this.getPatientDeadlineDays(p);
-                if (this.deadlineFilter === 'no-date') return days === null;
-                if (days === null) return false;
-                if (this.deadlineFilter === 'overdue') return days < 0;
-                if (this.deadlineFilter === '0-3') return days >= 0 && days <= 3;
-                if (this.deadlineFilter === '4-7') return days >= 4 && days <= 7;
-                if (this.deadlineFilter === '7+') return days > 7;
-                return true;
-            });
-        }
-        if (this.searchQuery) {
-            const q = this.searchQuery.toLowerCase();
-            filtered = filtered.filter(p =>
-                (p.name || '').toLowerCase().includes(q) ||
-                (p.policyNumber || '').toLowerCase().includes(q) ||
-                (p.diagnosis || '').toLowerCase().includes(q) ||
-                (p.doctor || '').toLowerCase().includes(q) ||
-                (p.head || '').toLowerCase().includes(q)
-            );
-        }
-        const byDate = (value) => new Date(value).getTime() || 0;
-        if (this.sortOrder === 'newest') filtered.sort((a, b) => byDate(b.arrival) - byDate(a.arrival));
-        else if (this.sortOrder === 'oldest') filtered.sort((a, b) => byDate(a.arrival) - byDate(b.arrival));
-        else if (this.sortOrder === 'updated-newest') filtered.sort((a, b) => byDate(b.updatedAt || b.arrival) - byDate(a.updatedAt || a.arrival));
-        else if (this.sortOrder === 'updated-oldest') filtered.sort((a, b) => byDate(a.updatedAt || a.arrival) - byDate(b.updatedAt || b.arrival));
-        else if (this.sortOrder === 'attention') filtered.sort((a, b) => {
-            const ac = (a.attention && a.attention.activeCount) || 0;
-            const bc = (b.attention && b.attention.activeCount) || 0;
-            return bc - ac || (a.name || '').localeCompare(b.name || '', 'ru');
-        });
-        else if (this.sortOrder === 'first-visit-oldest') filtered.sort((a, b) =>
-            (this.firstVisitTime(a) || Number.MAX_SAFE_INTEGER) - (this.firstVisitTime(b) || Number.MAX_SAFE_INTEGER) ||
-            (a.name || '').localeCompare(b.name || '', 'ru')
-        );
-        else if (this.sortOrder === 'first-visit-newest') filtered.sort((a, b) =>
-            (this.firstVisitTime(b) || -1) - (this.firstVisitTime(a) || -1) ||
-            (a.name || '').localeCompare(b.name || '', 'ru')
-        );
-        else if (this.sortOrder === 'name') filtered.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ru'));
-        return filtered;
+        return this.patientRows; // Already searched/filtered/sorted across the server scope.
     },
 
     generateSummary(p) {
@@ -2848,7 +2888,7 @@ const app = {
     },
 
     async copySummary(id) {
-        const p = this.getPatient(id);
+        const p = this.getPatient(id) || await this.refreshPatientRecord(id);
         const text = this.generateSummary(p);
         try {
             await navigator.clipboard.writeText(text);
@@ -2866,7 +2906,7 @@ const app = {
             ...this.stageFilterOrder.map(s => option(s, this.stageNames[s])),
         ]));
 
-        const heads = [...new Set(this.patients.map(p => p.head).filter(Boolean))].sort();
+        const heads = this.patientPage?.heads || [];
         $('filterHead').replaceChildren(frag([
             option('', 'Все заведующие', true),
             ...heads.map(h => option(h, h)),
@@ -2959,7 +2999,7 @@ const app = {
 
         $('head').replaceChildren(frag([
             option('', 'Выберите заведующего', true),
-            ...this.HEAD_OPTIONS.map(h => option(h, h)),
+            ...this.headOptions.map(h => option(h.name, h.name)),
         ]));
 
         $('treatmentType').replaceChildren(frag(this.treatmentTypeOptions()));
@@ -3003,11 +3043,8 @@ const app = {
     },
 
     renderStats() {
-        const total = this.patients.length;
-        const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-        const fresh = this.patients.filter(p => new Date(p.arrival).getTime() >= weekAgo).length;
-        const inTreatment = this.patients.filter(p => p.stage === 'treatment' || p.stage === 'treatment-prep').length;
-        const done = this.patients.filter(p => p.stage === 'completed').length;
+        const total = this.patientPage?.summary.total || 0;
+        const {fresh=0, inTreatment=0, done=0} = this.patientPage?.summary || {};
         const share = (n) => total ? `${(n / total * 100).toFixed(1)}% от всех` : 'нет данных';
 
         const stat = (label, value, meta, metaClass) => el('div', { class: 'stat' }, [
@@ -3096,7 +3133,7 @@ const app = {
         }
         // Считаем из уже загруженного scope-списка (Разработчик видит всех),
         // чтобы не делать лишний запрос при каждом рендере.
-        const count = this.patients.filter(p => !p.treatingDoctorUserId).length;
+        const count = this.patientPage?.summary.unresolved || 0;
         if (!count) {
             banner.classList.add('is-hidden');
             return;
@@ -3118,7 +3155,7 @@ const app = {
         if (filtered.length === 0) {
             body.replaceChildren();
             empty.classList.remove('is-hidden');
-            empty.textContent = this.patients.length === 0
+            empty.textContent = (this.patientPage?.summary.total || 0) === 0
                 ? (this.can('createPatients')
                     ? 'Пациентов пока нет. Нажмите «Новый пациент», чтобы добавить первого.'
                     : 'В вашей области видимости пока нет пациентов.')
@@ -3127,6 +3164,7 @@ const app = {
         }
         empty.classList.add('is-hidden');
 
+        this.renderPatientPagination();
         body.replaceChildren(frag(filtered.map(p => {
             const stageLabel = this.getCurrentStageLabel(p);
             const percent = this.stageProgressPercent(p.stage);
@@ -3139,23 +3177,15 @@ const app = {
 
             return el('tr', {
                 class: 'patient-row patient-row--interactive',
-                role: 'button',
-                tabindex: '0',
-                'aria-label': `Открыть карточку: ${p.name}`,
+
                 on: {
                     click: () => this.openPatient(p.id),
-                    keydown: (event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                            event.preventDefault();
-                            this.openPatient(p.id);
-                        }
-                    },
                 },
             }, [
                 el('td', {}, el('div', { class: 'person' }, [
                     el('span', { class: `avatar avatar--${p.priority}`, text: this.initials(p.name) }),
                     el('div', {}, [
-                        el('div', { class: 'person__name', text: p.name }),
+                        el('button', {type:'button', class:'person__name patient-open', text:p.name, 'aria-label':`Открыть карточку: ${p.name}`, on:{click:event=>{event.stopPropagation();this.openPatient(p.id);}}}),
                         el('div', { class: 'person__meta', text: `${p.age} лет · ${p.diagnosis || 'диагноз не указан'}` }),
                         attentionBadge,
                     ]),
@@ -3494,12 +3524,20 @@ const app = {
             role: 'tab',
             id: `tab-${tab.key}`,
             'aria-selected': this.currentTab === tab.key ? 'true' : 'false',
+            tabindex:this.currentTab===tab.key?'0':'-1',
             'aria-controls': 'patientPanels',
             text: tab.label,
             on: {
+                keydown:event=>{
+                    const keys=['ArrowLeft','ArrowRight','Home','End'];if(!keys.includes(event.key))return;
+                    event.preventDefault();const index=this.TABS.findIndex(t=>t.key===tab.key);
+                    const next=event.key==='Home'?0:event.key==='End'?this.TABS.length-1:(index+(event.key==='ArrowRight'?1:-1)+this.TABS.length)%this.TABS.length;
+                    $('tab-'+this.TABS[next].key).click();
+                },
                 click: () => {
                     this.currentTab = tab.key;
                     this.renderTabs();
+                    $('tab-'+tab.key).focus();
                     this.renderTabPanel(this.getPatient(this.currentPatientId));
                     this.applyReadOnlyToPatientView();
                     if (tab.key === 'overview') {
@@ -3988,8 +4026,13 @@ const app = {
     /* --- Вкладка «Данные» --------------------------------------------------- */
 
     field(label, control, hint) {
+        const controls=control.matches?.('input,select,textarea')?[control]:[...control.querySelectorAll('input,select,textarea')];
+        for(const [index,node] of controls.entries()) {
+            if(!node.id)node.id='patient-field-'+newIdempotencyKey();
+            if(!node.getAttribute('aria-label')&&!node.getAttribute('aria-labelledby'))node.setAttribute('aria-label',controls.length>1?`${label} ${index+1}`:label);
+        }
         return el('div', { class: 'field' }, [
-            el('label', { class: 'field__label' }, label),
+            el('label', { class: 'field__label', ...(controls.length===1?{for:controls[0].id}:{}) }, label),
             control,
             hint ? el('p', { class: 'field__hint', text: hint }) : null,
         ]);
@@ -4138,7 +4181,7 @@ const app = {
                     })),
                 ]),
                 this.field('Заведующий', this.patientSelect(p, 'head',
-                    this.HEAD_OPTIONS.map(h => option(h, h, p.head === h)))),
+                    [...new Set([p.head, ...this.headOptions.map(h=>h.name)].filter(Boolean))].map(h => option(h, h + (!this.headOptions.some(x=>x.name===h) ? ' (сохраненное значение)' : ''), p.head === h)))),
             ]),
         ]);
     },
@@ -6538,80 +6581,50 @@ const app = {
 
     /* ==================================================== РЕНДЕР: ПРОЧИЕ РАЗДЕЛЫ */
 
-    renderCalendar() {
-        const rows = [];
-        this.patients.forEach(p => {
-            (p.history || []).forEach((occ, occIndex) => {
-                (occ.events || []).forEach(ev => {
-                    if (!ev.date || ev.actualDate) return;
-                    rows.push({ patient: p, occIndex, stage: occ.stage, date: ev.date, time: ev.time });
-                });
-            });
-        });
-        rows.sort((a, b) => a.date.localeCompare(b.date));
-
-        const panel = $('calendarPanel');
-        if (!rows.length) {
-            panel.replaceChildren(el('div', { class: 'empty', text: 'Плановых событий нет.' }));
-            return;
-        }
-        panel.replaceChildren(frag(rows.map(row => {
-            const days = this.getDaysUntil(row.date);
-            return el('div', { class: 'list-row' }, [
-                el('div', { class: 'list-row__main' }, [
-                    el('div', { class: 'list-row__title', text: row.patient.name }),
-                    el('div', { class: 'list-row__sub', text: `${this.stageNames[row.stage]} · ${row.patient.head || 'заведующий не указан'}` }),
-                ]),
-                this.dateChip(days, row.time),
-                el('span', { class: 'list-row__side', text: row.date }),
-                el('button', {
-                    type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть',
-                    'aria-label': `Открыть карточку: ${row.patient.name}`,
-                    on: { click: () => this.openPatient(row.patient.id) },
-                }),
-            ]);
-        })));
+    async renderCalendar(cursor = null) {
+        await this.renderWorkspacePage('events', 'calendarPanel', 'calendar', cursor, row => el('div', {class:'list-row'}, [
+            el('div', {class:'list-row__main'}, [el('div',{class:'list-row__title',text:row.patientName}),el('div',{class:'list-row__sub',text:`${this.stageNames[row.stage]} · ${row.head || 'заведующий не указан'}`})]),
+            this.dateChip(this.getDaysUntil(row.date),row.time),el('span',{text:row.date}),
+            el('button',{type:'button',class:'btn btn--ghost btn--sm',text:'Открыть','aria-label':`Открыть карточку: ${row.patientName}`,on:{click:()=>this.openPatient(row.patientId)}}),
+        ]));
     },
 
-    renderChecklistsView() {
-        const rows = this.patients
-            .map(p => {
-                const occ = this.getCurrentOccurrence(p);
-                const nosology = this.nosologyData[p.nosology];
-                if (!occ || !nosology) return null;
-                const isExam = occ.stage === 'exam';
-                const required = (isExam ? nosology.checklistRequired : nosology.checklistRequiredStage2) || [];
-                if (!required.length) return null;
-                const checklist = occ.checklist || {};
-                return { p, done: required.filter(i => checklist[i]).length, total: required.length, stage: occ.stage };
-            })
-            .filter(Boolean)
-            .sort((a, b) => (a.done / a.total) - (b.done / b.total));
-
-        const panel = $('checklistsPanel');
-        if (!rows.length) {
-            panel.replaceChildren(el('div', { class: 'empty', text: 'Нет пациентов с активным чек-листом.' }));
-            return;
+    async renderWorkspacePage(kind, hostId, view, cursor, renderRow, restarted = false) {
+        const version=this.beginRead('workspace-'+kind);
+        try {
+            const data=await apiGetJson('/api/patients/workspace/'+kind+'?limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''));
+            if (!this.isCurrentRead('workspace-'+kind,version) || this.currentView!==view) return;
+            this.workspacePages ||= {};
+            const state=this.workspacePages[kind] ||= {trail:[null],index:0};
+            if (!cursor) {state.trail=[null];state.index=0;}
+            const rows=data[kind];
+            const host=$(hostId);host.replaceChildren(frag(rows.length?rows.map(renderRow):[el('div',{class:'empty',text:'Нет записей по выбранным условиям.'})]));
+            host.append(this.boundedPager(data,state,next=>this.renderWorkspacePage(kind,hostId,view,next,renderRow)));
+        } catch(error) {
+            if (!this.isCurrentRead('workspace-'+kind,version)) return;
+            if (!restarted && cursor && [409,410].includes(error.status)) {
+                ui.toast('Набор изменился. Обновлена первая страница; карточка и черновики сохранены.','warning');
+                return this.renderWorkspacePage(kind,hostId,view,null,renderRow,true);
+            }
+            if (!error.obsolete) $(hostId).replaceChildren(el('p',{role:'alert',text:error.message}));
         }
-        panel.replaceChildren(frag(rows.map(row => el('div', { class: 'list-row' }, [
-            el('div', { class: 'list-row__main' }, [
-                el('div', { class: 'list-row__title', text: row.p.name }),
-                el('div', { class: 'list-row__sub', text: `${this.stageNames[row.stage]} · ${this.nosologyData[row.p.nosology].label}` }),
-            ]),
-            el('span', { class: `chip chip--${row.done === row.total ? 'good' : 'warning'}`, text: `${row.done} из ${row.total}` }),
-            el('button', {
-                type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть',
-                'aria-label': `Открыть чек-лист: ${row.p.name}`,
-                on: {
-                    click: () => {
-                        this.openPatient(row.p.id);
-                        this.currentTab = 'checklist';
-                        this.renderTabs();
-                        this.renderTabPanel(this.getPatient(row.p.id));
-                    },
-                },
-            }),
-        ]))));
+    },
+
+    boundedPager(data,state,load) {
+        const page=data.page;
+        return el('div',{class:'pagination'},[
+            el('button',{type:'button',class:'btn btn--ghost',text:'Назад',disabled:state.index===0,on:{click:()=>{state.index--;load(state.trail[state.index]);}}}),
+            el('span',{role:'status','aria-live':'polite',text:page.total?`${page.offset+1}–${Math.min(page.offset+page.limit,page.total)} из ${page.total}`:'Нет результатов'}),
+            el('button',{type:'button',class:'btn btn--ghost',text:'Далее',disabled:!page.hasNext,on:{click:()=>{state.trail[++state.index]=page.nextCursor;load(page.nextCursor);}}}),
+        ]);
+    },
+
+    async renderChecklistsView(cursor = null) {
+        await this.renderWorkspacePage('checklists','checklistsPanel','checklists',cursor,row=>el('div',{class:'list-row'},[
+            el('div',{class:'list-row__main'},[el('div',{class:'list-row__title',text:row.patient_name}),el('div',{class:'list-row__sub',text:this.stageNames[row.stage]||row.stage})]),
+            el('span',{class:row.incomplete_required?'chip chip--warning':'chip chip--good',text:`${row.completed_required} из ${row.total_required}`}),
+            el('button',{type:'button',class:'btn btn--ghost btn--sm',text:'Открыть','aria-label':`Открыть чек-лист: ${row.patient_name}`,on:{click:async()=>{await this.openPatient(row.patient_id);if(this.currentPatientId!==row.patient_id)return;this.currentTab='checklist';this.renderTabs();this.renderTabPanel(this.getPatient(row.patient_id));}}}),
+        ]));
     },
 
     async renderAudit() {
@@ -6893,7 +6906,7 @@ const app = {
         if (!confirmed) return;
         try {
             await apiDelete(`/api/patients/${patientId}`);
-            this.patients = this.patients.filter(x => x.id !== patientId);
+            this.patientDetails.delete(patientId); await this.loadPatients();
             ui.toast('Пациент удалён.', 'good');
             this.showView('patients');
         } catch (e) {
@@ -8120,7 +8133,7 @@ const app = {
         this.renderConsiliumStats(rows);
         empty.textContent = chair
             ? 'В общей очереди консилиума пока нет записей.'
-            : (this.patients.length
+            : (this.patientPage?.summary.total
                 ? 'Записей пока нет. Нажмите «Запись», чтобы направить пациента на консилиум.'
                 : 'Сначала добавьте пациента в разделе «Пациенты».');
         if (chair && !rows.length) {
@@ -8759,9 +8772,13 @@ const app = {
         if (!show) $('consiliumAdditionalDiagnosis').value = '';
     },
 
-    prefillConsiliumDiagnosisFromPatient() {
+    async prefillConsiliumDiagnosisFromPatient() {
         if (this.consilium.editingId) return;
-        const patient = this.getPatient($('consiliumPatient').value);
+        const selected=$('consiliumPatient').value;
+        if(!selected)return;
+        let patient=this.getPatient(selected);
+        if(!patient){try{patient=await this.refreshPatientRecord(selected);}catch(error){ui.toast(error.message,'danger');return;}}
+        if($('consiliumPatient').value!==selected||this.sessionExpired)return;
         const diagnosis = this.validConsiliumDiagnosis(patient && patient.diagnosis, false);
         $('consiliumPrimaryDiagnosis').value = diagnosis || '';
         $('consiliumPolicyNumber').value = (patient && patient.policyNumber) || '';
@@ -8852,37 +8869,39 @@ const app = {
         ]));
     },
 
-    fillConsiliumPatientsForGroup(record = null) {
-        const group = this.consiliumGroupKey();
-        const knownGroup = (this.consilium.meta?.groups || []).some(item => item.value === group);
-        const currentPatientId = record?.patientId || $('consiliumPatient').value;
-        let patients = [...this.patients].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-        const blocked = new Set(this.consilium.blockedPatientIds || []);
-        patients = patients.filter(patient => !blocked.has(patient.id) || patient.id === record?.patientId);
-        if (knownGroup) {
-            patients = patients.filter(patient => this.consiliumGroupForDiagnosis(patient.diagnosis) === group);
+    async fillConsiliumPatientsForGroup(record = null, cursor = null, restarted = false) {
+        const version=this.beginRead('consilium-candidates');
+        const group=this.consiliumGroupKey();
+        const known=(this.consilium.meta?.groups||[]).some(g=>g.value===group);
+        const selected=record?.patientId || $('consiliumPatient').value;
+        const q=$('consiliumPatientSearch')?.value || '';
+        $('submitConsiliumBtn').disabled=true;
+        try {
+            const p=new URLSearchParams({limit:'50',q});if(known)p.set('group',group);if(cursor)p.set('cursor',cursor);
+            const data=await apiGetJson('/api/patients/workspace/patients?'+p);
+            if(!this.isCurrentRead('consilium-candidates',version))return [];
+            const rows=data.patients;
+            if(record && !rows.some(p=>p.id===record.patientId)) {
+                const detail=await this.refreshPatientRecord(record.patientId);
+                if(!this.isCurrentRead('consilium-candidates',version))return [];
+                rows.unshift(detail);
+            }
+            this.candidateRows=rows;
+            const selectedId=rows.some(p=>p.id===selected)?selected:(rows[0]?.id||'');
+            $('consiliumPatient').replaceChildren(frag([option('',rows.length?'Выберите пациента':'Нет подходящих пациентов',!selectedId),...rows.map(p=>option(p.id,`${p.name} · ${p.diagnosis||''}`,p.id===selectedId))]));
+            $('consiliumPatient').value=selectedId;
+            $('consiliumPatientHint').textContent=`Доступно по условиям: ${data.page.total}. Исключены пациенты с незавершенной записью на консилиум.`;
+            let pager=$('consiliumCandidatePager');if(!pager){pager=el('div',{id:'consiliumCandidatePager'});$('consiliumPatientHint').after(pager);}
+            this.consilium.candidatePaging ||= {trail:[null],index:0};
+            if(!cursor)this.consilium.candidatePaging={trail:[null],index:0};
+            pager.replaceChildren(this.boundedPager(data,this.consilium.candidatePaging,next=>this.fillConsiliumPatientsForGroup(record,next)));
+            $('submitConsiliumBtn').disabled=!rows.length;
+            return rows;
+        } catch(error) {
+            if(!this.isCurrentRead('consilium-candidates',version))return [];
+            if(cursor&&!restarted&&[409,410].includes(error.status))return this.fillConsiliumPatientsForGroup(record,null,true);
+            ui.toast(error.message,'danger');return [];
         }
-        if (record && !patients.some(patient => patient.id === record.patientId)) {
-            const currentPatient = this.getPatient(record.patientId);
-            if (currentPatient) patients.unshift(currentPatient);
-        }
-        const selectedId = patients.some(patient => patient.id === currentPatientId)
-            ? currentPatientId
-            : (patients[0]?.id || '');
-        $('consiliumPatient').replaceChildren(frag([
-            option('', patients.length ? 'Выберите пациента' : 'Нет пациентов с подходящим кодом МКБ‑10', !selectedId),
-            ...patients.map(patient => option(
-                patient.id,
-                `${patient.name}${patient.diagnosis ? ` · ${patient.diagnosis}` : ''}`,
-                patient.id === selectedId,
-            )),
-        ]));
-        $('consiliumPatient').value = selectedId;
-        $('consiliumPatientHint').textContent = knownGroup
-            ? `Доступных пациентов по коду МКБ‑10: ${patients.length}. Исключены пациенты с незавершенной записью на консилиум.`
-            : 'Выберите консилиумную группу, чтобы отфильтровать пациентов по коду МКБ‑10.';
-        $('submitConsiliumBtn').disabled = patients.length === 0;
-        return patients;
     },
 
     async openConsiliumModal(appointmentId = null, selectedSlot = null, options = {}) {
@@ -8921,7 +8940,7 @@ const app = {
         $('consiliumGroup').value = record
             ? record.consiliumGroupLabel
             : (firstFree ? firstFree.consiliumGroupLabel : '');
-        const patients = this.fillConsiliumPatientsForGroup(record);
+        const patients = await this.fillConsiliumPatientsForGroup(record);
         $('consiliumPatient').disabled = !!record;
         $('consiliumGroup').readOnly = !!record;
         this.updateConsiliumAvailableSlots(record);
@@ -8983,11 +9002,11 @@ const app = {
         $('submitConsiliumBtn').disabled = !slots.length;
     },
 
-    applyConsiliumBackdatedSlot() {
+    async applyConsiliumBackdatedSlot() {
         const slot = this.consiliumBackdatedSlots().find(item => item.id === $('consiliumBackdatedSlot').value);
         if (!slot) return;
         $('consiliumGroup').value = slot.consiliumGroupLabel;
-        this.fillConsiliumPatientsForGroup();
+        await this.fillConsiliumPatientsForGroup();
         this.prefillConsiliumDiagnosisFromPatient();
         this.updateConsiliumAvailableSlots();
         $('submitConsiliumBtn').disabled = false;
@@ -10027,6 +10046,7 @@ const app = {
 
     openExportModal() {
         this.exportSelectedIds = new Set();
+        this.exportAllSelection=null;
         this.exportHeadFilter = null;
         $('exportSearchInput').value = '';
         this.renderExportHeadsFilter();
@@ -10035,53 +10055,40 @@ const app = {
     },
 
     renderExportHeadsFilter() {
-        const heads = [...new Set(this.patients.map(p => p.head).filter(Boolean))].sort();
+        const heads=this.patientPage?.heads||[];
         $('exportHeadsFilter').replaceChildren(frag([
-            el('button', {
-                type: 'button', class: `chip-btn ${!this.exportHeadFilter ? 'is-active' : ''}`, text: 'Все',
-                on: { click: () => this.filterExportByHead(null) },
-            }),
-            ...heads.map(h => el('button', {
-                type: 'button',
-                class: `chip-btn ${this.exportHeadFilter === h ? 'is-active' : ''}`,
-                title: h,
-                text: `${h.split(' ')[0]} (${this.patients.filter(p => p.head === h).length})`,
-                on: { click: () => this.filterExportByHead(h) },
-            })),
+            el('button',{type:'button',class:'chip-btn',text:'Все',on:{click:()=>this.filterExportByHead(null)}}),
+            ...heads.map(h=>el('button',{type:'button',class:'chip-btn',text:h,on:{click:()=>this.filterExportByHead(h)}})),
         ]));
     },
 
     filterExportByHead(head) {
-        this.exportHeadFilter = head;
+        this.exportHeadFilter = head; this.exportAllSelection=null;
         this.renderExportHeadsFilter();
         this.renderExportPatientList($('exportSearchInput').value);
     },
 
-    renderExportPatientList(query) {
-        if (!this.exportSelectedIds) this.exportSelectedIds = new Set();
-        const q = (query || '').toLowerCase();
-        const filtered = this.patients.filter(p =>
-            ((p.name || '').toLowerCase().includes(q) || (p.head || '').toLowerCase().includes(q)) &&
-            (!this.exportHeadFilter || p.head === this.exportHeadFilter)
-        );
-
-        const rows = filtered.map(p => el('label', { class: 'pick' }, [
-            el('input', {
-                type: 'checkbox', checked: this.exportSelectedIds.has(p.id),
-                'aria-label': `Выбрать: ${p.name}`,
-                on: { change: (event) => this.toggleExportSelection(p.id, event.target.checked) },
-            }),
-            el('div', {}, [
-                el('div', { class: 'pick__name', text: p.name }),
-                el('div', { class: 'pick__meta', text: `${this.getCurrentStageLabel(p)}${p.head ? ' · ' + p.head : ''}` }),
-            ]),
-        ]));
-
-        $('exportPatientList').replaceChildren(rows.length
-            ? frag(rows)
-            : el('div', { class: 'empty', text: 'Никого не найдено.' }));
-        this.exportFilteredIds = filtered.map(p => p.id);
-        this.updateExportCount();
+    async renderExportPatientList(query, cursor = null, restarted = false) {
+        const version=this.beginRead('export-list');
+        const p=new URLSearchParams({view:'page',limit:'50',sort:'name',include_terminal:'true'});
+        if(query)p.set('q',query);if(this.exportHeadFilter)p.set('head',this.exportHeadFilter);if(cursor)p.set('cursor',cursor);
+        try {
+            const data=await apiGetJson('/api/patients?'+p);
+            if(!this.isCurrentRead('export-list',version))return;
+            this.exportPage=data;this.exportQuery=Object.fromEntries([...p].filter(([k])=>k!=='cursor'));
+            this.exportPaging ||= {trail:[null],index:0};if(!cursor)this.exportPaging={trail:[null],index:0};
+            const rows=data.patients.map(card=>el('label',{class:'pick'},[
+                el('input',{type:'checkbox',disabled:!!this.exportAllSelection,checked:!!this.exportAllSelection||this.exportSelectedIds.has(card.id),'aria-label':`Выбрать: ${card.name}`,on:{change:e=>this.toggleExportSelection(card.id,e.target.checked)}}),
+                el('div',{},[el('div',{class:'pick__name',text:card.name}),el('div',{class:'pick__meta',text:`${this.getCurrentStageLabel(card)} · ${card.head||''}`})]),
+            ]));
+            $('exportPatientList').replaceChildren(frag(rows.length?rows:[el('p',{class:'empty',text:'Нет результатов'})]));
+            $('exportPatientList').append(this.boundedPager(data,this.exportPaging,next=>this.renderExportPatientList(query,next)));
+            this.updateExportCount();
+        } catch(error) {
+            if(!this.isCurrentRead('export-list',version))return;
+            if(cursor&&!restarted&&[409,410].includes(error.status)){this.exportAllSelection=null;ui.toast('Выдача экспорта изменилась. Проверьте выбор.','warning');return this.renderExportPatientList(query,null,true);}
+            ui.toast(error.message,'danger');
+        }
     },
 
     toggleExportSelection(id, checked) {
@@ -10092,28 +10099,31 @@ const app = {
     },
 
     exportSelectAll() {
-        (this.exportFilteredIds || []).forEach(id => this.exportSelectedIds.add(id));
-        this.renderExportPatientList($('exportSearchInput').value);
+        if(!this.exportPage)return;
+        this.exportAllSelection={query:{...this.exportQuery},revision:this.exportPage.page.revision,total:this.exportPage.page.total};
+        this.exportSelectedIds.clear();
+        ui.toast('Выбран весь серверный фильтр. Чтобы выбирать по одному, сначала снимите выбор.','good');
+        this.renderExportPatientList($('exportSearchInput').value);this.updateExportCount();
     },
 
     exportSelectNone() {
-        (this.exportFilteredIds || []).forEach(id => this.exportSelectedIds.delete(id));
-        this.renderExportPatientList($('exportSearchInput').value);
+        this.exportAllSelection=null;this.exportSelectedIds.clear();
+        this.renderExportPatientList($('exportSearchInput').value);this.updateExportCount();
     },
 
     updateExportCount() {
-        $('exportSelectedCount').textContent = this.exportSelectedIds ? this.exportSelectedIds.size : 0;
-        $('exportTotalCount').textContent = this.patients.length;
+        $('exportSelectedCount').textContent=this.exportAllSelection?this.exportAllSelection.total:(this.exportSelectedIds?.size||0);
+        $('exportTotalCount').textContent=this.patientPage?.summary.total||0;
     },
 
     async confirmExport() {
-        if (!this.exportSelectedIds || this.exportSelectedIds.size === 0) {
+        if (!this.exportAllSelection && (!this.exportSelectedIds || this.exportSelectedIds.size === 0)) {
             ui.toast('Выберите хотя бы одного пациента.', 'warning');
             return;
         }
         const confirmed = await ui.confirm({
             title: 'Скачать файл с медицинскими данными?',
-            text: `В файл попадут данные ${this.exportSelectedIds.size} пациент(ов): ФИО, диагнозы, контакты. Храните его так же осторожно, как медицинскую карту.`,
+            text: `В файл попадут данные ${this.exportAllSelection?.total || this.exportSelectedIds.size} пациент(ов): ФИО, диагнозы, контакты. Храните его так же осторожно, как медицинскую карту.`,
             okLabel: 'Скачать',
             danger: false,
         });
@@ -10121,7 +10131,8 @@ const app = {
 
         try {
             const ids = Array.from(this.exportSelectedIds);
-            const response = await apiFetch('/api/export?ids=' + encodeURIComponent(ids.join(',')), {
+            const response = await apiFetch(this.exportAllSelection ? '/api/export/selection' : '/api/export?ids=' + encodeURIComponent(ids.join(',')), {
+                ...(this.exportAllSelection ? {method:'POST',body:JSON.stringify({query:this.exportAllSelection.query,revision:this.exportAllSelection.revision})} : {}),
                 rawResponse: true,
                 headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
             });
@@ -10560,6 +10571,15 @@ const app = {
         target.addEventListener(type, handler, {signal: this.globalControls.signal});
     },
 
+    syncSidebarFocus() {
+        const sidebar=$('sidebar');if(!sidebar)return;
+        const mobile=window.matchMedia('(max-width:860px)').matches;
+        const open=$('appScreen').classList.contains('is-nav-open');
+        if(mobile&&!open&&sidebar.contains(document.activeElement))$('sidebarToggle').focus();
+        sidebar.inert=mobile&&!open;
+        if(mobile)sidebar.setAttribute('aria-hidden',open?'false':'true');else sidebar.removeAttribute('aria-hidden');
+    },
+
     bindStaticControls() {
         this.globalControls = new AbortController();
         const on = (id, event, handler) => {
@@ -10679,6 +10699,7 @@ const app = {
             if (item) this.deleteConsiliumAppointment(item);
         });
         on('consiliumPatient', 'change', () => this.prefillConsiliumDiagnosisFromPatient());
+        on('consiliumPatientSearch','input',()=>{clearTimeout(this.candidateSearchTimer);this.candidateSearchTimer=setTimeout(async()=>{const record=this.consilium.appointments.find(a=>a.id===this.consilium.editingId);await this.fillConsiliumPatientsForGroup(record);},300);});
         on('consiliumLocalization', 'input', () => this.fillConsiliumDiagnosisList());
         on('consiliumPrimaryDiagnosis', 'input', () => this.prefillConsiliumGroupFromDiagnosis());
         on('addConsiliumDiagnosisBtn', 'click', () => this.toggleConsiliumAdditionalDiagnosis(true));
@@ -10750,7 +10771,7 @@ const app = {
             $('consiliumDoctorDate').value = this.consilium.doctorDate;
             this.renderConsilium();
         });
-        on('consiliumGroup', 'input', () => {
+        on('consiliumGroup', 'input', async () => {
             const record = this.consilium.editingId
                 ? this.consilium.appointments.find(item => item.id === this.consilium.editingId)
                 : null;
@@ -10759,7 +10780,7 @@ const app = {
                 group.value.toLowerCase() === entered || group.label.toLowerCase() === entered
             );
             if (knownGroup) {
-                const patients = this.fillConsiliumPatientsForGroup(record);
+                const patients = await this.fillConsiliumPatientsForGroup(record);
                 if (!record && patients.length) this.prefillConsiliumDiagnosisFromPatient();
             }
             this.updateConsiliumAvailableSlots(record);
@@ -10874,23 +10895,29 @@ const app = {
             this.renderInternalNotificationCenter();
         });
 
+        const sidebarObserver=new MutationObserver(()=>this.syncSidebarFocus());
+        sidebarObserver.observe($('appScreen'),{attributes:true,attributeFilter:['class']});
+        this.globalControls.signal.addEventListener('abort',()=>sidebarObserver.disconnect(),{once:true});
+        window.addEventListener('resize',()=>this.syncSidebarFocus(),{signal:this.globalControls.signal});
+        this.syncSidebarFocus();
+
         // Фильтры списка
         on('searchInput', 'input', (event) => {
             this.searchQuery = event.target.value;
             clearTimeout(this.patientSearchTimer);
-            this.patientSearchTimer = setTimeout(() => this.renderPatients(), this.searchQuery ? 300 : 0);
+            this.patientSearchTimer = setTimeout(() => this.reloadPatientsAndRender(), this.searchQuery ? 300 : 0);
         });
         on('filterStage', 'change', (event) => {
             this.stageFilter = event.target.value || null;
-            this.renderPatients();
+            this.reloadPatientsAndRender();
         });
         on('filterHead', 'change', (event) => {
             this.headFilter = event.target.value || null;
-            this.renderPatients();
+            this.reloadPatientsAndRender();
         });
         on('filterDeadline', 'change', (event) => {
             this.deadlineFilter = event.target.value || null;
-            this.renderPatients();
+            this.reloadPatientsAndRender();
         });
         on('filterAttention', 'change', (event) => {
             this.attentionFilter = event.target.value || null;
@@ -10903,7 +10930,7 @@ const app = {
         });
         on('sortOrderSelect', 'change', (event) => {
             this.sortOrder = event.target.value;
-            this.renderPatients();
+            this.reloadPatientsAndRender();
         });
 
         // Новый пациент
@@ -11082,7 +11109,7 @@ const app = {
         on('closeExportBtn', 'click', () => ui.closeModal('exportModal'));
         on('closeExportIconBtn', 'click', () => ui.closeModal('exportModal'));
         on('confirmExportBtn', 'click', () => this.confirmExport());
-        on('exportSearchInput', 'input', (event) => this.renderExportPatientList(event.target.value));
+        on('exportSearchInput', 'input', (event) => (this.exportAllSelection=null,this.renderExportPatientList(event.target.value)));
         on('exportSelectAllBtn', 'click', () => this.exportSelectAll());
         on('exportSelectNoneBtn', 'click', () => this.exportSelectNone());
 

@@ -28,7 +28,7 @@ const assert = require('node:assert/strict');
         }
         console.log('PASS AUD-24 live browser: five real API routes, no values in validation responses');
         const patient = await page.evaluate(() => apiPost('/api/patients', {name: 'Синтетический Пациент Браузера', priority: 'normal', stage: 'exam', diagnosis: 'C34.1', nosology: 'lung34', head: 'Синтетический Заведующий', complaint: 'Начальное значение'}));
-        await page.evaluate(async patient => { await app.loadPatients(); app.openPatient(patient.id); app.currentTab = 'complaints'; app.renderTabs(); app.renderTabPanel(app.getPatient(patient.id)); }, patient);
+        await page.evaluate(async patient => { await app.loadPatients(); await app.openPatient(patient.id); app.currentTab = 'complaints'; app.renderTabs(); app.renderTabPanel(app.getPatient(patient.id)); }, patient);
         const textarea = page.getByRole('textbox', {name: 'Комментарии', exact: true});
         // Завершаем реальную сессию штатным API, не меняя SQLite из браузера.
         await textarea.fill('Синтетический несохраненный комментарий');

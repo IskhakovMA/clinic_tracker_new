@@ -1,0 +1,10 @@
+{
+  "name": "clinic-wph-isolated-research",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Isolated baseline measurement only; not application dependencies",
+  "dependencies": {
+    "axe-core": "4.11.0",
+    "playwright": "1.62.1"
+  }
+}

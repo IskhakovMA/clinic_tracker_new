@@ -95,7 +95,7 @@ def _persist(state, route, raw, params, denied):
                     raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
                 if state.export_recorded:
                     allowed = (policy.can_manage_consilium(fresh) if route.startswith('GET /api/consilium/registries/')
-                               else policy.can_export(fresh) if route.startswith('GET /api/export') else True)
+                               else policy.can_export(fresh) if route.startswith(('GET /api/export','POST /api/export/selection')) else True)
                     if not allowed:
                         raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
                 # A card can leave scope without a user-role/departments change.

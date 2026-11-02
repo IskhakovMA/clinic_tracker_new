@@ -282,13 +282,22 @@ def test_analytics_renderer_does_not_assign_to_append_return_value():
     assert "Не удалось загрузить аналитику: ${e.message}" not in js
 
 
-def test_policy_number_frontend_contract_is_present():
+def test_policy_number_frontend_contract_is_present(auth_client):
     html = HTML.read_text(encoding="utf-8")
     js = JS.read_text(encoding="utf-8")
     assert 'id="policyNumber"' in html
     assert "Номер полиса ОМС" in html
     assert "policyNumber: $('policyNumber').value" in js
-    assert "(p.policyNumber || '').toLowerCase().includes(q)" in js
+    # WP-H moves this search to the entire server-side authorized collection.
+    assert "q: this.searchQuery" in js and "view: 'page'" in js
+    from .test_wp_h_pages import seed
+    from .conftest import get_conn
+    ids=seed(55,names=[f'А Синтетический {i:02}' for i in range(54)]+['Я Синтетический'])
+    conn=get_conn();conn.execute("UPDATE patients SET policy_number=? WHERE id=?",('9900990099009900',ids[-1]));conn.commit()
+    first=auth_client.get('/api/patients',params={'view':'page','sort':'name'}).json()
+    assert ids[-1] not in {p['id'] for p in first['patients']}
+    found=auth_client.get('/api/patients',params={'view':'page','q':'9900990099009900'}).json()
+    assert found['page']['total']==1 and [p['id'] for p in found['patients']]==[ids[-1]]
     assert "Полис ОМС: ${p.policyNumber || 'Не указан'}" in js
     assert "missing_policy_number" in js
 

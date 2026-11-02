@@ -104,7 +104,7 @@ const assert = require('node:assert/strict');
             let event = p.history[0].events[0];
             p = await api(admin, 'PATCH', `/api/patients/${p.id}/events/${event.id}`, {field: 'date', value: '2026-10-01', version: event.version});
             const context = await browser.newContext(), page = await context.newPage(); await page.goto(origin); await login(page, doctor.username);
-            await page.evaluate(id => { app.openPatient(id); window.clinicalDone = false; window.clinicalChange = app.changeStage(id, 'appointment').then(result => { window.clinicalDone = true; return result; }); }, p.id);
+            await page.evaluate(async id => { await app.openPatient(id); window.clinicalDone = false; window.clinicalChange = app.changeStage(id, 'appointment').then(result => { window.clinicalDone = true; return result; }); }, p.id);
             await page.locator('#promptDate').fill('2026-10-02'); await page.locator('#promptTime').fill('10:25');
             await api(admin, 'POST', `/api/users/${doctor.id}/terminate-sessions`, {});
             await page.evaluate(async () => { try { await apiGetJson('/api/patients'); } catch (e) {} });

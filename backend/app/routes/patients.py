@@ -6,10 +6,10 @@ import sqlite3
 
 from typing import Literal, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
-from .. import audit, config, idempotency, identity, policy, store
+from .. import audit, config, idempotency, identity, policy, store, patient_pages, request_security, security, session_context
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf, user_rate_limit
 from ..models import (
     ChecklistItemIn,
@@ -65,11 +65,17 @@ def _require_writable(conn: sqlite3.Connection, user: policy.CurrentUser, patien
 
 @router.get("")
 def list_patients(
+    request: Request,
+    view: Literal["page"] | None = None,
     attention: Literal["active", "none"] | None = None,
     attention_reason: str | None = Query(None, max_length=80),
     conn: sqlite3.Connection = Depends(get_db),
     user: policy.CurrentUser = Depends(require_active_password),
 ):
+    if view=='page':
+        keys=[k for k,_ in request.query_params.multi_items()]
+        if len(keys)!=len(set(keys)):patient_pages.fail('PATIENT_QUERY_INVALID')
+        return patient_pages.page(conn,user,dict(request.query_params),_page_binding(user))
     if attention_reason and attention_reason not in patient_attention.REASON_LABELS:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="unknown attention reason")
     return store.list_patients(
@@ -191,6 +197,48 @@ def create_patient(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(e))
     except sqlite3.OperationalError as e:
         _card_write_busy(e)
+
+
+def _page_binding(user):
+    state=request_security.current.get()
+    return patient_pages.digest({'user':user.id,'access':session_context.access_context(user),
+        'session':security.hash_token(state.token) if state and state.token else None})
+
+
+@router.get('/resolve')
+def resolve_patients(ids: str=Query('',max_length=5049),conn: sqlite3.Connection=Depends(get_db),user: policy.CurrentUser=Depends(require_active_password)):
+    selected=ids.split(',') if ids else []
+    if len(selected)>50 or any(not i or len(i)>100 or any(ord(ch)<32 for ch in i) for i in selected):patient_pages.fail('PATIENT_IDS_INVALID')
+    result=[]
+    with patient_pages.snapshot(conn):
+        for pid in dict.fromkeys(selected):
+            if policy.can_read_patient(conn,user,pid):
+                item=store.patient_to_dict(conn,pid)
+                if item:result.append(item)
+    return {'patients':result}
+
+
+@router.get('/head-options')
+def patient_head_options(conn: sqlite3.Connection=Depends(get_db),user: policy.CurrentUser=Depends(require_active_password)):
+    if not policy.can_write_patient_data(user):return {'heads':[]}
+    sql="""SELECT DISTINCT u.id,u.full_name FROM department_heads dh
+        JOIN users u ON u.id=dh.user_id AND u.status='active'
+        JOIN departments d ON d.id=dh.department_id AND d.status='active'"""
+    args=[]
+    if user.scope_strategy not in {policy.SCOPE_GLOBAL,policy.SCOPE_GLOBAL_READONLY}:
+        if not user.department_ids:return {'heads':[]}
+        sql+=' WHERE dh.department_id IN ('+','.join('?' for _ in user.department_ids)+')'
+        args=list(user.department_ids)
+    rows=[{'userId':r['id'],'name':r['full_name']} for r in conn.execute(sql,args)]
+    rows.sort(key=lambda r:(patient_pages.russian_key(r['name']),r['userId']))
+    return {'heads':rows}
+
+
+@router.get('/workspace/{kind}')
+def patient_workspace(request:Request,kind:Literal['events','checklists','patients'],conn:sqlite3.Connection=Depends(get_db),user:policy.CurrentUser=Depends(require_active_password)):
+    keys=[k for k,_ in request.query_params.multi_items()]
+    if len(keys)!=len(set(keys)):patient_pages.fail('PATIENT_QUERY_INVALID')
+    return patient_pages.workspace_rows(conn,user,dict(request.query_params),_page_binding(user),kind)
 
 
 @router.get("/{patient_id}")

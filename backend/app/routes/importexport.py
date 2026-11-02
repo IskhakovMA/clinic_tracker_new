@@ -12,7 +12,9 @@ from fastapi.responses import JSONResponse
 
 from .. import audit, config, export_signing, idempotency, identity, importexport, policy, store
 from ..deps import abuse_rate_limit, get_db, require_active_password, require_csrf
-from ..models import ImportCommitRequest, ImportPreviewRequest
+from ..models import ImportCommitRequest, ImportPreviewRequest, StrictRequestModel
+from pydantic import Field
+from .. import patient_pages
 from ..services import import_operations, patient_duplicates
 
 router = APIRouter(prefix="/api", tags=["import-export"])
@@ -432,6 +434,28 @@ def export_patients(
         selected = [p for p in scoped if p["id"] in wanted]
     else:
         selected = scoped
+    return _export_selected(conn,user,selected)
+
+
+class ExportSelectionIn(StrictRequestModel):
+    query: dict[str,str] = Field(max_length=12)
+    revision: str = Field(min_length=64,max_length=64,pattern='^[a-f0-9]{64}$')
+
+
+@router.post('/export/selection',dependencies=[Depends(require_csrf)])
+@patient_pages.clock.consistent
+def export_patient_selection(body:ExportSelectionIn,conn:sqlite3.Connection=Depends(get_db),user:policy.CurrentUser=Depends(require_active_password)):
+    if not policy.can_export(user):_deny(conn,user,'action=export')
+    with patient_pages.snapshot(conn):
+        p=patient_pages.normalized(body.query)
+        rows=patient_pages.filtered(patient_pages.projection(conn,user),p,conn)
+        revision=patient_pages.digest({'day':patient_pages.clock.today_moscow().isoformat(),'rows':rows})
+        if revision!=body.revision:patient_pages.fail('PATIENT_QUERY_CHANGED',409)
+        selected=[store.patient_to_dict(conn,row['id']) for row in rows]
+    return _export_selected(conn,user,selected)
+
+
+def _export_selected(conn,user,selected):
     from ..request_security import aggregate_patients
     aggregate_patients((patient['id'] for patient in selected), resources=('/api/export',))
     exported = []

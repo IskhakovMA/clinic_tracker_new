@@ -28,7 +28,7 @@ const assert = require('node:assert/strict');
         return page;
     }
     async function openComments(page, id) {
-        await page.evaluate(id => { app.openPatient(id); app.currentTab = 'complaints'; app.renderTabs(); app.renderTabPanel(app.getPatient(id)); }, id);
+        await page.evaluate(async id => { await app.openPatient(id); app.currentTab = 'complaints'; app.renderTabs(); app.renderTabPanel(app.getPatient(id)); }, id);
     }
     async function expireWithDraft(page, admin, user, value) {
         const field = page.getByRole('textbox', {name: 'Комментарии', exact: true});
@@ -53,7 +53,7 @@ const assert = require('node:assert/strict');
         // Та же личность и прежние права: черновик и старая версия остаются, записи нет.
         let context = await browser.newContext(); let page = await pageFor(context, a.username);
         await openComments(page, pA.id); await expireWithDraft(page, admin, a, 'Синтетический неизменный доступ');
-        await page.route('**/api/patients', route => route.fulfill({status: 503, json: {detail: 'Synthetic unavailable'}}), {times: 1});
+        await page.route('**/api/patients?*', route => route.fulfill({status: 503, json: {detail: 'Synthetic unavailable'}}), {times: 1});
         await page.locator('#password').fill(password); await page.locator('#loginSubmit').click();
         await page.waitForFunction(() => document.getElementById('loginError').textContent.includes('недоступен'));
         assert.equal(await page.evaluate(() => app.sessionExpired), true);
@@ -91,6 +91,7 @@ const assert = require('node:assert/strict');
         assert.equal(await page.evaluate(id => !!app.getPatient(id), pA.id), false);
         assert(!(await page.locator('body').textContent()).includes(pA.name));
         assert.equal(await page.evaluate(id => [...(app.sessionFieldDrafts || [])].some(([, d]) => d.patientId === id), pA.id), false);
+        await page.evaluate(id=>app.openPatient(id),pB.id);
         assert.equal(await page.evaluate(id => !!app.getPatient(id), pB.id), true);
         assert.equal(await page.evaluate(() => app.ai.messages.length), 0);
         assert.equal(await page.locator('#promptModal').evaluate(node => node.hidden), true);
@@ -159,7 +160,7 @@ const assert = require('node:assert/strict');
         const switcher = await context.newPage(); await switcher.goto(origin); await switcher.waitForFunction(() => app.appReady);
         await Promise.all([switcher.waitForEvent('load'), switcher.locator('#logoutBtn').click()]);
         await loginUI(switcher, b.username);
-        const denied = old.waitForResponse(r => r.url().endsWith('/api/patients') && r.status() === 409);
+        const denied = old.waitForResponse(r => (new URL(r.url()).pathname==='/api/patients') && r.status() === 409);
         const action = old.evaluate(async p => { try { await app.loadPatients(); await apiPatch('/api/patients/' + p.id, {field: 'complaint', value: 'Нельзя сохранить под Б', expectedVersion: p.version}); } catch (e) {} }, pB).catch(e => { if (!e.message.includes('Execution context was destroyed')) throw e; });
         await denied; await action;
         await old.waitForFunction(id => typeof app !== 'undefined' && app.user?.id === id && app.appReady, b.id);
@@ -183,7 +184,7 @@ const assert = require('node:assert/strict');
         context = await browser.newContext(); const heldPage = await pageFor(context, 'synthetic.browser', true);
         let release, seen;
         const received = new Promise(resolve => { seen = resolve; });
-        await heldPage.route('**/api/patients', async route => {
+        await heldPage.route('**/api/patients?*', async route => {
             const response = await route.fetch(); seen();
             await new Promise(resolve => { release = resolve; });
             await route.fulfill({response});

@@ -27,12 +27,12 @@ const assert = require('node:assert/strict');
         await page.route('**/api/**', route => {
             const p = new URL(route.request().url()).pathname;
             const data = p === '/api/auth/me' ? {authenticated, user} : p === '/api/auth/login' ? {user}
-                : p === '/api/patients' ? [] : p === '/api/ai/status' ? {enabled: false} : {};
+                : p === '/api/patients' ? {patients:[],page:{total:0,offset:0,limit:50,hasNext:false},summary:{total:0},heads:[]} : p === '/api/patients/head-options' ? {heads:[]} : p === '/api/patients/resolve' ? {patients:[{id:'synthetic',version:7}]} : p === '/api/ai/status' ? {enabled: false} : {};
             return route.fulfill({status: p === '/api/patients' ? patientsStatus : 200, json: data});
         });
         await page.goto(origin);
         await page.waitForFunction(() => typeof app !== 'undefined');
-        if (authenticated && patientsStatus === 200) await page.waitForFunction(() => app.currentView === 'patients');
+        if (authenticated && patientsStatus === 200) await page.waitForFunction(() => app.appReady && app.currentView === 'patients');
         return page;
     }
     function log(name) { console.log('PASS', name); }
@@ -93,7 +93,7 @@ const assert = require('node:assert/strict');
         let writes = 0;
         await page.route('**/api/patients/synthetic', r => { writes++; return r.fulfill({status: 401, json: {detail: 'Not authenticated'}}); });
         await page.evaluate(async () => {
-            app.patients = [{id: 'synthetic', version: 7}];
+            app.patientDetails.set('synthetic', {id:'synthetic',version:7});
             await app.updatePatientField('synthetic', 'complaint', 'Синтетический текст');
         });
         assert.equal(writes, 1);
@@ -104,8 +104,8 @@ const assert = require('node:assert/strict');
         await page.route('**/api/auth/login', r => r.fulfill({status: 500, json: {detail: 'PRIVATE'}}));
         await page.locator('#username').fill('synthetic-a'); await page.locator('#password').fill('synthetic'); await page.locator('#loginSubmit').click();
         await page.waitForFunction(() => document.getElementById('loginError').textContent.includes('Внутренняя ошибка'));
-        await page.route('**/api/patients', r => r.fulfill({json: [{id: 'synthetic', version: 7,
-            name: 'Синтетический пациент', stage: 'exam', priority: 'normal', history: [], nosology: 'lung34'}]}));
+        await page.route('**/api/patients?*', r => r.fulfill({json: {patients:[],page:{total:0,offset:0,limit:50,hasNext:false},summary:{total:0},heads:[]}}));
+        await page.route('**/api/patients/resolve?*', r=>r.fulfill({json:{patients:[{id:'synthetic',version:7,name:'Синтетический пациент',stage:'exam',priority:'normal',history:[],nosology:'lung34'}]}}));
         await page.unroute('**/api/auth/login');
         await page.route('**/api/auth/login', r => r.fulfill({json: {user}}));
         await page.locator('#loginSubmit').click();
@@ -136,7 +136,7 @@ const assert = require('node:assert/strict');
         await page.waitForFunction(() => app.user && app.user.id === 'synthetic-b');
         assert.equal(await page.locator('#fio').inputValue(), '');
         assert.equal(await page.locator('#addModal').evaluate(e => e.hidden), true);
-        assert.equal(await page.evaluate(() => app.patients.length), 0);
+        assert.equal(await page.evaluate(() => app.patientRows.length), 0);
         log('AUD-05: different account reload clears old draft and cache');
         await page.context().close();
 

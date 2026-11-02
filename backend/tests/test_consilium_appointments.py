@@ -673,7 +673,7 @@ def test_doctor_can_archive_and_restore_only_signed_consilium(client):
     assert client.get("/api/consilium/appointments?archived=true").json()["appointments"] == []
 
 
-def test_doctor_consilium_frontend_has_single_day_multi_group_grid_and_delete():
+def test_doctor_consilium_frontend_has_single_day_multi_group_grid_and_delete(auth_client):
     from pathlib import Path
 
     root = Path(__file__).resolve().parents[2]
@@ -718,8 +718,15 @@ def test_doctor_consilium_frontend_has_single_day_multi_group_grid_and_delete():
     assert 'id="consiliumScheduleCalendarDays"' in html
     assert "event.target.checked ? null : []" in js
     assert "!picker.contains(event.target)" in js
-    assert "fillConsiliumPatientsForGroup(record = null)" in js
-    assert "this.consiliumGroupForDiagnosis(patient.diagnosis) === group" in js
+    assert "async fillConsiliumPatientsForGroup(record = null, cursor = null" in js
+    assert "/api/patients/workspace/patients?" in js
+    thoracic = create_patient(auth_client, name='Синтетический Торакальный', diagnosis='C34.1')
+    breast = create_patient(auth_client, name='Синтетический Маммологический', diagnosis='C50.1', nosology='breast')
+    for group, wanted, excluded in [('thoracic',thoracic,breast),('breast',breast,thoracic)]:
+        response = auth_client.get('/api/patients/workspace/patients',params={'group':group})
+        assert response.status_code == 200, response.text
+        ids = {p['id'] for p in response.json()['patients']}
+        assert wanted['id'] in ids and excluded['id'] not in ids
     assert 'id="consiliumPatientHint"' in html
     assert 'id="consiliumUvRuv"' in html
     assert 'id="consiliumDate" required disabled' in html
