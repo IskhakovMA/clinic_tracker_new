@@ -89,7 +89,15 @@ def retire_browser_context(conn,user_id,browser_token=None,previous_flow=None):
         if old and old['user_id']!=user_id:
             conn.execute('DELETE FROM sessions WHERE token_hash=?',(token_hash,))
             conn.execute("UPDATE mfa_flows SET state='FAILED' WHERE parent_session=? AND state IN ('PENDING','CLAIMED')",(token_hash,))
-            audit.record_required_or_fail(conn,'mfa_browser_session_revoked',actor_user_id=old['user_id'],target_user_id=user_id)
+            # v2 semantics apply to NEW events only. A password-verified B is the
+            # initiator, not the owner A of the retired browser session. This does
+            # not assert WebAuthn/full-session assurance for B.
+            detail=json.dumps({'version':2,'initiator_user_id':user_id,
+                'previous_identity_user_id':old['user_id'],'new_identity_user_id':user_id,
+                'authentication_level':'password_verified','reason':'identity_switch',
+                'outcome':'session_revoked'},sort_keys=True,separators=(',',':'))
+            audit.record_required_or_fail(conn,'mfa_browser_session_revoked',
+                actor_user_id=user_id,target_user_id=old['user_id'],detail=detail)
 
 
 def allocation_budget(conn,user_id):
