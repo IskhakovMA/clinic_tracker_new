@@ -398,7 +398,9 @@ def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
 # которые срабатывают на таблице или ссылаются на нее. Удаленное, измененное или
 # постороннее правило дает другую структуру. Для мобильного доступа это отличает
 # проверенную сборку portal-a3fbe00 от ранней или измененной таблицы.
-STRICT_TABLES = ("patient_portal_access", "read_access_manifests", "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance")
+from .mfa_lifecycle_schema import TABLES as MFA_LIFECYCLE_TABLES
+
+STRICT_TABLES = MFA_LIFECYCLE_TABLES + ("patient_portal_access", "read_access_manifests", "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance")
 
 _SQL_TOKEN = re.compile(
     r"""(?P<skip>\s+|--[^\n]*(?:\n|$)|/\*.*?(?:\*/|$))

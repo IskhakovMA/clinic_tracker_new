@@ -196,7 +196,7 @@ def test_v28_upgrade_is_explicit_atomic_and_keeps_old_rows(auth_client, monkeypa
         assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 28
         monkeypatch.setattr(db, 'migrate_v28_to_v29', migrate)
         db.init_db(conn)
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 31
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 32
         assert [tuple(r)[:-1] for r in conn.execute('SELECT * FROM notifications')] == before
         assert conn.execute('SELECT event_at FROM notifications').fetchone()[0] is None
         db.init_db(conn)
@@ -290,6 +290,9 @@ def test_exact_v28_backup_validates_and_restores_to_v29(auth_client, monkeypatch
     try:
         get_conn().backup(conn)
         with conn:
+            from backend.app.mfa_lifecycle_schema import TABLES as LIFECYCLE_TABLES
+            for table in reversed(LIFECYCLE_TABLES):
+                conn.execute('DROP TABLE IF EXISTS '+table)
             from backend.app.mfa_schema import TABLES
             for table in reversed(TABLES):
                 conn.execute('DROP TABLE '+table)
@@ -316,7 +319,7 @@ def test_exact_v28_backup_validates_and_restores_to_v29(auth_client, monkeypatch
         assert result['migrated_from_schema_version'] == 28
         restored = sqlite3.connect(config.DB_PATH); restored.row_factory = sqlite3.Row
         try:
-            assert restored.execute('SELECT version FROM schema_version').fetchone()[0] == 31
+            assert restored.execute('SELECT version FROM schema_version').fetchone()[0] == 32
             assert dict(restored.execute('SELECT * FROM notifications').fetchone()) == {**original, 'event_at':None}
             assert restored.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
             assert restored.execute('PRAGMA foreign_key_check').fetchall() == []

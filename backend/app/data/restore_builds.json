@@ -6579,6 +6579,1493 @@
      ]
     }
    }
+  },
+  {
+   "id": "wpg2b-be4adab",
+   "schema_version": 31,
+   "tables": {
+    "schema_version": [
+     "version"
+    ],
+    "app_login": [
+     "id",
+     "password_hash",
+     "updated_at"
+    ],
+    "roles": [
+     "id",
+     "label",
+     "scope_strategy"
+    ],
+    "users": [
+     "created_at",
+     "full_name",
+     "id",
+     "last_login_at",
+     "must_change_password",
+     "password_changed_at",
+     "password_hash",
+     "role_id",
+     "status",
+     "updated_at",
+     "username"
+    ],
+    "departments": [
+     "created_at",
+     "id",
+     "name",
+     "status",
+     "updated_at"
+    ],
+    "user_departments": [
+     "created_at",
+     "department_id",
+     "user_id"
+    ],
+    "department_heads": [
+     "created_at",
+     "department_id",
+     "user_id"
+    ],
+    "sessions": [
+     "created_at",
+     "csrf_token",
+     "expires_at",
+     "last_seen_at",
+     "token_hash",
+     "user_id"
+    ],
+    "patients": [
+     "age",
+     "arrival",
+     "complaint",
+     "consilium_code",
+     "created_at",
+     "created_by_user_id",
+     "creation_source",
+     "diagnosis",
+     "disease_stage",
+     "doctor",
+     "head",
+     "id",
+     "name",
+     "nosology",
+     "pgi_code",
+     "pgi_malignancy_confirmed",
+     "pgi_result_date",
+     "phone",
+     "policy_number",
+     "priority",
+     "stage",
+     "treating_doctor_user_id",
+     "updated_at",
+     "version"
+    ],
+    "history_entries": [
+     "checklist_json",
+     "entered_at",
+     "id",
+     "note",
+     "patient_id",
+     "seq",
+     "stage"
+    ],
+    "events": [
+     "actual_date",
+     "actual_time",
+     "consilium_decision",
+     "consilium_decision_at",
+     "consilium_decision_by_user_id",
+     "consilium_decision_import_id",
+     "consilium_decision_imported_at",
+     "consilium_decision_imported_by_user_id",
+     "consilium_decision_source",
+     "date",
+     "deleted_at",
+     "deleted_by_user_id",
+     "history_entry_id",
+     "id",
+     "matched_plan",
+     "no_plan",
+     "seq",
+     "set_at",
+     "time",
+     "treatment_type",
+     "version"
+    ],
+    "patient_diagnosis_history": [
+     "actor_user_id",
+     "changed_at",
+     "id",
+     "new_diagnosis",
+     "old_diagnosis",
+     "patient_id"
+    ],
+    "patient_event_fact_history": [
+     "actor_user_id",
+     "anomaly",
+     "change_type",
+     "changed_at",
+     "event_id",
+     "field",
+     "id",
+     "new_value",
+     "old_value",
+     "patient_id",
+     "seq",
+     "source"
+    ],
+    "future_plans": [
+     "date",
+     "patient_id",
+     "template_index",
+     "time",
+     "treatment_type"
+    ],
+    "audit_events": [
+     "actor",
+     "actor_department_id",
+     "actor_role",
+     "actor_user_id",
+     "created_at",
+     "detail",
+     "event_type",
+     "id",
+     "patient_id",
+     "request_id",
+     "result",
+     "target_department_id",
+     "target_user_id"
+    ],
+    "patient_notification_preferences": [
+     "consent_recorded_at",
+     "consent_recorded_by_user_id",
+     "consent_revoked_at",
+     "consent_status",
+     "patient_id",
+     "sms_enabled",
+     "updated_at"
+    ],
+    "notification_templates": [
+     "body",
+     "channel",
+     "code",
+     "created_at",
+     "enabled",
+     "id",
+     "name",
+     "updated_at",
+     "version"
+    ],
+    "notifications": [
+     "attempt_count",
+     "cancelled_at",
+     "cancelled_by_user_id",
+     "channel",
+     "created_at",
+     "created_by_user_id",
+     "error_code",
+     "error_message_safe",
+     "event_at",
+     "id",
+     "idempotency_key",
+     "max_attempts",
+     "next_attempt_at",
+     "patient_id",
+     "processing_started_at",
+     "provider_message_id",
+     "provider_status",
+     "scheduled_at",
+     "sent_at",
+     "source_id",
+     "source_type",
+     "status",
+     "template_code",
+     "template_id",
+     "template_version",
+     "updated_at"
+    ],
+    "internal_notification_state": [
+     "first_seen_at",
+     "id",
+     "last_seen_at",
+     "notification_type",
+     "patient_id",
+     "read_at",
+     "resolved_at",
+     "source_id",
+     "source_type",
+     "stable_key",
+     "user_id"
+    ],
+    "patient_attention_issues": [
+     "closed_at",
+     "closed_by_user_id",
+     "comment",
+     "created_at",
+     "created_by_user_id",
+     "event_date",
+     "id",
+     "patient_id",
+     "reason_code",
+     "resolution_comment",
+     "status"
+    ],
+    "oncology_consilium_appointments": [
+     "additional_diagnosis",
+     "additional_participant",
+     "archived_at",
+     "archived_by_user_id",
+     "backdated",
+     "backdating_reason_id",
+     "comment",
+     "consilium_group",
+     "created_at",
+     "created_by_user_id",
+     "deleted_at",
+     "deleted_by_user_id",
+     "diagnosis_localization",
+     "goc",
+     "goc_65_plus",
+     "has_benefit",
+     "id",
+     "needs_radiotherapist",
+     "needs_surgeon",
+     "patient_id",
+     "policy_number",
+     "primary_diagnosis",
+     "referral_completed_at",
+     "referral_completed_by_user_id",
+     "review_started_at",
+     "revision_comment",
+     "revision_count",
+     "revision_submitted_at",
+     "scheduled_date",
+     "scheduled_time",
+     "signed_at",
+     "signed_by_user_id",
+     "signed_route_entered_at",
+     "signed_route_history_entry_id",
+     "signed_route_link_source",
+     "signed_route_stage",
+     "signed_treating_doctor_name",
+     "signed_treating_doctor_user_id",
+     "status",
+     "treating_doctor_name",
+     "treatment_scheme",
+     "treatment_scheme_code",
+     "treatment_type",
+     "updated_at",
+     "uv_ruv",
+     "version"
+    ],
+    "consilium_revision_history": [
+     "appointment_id",
+     "comment",
+     "id",
+     "migrated",
+     "returned_at",
+     "returned_by_user_id",
+     "round"
+    ],
+    "consilium_chair_favorites": [
+     "created_at",
+     "patient_id",
+     "user_id"
+    ],
+    "consilium_schedule_slots": [
+     "backdated",
+     "backdating_reason_id",
+     "consilium_group",
+     "created_at",
+     "created_by_user_id",
+     "id",
+     "scheduled_date",
+     "scheduled_time"
+    ],
+    "consilium_backdating_reasons": [
+     "created_at",
+     "created_by_user_id",
+     "id",
+     "kind",
+     "reason"
+    ],
+    "consilium_resubmissions": [
+     "appointment_id",
+     "id",
+     "migrated",
+     "round",
+     "submitted_at",
+     "submitted_by_user_id"
+    ],
+    "idempotency_keys": [
+     "actor_user_id",
+     "created_at",
+     "expires_at",
+     "key_hash",
+     "operation",
+     "request_hash",
+     "result_import_id",
+     "result_json",
+     "result_patient_id",
+     "state",
+     "status_code"
+    ],
+    "import_files_processed": [
+     "actor_user_id",
+     "added",
+     "appended_events",
+     "file_sha256",
+     "import_id",
+     "mode",
+     "operation",
+     "processed_at",
+     "repeat_confirmed",
+     "skipped",
+     "unchanged",
+     "updated"
+    ],
+    "patient_duplicate_confirmations": [
+     "created_at",
+     "created_by_user_id",
+     "id",
+     "import_id",
+     "matched_patient_ids",
+     "operation",
+     "patient_id",
+     "reason"
+    ],
+    "patient_duplicate_scans": [
+     "error_code",
+     "finished_at",
+     "id",
+     "pairs_found",
+     "pairs_new",
+     "pairs_updated",
+     "patients_scanned",
+     "report",
+     "started_at",
+     "started_by_user_id",
+     "status"
+    ],
+    "patient_duplicate_candidates": [
+     "detected_at",
+     "first_scan_id",
+     "id",
+     "last_scan_id",
+     "last_seen_at",
+     "patient_a_id",
+     "patient_b_id",
+     "reason_codes",
+     "signals_changed_at",
+     "source",
+     "state",
+     "strength",
+     "version"
+    ],
+    "patient_duplicate_reviews": [
+     "action",
+     "candidate_id",
+     "dependency_codes",
+     "id",
+     "patient_id",
+     "reason",
+     "reviewed_at",
+     "reviewed_by_user_id",
+     "seq",
+     "state"
+    ],
+    "patient_erroneous_marks": [
+     "action",
+     "at",
+     "by_user_id",
+     "candidate_id",
+     "id",
+     "patient_id",
+     "reason",
+     "reverts_mark_id",
+     "seq"
+    ],
+    "patient_erroneous_state": [
+     "mark_id",
+     "marked_at",
+     "patient_id"
+    ],
+    "patient_portal_access": [
+     "activated_at",
+     "email_normalized",
+     "enrollment_state",
+     "last_login_at",
+     "linked_at",
+     "linked_by_user_id",
+     "patient_id",
+     "revoked_at",
+     "revoked_by_user_id",
+     "status",
+     "updated_at"
+    ],
+    "read_access_manifests": [
+     "access_context",
+     "audit_event_id",
+     "object_count",
+     "objects_json",
+     "snapshot_sha256"
+    ],
+    "mfa_policy": [
+     "id",
+     "mode",
+     "origin",
+     "rp_id",
+     "user_ids",
+     "version"
+    ],
+    "mfa_user_state": [
+     "auth_epoch",
+     "state",
+     "user_handle",
+     "user_id"
+    ],
+    "mfa_credentials": [
+     "be",
+     "bs",
+     "counter",
+     "credential_data",
+     "credential_id",
+     "state",
+     "user_id"
+    ],
+    "mfa_flows": [
+     "access_context",
+     "challenge",
+     "csrf_hash",
+     "epoch",
+     "expires_at",
+     "generation",
+     "library_state",
+     "owner",
+     "parent_session",
+     "password_revision",
+     "policy_digest",
+     "purpose",
+     "state",
+     "token_hash",
+     "user_id"
+    ],
+    "mfa_session_assurance": [
+     "access_context",
+     "credential_id",
+     "epoch",
+     "generation",
+     "method",
+     "password_revision",
+     "policy_digest",
+     "token_hash",
+     "user_id"
+    ]
+   },
+   "strict_tables": {
+    "patient_portal_access": {
+     "columns": [
+      [
+       "activated_at",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "email_normalized",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "enrollment_state",
+       "TEXT",
+       1,
+       "'none'",
+       0,
+       0
+      ],
+      [
+       "last_login_at",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "linked_at",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "linked_by_user_id",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "patient_id",
+       "TEXT",
+       0,
+       null,
+       1,
+       0
+      ],
+      [
+       "revoked_at",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "revoked_by_user_id",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "status",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "updated_at",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ]
+     ],
+     "indexes": [
+      [
+       0,
+       "c",
+       0,
+       [
+        [
+         "status",
+         "BINARY",
+         0
+        ]
+       ]
+      ],
+      [
+       1,
+       "pk",
+       0,
+       [
+        [
+         "patient_id",
+         "BINARY",
+         0
+        ]
+       ]
+      ],
+      [
+       1,
+       "u",
+       0,
+       [
+        [
+         "email_normalized",
+         "NOCASE",
+         0
+        ]
+       ]
+      ]
+     ],
+     "foreign_keys": [
+      [
+       "patients",
+       "patient_id",
+       "id",
+       "NO ACTION",
+       "CASCADE"
+      ],
+      [
+       "users",
+       "linked_by_user_id",
+       "id",
+       "NO ACTION",
+       "NO ACTION"
+      ],
+      [
+       "users",
+       "revoked_by_user_id",
+       "id",
+       "NO ACTION",
+       "NO ACTION"
+      ]
+     ],
+     "checks": [
+      [
+       "",
+       "",
+       "status <> 'revoked' or revoked_at is not null"
+      ],
+      [
+       "enrollment_state",
+       "",
+       "enrollment_state in ( 'none' , 'totp_enrolled' )"
+      ],
+      [
+       "status",
+       "",
+       "status in ( 'linked' , 'active' , 'revoked' )"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "activated_at text",
+      "check ( status <> 'revoked' or revoked_at is not null )",
+      "email_normalized text not null unique collate nocase",
+      "enrollment_state text not null default 'none' check ( enrollment_state in ( 'none' , 'totp_enrolled' ) )",
+      "last_login_at text",
+      "linked_at text not null",
+      "linked_by_user_id text references users ( id )",
+      "patient_id text primary key references patients ( id ) on delete cascade",
+      "revoked_at text",
+      "revoked_by_user_id text references users ( id )",
+      "status text not null check ( status in ( 'linked' , 'active' , 'revoked' ) )",
+      "updated_at text not null"
+     ],
+     "ddl": "create table patient_portal_access ( patient_id text primary key references patients ( id ) on delete cascade , email_normalized text not null unique collate nocase , status text not null check ( status in ( 'linked' , 'active' , 'revoked' ) ) , linked_at text not null , linked_by_user_id text references users ( id ) , activated_at text , enrollment_state text not null default 'none' check ( enrollment_state in ( 'none' , 'totp_enrolled' ) ) , last_login_at text , revoked_at text , revoked_by_user_id text references users ( id ) , updated_at text not null , check ( status <> 'revoked' or revoked_at is not null ) )",
+     "write_probes": [
+      [
+       "valid",
+       true
+      ],
+      [
+       "valid_revoked",
+       true
+      ],
+      [
+       "valid_active_enrolled",
+       true
+      ],
+      [
+       "status_upper",
+       false
+      ],
+      [
+       "status_mixed",
+       false
+      ],
+      [
+       "status_revoked_upper",
+       false
+      ],
+      [
+       "status_unknown",
+       false
+      ],
+      [
+       "status_null",
+       false
+      ],
+      [
+       "revoked_without_time",
+       false
+      ],
+      [
+       "enrollment_upper",
+       false
+      ],
+      [
+       "enrollment_mixed",
+       false
+      ],
+      [
+       "enrollment_none_upper",
+       false
+      ],
+      [
+       "enrollment_unknown",
+       false
+      ],
+      [
+       "email_null",
+       false
+      ],
+      [
+       "email_case_duplicate",
+       false
+      ],
+      [
+       "email_trailing_space_duplicate",
+       true
+      ],
+      [
+       "patient_case_duplicate",
+       true
+      ]
+     ],
+     "index_sql": [
+      "create index idx_portal_access_status on patient_portal_access ( status )"
+     ],
+     "triggers": [
+      "create trigger trg_erroneous_mark_requires_no_mobile_access before insert on patient_erroneous_marks when new . action = 'mark' and exists ( select 1 from patient_portal_access where patient_id = new . patient_id and status in ( 'linked' , 'active' ) ) begin select raise ( abort , 'patient_mobile_access_in_force' ) ; end",
+      "create trigger trg_erroneous_readonly_patient_portal_access_delete before delete on patient_portal_access when exists ( select 1 from patient_erroneous_state where patient_id = old . patient_id ) begin select raise ( abort , 'patient_erroneous_readonly' ) ; end",
+      "create trigger trg_erroneous_readonly_patient_portal_access_insert before insert on patient_portal_access when exists ( select 1 from patient_erroneous_state where patient_id = new . patient_id ) begin select raise ( abort , 'patient_erroneous_readonly' ) ; end",
+      "create trigger trg_erroneous_readonly_patient_portal_access_update before update on patient_portal_access when exists ( select 1 from patient_erroneous_state where patient_id = new . patient_id ) or exists ( select 1 from patient_erroneous_state where patient_id = old . patient_id ) begin select raise ( abort , 'patient_erroneous_readonly' ) ; end",
+      "create trigger trg_patients_delete_requires_no_history before delete on patients when exists ( select 1 from patients where id = old . id and coalesce ( diagnosis , '' ) != '' ) or exists ( select 1 from patients where id = old . id and coalesce ( complaint , '' ) != '' ) or exists ( select 1 from patients where id = old . id and coalesce ( nosology , '' ) != '' ) or exists ( select 1 from patients where id = old . id and ( pgi_malignancy_confirmed is not null or coalesce ( pgi_result_date , '' ) != '' ) ) or exists ( select 1 from patients where id = old . id and coalesce ( pgi_code , '' ) != '' ) or exists ( select 1 from patients where id = old . id and coalesce ( consilium_code , '' ) != '' ) or exists ( select 1 from patients where id = old . id and coalesce ( disease_stage , '' ) != '' ) or exists ( select 1 from history_entries where patient_id = old . id and seq > ( select min ( seq ) from history_entries where patient_id = old . id ) ) or exists ( select 1 from history_entries where patient_id = old . id and coalesce ( note , '' ) != '' ) or exists ( select 1 from history_entries h , json_each ( case when coalesce ( h . checklist_json , '' ) = '' then '{}' when json_valid ( h . checklist_json ) then h . checklist_json else '[true]' end ) j where h . patient_id = old . id and j . type = 'true' ) or exists ( select 1 from events e join history_entries h on h . id = e . history_entry_id where h . patient_id = old . id and ( coalesce ( e . actual_date , '' ) != '' or coalesce ( e . actual_time , '' ) != '' ) ) or exists ( select 1 from events e join history_entries h on h . id = e . history_entry_id where h . patient_id = old . id and e . consilium_decision is not null ) or exists ( select 1 from events e join history_entries h on h . id = e . history_entry_id where h . patient_id = old . id and e . deleted_at is not null ) or exists ( select 1 from patient_diagnosis_history where patient_id = old . id ) or exists ( select 1 from patient_event_fact_history where patient_id = old . id ) or exists ( select 1 from oncology_consilium_appointments where patient_id = old . id ) or exists ( select 1 from patient_attention_issues where patient_id = old . id ) or exists ( select 1 from patient_notification_preferences where patient_id = old . id and ( consent_status != 'not_recorded' or sms_enabled = 1 or consent_recorded_at is not null ) ) or exists ( select 1 from notifications where patient_id = old . id ) or exists ( select 1 from patient_portal_access where patient_id = old . id ) or exists ( select 1 from patient_duplicate_confirmations where patient_id = old . id union all select 1 from patient_duplicate_candidates where old . id in ( patient_a_id , patient_b_id ) union all select 1 from patient_erroneous_marks where patient_id = old . id ) begin select raise ( abort , 'patient_has_clinical_history' ) ; end"
+     ]
+    },
+    "read_access_manifests": {
+     "columns": [
+      [
+       "access_context",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "audit_event_id",
+       "INTEGER",
+       0,
+       null,
+       1,
+       0
+      ],
+      [
+       "object_count",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "objects_json",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "snapshot_sha256",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ]
+     ],
+     "indexes": [],
+     "foreign_keys": [
+      [
+       "audit_events",
+       "audit_event_id",
+       "id",
+       "NO ACTION",
+       "NO ACTION"
+      ]
+     ],
+     "checks": [
+      [
+       "object_count",
+       "",
+       "object_count >= 0 and json_array_length ( objects_json ) = object_count"
+      ],
+      [
+       "objects_json",
+       "",
+       "json_valid ( objects_json ) and json_type ( objects_json ) = 'array'"
+      ],
+      [
+       "snapshot_sha256",
+       "",
+       "length ( snapshot_sha256 ) = 64"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "access_context text not null",
+      "audit_event_id integer primary key references audit_events ( id )",
+      "object_count integer not null check ( object_count >= 0 and json_array_length ( objects_json ) = object_count )",
+      "objects_json text not null check ( json_valid ( objects_json ) and json_type ( objects_json ) = 'array' )",
+      "snapshot_sha256 text not null check ( length ( snapshot_sha256 ) = 64 )"
+     ],
+     "ddl": "create table read_access_manifests ( audit_event_id integer primary key references audit_events ( id ) , objects_json text not null check ( json_valid ( objects_json ) and json_type ( objects_json ) = 'array' ) , object_count integer not null check ( object_count >= 0 and json_array_length ( objects_json ) = object_count ) , snapshot_sha256 text not null check ( length ( snapshot_sha256 ) = 64 ) , access_context text not null )",
+     "write_probes": null,
+     "index_sql": [],
+     "triggers": [
+      "create trigger trg_read_manifest_immutable before update on read_access_manifests begin select raise ( abort , 'read_manifest_immutable' ) ; end",
+      "create trigger trg_read_manifest_retained before delete on read_access_manifests begin select raise ( abort , 'read_manifest_retained' ) ; end"
+     ]
+    },
+    "mfa_policy": {
+     "columns": [
+      [
+       "id",
+       "INTEGER",
+       0,
+       null,
+       1,
+       0
+      ],
+      [
+       "mode",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "origin",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "rp_id",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "user_ids",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "version",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ]
+     ],
+     "indexes": [],
+     "foreign_keys": [],
+     "checks": [
+      [
+       "id",
+       "",
+       "id = 1"
+      ],
+      [
+       "mode",
+       "",
+       "mode in ( 'stage1_compatibility' , 'required_cohort' )"
+      ],
+      [
+       "user_ids",
+       "",
+       "json_valid ( user_ids ) and json_type ( user_ids ) = 'array'"
+      ],
+      [
+       "version",
+       "",
+       "version = 1"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "id integer primary key check ( id = 1 )",
+      "mode text not null check ( mode in ( 'stage1_compatibility' , 'required_cohort' ) )",
+      "origin text",
+      "rp_id text",
+      "user_ids text not null check ( json_valid ( user_ids ) and json_type ( user_ids ) = 'array' )",
+      "version integer not null check ( version = 1 )"
+     ],
+     "ddl": "create table mfa_policy ( id integer primary key check ( id = 1 ) , version integer not null check ( version = 1 ) , mode text not null check ( mode in ( 'stage1_compatibility' , 'required_cohort' ) ) , user_ids text not null check ( json_valid ( user_ids ) and json_type ( user_ids ) = 'array' ) , rp_id text , origin text )",
+     "write_probes": null,
+     "index_sql": [],
+     "triggers": []
+    },
+    "mfa_user_state": {
+     "columns": [
+      [
+       "auth_epoch",
+       "INTEGER",
+       1,
+       "0",
+       0,
+       0
+      ],
+      [
+       "state",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "user_handle",
+       "BLOB",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "user_id",
+       "TEXT",
+       0,
+       null,
+       1,
+       0
+      ]
+     ],
+     "indexes": [
+      [
+       1,
+       "pk",
+       0,
+       [
+        [
+         "user_id",
+         "BINARY",
+         0
+        ]
+       ]
+      ],
+      [
+       1,
+       "u",
+       0,
+       [
+        [
+         "user_handle",
+         "BINARY",
+         0
+        ]
+       ]
+      ]
+     ],
+     "foreign_keys": [
+      [
+       "users",
+       "user_id",
+       "id",
+       "NO ACTION",
+       "NO ACTION"
+      ]
+     ],
+     "checks": [
+      [
+       "auth_epoch",
+       "",
+       "auth_epoch >= 0"
+      ],
+      [
+       "state",
+       "",
+       "state in ( 'ENROLLMENT_REQUIRED' , 'ACTIVE' , 'SECURITY_REVIEW_HOLD' )"
+      ],
+      [
+       "user_handle",
+       "",
+       "length ( user_handle ) = 32"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "auth_epoch integer not null default 0 check ( auth_epoch >= 0 )",
+      "state text not null check ( state in ( 'ENROLLMENT_REQUIRED' , 'ACTIVE' , 'SECURITY_REVIEW_HOLD' ) )",
+      "user_handle blob not null unique check ( length ( user_handle ) = 32 )",
+      "user_id text primary key references users ( id )"
+     ],
+     "ddl": "create table mfa_user_state ( user_id text primary key references users ( id ) , user_handle blob not null unique check ( length ( user_handle ) = 32 ) , auth_epoch integer not null default 0 check ( auth_epoch >= 0 ) , state text not null check ( state in ( 'ENROLLMENT_REQUIRED' , 'ACTIVE' , 'SECURITY_REVIEW_HOLD' ) ) )",
+     "write_probes": null,
+     "index_sql": [],
+     "triggers": [
+      "create trigger trg_mfa_handle_immutable before update of user_id , user_handle on mfa_user_state begin select raise ( abort , 'immutable_mfa_identity' ) ; end"
+     ]
+    },
+    "mfa_credentials": {
+     "columns": [
+      [
+       "be",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "bs",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "counter",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "credential_data",
+       "BLOB",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "credential_id",
+       "BLOB",
+       0,
+       null,
+       1,
+       0
+      ],
+      [
+       "state",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "user_id",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ]
+     ],
+     "indexes": [
+      [
+       1,
+       "pk",
+       0,
+       [
+        [
+         "credential_id",
+         "BINARY",
+         0
+        ]
+       ]
+      ]
+     ],
+     "foreign_keys": [
+      [
+       "mfa_user_state",
+       "user_id",
+       "user_id",
+       "NO ACTION",
+       "NO ACTION"
+      ]
+     ],
+     "checks": [
+      [
+       "be",
+       "",
+       "be in ( 0 , 1 )"
+      ],
+      [
+       "bs",
+       "",
+       "bs in ( 0 , 1 ) and bs <= be"
+      ],
+      [
+       "counter",
+       "",
+       "counter >= 0"
+      ],
+      [
+       "state",
+       "",
+       "state in ( 'PENDING' , 'ACTIVE' , 'REVOKED' )"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "be integer not null check ( be in ( 0 , 1 ) )",
+      "bs integer not null check ( bs in ( 0 , 1 ) and bs <= be )",
+      "counter integer not null check ( counter >= 0 )",
+      "credential_data blob not null",
+      "credential_id blob primary key",
+      "state text not null check ( state in ( 'PENDING' , 'ACTIVE' , 'REVOKED' ) )",
+      "user_id text not null references mfa_user_state ( user_id )"
+     ],
+     "ddl": "create table mfa_credentials ( credential_id blob primary key , user_id text not null references mfa_user_state ( user_id ) , credential_data blob not null , counter integer not null check ( counter >= 0 ) , be integer not null check ( be in ( 0 , 1 ) ) , bs integer not null check ( bs in ( 0 , 1 ) and bs <= be ) , state text not null check ( state in ( 'PENDING' , 'ACTIVE' , 'REVOKED' ) ) )",
+     "write_probes": null,
+     "index_sql": [],
+     "triggers": [
+      "create trigger trg_mfa_counter before update of counter on mfa_credentials when new . counter < old . counter begin select raise ( abort , 'mfa_counter_rollback' ) ; end",
+      "create trigger trg_mfa_credential_immutable before update of credential_id , user_id , credential_data , be on mfa_credentials begin select raise ( abort , 'immutable_mfa_credential' ) ; end",
+      "create trigger trg_mfa_no_unrevoke before update of state on mfa_credentials when old . state = 'REVOKED' and new . state != 'REVOKED' begin select raise ( abort , 'revoked_mfa_credential' ) ; end",
+      "create trigger trg_mfa_tombstone before delete on mfa_credentials begin select raise ( abort , 'retained_mfa_credential' ) ; end"
+     ]
+    },
+    "mfa_flows": {
+     "columns": [
+      [
+       "access_context",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "challenge",
+       "BLOB",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "csrf_hash",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "epoch",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "expires_at",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "generation",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "library_state",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "owner",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "parent_session",
+       "TEXT",
+       0,
+       null,
+       0,
+       0
+      ],
+      [
+       "password_revision",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "policy_digest",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "purpose",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "state",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "token_hash",
+       "TEXT",
+       0,
+       null,
+       1,
+       0
+      ],
+      [
+       "user_id",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ]
+     ],
+     "indexes": [
+      [
+       1,
+       "pk",
+       0,
+       [
+        [
+         "token_hash",
+         "BINARY",
+         0
+        ]
+       ]
+      ],
+      [
+       1,
+       "u",
+       0,
+       [
+        [
+         "challenge",
+         "BINARY",
+         0
+        ]
+       ]
+      ]
+     ],
+     "foreign_keys": [
+      [
+       "mfa_user_state",
+       "user_id",
+       "user_id",
+       "NO ACTION",
+       "NO ACTION"
+      ]
+     ],
+     "checks": [
+      [
+       "challenge",
+       "",
+       "length ( challenge ) = 32"
+      ],
+      [
+       "purpose",
+       "",
+       "purpose in ( 'authenticate' , 'register' )"
+      ],
+      [
+       "state",
+       "",
+       "state in ( 'PENDING' , 'CLAIMED' , 'SUCCEEDED' , 'FAILED' )"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "access_context text not null",
+      "challenge blob not null unique check ( length ( challenge ) = 32 )",
+      "csrf_hash text not null",
+      "epoch integer not null",
+      "expires_at text not null",
+      "generation text not null",
+      "library_state text not null",
+      "owner text",
+      "parent_session text",
+      "password_revision text not null",
+      "policy_digest text not null",
+      "purpose text not null check ( purpose in ( 'authenticate' , 'register' ) )",
+      "state text not null check ( state in ( 'PENDING' , 'CLAIMED' , 'SUCCEEDED' , 'FAILED' ) )",
+      "token_hash text primary key",
+      "user_id text not null references mfa_user_state ( user_id )"
+     ],
+     "ddl": "create table mfa_flows ( token_hash text primary key , user_id text not null references mfa_user_state ( user_id ) , csrf_hash text not null , challenge blob not null unique check ( length ( challenge ) = 32 ) , purpose text not null check ( purpose in ( 'authenticate' , 'register' ) ) , state text not null check ( state in ( 'PENDING' , 'CLAIMED' , 'SUCCEEDED' , 'FAILED' ) ) , epoch integer not null , password_revision text not null , access_context text not null , generation text not null , policy_digest text not null , expires_at text not null , owner text , parent_session text , library_state text not null )",
+     "write_probes": null,
+     "index_sql": [],
+     "triggers": []
+    },
+    "mfa_session_assurance": {
+     "columns": [
+      [
+       "access_context",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "credential_id",
+       "BLOB",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "epoch",
+       "INTEGER",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "generation",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "method",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "password_revision",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "policy_digest",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ],
+      [
+       "token_hash",
+       "TEXT",
+       0,
+       null,
+       1,
+       0
+      ],
+      [
+       "user_id",
+       "TEXT",
+       1,
+       null,
+       0,
+       0
+      ]
+     ],
+     "indexes": [
+      [
+       1,
+       "pk",
+       0,
+       [
+        [
+         "token_hash",
+         "BINARY",
+         0
+        ]
+       ]
+      ]
+     ],
+     "foreign_keys": [
+      [
+       "mfa_credentials",
+       "credential_id",
+       "credential_id",
+       "NO ACTION",
+       "NO ACTION"
+      ],
+      [
+       "mfa_user_state",
+       "user_id",
+       "user_id",
+       "NO ACTION",
+       "NO ACTION"
+      ],
+      [
+       "sessions",
+       "token_hash",
+       "token_hash",
+       "NO ACTION",
+       "CASCADE"
+      ]
+     ],
+     "checks": [
+      [
+       "method",
+       "",
+       "method = 'webauthn_uv'"
+      ]
+     ],
+     "options": "",
+     "column_definitions": [
+      "access_context text not null",
+      "credential_id blob not null references mfa_credentials ( credential_id )",
+      "epoch integer not null",
+      "generation text not null",
+      "method text not null check ( method = 'webauthn_uv' )",
+      "password_revision text not null",
+      "policy_digest text not null",
+      "token_hash text primary key references sessions ( token_hash ) on delete cascade",
+      "user_id text not null references mfa_user_state ( user_id )"
+     ],
+     "ddl": "create table mfa_session_assurance ( token_hash text primary key references sessions ( token_hash ) on delete cascade , user_id text not null references mfa_user_state ( user_id ) , epoch integer not null , password_revision text not null , access_context text not null , generation text not null , policy_digest text not null , credential_id blob not null references mfa_credentials ( credential_id ) , method text not null check ( method = 'webauthn_uv' ) )",
+     "write_probes": null,
+     "index_sql": [],
+     "triggers": []
+    }
+   },
+   "source": "be4adab72f85852bdd0786d55baa300704366197 exact v31 empty-schema reference"
   }
  ]
 }

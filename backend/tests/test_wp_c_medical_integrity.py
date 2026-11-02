@@ -1855,7 +1855,7 @@ def test_v27_database_is_migrated_explicitly_and_keeps_history(tmp_path, monkeyp
     assert _cli(data, "check-db").returncode == 1 and _digest(data / "clinic.db") == sha      # только диагностика
     r = _cli(data, "migrate-db", "--confirm-offline")
     assert r.returncode == 0, r.stderr
-    assert "v27 → v31" in r.stdout
+    assert "v27 → v32" in r.stdout
     conn = sqlite3.connect(str(data / "clinic.db"))
     after = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in before}  # nosec B608
     conn.close()
@@ -1916,4 +1916,4 @@ def test_v27_backup_restores_into_v28(tmp_path, monkeypatch):
     result = maintenance.restore_database(backup, data / "clinic.db", confirm_offline=True)
     assert result["migrated_from_schema_version"] == 27          # schema_version результата — версия самой копии
     restored = maintenance.diagnose_database(data / "clinic.db")
-    assert restored["ok"] is True and restored["schema_version"] == 31
+    assert restored["ok"] is True and restored["schema_version"] == 32

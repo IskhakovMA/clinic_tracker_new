@@ -676,7 +676,9 @@ ROLE_SEED = (
     ("consilium_chair", "Председатель онкологического консилиума", "by_treating_doctor"),
 )
 
-REQUIRED_TABLES = (
+from .mfa_lifecycle_schema import TABLES as MFA_LIFECYCLE_TABLES
+
+REQUIRED_TABLES = MFA_LIFECYCLE_TABLES + (
     "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance",
     "schema_version",
     "app_login",
@@ -2602,6 +2604,12 @@ _reference_state = threading.local()
 
 
 
+def migrate_v31_to_v32(conn):
+    """Explicit additive lifecycle storage; no authority or factors are enabled."""
+    from .mfa_lifecycle_schema import SQL
+    _execute_script(conn, SQL)
+
+
 def migrate_v30_to_v31(conn):
     """Technical MFA storage only; no activation, medical rewrite or legacy assurance."""
     from .mfa_schema import SQL
@@ -2764,6 +2772,7 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         migrate_v28_to_v29(conn)         # WP-E: original event schedule, explicit upgrade only
         migrate_v29_to_v30(conn)         # WP-G: atomic release manifest, explicit upgrade only
         migrate_v30_to_v31(conn)         # MFA storage; explicit offline upgrade only
+        migrate_v31_to_v32(conn)         # disabled enrollment/recovery lifecycle
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)

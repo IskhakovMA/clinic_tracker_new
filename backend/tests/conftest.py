@@ -182,6 +182,9 @@ def strip_v28(conn) -> None:
     В настоящей базе v27 и старше этих объектов нет."""
     from backend.app import db
     # Remove v31 technical storage when reconstructing a pre-v28 database.
+    from backend.app.mfa_lifecycle_schema import TABLES as LIFECYCLE_TABLES
+    for table in reversed(LIFECYCLE_TABLES):
+        conn.execute('DROP TABLE IF EXISTS '+table)
     from backend.app.mfa_schema import TABLES
     for table in reversed(TABLES):
         conn.execute('DROP TABLE IF EXISTS '+table)
