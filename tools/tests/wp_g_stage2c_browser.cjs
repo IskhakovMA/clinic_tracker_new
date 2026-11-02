@@ -20,24 +20,44 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE),assert=require('node:ass
   let r=await call('start');assert.equal(r.status,200);const grant=r.body;
   const isolated=await browser.newContext();await isolated.addCookies([{name:'clinic_session',value:grant.grant,url:origin}]);
   for(const path of ['/api/patients','/api/users','/api/export'])assert.equal((await isolated.request.get(origin+path)).status(),401);
-  const notices=[];
+  const notices=[],authenticators=[],credentials=[];
   for(let i=0;i<2;i++){
    const auth=(await cdp.send('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'usb',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}})).authenticatorId;
+   authenticators.push(auth);
    r=await call('options',grant);assert.equal(r.status,200);const f=r.body;
    const response=await credential('create',f.options.publicKey);
-   r=await call('finish',{...grant,flow:f.flow,response});assert.equal(r.status,200);notices.push(r.body.notice);const cid=r.body.credential;
+   r=await call('finish',{...grant,flow:f.flow,response});assert.equal(r.status,200);notices.push(r.body.notice);const cid=r.body.credential;credentials.push(cid);
    assert.equal((await call('finish',{...grant,flow:f.flow,response})).status,409);
    r=await call('options',{...grant,credential:cid});assert.equal(r.status,200);
    const assertion=await credential('get',r.body.options.publicKey);
    r=await call('finish',{...grant,flow:r.body.flow,response:assertion});assert.equal(r.status,200);assert.equal(r.body.possession,true);
-   await cdp.send('WebAuthn.removeVirtualAuthenticator',{authenticatorId:auth});
+   await cdp.send('WebAuthn.setUserVerified',{authenticatorId:auth,isUserVerified:true});
+   await cdp.send('WebAuthn.setAutomaticPresenceSimulation',{authenticatorId:auth,enabled:false});
   }
   assert.equal((await call('activate',grant)).status,403);
   for(const notice of notices)assert.equal((await call('confirm',{notice})).status,200);
   r=await call('activate',grant);assert.equal(r.status,200);assert.equal(r.body.medicalSession,false);assert.equal(r.body.reauthenticationRequired,true);
   assert.equal((await call('options',grant)).status,401);
   for(const path of ['/api/patients','/api/users','/api/export'])assert.equal((await isolated.request.get(origin+path)).status(),401);
+  async function login(auth){
+   await cdp.send('WebAuthn.setAutomaticPresenceSimulation',{authenticatorId:auth,enabled:true});
+   let r=await call('login-options');assert.equal(r.status,200);const flow=r.body;
+   const response=await credential('get',flow.options.publicKey);
+   r=await call('login-finish',{...flow,response});assert.equal(r.status,200);
+   await cdp.send('WebAuthn.setAutomaticPresenceSimulation',{authenticatorId:auth,enabled:false});
+   return r.body.token;
+  }
+  let token=await login(authenticators[0]);
+  assert.equal((await call('revoke',{credential:credentials[0],token})).status,200);
+  await cdp.send('WebAuthn.removeVirtualAuthenticator',{authenticatorId:authenticators[0]});
+  token=await login(authenticators[1]);
+  const before=(await call('state')).body;
+  assert.deepEqual({active:before.active,state:before.state,revocations:before.revocations,notices:before.notices},{active:1,state:'ACTIVE',revocations:1,notices:1});
+  assert.equal(before.sessions,1);
+  r=await call('revoke',{credential:credentials[1],token});
+  assert.equal(r.status,409);assert.equal(r.body.detail,'MFA_LAST_ACTIVE_FACTOR_REQUIRES_RECOVERY');
+  assert.deepEqual((await call('state')).body,before);
   await isolated.close();
-  console.log(JSON.stringify({real_backend:true,real_webauthn:true,independent_virtual_authenticators:2,physical_independence_qualified:false,limited_grant_isolation:true,challenge_replay_denied:true,activation_requires_notice:true,active_without_medical_session:true,used_grant_denied:true,browser:browser.version(),synthetic_only:true}));
+  console.log(JSON.stringify({real_backend:true,real_webauthn:true,independent_virtual_authenticators:2,physical_independence_qualified:false,limited_grant_isolation:true,challenge_replay_denied:true,activation_requires_notice:true,active_without_medical_session:true,used_grant_denied:true,remaining_key_real_login:true,last_factor_refused_without_changes:true,browser:browser.version(),synthetic_only:true}));
  }finally{await browser.close();}
 })().catch(e=>{console.error(e.name+': '+e.message);process.exitCode=1;});

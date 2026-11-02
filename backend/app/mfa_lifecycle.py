@@ -375,6 +375,10 @@ def revoke(conn,target,credential,token,proof):
         _proof(a,'factor_revocation',proof,{'target':target,'credential':credential.hex(),'binding':binding(conn,target),'session':session['token_hash']})
         f=conn.execute('SELECT state FROM mfa_credentials WHERE credential_id=? AND user_id=?',(credential,target)).fetchone()
         if not f or f['state']=='REVOKED':deny('MFA_FACTOR_UNAVAILABLE')
+        # Ordinary revocation must leave a usable factor. Checked under the
+        # authority coordination lock and BEGIN IMMEDIATE, before reservation.
+        if f['state']=='ACTIVE' and conn.execute("SELECT COUNT(*) FROM mfa_credentials WHERE user_id=? AND state='ACTIVE'",(target,)).fetchone()[0]<=1:
+            deny('MFA_LAST_ACTIVE_FACTOR_REQUIRES_RECOVERY',409)
         def apply():
             # Immediate revocation is not delayed for notification.
             conn.execute("UPDATE mfa_credentials SET state='REVOKED' WHERE credential_id=?",(credential,))

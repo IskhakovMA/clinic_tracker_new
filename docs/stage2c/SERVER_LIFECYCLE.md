@@ -124,3 +124,29 @@ WP-F/deployment adoption, real HTTP/step-up/recipient delivery, three operators
 and offline ceremony, HTTPS origin/RP ID, retention, RPO/RTO and monitoring all
 require separate approval. A restored compatibility policy is NOT made safe by
 restored SQLite or this disabled server component. Production S1 stays closed.
+
+## FIX1: ordinary revocation and the last usable factor
+
+Ordinary `revoke` checks the current credential state and number of ACTIVE
+credentials while holding the existing authority coordination lock and
+`BEGIN IMMEDIATE`, before authority reservation or any mutation. Revoking the
+last ACTIVE credential returns HTTP 409
+`MFA_LAST_ACTIVE_FACTOR_REQUIRES_RECOVERY`. This refusal creates no successful
+revocation event/notice, changes no factor/grant/epoch, and does not terminate
+sessions. PENDING is not a usable backup; REVOKED remains a tombstone.
+
+After an allowed two-to-one revocation, `mfa_user_state.state` remains ACTIVE
+and the remaining verified key can authenticate. This is a temporarily degraded
+redundancy state, **not** two independent available factors. Replace the lost
+factor using the existing additional EnrollmentOnly, possession, independent
+qualification, confirmed notices and two-domain activation sequence. No new
+state, migration, grace period, retention policy or automatic enrollment is
+introduced by FIX1.
+
+Ordinary last-key refusal is not advice to continue using a compromised key.
+An existing independently authenticated notice dispute can immediately revoke
+all factors/sessions and enter SECURITY_REVIEW_HOLD without a medical session.
+It does not automatically reopen normal recovery. A general incident-blocking
+and controlled recovery path requires the separately proposed authority contract
+in ADR_LAST_FACTOR_COMPROMISE_RECOVERY.md; that extension is NOT implemented.
+Production S1 and unavailable production authority remain unchanged.

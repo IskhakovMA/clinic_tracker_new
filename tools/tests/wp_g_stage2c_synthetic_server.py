@@ -70,6 +70,42 @@ def main():
             local(request)
             p=proof('activation',{'target':uid,'binding':service.binding(c,uid),'grant':security.hash_token(body['grant'])})
             return service.activate(c,body['grant'],body['csrf'],p)
+        def witnessed_login(fn):
+            # Test-only bridge; production has no approved witness/login adapter.
+            with a.exclusive():
+                a.start_operation(c);reservation=a.reserve(c,'synthetic_browser_login')
+                original=mfa_continuity.require_trust
+                try:
+                    mfa_continuity.require_trust=lambda *args:None
+                    result=fn()
+                finally:mfa_continuity.require_trust=original
+                a.commit(c,reservation);a.require_current(c)
+                return result
+        @app.post('/synthetic/stage2c/login-options')
+        def login_options(request:Request):
+            local(request)
+            password=c.execute('SELECT password_hash FROM users WHERE id=?',(uid,)).fetchone()[0]
+            raw,csrf,opts=witnessed_login(lambda:mfa.begin(c,uid,password))
+            return {'flow':raw,'csrf':csrf,'options':opts}
+        @app.post('/synthetic/stage2c/login-finish')
+        def login_finish(request:Request,body:dict):
+            local(request)
+            token,_,_=witnessed_login(lambda:mfa.finish(c,body['flow'],body['csrf'],origin,body['response']))
+            return {'token':token}
+        @app.post('/synthetic/stage2c/revoke')
+        def revoke(request:Request,body:dict):
+            local(request);key=bytes.fromhex(body['credential'])
+            p=proof('factor_revocation',{'target':uid,'credential':key.hex(),'binding':service.binding(c,uid),'session':security.hash_token(body['token'])})
+            return service.revoke(c,uid,key,body['token'],p)
+        @app.post('/synthetic/stage2c/state')
+        def state(request:Request):
+            local(request)
+            account=c.execute('SELECT state,auth_epoch FROM mfa_user_state WHERE user_id=?',(uid,)).fetchone()
+            return {'state':account['state'],'epoch':account['auth_epoch'],
+                'active':c.execute("SELECT COUNT(*) FROM mfa_credentials WHERE user_id=? AND state='ACTIVE'",(uid,)).fetchone()[0],
+                'sessions':c.execute('SELECT COUNT(*) FROM sessions WHERE user_id=?',(uid,)).fetchone()[0],
+                'revocations':c.execute("SELECT COUNT(*) FROM audit_events WHERE event_type='mfa_factor_revoked' AND target_user_id=?",(uid,)).fetchone()[0],
+                'notices':c.execute("SELECT COUNT(*) FROM mfa_notices WHERE action='revoke_factor' AND target=?",(uid,)).fetchone()[0]}
         import uvicorn
         uvicorn.run(app,host='127.0.0.1',port=args.port,access_log=False)
 
