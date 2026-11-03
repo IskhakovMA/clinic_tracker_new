@@ -6,6 +6,7 @@ invalidates cursors; this is pagination state, never MFA continuity authority.
 """
 import base64
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 import hashlib
 import hmac
@@ -13,7 +14,7 @@ import json
 import secrets
 import unicodedata
 from fastapi import HTTPException
-from . import clock, policy
+from . import clock, policy, request_security
 from .services import patient_attention
 
 _KEY = secrets.token_bytes(32)
@@ -145,6 +146,62 @@ def filtered(rows,p,conn=None):
     return result
 
 
+@dataclass(frozen=True)
+class ScopedRelease:
+    kind: str
+    params: dict
+    expected: str
+
+
+class QueryChanged(Exception):
+    """Ordinary scoped dataset change; never an identity/access refusal."""
+
+
+def _remember(kind, params, fingerprint):
+    state = request_security.current.get()
+    if state is not None:
+        state.scoped_release = ScopedRelease(kind, dict(params), fingerprint)
+
+
+def _summary(rows):
+    week=clock.current_moscow()-timedelta(days=7)
+    def is_new(row):
+        try:return datetime.fromisoformat(row['arrival']).astimezone(clock.institution_tz())>=week
+        except (ValueError,TypeError):return False
+    return {'total':len(rows),'fresh':sum(is_new(r) for r in rows),
+            'inTreatment':sum(r['stage'] in {'treatment','treatment-prep'} for r in rows),
+            'done':sum(r['stage']=='completed' for r in rows),
+            'unresolved':sum(not r['treatingDoctorUserId'] for r in rows)}
+
+
+def _page_fingerprint(rows, selected):
+    # Includes the WHOLE scope: filtered revision alone omits summary/facets.
+    return digest({'day': clock.today_moscow().isoformat(), 'scope': rows,
+                   'selected': [r['id'] for r in selected], 'summary': _summary(rows)})
+
+
+def _workspace_fingerprint(conn, user, rows):
+    cond, args = policy.patient_scope_filter(user)
+    ids = [r[0] for r in conn.execute('SELECT id FROM patients WHERE '+cond+' ORDER BY id', args)]  # nosec B608 - server policy only
+    return digest({'day': clock.today_moscow().isoformat(), 'scope': ids, 'rows': rows})
+
+
+@clock.consistent
+def validate_release(conn, user, check):
+    # Called on the release connection, in a read snapshot OUTSIDE the audit
+    # write lock. No retained connection, medical rows, or trust sidecar.
+    with snapshot(conn):
+        if check.kind == 'page':
+            rows = projection(conn, user)
+            selected = filtered(rows, normalized(check.params), conn)
+            actual = _page_fingerprint(rows, selected)
+        else:
+            rows = _workspace_rows(conn, user, check.params, check.kind)
+            actual = _workspace_fingerprint(conn, user, rows)
+    if not hmac.compare_digest(actual, check.expected):
+        raise QueryChanged()
+
+
 def public(row):
     return {k:v for k,v in row.items() if not k.startswith('_')}
 
@@ -169,13 +226,8 @@ def page(conn,user,params,binding):
         if offset>len(selected):fail('PATIENT_QUERY_CHANGED',409)
         next_offset=offset+limit
         token=_encode({'v':1,'query':query,'revision':revision,'binding':binding,'offset':next_offset,'limit':limit}) if next_offset<len(selected) else None
-        week=clock.current_moscow()-timedelta(days=7)
-        def is_new(r):
-            try:return datetime.fromisoformat(r['arrival']).astimezone(clock.institution_tz())>=week
-            except (ValueError,TypeError):return False
-        stats={'total':len(rows),'fresh':sum(is_new(r) for r in rows),
-            'inTreatment':sum(r['stage'] in {'treatment','treatment-prep'} for r in rows),
-            'done':sum(r['stage']=='completed' for r in rows),'unresolved':sum(not r['treatingDoctorUserId'] for r in rows)}
+        stats=_summary(rows)
+        _remember('page', params, _page_fingerprint(rows, selected))
         return {'patients':[public(r) for r in selected[offset:next_offset]],'page':{'limit':limit,'offset':offset,'total':len(selected),'hasNext':token is not None,'nextCursor':token,'revision':revision},
             'summary':stats,'heads':sorted({r['head'] for r in rows if r['head']},key=russian_key)}
 
@@ -204,24 +256,32 @@ def workspace_rows(conn,user,params,binding,kind):
     if kind!='patients' and 'group' in params:fail('PATIENT_QUERY_INVALID')
     q=params.get('q','');group=params.get('group','')
     if len(q)>200 or len(group)>100:fail('PATIENT_QUERY_INVALID')
-    cond,args=policy.patient_scope_filter(user)
     with snapshot(conn):
-        if kind=='events':
-            rows=[dict(r) for r in conn.execute('''SELECT e.id,p.id AS patientId,p.name AS patientName,
-                p.head,h.id AS historyEntryId,h.stage,e.date,e.time FROM events e
-                JOIN history_entries h ON h.id=e.history_entry_id JOIN patients p ON p.id=h.patient_id
-                WHERE e.deleted_at IS NULL AND e.date IS NOT NULL AND e.date!='' AND (e.actual_date IS NULL OR e.actual_date='') AND '''+cond.replace('patients.','p.')+''' ORDER BY e.date,e.time,p.id,h.seq,e.seq,e.id''',args)]  # nosec B608 - server policy only
-        elif kind=='checklists':
-            from .analytics.service import _checklist_state
-            ids={r[0] for r in conn.execute('SELECT id FROM patients WHERE '+cond,args)}  # nosec B608 - server policy only
-            rows=_checklist_state(conn,ids,include_completed=True)['patients']
-            rows.sort(key=lambda r:(r['completed_required']/r['total_required'] if r['total_required'] else 1,russian_key(r['patient_name']),r['patient_id']))
-        else:
-            from .services import consilium
-            if not policy.can_book_consilium(user):fail('PATIENT_CANDIDATES_FORBIDDEN',403)
-            if group and group not in consilium.GROUP_LABELS:fail('PATIENT_QUERY_INVALID')
-            blocked=set(consilium.booked_patient_ids(conn,user))
-            rows=[public(r) for r in projection(conn,user) if r['id'] not in blocked and (not group or consilium.group_for_diagnosis(r['diagnosis'])==group)]
-            rows.sort(key=lambda r:(russian_key(r['name']),r['id']))
-        if q:rows=[r for r in rows if fold(q) in fold(r.get('patientName',r.get('patient_name',r.get('name',''))))]
-        return slice_rows(rows,params,binding,kind,{'q':q,'group':group})
+        rows = _workspace_rows(conn,user,params,kind)
+        result = slice_rows(rows,params,binding,kind,{'q':q,'group':group})
+        _remember(kind, params, _workspace_fingerprint(conn,user,rows))
+        return result
+
+
+def _workspace_rows(conn,user,params,kind):
+    q=params.get('q','');group=params.get('group','')
+    cond,args=policy.patient_scope_filter(user)
+    if kind=='events':
+        rows=[dict(r) for r in conn.execute('''SELECT e.id,p.id AS patientId,p.name AS patientName,
+            p.head,h.id AS historyEntryId,h.stage,e.date,e.time FROM events e
+            JOIN history_entries h ON h.id=e.history_entry_id JOIN patients p ON p.id=h.patient_id
+            WHERE e.deleted_at IS NULL AND e.date IS NOT NULL AND e.date!='' AND (e.actual_date IS NULL OR e.actual_date='') AND '''+cond.replace('patients.','p.')+''' ORDER BY e.date,e.time,p.id,h.seq,e.seq,e.id''',args)]  # nosec B608 - server policy only
+    elif kind=='checklists':
+        from .analytics.service import _checklist_state
+        ids={r[0] for r in conn.execute('SELECT id FROM patients WHERE '+cond,args)}  # nosec B608 - server policy only
+        rows=_checklist_state(conn,ids,include_completed=True)['patients']
+        rows.sort(key=lambda r:(r['completed_required']/r['total_required'] if r['total_required'] else 1,russian_key(r['patient_name']),r['patient_id']))
+    else:
+        from .services import consilium
+        if not policy.can_book_consilium(user):fail('PATIENT_CANDIDATES_FORBIDDEN',403)
+        if group and group not in consilium.GROUP_LABELS:fail('PATIENT_QUERY_INVALID')
+        blocked=set(consilium.booked_patient_ids(conn,user))
+        rows=[public(r) for r in projection(conn,user) if r['id'] not in blocked and (not group or consilium.group_for_diagnosis(r['diagnosis'])==group)]
+        rows.sort(key=lambda r:(russian_key(r['name']),r['id']))
+    if q:rows=[r for r in rows if fold(q) in fold(r.get('patientName',r.get('patient_name',r.get('name',''))))]
+    return rows

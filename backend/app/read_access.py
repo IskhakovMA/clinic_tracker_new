@@ -10,7 +10,7 @@ import re
 from contextlib import closing
 from starlette.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
-from . import audit, config, db, policy, security, session_context, request_security
+from . import audit, config, db, policy, security, session_context, request_security, patient_pages
 
 RELEASE = 'medical_read_release'
 DENIED = 'medical_read_denied'
@@ -73,6 +73,19 @@ def persist(state, route, raw, params, denied):
         request_security.current.reset(token)
 
 
+def _fresh_reader(conn, state):
+    from fastapi import HTTPException
+    session = security.validate_session(conn, state.token, remove_expired=False)
+    if session is None:
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    fresh = policy.load_current_user(conn, session['user_id'])
+    if fresh is None or fresh.status != 'active':
+        raise HTTPException(status_code=401, detail='Not authenticated')
+    if fresh.id != state.user.id or session_context.access_context(fresh) != state.access:
+        raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
+    return fresh
+
+
 def _persist(state, route, raw, params, denied):
     from fastapi import HTTPException
     payload = None if denied or state.export_recorded else json.loads(raw) if raw else None
@@ -82,6 +95,17 @@ def _persist(state, route, raw, params, denied):
             {(o['type'], o['id']) for o in objects} | state.aggregate_objects | set(state.export_objects))]
     encoded = json.dumps(objects, ensure_ascii=False, separators=(',', ':'))
     with closing(db.connect_live(config.DB_PATH)) as conn:
+        version = None
+        if not denied and state.scoped_release is not None:
+            # PRAGMA data_version is meaningful only on this same connection.
+            # Read validation is optimistic; no O(N) work under a write lock.
+            version = conn.execute('PRAGMA data_version').fetchone()[0]
+            reader = _fresh_reader(conn, state)
+            validation_changed = False
+            try:
+                patient_pages.validate_release(conn, reader, state.scoped_release)
+            except patient_pages.QueryChanged:
+                validation_changed = True
         conn.execute('BEGIN IMMEDIATE')
         try:
             if not denied:
@@ -91,8 +115,13 @@ def _persist(state, route, raw, params, denied):
                 fresh = policy.load_current_user(conn, session['user_id'])
                 if fresh is None or fresh.status != 'active':
                     raise HTTPException(status_code=401, detail='Not authenticated')
-                if session_context.access_context(fresh) != state.access:
+                if fresh.id != state.user.id or session_context.access_context(fresh) != state.access:
                     raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
+                if version is not None:
+                    # Check identity/access FIRST: these failures cannot become
+                    # an innocuous list refresh, even if the DB also changed.
+                    if validation_changed or conn.execute('PRAGMA data_version').fetchone()[0] != version:
+                        raise patient_pages.QueryChanged()
                 if state.export_recorded:
                     allowed = (policy.can_manage_consilium(fresh) if route.startswith('GET /api/consilium/registries/')
                                else policy.can_export(fresh) if route.startswith(('GET /api/export','POST /api/export/selection')) else True)
@@ -154,7 +183,8 @@ def install(app):
             except Exception as exc:
                 from fastapi import HTTPException
                 changed = isinstance(exc, session_context.ContextChanged)
-                code = 409 if changed else exc.status_code if isinstance(exc, HTTPException) else 503
+                query_changed = isinstance(exc, patient_pages.QueryChanged)
+                code = 409 if changed or query_changed else exc.status_code if isinstance(exc, HTTPException) else 503
                 if changed or code == 401:
                     try:
                         await run_in_threadpool(persist, state, request.method + ' ' + route_obj.path, b'', request.path_params, True)
@@ -163,6 +193,8 @@ def install(app):
                 body = {'detail': 'Not authenticated' if code == 401 else 'Read audit unavailable'}
                 if code == 503 and state.export_recorded:
                     body['code'] = 'AUDIT_UNAVAILABLE'
+                if query_changed and code == 409:
+                    body = {'detail': 'Patient list changed', 'code': 'PATIENT_QUERY_CHANGED'}
                 if changed and code == 409:
                     body = {'detail': 'Access changed', 'code': 'ACCESS_CONTEXT_CHANGED'}
                 return JSONResponse(body, status_code=code)

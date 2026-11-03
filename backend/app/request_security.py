@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 @dataclass
 class RequestState:
     aggregate_objects: set = field(default_factory=set)
+    scoped_release: object = None
     resource: str = ""
     token: str | None = None
     user: object = None

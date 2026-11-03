@@ -2029,14 +2029,14 @@ const app = {
         return p;
     },
 
-    async loadPatients(cursor = null) {
+    async loadPatients(cursor = null, restarted = false) {
         const version = this.beginRead('patients');
         const path = '/api/patients?' + this.patientPageQuery(cursor);
         let data;
         try { data = await apiGetJson(path); }
         catch (error) {
             if (!this.isCurrentRead('patients', version)) return;
-            if (cursor && [409, 410].includes(error.status) && ['PATIENT_QUERY_CHANGED', 'CURSOR_EXPIRED'].includes(error.data?.code)) {
+            if (!restarted && [409, 410].includes(error.status) && ['PATIENT_QUERY_CHANGED', 'CURSOR_EXPIRED'].includes(error.data?.code)) {
                 ui.toast('Список изменился. Выдача обновлена; фильтры, выбранная карточка и черновики сохранены.', 'warning');
                 // Exactly one controlled restart, never a retry loop.
                 data = await apiGetJson('/api/patients?' + this.patientPageQuery());
@@ -6602,7 +6602,7 @@ const app = {
             host.append(this.boundedPager(data,state,next=>this.renderWorkspacePage(kind,hostId,view,next,renderRow)));
         } catch(error) {
             if (!this.isCurrentRead('workspace-'+kind,version)) return;
-            if (!restarted && cursor && [409,410].includes(error.status)) {
+            if (!restarted && [409,410].includes(error.status) && ['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code)) {
                 ui.toast('Набор изменился. Обновлена первая страница; карточка и черновики сохранены.','warning');
                 return this.renderWorkspacePage(kind,hostId,view,null,renderRow,true);
             }
@@ -8899,7 +8899,7 @@ const app = {
             return rows;
         } catch(error) {
             if(!this.isCurrentRead('consilium-candidates',version))return [];
-            if(cursor&&!restarted&&[409,410].includes(error.status))return this.fillConsiliumPatientsForGroup(record,null,true);
+            if(!restarted&&[409,410].includes(error.status)&&['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code))return this.fillConsiliumPatientsForGroup(record,null,true);
             ui.toast(error.message,'danger');return [];
         }
     },
@@ -10086,7 +10086,7 @@ const app = {
             this.updateExportCount();
         } catch(error) {
             if(!this.isCurrentRead('export-list',version))return;
-            if(cursor&&!restarted&&[409,410].includes(error.status)){this.exportAllSelection=null;ui.toast('Выдача экспорта изменилась. Проверьте выбор.','warning');return this.renderExportPatientList(query,null,true);}
+            if(!restarted&&[409,410].includes(error.status)&&['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code)){this.exportAllSelection=null;ui.toast('Выдача экспорта изменилась. Проверьте выбор.','warning');return this.renderExportPatientList(query,null,true);}
             ui.toast(error.message,'danger');
         }
     },

@@ -31,6 +31,10 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=req
   await page.getByRole('button',{name:'Следующая страница',exact:true}).click();await page.waitForFunction(()=>app.patientPage.page.offset===0&&app.patientPage.page.total===101);
   const state=await page.evaluate(id=>({id:app.currentPatientId,draft:app.sessionFieldDrafts.get(id+':complaint'),server:app.getPatient(id)}),id);
   assert.equal(state.id,id);assert.equal(state.draft.body.expectedVersion,before.version);assert.equal(state.draft.body.value,'Синтетический несохраненный черновик');assert.equal(state.server.complaint,'Синтетическое изменение другого сотрудника');assert.equal(writes,1);
+  await api(admin,'POST','/synthetic/wph/release-race',{mode:'once'});
+  await page.evaluate(()=>app.reloadPatientsAndRender());
+  const retained=await page.evaluate(id=>({id:app.currentPatientId,draft:app.sessionFieldDrafts.get(id+':complaint')}),id);
+  assert.equal(retained.id,id);assert.equal(retained.draft.body.expectedVersion,before.version);assert.equal(retained.draft.body.value,'Синтетический несохраненный черновик');assert.equal(writes,1);
   await page.evaluate(id=>app.openPatient(id),id);await page.getByRole('tab',{name:'Комментарии',exact:true}).click();
   const response=page.waitForResponse(r=>r.request().method()==='PATCH'&&new URL(r.url()).pathname==='/api/patients/'+id);
   await page.getByRole('button',{name:'Сохранить правку',exact:true}).click();const denied=await response;

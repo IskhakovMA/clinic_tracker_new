@@ -70,6 +70,14 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
   const selection=await page.evaluate(()=>app.exportAllSelection);const response=await api(context,'POST','/api/export/selection',{query:selection.query,revision:selection.revision});assert.equal(response.patients.length,101);assert(response.signature);await page.locator('#closeExportIconBtn').click();results.checks.push('full filtered signed export, not current50');
   await page.evaluate(()=>app.showView('calendar'));await page.waitForFunction(()=>document.querySelector('#calendarPanel .pagination'));assert.equal(await page.locator('#calendarPanel .list-row').count(),50);
   await page.evaluate(()=>app.showView('checklists'));await page.waitForFunction(()=>document.querySelector('#checklistsPanel .pagination'));results.checks.push('independent bounded calendar/checklists');
+  await page.evaluate(()=>app.showView('patients'));
+  await api(context,'POST','/synthetic/wph/release-race',{mode:'once'});
+  let pageRequests=0;const countPages=r=>{if(new URL(r.url()).pathname==='/api/patients'&&r.method()==='GET')pageRequests++;};page.on('request',countPages);
+  await page.evaluate(()=>app.reloadPatientsAndRender());assert.equal(pageRequests,2);assert.equal(await page.evaluate(()=>app.appReady&&!app.sessionExpired),true);
+  await api(context,'POST','/synthetic/wph/release-race',{mode:'always'});pageRequests=0;
+  await page.evaluate(()=>app.reloadPatientsAndRender());assert.equal(pageRequests,2);
+  await api(context,'POST','/synthetic/wph/release-race',{mode:'none'});page.off('request',countPages);
+  results.checks.push('release-time first-page409: one refresh; persistent409 bounded at two requests');
   assert.equal(legacy,0);assert.deepEqual(errors,[]);results.checks.push('no hidden legacy list downloads; no page errors');
   for(const role of ['doc0','head']){const c=await browser.newContext(),p=await c.newPage();await login(p,'wph.'+role);const data=await p.evaluate(()=>({total:app.patientPage.summary.total,rows:app.patientRows.length}));assert.equal(data.total,role==='doc0'?20:80);assert.equal(data.rows,role==='doc0'?20:50);await c.close();}results.checks.push('doctor/head scoped totals and pages');
   const violations=results.axe.flatMap(a=>a.violations);console.log(JSON.stringify(results));assert.deepEqual(violations,[],'axe WCAG A/AA violations');

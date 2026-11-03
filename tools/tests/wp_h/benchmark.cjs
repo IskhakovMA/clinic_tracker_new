@@ -30,7 +30,16 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),fs=require
    assert(traversal.pages.every(p=>p.rows<=50&&p.detailCache===0));
    assert(metrics.samples.at(-1).audit_hash_matches);
    assert(endMetrics.samples.slice(metrics.samples.length).every(s=>s.audit_hash_matches));
-   results.roles.push({role,visible:expected,initialMs,rendering,JSHeapUsedSize:get('JSHeapUsedSize'),CDPNodes:get('Nodes'),api:metrics.samples.at(-1),audit:metrics.audit,traversal,traversalApi:endMetrics.samples.slice(metrics.samples.length),heapAfterPages:(await cdp.send('Performance.getMetrics')).metrics.find(x=>x.name==='JSHeapUsedSize').value});
+   let refresh409=null;
+   if(!process.env.WP_H_BENCH_NO_RACE){
+    await context.request.post(origin+'/synthetic/wph/release-race',{data:{mode:'once'}});
+    const start=Date.now();await page.evaluate(()=>app.reloadPatientsAndRender());
+    const refreshed=await (await context.request.get(origin+'/synthetic/wph/metrics')).json();
+    const samples=refreshed.samples.slice(endMetrics.samples.length);
+    assert.deepEqual(samples.map(s=>s.status),[409,200]);assert(samples[1].audit_hash_matches);
+    refresh409={wallMs:Date.now()-start,samples};
+   }
+   results.roles.push({role,refresh409,visible:expected,initialMs,rendering,JSHeapUsedSize:get('JSHeapUsedSize'),CDPNodes:get('Nodes'),api:metrics.samples.at(-1),audit:metrics.audit,traversal,traversalApi:endMetrics.samples.slice(metrics.samples.length),heapAfterPages:(await cdp.send('Performance.getMetrics')).metrics.find(x=>x.name==='JSHeapUsedSize').value});
    await context.close();fs.writeFileSync(out+'/after-'+n+'.json',JSON.stringify(results,null,2));
   }
  }finally{await browser.close();}
