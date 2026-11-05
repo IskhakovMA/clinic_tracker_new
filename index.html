@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-registry-v2">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-card-v3">
 </head>
 <body>
 
@@ -458,7 +458,7 @@
             </section>
 
             <!-- КАРТОЧКА ПАЦИЕНТА -->
-            <section class="view is-hidden" id="view-patient">
+            <section class="view is-hidden patient-workspace" id="view-patient">
                 <nav class="crumbs" aria-label="Навигация">
                     <button type="button" class="crumbs__back" id="backToList">
                         <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
@@ -469,11 +469,12 @@
                 </nav>
 
                 <div class="patient-layout">
-                    <aside class="patient-side" id="patientSide"></aside>
+                    <header class="patient-side" id="patientSide"></header>
+                    <section id="patientRoute" class="patient-route" aria-label="Маршрут лечения"></section>
 
                     <div class="patient-body">
-                        <div class="tabs" role="tablist" id="patientTabs"></div>
-                        <div class="tabpanels" id="patientPanels"></div>
+                        <div class="tabs" role="tablist" id="patientTabs" aria-label="Разделы карточки пациента"></div>
+                        <div class="patient-workspace__body"><div class="tabpanels" id="patientPanels" role="tabpanel" aria-labelledby="tab-overview"></div><aside class="patient-facts" id="patientFacts" aria-label="Сведения о пациенте"></aside></div>
                     </div>
                 </div>
             </section>
@@ -1831,6 +1832,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=wp-i-registry-v2"></script>
+<script src="/static/app.js?v=wp-i-card-v3"></script>
 </body>
 </html>

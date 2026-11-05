@@ -2159,6 +2159,7 @@ const app = {
     /* ------------------------------------------------------------ Навигация */
 
     showView(view) {
+        this.capturePatientEdits();
         if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';
         const previousView = this.currentView;
         this.currentView = view;
@@ -3261,6 +3262,7 @@ const app = {
 
     renderPatientView() {
         if (this.sessionExpired) return;
+        this.capturePatientEdits();
         const p = this.getPatient(this.currentPatientId);
         if (!p) {
             this.showView('patients');
@@ -3320,6 +3322,7 @@ const app = {
                     el('div', {}, [
                         el('h1', { class: 'pcard__name', text: p.name }),
                         el('div', { class: 'pcard__meta', text: `${p.age} лет · приоритет: ${this.PRIORITY_LABELS[p.priority] || p.priority}` }),
+                        el('div', {class:'pcard__diagnosis', text:`Диагноз: ${p.diagnosis || 'не указан'}`}),
                         p.phone ? el('div', { class: 'pcard__phone', text: p.phone }) : null,
                         el('div', { class: 'pcard__sub', text: `Полис ОМС: ${p.policyNumber || 'Не указан'}` }),
                     ]),
@@ -3395,6 +3398,7 @@ const app = {
                 ]),
             ]),
         ]));
+        $('patientFacts').replaceChildren(...$('patientSide').querySelectorAll('.pcard > .pcard__block:not(.patient-attention-summary)'));
     },
 
     /**
@@ -3598,7 +3602,14 @@ const app = {
     },
 
     renderTabPanel(p) {
+        this.capturePatientEdits();
         const panels = $('patientPanels');
+        const clinicalDirty = this.dirtyClinicalControls();
+        if (clinicalDirty.length && panels.dataset.patientId === p.id) {
+            this.currentTab = panels.dataset.tab;this.renderTabs();
+            ui.toast('В форме есть несохраненный ввод. Сохраните поле или явно отмените ввод перед переходом.', 'warning');
+            return;
+        }
         const renderers = {
             overview: () => this.tabOverview(p),
             notifications: () => this.tabNotifications(p),
@@ -3610,6 +3621,10 @@ const app = {
             history: () => this.tabHistory(p),
         };
         panels.replaceChildren((renderers[this.currentTab] || renderers.overview)());
+        panels.dataset.patientId=p.id;panels.dataset.tab=this.currentTab;
+        panels.setAttribute('aria-labelledby','tab-'+this.currentTab);
+        $('patientRoute').replaceChildren(panels.querySelector('.timeline') || this.renderTimeline(p));
+        this.registerClinicalControls();
     },
 
     /* --- Вкладка «Обзор» ---------------------------------------------------- */
@@ -3618,9 +3633,8 @@ const app = {
         return el('div', { class: 'overview' }, [
             el('div', {}, [
                 el('div', { class: 'panel panel--pad' }, [
-                    el('h2', { class: 'section-title', text: 'Маршрут лечения' }),
                     this.renderTimeline(p),
-                    el('h2', { class: 'section-title', text: 'Лента событий' }),
+                    el('h2', { class: 'section-title', text: 'Последние изменения' }),
                     this.renderFeed(p),
                 ]),
             ]),
@@ -3922,7 +3936,7 @@ const app = {
         const nodes = this.buildTimelineNodes(p);
         const selectedKey = this.selectedTimelineNodes[p.id] || null;
 
-        return el('div', { class: 'timeline' }, nodes.map((node, idx) => {
+        return el('div', { class: 'timeline', tabindex:'0', role:'region', 'aria-label':'Этапы маршрута лечения' }, nodes.map((node, idx) => {
             const isNext = node.status === 'future' && node.isNext;
             const nodeKey = node.status === 'future' ? `future:${node.templateIndex}` : `occ:${node.occIndex}`;
             const stageLabel = this.stageNames[node.stage];
@@ -3947,11 +3961,11 @@ const app = {
                 ? () => this.advanceToStage(p.id, node.stage, stageLabel)
                 : () => this.selectTimelineNode(p.id, nodeKey);
 
-            return el('button', {
-                type: 'button',
+            return el(this.isReadOnly() ? 'div' : 'button', {
+                ...(this.isReadOnly() ? {role:'group'} : {type:'button'}),
                 class: `tl-step ${modifier} ${selectedKey === nodeKey ? 'is-selected' : ''}`,
-                'aria-label': `${stageLabel}: ${stateText}. ${isNext ? 'Перевести пациента на этот этап' : 'Показать даты этапа'}`,
-                on: { click: activate },
+                'aria-label': this.isReadOnly() ? `${stageLabel}: ${stateText}` : `${stageLabel}: ${stateText}. ${isNext ? 'Перевести пациента на этот этап' : 'Показать даты этапа'}`,
+                on: this.isReadOnly() ? {} : { click: activate },
             }, [
                 el('span', { class: 'tl-step__mark', text: node.status === 'done' ? '✓' : String(idx + 1) }),
                 el('span', { class: 'tl-step__label', text: label }),
@@ -4241,7 +4255,7 @@ const app = {
                 'aria-label': 'Комментарии',
                 on: { change: (event) => this.updatePatientField(p.id, 'complaint', event.target.value) },
             })),
-            el('p', { class: 'field__hint', text: 'Изменения сохраняются на сервере автоматически при выходе из поля.' }),
+            el('p', { class: 'field__hint', text: 'Поля сохраняются независимо. При переходе в другую вкладку несохраненный комментарий остается отдельным черновиком.' }),
         ]);
     },
 
@@ -4276,10 +4290,15 @@ const app = {
     },
 
     eventInput(p, occIndex, ev, fieldName, type, value, label) {
-        return el('input', {
-            class: 'input', type, value: value || '', 'aria-label': label,
-            on: { change: (event) => this.updateEvent(p.id, occIndex, ev, fieldName, event.target.value) },
+        const input=el('input', {
+            class:'input',type,value:value || '', 'aria-label':label,'data-clinical-control':'true',
+            on:{change:event=>this.updateEvent(p.id,occIndex,ev,fieldName,event.target.value,event.target)},
         });
+        return el('div',{class:'clinical-field'},[
+            this.field(label,input),
+            el('button',{type:'button',class:'btn btn--quiet btn--sm','data-card-save':'true',text:'Сохранить поле',
+                'aria-label':'Сохранить: '+label,on:{click:()=>{this.updateEvent(p.id,occIndex,ev,fieldName,input.value,input);}}}),
+        ]);
     },
 
     renderStageEventsPanel(p, occIndex) {
@@ -4395,8 +4414,8 @@ const app = {
                     showType ? el('div', { class: 'event-card__group' }, [
                         el('div', { class: 'event-card__legend', text: 'Тип лечения' }),
                         el('select', {
-                            class: 'select', 'aria-label': 'Тип лечения',
-                            on: { change: (event) => this.updateEvent(p.id, occIndex, ev, 'treatmentType', event.target.value) },
+                            class: 'select', 'aria-label': 'Тип лечения', 'data-clinical-control':'true',
+                            on: { change: (event) => this.updateEvent(p.id, occIndex, ev, 'treatmentType', event.target.value, event.target) },
                         }, this.treatmentTypeOptions(ev.treatmentType || '')),
                     ]) : null,
                 ]);
@@ -4469,13 +4488,14 @@ const app = {
     },
 
     noteField(p, occIndex, note) {
-        return el('div', { class: 'field' }, [
-            el('label', { class: 'field__label', text: 'Примечание к этапу' }),
-            el('textarea', {
-                class: 'textarea', rows: '3', value: note || '',
-                placeholder: 'Свободный комментарий по этому этапу…',
-                on: { change: (event) => this.updateOccurrenceNote(p.id, occIndex, event.target.value) },
-            }),
+        const input=el('textarea', {class:'textarea',rows:'3',value:note || '','data-clinical-control':'true',
+            placeholder:'Свободный комментарий по этому этапу…',
+            on:{change:event=>this.updateOccurrenceNote(p.id,occIndex,event.target.value,event.target)},
+        });
+        return el('div',{class:'clinical-field'},[
+            this.field('Примечание к этапу',input),
+            el('button',{type:'button',class:'btn btn--ghost btn--sm','data-card-save':'true',text:'Сохранить заметку',
+                on:{click:()=>{this.updateOccurrenceNote(p.id,occIndex,input.value,input);}}}),
         ]);
     },
 
@@ -6730,6 +6750,125 @@ const app = {
 
     /* ================================================================ МУТАЦИИ */
 
+    capturePatientEdits() {
+        if (!this.user || this.sessionExpired || !this.patientDetails || !$('patientPanels')) return;
+        this.sessionFieldDrafts=this.collectSessionFieldDrafts(this.user,[...this.patientDetails.values()],new Set(this.patientDetails.keys()));
+        if (this.sessionFieldDrafts.size || $('sessionFieldDrafts')) this.renderSessionFieldDrafts();
+    },
+
+    guardNavigationChange(node, control) {
+        node.addEventListener('focus',()=>{control.navigationBlur=false;});
+        // Clinical controls stay dirty until acknowledgment. Primary fields retain
+        // the existing explicit field-completion change contract (including Tab).
+        node.addEventListener('keydown',event=>{if(event.key==='Tab' && control.navigationOnly)control.navigationBlur=true;});
+        node.addEventListener('change',event=>{
+            if (control.navigationBlur) {control.navigationBlur=false;event.stopImmediatePropagation();return;}
+        },true);
+    },
+
+    registerClinicalControls() {
+        this.patientDraftControls ||= new WeakMap();
+        for (const node of $('patientPanels').querySelectorAll('[data-clinical-control]')) {
+            if (this.patientDraftControls.has(node) || node.disabled || ['checkbox','search'].includes(node.type)) continue;
+            const control={navigationOnly:true,readValue:()=>node.value,initial:JSON.stringify(node.value),touched:false};
+            this.patientDraftControls.set(node,control);node.addEventListener('input',()=>{control.touched=true;});
+            this.guardNavigationChange(node,control);
+        }
+    },
+
+    dirtyClinicalControls() {
+        return [...$('patientPanels').querySelectorAll('input,select,textarea')].filter(node=>{
+            const c=this.patientDraftControls?.get(node);return c?.navigationOnly && !node.disabled && (c.pending || c.error || (c.touched && JSON.stringify(c.readValue())!==c.initial));
+        });
+    },
+
+    markClinicalSubmitted(node, submitted) {
+        const c = this.patientDraftControls?.get(node);
+        if (!c) return;
+        c.initial = JSON.stringify(submitted);
+        c.touched = JSON.stringify(c.readValue()) !== c.initial;
+        c.error = null;
+    },
+
+    async submitClinicalControl(node, patientId, write) {
+        const c = this.patientDraftControls?.get(node);
+        if (!c || this.sessionExpired || !this.can('editPatients')) return;
+        if (this.clinicalWriteInFlight || c.blocked) return;
+        const owner = this.user.id, epoch = this.sessionEpoch;
+        const submitted = node.value;
+        const ticket = {};
+        this.clinicalWriteInFlight = ticket;
+        c.pending = true;
+        c.touched = true;
+        const field = node.closest('.clinical-field') || node.parentElement;
+        let status = field.querySelector('.clinical-save-status');
+        if (!status) { status = el('p', {class:'field__hint clinical-save-status', role:'status'}); field.append(status); }
+        status.textContent = 'Сохранение… Ввод можно продолжать, повторная запись заблокирована.';
+        field.setAttribute('aria-busy', 'true');
+        const buttons = [...$('patientPanels').querySelectorAll('[data-card-save]')];
+        buttons.forEach(button => { button.disabled = true; });
+        try {
+            const updated = await write(submitted, c);
+            if (this.user?.id !== owner || this.sessionEpoch !== epoch || this.sessionExpired || !node.isConnected) return;
+            this.replacePatientInCache(updated);
+            this.markClinicalSubmitted(node, submitted);
+            status.textContent = c.touched ? 'Отправленное значение сохранено. Новый ввод еще не сохранен.' : 'Сохранено.';
+        } catch (error) {
+            if (this.user?.id !== owner || this.sessionEpoch !== epoch || this.sessionExpired || !node.isConnected) return;
+            if ([403,404].includes(error.status)) {
+                // Object access can change without a role/access-context change.
+                this.patientDetails.delete(patientId);
+                for (const [key,draft] of this.sessionFieldDrafts) if (draft.patientId === patientId) this.sessionFieldDrafts.delete(key);
+                for (const id of ['patientPanels','patientSide','patientRoute','patientFacts']) $(id).replaceChildren();
+                this.currentPatientId = null;
+                this.renderSessionFieldDrafts();
+                this.showView('patients');
+                void this.reloadPatientsAndRender();
+                return;
+            }
+            c.error = error.status || 'unknown';
+            c.blocked = !error.status || [409,410].includes(error.status);
+            status.textContent = c.blocked
+                ? 'Результат записи не подтвержден или версия изменилась. Ввод сохранен в форме. Повторная запись запрещена: явно отмените ввод и обновите карточку перед новым решением.'
+                : 'Не сохранено. Ввод сохранен в форме. Исправьте ошибку или повторите сохранение вручную. ' + apiErrorMessage(error.status);
+        } finally {
+            c.pending = false;
+            if (this.clinicalWriteInFlight === ticket) {
+                this.clinicalWriteInFlight = null;
+                buttons.forEach(button => { button.disabled = !this.can('editPatients'); });
+            }
+            field.removeAttribute('aria-busy');
+            if (c.blocked) field.querySelectorAll('[data-card-save]').forEach(button => { button.disabled = true; });
+            if (node.isConnected && !this.sessionExpired && this.user?.id === owner && !this.dirtyClinicalControls().length) this.refreshCurrent();
+        }
+    },
+
+    bindPatientNavigation() {
+        const selector='#patientTabs button,#backToList,.nav__item,#patientSide button,#patientFacts button,.tl-step,#themeToggle,[data-card-save]';
+        document.addEventListener('pointerdown',event=>{
+            if (!event.target.closest(selector) || this.sessionExpired) return;
+            const c=this.patientDraftControls?.get(document.activeElement);if(c)c.navigationBlur=true;
+        },{capture:true,signal:this.globalControls.signal});
+        document.addEventListener('click',event=>{
+            const target=event.target.closest(selector);
+            if(!target || this.sessionExpired || !this.user || target.matches('[data-card-save]'))return;
+            const dirty=this.dirtyClinicalControls();if(!dirty.length)return;
+            event.preventDefault();event.stopImmediatePropagation();
+            if (this.clinicalWriteInFlight) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }
+            const epoch=this.sessionEpoch,user=this.user.id;
+            void ui.confirm({title:'Отменить несохраненный ввод?',text:'Поля события или заметки еще не сохранены. Остаться в форме или явно отменить ввод перед переходом?',okLabel:'Отменить ввод и перейти',danger:false}).then(async ok=>{
+                if(!ok || this.sessionExpired || this.user?.id!==user || this.sessionEpoch!==epoch)return;
+                if (dirty.some(node=>this.patientDraftControls.get(node).error)) {
+                    try { await this.refreshPatientRecord(this.currentPatientId); }
+                    catch (error) { if ([403,404].includes(error.status)) this.discardSessionAndReload(); else ui.toast('Не удалось обновить карточку. Ввод сохранен.', 'warning'); return; }
+                    if (this.sessionExpired || this.user?.id!==user || this.sessionEpoch!==epoch) return;
+                }
+                for(const node of dirty){const c=this.patientDraftControls.get(node);node.value=JSON.parse(c.initial);c.touched=false;c.error=null;c.blocked=false;}
+                target.click();
+            });
+        },{capture:true,signal:this.globalControls.signal});
+    },
+
     trackPatientControl(patient, field, node, readValue = () => node.value) {
         this.patientDraftControls = this.patientDraftControls || new WeakMap();
         // Версия принадлежит отрисованной карточке, а не будущему ответу сервера.
@@ -6737,6 +6876,7 @@ const app = {
             readValue, initial: JSON.stringify(readValue()), touched: false};
         this.patientDraftControls.set(node, control);
         for (const event of ['input', 'change']) node.addEventListener(event, () => { control.touched = true; });
+        this.guardNavigationChange(node,control);
         return node;
     },
 
@@ -6744,7 +6884,7 @@ const app = {
         const drafts = new Map(this.sessionFieldDrafts || []);
         for (const node of $('patientPanels').querySelectorAll('input, select, textarea')) {
             const control = this.patientDraftControls?.get(node);
-            if (!control || !control.touched || node.disabled) continue;
+            if (!control || control.navigationOnly || !control.touched || node.disabled) continue;
             const value = control.readValue();
             if (JSON.stringify(value) === control.initial) continue;
             drafts.set(control.patientId + ':' + control.field, {patientId: control.patientId, owner: this.user.id,
@@ -6839,6 +6979,7 @@ const app = {
                     this.keepSessionFieldDraft(patientId, body);
                     return;
                 }
+                if (!e.status || e.status === 503 || e.status === 422 || this.isStaleRecord(e)) this.keepSessionFieldDraft(patientId, body);
                 // WP2.4-C: другой карточке вашей области принадлежит тот же номер полиса.
                 if (this.isStaleRecord(e)) {
                     await this.reloadAfterStaleRecord(patientId, e);
@@ -7022,34 +7163,27 @@ const app = {
         }
     },
 
-    async updateEvent(patientId, occIndex, ev, fieldName, value) {
-        try {
-            let target = ev;
+    async updateEvent(patientId, occIndex, ev, fieldName, value, node) {
+        return this.submitClinicalControl(node, patientId, async (submitted, control) => {
+            let target = control.eventTarget || ev;
             if (!target || !target.id) {
-                // У этапа ещё нет события (поле-заготовка): создать его, только
-                // если этап всё ещё пуст, и править именно созданное событие.
                 const created = await apiPost(`/api/patients/${patientId}/history/${occIndex}/events`, {
                     expectedEventIds: [], purpose: 'placeholder',
                 });
                 target = created.history[occIndex].events.find(item => item.id === created.createdEventId);
                 if (!target) throw new Error('Созданное событие не найдено. Обновите карточку пациента');
+                // A confirmed placeholder must not be created a second time after PATCH failure.
+                control.eventTarget = target;
             }
-            const updated = await apiPatch(`/api/patients/${patientId}/events/${encodeURIComponent(target.id)}`, { field: fieldName, value, version: target.version });
-            this.replacePatientInCache(updated);
-            this.refreshCurrent();
-        } catch (e) {
-            ui.toast('Не удалось сохранить: ' + e.message, 'danger');
-            await this.reloadPatientAfterConflict(patientId, e);
-        }
+            const updated = await apiPatch(`/api/patients/${patientId}/events/${encodeURIComponent(target.id)}`, {field:fieldName, value:submitted, version:target.version});
+            control.eventTarget = updated.history[occIndex].events.find(item => item.id === target.id);
+            return updated;
+        });
     },
 
-    async updateOccurrenceNote(patientId, occIndex, value) {
-        try {
-            const updated = await apiPatch(`/api/patients/${patientId}/history/${occIndex}/note`, { note: value });
-            this.replacePatientInCache(updated);
-        } catch (e) {
-            ui.toast('Не удалось сохранить заметку: ' + e.message, 'danger');
-        }
+    async updateOccurrenceNote(patientId, occIndex, value, node) {
+        return this.submitClinicalControl(node, patientId, submitted =>
+            apiPatch(`/api/patients/${patientId}/history/${occIndex}/note`, {note:submitted}));
     },
 
     async updateChecklistItem(patientId, occIndex, itemName, checked) {
@@ -10629,6 +10763,7 @@ const app = {
 
     bindStaticControls() {
         this.globalControls = new AbortController();
+        this.bindPatientNavigation();
         const on = (id, event, handler) => {
             const node = $(id);
             if (node) node.addEventListener(event, handler);

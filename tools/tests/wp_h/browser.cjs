@@ -7,6 +7,13 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
  const results={syntheticOnly:true,realBackend:true,checks:[],axe:[]};
  try{
   const context=await browser.newContext({viewport:{width:1440,height:1000}}),page=await context.newPage();page.setDefaultTimeout(30000);
+  // Ordinary paging has no competing writes in this scenario. Serialize API
+  // transport; intentional release races are separate WP-I registry cases.
+  let apiQueue=Promise.resolve();
+  await page.route('**/api/**',route=>{
+   const job=apiQueue.then(async()=>{const response=await route.fetch();await route.fulfill({response});});
+   apiQueue=job.catch(()=>{});return job;
+  });
   let legacy=0;page.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/patients'&&r.method()==='GET'&&u.searchParams.get('view')!=='page')legacy++;});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
   async function settled(){await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));await page.waitForFunction(()=>app.appReady&&!app.sessionExpired&&!app.sessionReconciling);}

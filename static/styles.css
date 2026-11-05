@@ -3019,3 +3019,52 @@ html[data-theme="light"] .chip--warning { color:#854300; }
     .registry-table td + td { margin-top:var(--sp-3); }
     .registry-table .registry-doctor::before { content:'Врач: '; color:var(--text-3); }
 }
+
+/* WP-I I-3: Staff-UX patient workspace, retaining the medical renderers. */
+.patient-workspace .patient-layout { display:block; }
+.patient-workspace .patient-side { margin-bottom:var(--sp-5); }
+.patient-workspace .pcard { padding:0; border:0; background:transparent; border-radius:0; }
+.patient-workspace .pcard__head { align-items:center; margin-bottom:var(--sp-3); }
+.patient-workspace .pcard__name { font-size:var(--text-2xl); overflow-wrap:anywhere; }
+.patient-workspace .pcard__head .avatar { display:none; }
+.patient-workspace .pcard__meta,.patient-workspace .pcard__phone,.patient-workspace .pcard__sub,.pcard__diagnosis { display:inline-block; margin-right:var(--sp-4); font-size:var(--text-md); color:var(--text-2); }
+.patient-workspace .pcard__actions { flex-direction:row; flex-wrap:wrap; margin-top:var(--sp-4); }
+.patient-workspace__body { display:grid; grid-template-columns:minmax(0,1fr) 230px; gap:var(--sp-5); align-items:start; }
+.patient-facts { min-width:0; display:grid; gap:var(--sp-4); }
+.patient-facts .pcard__block { margin:0; padding:0 0 var(--sp-4); border-top:0; border-bottom:1px solid var(--border); }
+.patient-facts .pcard__sub { display:block; margin-right:0; font-size:var(--text-sm); }
+.patient-facts .pcard__label { text-transform:none; letter-spacing:normal; font-size:var(--text-md); }
+.patient-route { min-width:0; margin-bottom:var(--sp-4); }
+.patient-route .timeline { flex-wrap:nowrap; overflow-x:auto; padding-bottom:var(--sp-3); }
+.patient-route .tl-step { position:relative; flex:1 0 115px; border:0; background:transparent; border-radius:0; padding:var(--sp-2); }
+.patient-route .tl-step::after { content:''; position:absolute; height:2px; background:var(--border-strong); left:calc(50% + 18px); right:calc(-50% + 18px); top:23px; }
+.patient-route .tl-step:last-child::after { display:none; }
+.patient-route .tl-step.is-selected .tl-step__label { color:var(--accent-text); text-decoration:underline; text-underline-offset:4px; }
+.patient-route .tl-step__state { font-weight:500; text-transform:none; }
+.patient-workspace .tabs { flex-wrap:wrap; border:0; border-bottom:1px solid var(--border); border-radius:0; padding:0; gap:var(--sp-2); background:transparent; }
+.patient-workspace .tab { border-radius:0; border-bottom:2px solid transparent; padding:var(--sp-3) var(--sp-2); }
+.patient-workspace .tab[aria-selected="true"] { color:var(--text); background:transparent; border-bottom-color:var(--accent-text); }
+.patient-workspace .panel { border-radius:var(--r-md); }
+.patient-workspace .overview { grid-template-columns:minmax(0,1fr); }
+.patient-workspace .overview > div { display:contents; }
+.patient-workspace .fieldset { padding-bottom:var(--sp-4); border-bottom:1px solid var(--border); }
+.patient-workspace .fieldset:last-child { border:0; }
+.patient-workspace .fieldset__legend { text-transform:none; letter-spacing:normal; font-size:var(--text-lg); color:var(--text); }
+.clinical-field { min-width:0; }
+.clinical-field .field { margin-bottom:var(--sp-2); }
+.patient-workspace .event-card { margin-bottom:var(--sp-4); }
+@media (max-width:1100px) { .patient-workspace__body { grid-template-columns:minmax(0,1fr); } .patient-facts { grid-template-columns:repeat(3,minmax(0,1fr)); } }
+@media (max-width:560px) {
+    .patient-workspace .pcard__name { font-size:var(--text-xl); }
+    .patient-workspace .pcard__actions .btn { flex:1 1 140px; }
+    .patient-workspace .pcard__meta,.patient-workspace .pcard__phone,.pcard__diagnosis { display:block; margin:var(--sp-1) 0; }
+    .patient-facts { grid-template-columns:minmax(0,1fr); }
+    .patient-route .tl-step { min-width:115px; }
+    .patient-workspace .tab { white-space:normal; min-height:44px; }
+}
+
+.patient-workspace { min-width:0; overflow-wrap:anywhere; }
+.patient-workspace .alert--info { color:var(--accent-text); }
+.patient-workspace .chip--danger { color:#fca5a5; }
+
+html[data-theme="light"] .patient-workspace .chip--danger { color:#b91c1c; }

@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix='clinic-wph-baseline-') as td:
  faults={'mode':'none','serial':0}
  @app.post('/synthetic/wph/release-race')
  def arm_release_race(body:dict):
-  assert body.get('mode') in {'none','once','always'}
+  assert body.get('mode') in {'none','once','always','technical-once','technical-always'}
   with lock:faults['mode']=body['mode']
   return {'syntheticOnly':True}
  original_page=patient_pages.page
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='clinic-wph-baseline-') as td:
   with lock:
    mode=faults['mode'];faults['serial']+=1;serial=faults['serial']
    if mode=='once':faults['mode']='none'
-  if mode!='none':
+  if mode in {'once','always'}:
    cond,scope_args=policy.patient_scope_filter(a[1])
    pid=a[0].execute('SELECT id FROM patients WHERE '+cond+' ORDER BY id DESC LIMIT 1',scope_args).fetchone()[0]
    with a[0]:a[0].execute('UPDATE patients SET head=?,version=version+1 WHERE id=?',('Синтетическая гонка '+str(serial),pid))
@@ -56,7 +56,21 @@ with tempfile.TemporaryDirectory(prefix='clinic-wph-baseline-') as td:
  if original_validation is not None:
   def timed_validation(*a,**kw):
    start=time.perf_counter()
-   try:return original_validation(*a,**kw)
+   try:
+    result=original_validation(*a,**kw)
+    with lock:
+     mode=faults['mode']
+     if mode=='technical-once':faults['mode']='none'
+    if mode in {'technical-once','technical-always'}:
+     before=a[0].execute('PRAGMA data_version').fetchone()[0]
+     # Same technical table written by auth/activity; no patient/scope change.
+     other_conn=original(Path(td)/'clinic.db')
+     try:
+      with other_conn:other_conn.execute('UPDATE sessions SET last_seen_at=?',(security.utc_now().isoformat(),))
+     finally:other_conn.close()
+     x=bucket.get()
+     if x is not None:x['technical_commit']={'table':'sessions','before':before,'after':a[0].execute('PRAGMA data_version').fetchone()[0]}
+    return result
    finally:
     x=bucket.get()
     if x is not None:x['validation_seconds']=x.get('validation_seconds',0)+time.perf_counter()-start
