@@ -2029,25 +2029,46 @@ const app = {
         return p;
     },
 
+    setPatientListState(state, message = '') {
+        this.patientListState = state;
+        const busy = state === 'loading';
+        $('view-patients').setAttribute('aria-busy', String(busy));
+        $('patientListLoading').hidden = !busy;
+        $('patientListError').hidden = state !== 'error';
+        $('patientListErrorText').textContent = message;
+        $('patientRegistryResults').hidden = state === 'error';
+        $('patientRegistryResults').inert = busy || state === 'error';
+        if (state === 'error') $('patientRegistryCount').textContent = '—';
+        else if (state === 'ready' && this.patientPage) $('patientRegistryCount').textContent = String(this.patientPage.summary.total);
+    },
+
     async loadPatients(cursor = null, restarted = false) {
         const version = this.beginRead('patients');
-        const path = '/api/patients?' + this.patientPageQuery(cursor);
-        let data;
-        try { data = await apiGetJson(path); }
-        catch (error) {
+        this.setPatientListState('loading');
+        this.renderPatientFilterChips();
+        try {
+            const path = '/api/patients?' + this.patientPageQuery(cursor);
+            let data;
+            try { data = await apiGetJson(path); }
+            catch (error) {
+                if (!this.isCurrentRead('patients', version)) return;
+                if (!restarted && [409, 410].includes(error.status) && ['PATIENT_QUERY_CHANGED', 'CURSOR_EXPIRED'].includes(error.data?.code)) {
+                    ui.toast('Список изменился. Выдача обновлена; фильтры, выбранная карточка и черновики сохранены.', 'warning');
+                    // Exactly one controlled restart, never a retry loop.
+                    data = await apiGetJson('/api/patients?' + this.patientPageQuery());
+                    await this.reconcileSelectedDetails(version);
+                    if (this.isCurrentRead('patients', version)) { this.pageTrail = [null]; this.pageIndex = 0; }
+                } else throw error;
+            }
             if (!this.isCurrentRead('patients', version)) return;
-            if (!restarted && [409, 410].includes(error.status) && ['PATIENT_QUERY_CHANGED', 'CURSOR_EXPIRED'].includes(error.data?.code)) {
-                ui.toast('Список изменился. Выдача обновлена; фильтры, выбранная карточка и черновики сохранены.', 'warning');
-                // Exactly one controlled restart, never a retry loop.
-                data = await apiGetJson('/api/patients?' + this.patientPageQuery());
-                await this.reconcileSelectedDetails(version);
-                if (this.isCurrentRead('patients', version)) { this.pageTrail = [null]; this.pageIndex = 0; }
-            } else throw error;
+            if (!cursor) { this.pageTrail = [null]; this.pageIndex = 0; }
+            this.patientRows = data.patients; this.patientPage = data; this.patientListDirty=false;
+            this.renderPatientPagination();
+            this.setPatientListState('ready');
+        } catch (error) {
+            if (this.isCurrentRead('patients', version) && !error.obsolete) this.setPatientListState('error', error.message);
+            throw error;
         }
-        if (!this.isCurrentRead('patients', version)) return;
-        if (!cursor) { this.pageTrail = [null]; this.pageIndex = 0; }
-        this.patientRows = data.patients; this.patientPage = data; this.patientListDirty=false;
-        this.renderPatientPagination();
     },
 
     async reconcileSelectedDetails(version) {
@@ -2329,6 +2350,7 @@ const app = {
         Object.assign(this, structuredClone(pristineAppState), {user, sessionEpoch: epoch, sessionReconciling: true});
         this.bindStaticControls();
         this.patientRows = page.patients; this.patientPage = page;
+        this.setPatientListState('ready');
         this.patientDetails = new Map(fresh.map(p=>[p.id,p]));
         this.headOptions = heads; Object.assign(this, listSettings);
         this.doctors = doctors;
@@ -3043,13 +3065,14 @@ const app = {
     },
 
     renderStats() {
-        const total = this.patientPage?.summary.total || 0;
+        const total = this.patientPage?.summary.total ?? null;
+        $('patientRegistryCount').textContent = total === null ? '—' : String(total);
         const {fresh=0, inTreatment=0, done=0} = this.patientPage?.summary || {};
         const share = (n) => total ? `${(n / total * 100).toFixed(1)}% от всех` : 'нет данных';
 
         const stat = (label, value, meta, metaClass) => el('div', { class: 'stat' }, [
             el('div', { class: 'stat__label', text: label }),
-            el('div', { class: 'stat__value', text: String(value) }),
+            el('div', { class: 'stat__value', text: total === null ? '—' : String(value) }),
             el('div', { class: metaClass ? `stat__meta ${metaClass}` : 'stat__meta', text: meta }),
         ]);
 
@@ -3080,6 +3103,7 @@ const app = {
     /** Панели-листы переиспользуют те же select-элементы, а не копию:
         обработчики и значения остаются едиными для обеих раскладок. */
     openFiltersSheet() {
+        $('registryMoreFilters').open = true;
         $('filtersSheetBody').append($('toolbarFilters'));
         $('openFiltersSheetBtn').setAttribute('aria-expanded', 'true');
         ui.openModal('filtersSheet');
@@ -3090,6 +3114,7 @@ const app = {
         $('openFiltersSheetBtn').setAttribute('aria-expanded', 'false');
         const toolbar = document.querySelector('#view-patients .toolbar');
         toolbar.append($('toolbarFilters'));
+        $('registryMoreFilters').open = false;
     },
 
     resetFilters() {
@@ -3144,10 +3169,28 @@ const app = {
         banner.classList.remove('is-hidden');
     },
 
+    renderPatientFilterChips() {
+        const chips = [];
+        if (this.searchQuery) chips.push({id:'searchInput', label:`Поиск: ${this.searchQuery}`, event:'input'});
+        for (const [id, value, name] of [
+            ['filterStage',this.stageFilter,'Этап'], ['filterHead',this.headFilter,'Заведующий'],
+            ['filterDeadline',this.deadlineFilter,'Срок'], ['filterAttention',this.attentionFilter,'Внимание'],
+            ['filterAttentionReason',this.attentionReasonFilter,'Причина'],
+        ]) if (value) chips.push({id, label:`${name}: ${$(id).selectedOptions[0]?.textContent || value}`, event:'change'});
+        $('patientFilterChips').replaceChildren(frag(chips.map(chip => el('button', {
+            type:'button', class:'registry-chip', text:chip.label+' ×', 'aria-label':'Снять условие: '+chip.label,
+            on:{click:()=>{ const field=$(chip.id);field.value='';field.dispatchEvent(new Event(chip.event,{bubbles:true})); }},
+        }))));
+        $('resetPatientFiltersBtn').classList.toggle('is-hidden', !this.activeFilterCount());
+        const count=[this.deadlineFilter,this.attentionFilter,this.attentionReasonFilter].filter(Boolean).length;
+        $('registryMoreFilterCount').textContent = count ? `· ${count}` : '';
+    },
+
     renderPatients() {
-        if (this.sessionExpired) return;
+        if (this.sessionExpired || this.patientListState === 'error') return;
         this.renderStats();
         this.updateFiltersButton();
+        this.renderPatientFilterChips();
         const filtered = this.getFiltered();
         const body = $('patientsBody');
         const empty = $('patientsEmpty');
@@ -3183,10 +3226,10 @@ const app = {
                 },
             }, [
                 el('td', {}, el('div', { class: 'person' }, [
-                    el('span', { class: `avatar avatar--${p.priority}`, text: this.initials(p.name) }),
                     el('div', {}, [
                         el('button', {type:'button', class:'person__name patient-open', text:p.name, 'aria-label':`Открыть карточку: ${p.name}`, on:{click:event=>{event.stopPropagation();this.openPatient(p.id);}}}),
                         el('div', { class: 'person__meta', text: `${p.age} лет · ${p.diagnosis || 'диагноз не указан'}` }),
+                        p.priority !== 'normal' ? el('span', {class:'registry-priority', text:p.priority === 'urgent' ? 'Срочно' : 'Высокий приоритет'}) : null,
                         attentionBadge,
                     ]),
                 ])),
@@ -3198,12 +3241,16 @@ const app = {
                         el('span', { class: 'progress__value', text: `${percent}%` }),
                     ]),
                 ]),
+                el('td', { class: 'cell-deadline' }, el('span', {class:'registry-deadline', text:p.currentFact ? 'Факт отмечен' : p.deadlineDays == null ? 'Дата не назначена' : p.deadlineDays < 0 ? `Плановая дата прошла · ${Math.abs(p.deadlineDays)} дн.` : p.deadlineDays === 0 ? 'Сегодня' : `Через ${p.deadlineDays} дн.`})),
                 el('td', { class: 'cell-when' }, [
                     el('div', { class: 'cell-when__time', text: this.formatDateTime(p.updatedAt || p.arrival) }),
                     activity ? el('div', { class: 'cell-when__what', text: activity }) : null,
                 ]),
                 el('td', { class: 'cell-head' }, el('div', { class: 'cell-head__content' }, [
-                    el('span', { text: p.head || '—' }),
+                    el('div', {}, [
+                        el('div', {class:'registry-doctor', text:p.treatingDoctorName || p.doctor || 'Врач не сопоставлен'}),
+                        el('div', {class:'person__meta', text:`Заведующий: ${p.head || 'не указан'}`}),
+                    ]),
                     el('span', { class: 'patient-row__chevron', 'aria-hidden': 'true', text: '›' }),
                 ])),
             ]);
@@ -10902,6 +10949,16 @@ const app = {
         this.syncSidebarFocus();
 
         // Фильтры списка
+        on('resetPatientFiltersBtn', 'click', () => this.resetFilters());
+        on('retryPatientListBtn', 'click', () => this.reloadPatientsAndRender());
+        on('registryMoreFilters', 'keydown', event => {
+            if (event.key === 'Escape' && $('registryMoreFilters').open && !ui.openModals.includes('filtersSheet')) {
+                event.preventDefault();$('registryMoreFilters').open=false;$('registryMoreFilters').querySelector('summary').focus();
+            }
+        });
+        this.listenGlobal(document, 'click', event => {
+            if (!ui.openModals.includes('filtersSheet') && !$('registryMoreFilters').contains(event.target) && !$('filtersSheet').contains(event.target)) $('registryMoreFilters').open=false;
+        });
         on('searchInput', 'input', (event) => {
             this.searchQuery = event.target.value;
             clearTimeout(this.patientSearchTimer);

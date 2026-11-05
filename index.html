@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-shell-v1">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-registry-v2">
 </head>
 <body>
 
@@ -183,11 +183,11 @@
         <main class="content" id="content">
 
             <!-- СПИСОК ПАЦИЕНТОВ -->
-            <section class="view" id="view-patients">
+            <section class="view registry" id="view-patients" aria-labelledby="patientRegistryTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Пациенты</h1>
-                        <p class="pagehead__subtitle">Список всех пациентов клиники</p>
+                        <h1 class="pagehead__title" id="patientRegistryTitle">Пациенты <span class="registry__count" id="patientRegistryCount">—</span></h1>
+                        <p class="pagehead__subtitle">Пациенты в вашей области доступа</p>
                     </div>
                     <div class="pagehead__actions">
                         <!-- На узком экране импорт и экспорт прячутся под одну кнопку «Данные» -->
@@ -204,7 +204,7 @@
                     </div>
                 </div>
 
-                <div class="toolbar">
+                <div class="toolbar registry-toolbar">
                     <div class="search">
                         <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
                         <label class="visually-hidden" for="searchInput">Поиск пациентов</label>
@@ -214,20 +214,22 @@
                         <span id="filtersBtnLabel">Фильтры</span>
                     </button>
                     <div class="toolbar__filters" id="toolbarFilters">
-                        <label class="visually-hidden" for="filterStage">Фильтр по этапу</label>
-                        <select class="select" id="filterStage"></select>
-                        <label class="visually-hidden" for="filterHead">Фильтр по заведующему</label>
-                        <select class="select" id="filterHead"></select>
-                        <label class="visually-hidden" for="filterDeadline">Фильтр по сроку</label>
-                        <select class="select" id="filterDeadline"></select>
-                        <label class="visually-hidden" for="filterAttention">Фильтр по отметке внимания</label>
-                        <select class="select" id="filterAttention"></select>
-                        <label class="visually-hidden" for="filterAttentionReason">Фильтр по причине внимания</label>
-                        <select class="select" id="filterAttentionReason"></select>
-                        <label class="visually-hidden" for="sortOrderSelect">Сортировка</label>
-                        <select class="select" id="sortOrderSelect"></select>
+                        <div class="registry-filter"><label for="filterStage">Этап</label><select class="select" id="filterStage"></select></div>
+                        <div class="registry-filter"><label for="filterHead">Заведующий</label><select class="select" id="filterHead"></select></div>
+                        <details class="registry-more" id="registryMoreFilters">
+                            <summary>Еще фильтры <span id="registryMoreFilterCount"></span></summary>
+                            <div class="registry-more__body">
+                                <div class="registry-filter"><label for="filterDeadline">Срок</label><select class="select" id="filterDeadline"></select></div>
+                                <div class="registry-filter"><label for="filterAttention">Отметка внимания</label><select class="select" id="filterAttention"></select></div>
+                                <div class="registry-filter"><label for="filterAttentionReason">Причина внимания</label><select class="select" id="filterAttentionReason"></select></div>
+                            </div>
+                        </details>
+                        <div class="registry-filter"><label for="sortOrderSelect">Сортировка</label><select class="select" id="sortOrderSelect"></select></div>
                     </div>
                 </div>
+                <div class="registry-query"><div id="patientFilterChips" class="registry-chips" role="group" aria-label="Активные условия поиска"></div><button type="button" class="btn btn--quiet btn--sm is-hidden" id="resetPatientFiltersBtn">Сбросить фильтры</button></div>
+                <div id="patientListLoading" class="registry-status" role="status" hidden>Обновляем список пациентов…</div>
+                <div id="patientListError" class="alert alert--warning registry-error" role="alert" hidden><p id="patientListErrorText"></p><button type="button" class="btn btn--ghost" id="retryPatientListBtn">Обновить список</button></div>
                 <div class="deadline-legend" aria-label="Легенда цветов сроков">
                     <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--green"></span>4+ дн.</span>
                     <span class="deadline-legend__item"><span class="deadline-legend__dot deadline-legend__dot--yellow"></span>0–3 дн.</span>
@@ -241,23 +243,28 @@
                     <button type="button" class="btn btn--ghost btn--sm" id="unresolvedBannerBtn">Перейти к сопоставлению</button>
                 </div>
 
-                <div class="stats" id="statsRow"></div>
+                <div id="patientRegistryResults">
+                <p class="registry-summary-note">Показатели по всей доступной выборке, без фильтров</p>
+                <div class="stats registry-stats" id="statsRow"></div>
 
-                <div class="panel">
+                <div class="panel registry-panel">
                     <div class="table-wrap">
-                        <table class="table" id="patientsTable">
+                        <table class="table registry-table" id="patientsTable">
+                            <caption class="visually-hidden">Пациенты по выбранным условиям</caption>
                             <thead>
                                 <tr>
                                     <th scope="col">Пациент</th>
-                                    <th scope="col">Этап лечения</th>
+                                    <th scope="col">Этап маршрута</th>
+                                    <th scope="col">Срок</th>
                                     <th scope="col">Последняя активность</th>
-                                    <th scope="col">Заведующий</th>
+                                    <th scope="col">Ответственные</th>
                                 </tr>
                             </thead>
                             <tbody id="patientsBody"></tbody>
                         </table>
                     </div>
-                    <div class="empty is-hidden" id="patientsEmpty"></div>
+                    <div class="empty is-hidden" id="patientsEmpty" role="status"></div>
+                </div>
                 </div>
             </section>
 
@@ -1824,6 +1831,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=wp-e-time-notifications"></script>
+<script src="/static/app.js?v=wp-i-registry-v2"></script>
 </body>
 </html>
