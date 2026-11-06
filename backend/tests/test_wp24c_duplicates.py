@@ -897,7 +897,7 @@ Object.assign($('stage'), { value: 'exam' });
 Object.assign($('head'), { value: 'Заведуев' });
 Object.assign($('diagnosis'), { value: 'C34.1' });
 Object.assign($('policyNumber'), { value: '7700000000031001' });
-const ui = { toast() {}, closeModal() {} };
+const ui = { toast() {}, closeModal() {}, openModal() {} };
 function newIdempotencyKey() { keyCounter += 1; return 'key-' + keyCounter; }
 async function apiPostIdempotent(path, body, key) {
   sent.push({ key, body: JSON.parse(JSON.stringify(body)) });
@@ -919,6 +919,11 @@ async function apiPostIdempotent(path, body, key) {
 }
 const app = {
 METHODS
+  // The real handler now checks its existing create permission before sending.
+  user: { permissions: { createPatients: true } },
+  can(permission) { return this.user.permissions[permission] === true; },
+  clearCreateFieldErrors() {}, updateClientPathStatus() {}, updateStageFields() {},
+  addFormState() { return 'synthetic-form'; },
   addPatientPending: false,
   setAddPatientPending(v) { this.addPatientPending = v; },
   showFormError(m) { errors.push(m); },

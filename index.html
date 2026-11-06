@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-card-v3">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-create-v4">
 </head>
 <body>
 
@@ -455,6 +455,168 @@
                         <div class="empty is-hidden" id="goc65RegistryEmpty">В выбранном периоде случаев ГОК 65+ нет.</div>
                     </section>
                 </div>
+            </section>
+
+            <section class="view is-hidden" id="view-create" aria-labelledby="addModalTitle">
+<nav class="crumbs" aria-label="Навигация"><button class="btn btn--ghost" type="button" id="createBackBtn">Пациенты</button><span aria-hidden="true">/</span><span>Новый пациент</span></nav>
+<div class="create-patient" id="addModal" hidden>
+    <div class="create-patient__box">
+        <div class="pagehead">
+            <div><h1 id="addModalTitle" tabindex="-1">Новый пациент</h1><p class="pagehead__sub">Заполните данные пациента. Поля со звездочкой обязательны.</p></div>
+            <button type="button" class="btn btn--icon" id="closeAddIconBtn" aria-label="Закрыть">
+                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+        </div>
+
+        <div class="create-patient__layout"><form class="form create-patient__form" id="addForm">
+            <p class="alert alert--danger is-hidden" id="addFormError" role="alert" tabindex="-1"></p>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Личные данные</legend>
+                <div class="field">
+                    <label class="field__label" for="fio">ФИО пациента <span class="req">*</span></label>
+                    <input class="input" type="text" id="fio" required autocomplete="off">
+                </div>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="age">Возраст</label>
+                        <input class="input" type="number" id="age" min="0" max="150">
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="phone">Телефон</label>
+                        <input class="input" type="tel" id="phone" placeholder="+7 (999) 123-45-67">
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="policyNumber">Номер полиса ОМС</label>
+                    <input class="input" type="text" id="policyNumber" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="7700000000000001">
+                </div>
+            </fieldset>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Диагноз</legend>
+                <div class="field">
+                    <label class="field__label" for="diagnosisLocalization">Локализация <span class="req">*</span></label>
+                    <select class="select" id="diagnosisLocalization"></select>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="diagnosisSearch">Диагноз <span class="req">*</span></label>
+                    <div class="diagnosis-combobox">
+                        <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D48.6 или молочная"
+                               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="diagnosisOptions" aria-describedby="diagnosisHint">
+                        <input type="hidden" id="diagnosis">
+                        <div class="diagnosis-combobox__list is-hidden" id="diagnosisOptions" role="listbox" aria-label="Варианты диагнозов"></div>
+                    </div>
+                    <p class="field__hint" id="diagnosisHint">Список ограничен выбранной локализацией.</p>
+                </div>
+                <div class="client-path-status" id="clientPathStatus" role="status"></div>
+            </fieldset>
+
+            <fieldset class="fieldset">
+                <legend class="fieldset__legend">Маршрут</legend>
+                <div class="field">
+                    <label class="field__label" for="stage">Текущий этап <span class="req">*</span></label>
+                    <select class="select" id="stage" required></select>
+                </div>
+
+                <div class="field is-hidden" id="primaryAppointmentGroup">
+                    <label class="field__label" for="primaryAppointmentDate">Дата фактического первичного приёма <span class="req">*</span></label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="primaryAppointmentDate">
+                        <input class="input" type="time" id="primaryAppointmentTime" aria-label="Время первичного приёма">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="examGroup">
+                    <label class="field__label" for="examDate">Плановая дата обследования</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="examDate">
+                        <input class="input" type="time" id="examTime" aria-label="Время обследования">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="appointmentGroup">
+                    <label class="field__label" for="appointmentDate">Плановая дата приёма</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="appointmentDate">
+                        <input class="input" type="time" id="appointmentTime" aria-label="Время приёма">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="consultGroup">
+                    <label class="field__label" for="consultDate">Плановая дата онкоконсилиума</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="consultDate">
+                        <input class="input" type="time" id="consultTime" aria-label="Время онкоконсилиума">
+                    </div>
+                </div>
+                <div class="field is-hidden" id="treatmentGroup">
+                    <label class="field__label" for="treatmentType">Тип лечения</label>
+                    <select class="select" id="treatmentType">
+                        <option value="">Не указан</option>
+                        <option value="surgery">Хирургическое лечение</option>
+                        <option value="radiation">Лучевая терапия</option>
+                        <option value="chemo">Химиотерапия</option>
+                        <option value="hormone">Гормонотерапия</option>
+                    </select>
+                    <label class="field__label field__label--spaced" for="treatmentDate">Плановая дата лечения</label>
+                    <div class="grid-2">
+                        <input class="input" type="date" id="treatmentDate">
+                        <input class="input" type="time" id="treatmentTime" aria-label="Время лечения">
+                    </div>
+                </div>
+
+            </fieldset>
+            <fieldset class="fieldset"><legend class="fieldset__legend">Ответственные и приоритет</legend>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="priority">Приоритет</label>
+                        <select class="select" id="priority" required>
+                            <option value="normal">Обычный</option>
+                            <option value="high">Высокий</option>
+                            <option value="urgent">Срочно</option>
+                        </select>
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="doctor">Лечащий врач</label>
+                        <select class="select" id="doctor"></select>
+                        <p class="field__hint is-hidden" id="doctorHint"></p>
+                    </div>
+                </div>
+                <div class="field">
+                    <label class="field__label" for="head">Заведующий <span class="req">*</span></label>
+                    <select class="select" id="head" required></select>
+                </div>
+            </fieldset>
+            <fieldset class="fieldset"><legend class="fieldset__legend">Дополнительно</legend>
+                <div class="field">
+                    <label class="field__label" for="complaint">Комментарии</label>
+                    <textarea class="textarea" id="complaint" rows="4"></textarea>
+                </div>
+                <div class="grid-2">
+                    <div class="field">
+                        <label class="field__label" for="pgiResult">Результат ПГИ</label>
+                        <select class="select" id="pgiResult">
+                            <option value="">Не указано</option>
+                            <option value="confirmed">ЗНО подтвердилось</option>
+                            <option value="not_confirmed">ЗНО не подтвердилось</option>
+                        </select>
+                        <p class="field__hint">Не переводит маршрут автоматически.</p>
+                    </div>
+                    <div class="field">
+                        <label class="field__label" for="pgiResultDate">Дата результата ПГИ</label>
+                        <input class="input" type="date" id="pgiResultDate" aria-describedby="pgiResultDateError">
+                        <p class="field__hint field__hint--danger is-hidden" id="pgiResultDateError"></p>
+                    </div>
+                </div>
+            </fieldset>
+            <p id="createSaveStatus" class="field__hint" role="status"></p>
+        </form><aside class="create-patient__aside panel panel--pad" aria-label="Перед сохранением"><h2>Перед сохранением</h2><p>Проверьте ФИО, диагноз и ответственного врача.</p><p>Начальные события относятся к выбранному этапу лечения.</p><p>Если найден возможный дубль, система предложит проверить совпадения перед созданием.</p></aside></div>
+
+        <div class="create-patient__actions">
+            <button type="button" class="btn btn--ghost" id="closeAddBtn">Отмена</button>
+            <button type="submit" class="btn btn--primary" form="addForm" id="submitAddBtn">Добавить пациента</button>
+        </div>
+    </div>
+</div>
+
             </section>
 
             <!-- КАРТОЧКА ПАЦИЕНТА -->
@@ -955,159 +1117,6 @@
 <input type="file" id="importFileInput" accept="application/json,.json" class="is-hidden">
 
 <!-- МОДАЛКА: НОВЫЙ ПАЦИЕНТ -->
-<div class="modal" id="addModal" role="dialog" aria-modal="true" aria-labelledby="addModalTitle" hidden>
-    <div class="modal__box">
-        <div class="modal__head">
-            <h2 class="modal__title" id="addModalTitle">Новый пациент</h2>
-            <button type="button" class="btn btn--icon" id="closeAddIconBtn" aria-label="Закрыть">
-                <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-            </button>
-        </div>
-
-        <form class="modal__body form" id="addForm">
-            <p class="alert alert--danger is-hidden" id="addFormError" role="alert"></p>
-
-            <fieldset class="fieldset">
-                <legend class="fieldset__legend">Личные данные</legend>
-                <div class="field">
-                    <label class="field__label" for="fio">ФИО пациента <span class="req">*</span></label>
-                    <input class="input" type="text" id="fio" required autocomplete="off">
-                </div>
-                <div class="grid-2">
-                    <div class="field">
-                        <label class="field__label" for="age">Возраст</label>
-                        <input class="input" type="number" id="age" min="0" max="150">
-                    </div>
-                    <div class="field">
-                        <label class="field__label" for="phone">Телефон</label>
-                        <input class="input" type="tel" id="phone" placeholder="+7 (999) 123-45-67">
-                    </div>
-                </div>
-                <div class="field">
-                    <label class="field__label" for="policyNumber">Номер полиса ОМС</label>
-                    <input class="input" type="text" id="policyNumber" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="7700000000000001">
-                </div>
-            </fieldset>
-
-            <fieldset class="fieldset">
-                <legend class="fieldset__legend">Медицинская информация</legend>
-                <div class="field">
-                    <label class="field__label" for="diagnosisLocalization">Локализация <span class="req">*</span></label>
-                    <select class="select" id="diagnosisLocalization"></select>
-                </div>
-                <div class="field">
-                    <label class="field__label" for="diagnosisSearch">Диагноз <span class="req">*</span></label>
-                    <div class="diagnosis-combobox">
-                        <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D48.6 или молочная"
-                               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="diagnosisOptions" aria-describedby="diagnosisHint">
-                        <input type="hidden" id="diagnosis">
-                        <div class="diagnosis-combobox__list is-hidden" id="diagnosisOptions" role="listbox" aria-label="Варианты диагнозов"></div>
-                    </div>
-                    <p class="field__hint" id="diagnosisHint">Список ограничен выбранной локализацией.</p>
-                </div>
-                <div class="client-path-status" id="clientPathStatus" role="status"></div>
-                <div class="field">
-                    <label class="field__label" for="complaint">Комментарии</label>
-                    <textarea class="textarea" id="complaint" rows="4"></textarea>
-                </div>
-                <div class="grid-2">
-                    <div class="field">
-                        <label class="field__label" for="pgiResult">Результат ПГИ</label>
-                        <select class="select" id="pgiResult">
-                            <option value="">Не указано</option>
-                            <option value="confirmed">ЗНО подтвердилось</option>
-                            <option value="not_confirmed">ЗНО не подтвердилось</option>
-                        </select>
-                        <p class="field__hint">Не переводит маршрут автоматически.</p>
-                    </div>
-                    <div class="field">
-                        <label class="field__label" for="pgiResultDate">Дата результата ПГИ</label>
-                        <input class="input" type="date" id="pgiResultDate" aria-describedby="pgiResultDateError">
-                        <p class="field__hint field__hint--danger is-hidden" id="pgiResultDateError"></p>
-                    </div>
-                </div>
-            </fieldset>
-
-            <fieldset class="fieldset">
-                <legend class="fieldset__legend">Этап и ответственные</legend>
-                <div class="field">
-                    <label class="field__label" for="stage">Текущий этап <span class="req">*</span></label>
-                    <select class="select" id="stage" required></select>
-                </div>
-
-                <div class="field is-hidden" id="primaryAppointmentGroup">
-                    <label class="field__label" for="primaryAppointmentDate">Дата фактического первичного приёма <span class="req">*</span></label>
-                    <div class="grid-2">
-                        <input class="input" type="date" id="primaryAppointmentDate">
-                        <input class="input" type="time" id="primaryAppointmentTime" aria-label="Время первичного приёма">
-                    </div>
-                </div>
-                <div class="field is-hidden" id="examGroup">
-                    <label class="field__label" for="examDate">Плановая дата обследования</label>
-                    <div class="grid-2">
-                        <input class="input" type="date" id="examDate">
-                        <input class="input" type="time" id="examTime" aria-label="Время обследования">
-                    </div>
-                </div>
-                <div class="field is-hidden" id="appointmentGroup">
-                    <label class="field__label" for="appointmentDate">Плановая дата приёма</label>
-                    <div class="grid-2">
-                        <input class="input" type="date" id="appointmentDate">
-                        <input class="input" type="time" id="appointmentTime" aria-label="Время приёма">
-                    </div>
-                </div>
-                <div class="field is-hidden" id="consultGroup">
-                    <label class="field__label" for="consultDate">Плановая дата онкоконсилиума</label>
-                    <div class="grid-2">
-                        <input class="input" type="date" id="consultDate">
-                        <input class="input" type="time" id="consultTime" aria-label="Время онкоконсилиума">
-                    </div>
-                </div>
-                <div class="field is-hidden" id="treatmentGroup">
-                    <label class="field__label" for="treatmentType">Тип лечения</label>
-                    <select class="select" id="treatmentType">
-                        <option value="">Не указан</option>
-                        <option value="surgery">Хирургическое лечение</option>
-                        <option value="radiation">Лучевая терапия</option>
-                        <option value="chemo">Химиотерапия</option>
-                        <option value="hormone">Гормонотерапия</option>
-                    </select>
-                    <label class="field__label field__label--spaced" for="treatmentDate">Плановая дата лечения</label>
-                    <div class="grid-2">
-                        <input class="input" type="date" id="treatmentDate">
-                        <input class="input" type="time" id="treatmentTime" aria-label="Время лечения">
-                    </div>
-                </div>
-
-                <div class="grid-2">
-                    <div class="field">
-                        <label class="field__label" for="priority">Приоритет</label>
-                        <select class="select" id="priority" required>
-                            <option value="normal">Обычный</option>
-                            <option value="high">Высокий</option>
-                            <option value="urgent">Срочно</option>
-                        </select>
-                    </div>
-                    <div class="field">
-                        <label class="field__label" for="doctor">Лечащий врач</label>
-                        <select class="select" id="doctor"></select>
-                        <p class="field__hint is-hidden" id="doctorHint"></p>
-                    </div>
-                </div>
-                <div class="field">
-                    <label class="field__label" for="head">Заведующий <span class="req">*</span></label>
-                    <select class="select" id="head" required></select>
-                </div>
-            </fieldset>
-        </form>
-
-        <div class="modal__foot">
-            <button type="button" class="btn btn--ghost" id="closeAddBtn">Отмена</button>
-            <button type="submit" class="btn btn--primary" form="addForm" id="submitAddBtn">Добавить пациента</button>
-        </div>
-    </div>
-</div>
-
 <!-- МОДАЛКА: ЗАПИСЬ НА ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ -->
 <div class="modal" id="consiliumModal" role="dialog" aria-modal="true" aria-labelledby="consiliumModalTitle" hidden>
     <div class="modal__box">
@@ -1832,6 +1841,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=wp-i-card-v3"></script>
+<script src="/static/app.js?v=wp-i-create-v4"></script>
 </body>
 </html>

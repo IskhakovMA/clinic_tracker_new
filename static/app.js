@@ -272,6 +272,7 @@ const ui = {
     returnFocusTargets: new Map(),
 
     openModal(id) {
+        if (id === 'addModal') { $('addModal').hidden=false; app.showView('create'); $('addModalTitle').focus(); return; }
         const modal = $(id);
         this.returnFocusTargets.set(id, document.activeElement);
         modal.hidden = false;
@@ -282,6 +283,11 @@ const ui = {
     },
 
     closeModal(id) {
+        if (id === 'addModal') {
+            $('addModal').hidden=true; app.addFormActive=false;
+            if (app.currentView==='create') { app.leavingCreate=true; app.showView('patients'); app.leavingCreate=false; $('openAddBtn').focus(); }
+            return;
+        }
         const modal = $(id);
         if (!modal || modal.hidden) return;
         modal.hidden = true;
@@ -2159,6 +2165,8 @@ const app = {
     /* ------------------------------------------------------------ Навигация */
 
     showView(view) {
+        if (view==='create' && !this.can('createPatients')) view='patients';
+        if (this.currentView==='create' && view!=='create' && !this.leavingCreate && !this.sessionExpired) { void this.requestCloseAddModal(view); return; }
         this.capturePatientEdits();
         if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';
         const previousView = this.currentView;
@@ -2333,6 +2341,8 @@ const app = {
             ? [...$('addForm').querySelectorAll('input, select, textarea')].map(node => [node.id, node.value, node.checked]) : null;
         const createKey = this.addPatientKey;
         const createSentBody = this.addPatientSentBody;
+        const createUncertain = this.addPatientUncertain;
+        const createConfirmation = this.addPatientDuplicateConfirmation;
         const patientId = this.currentView === 'patient' && allowed.has(this.currentPatientId) ? this.currentPatientId : null;
         const tab = this.currentTab;
         const prompt = patientId && ui.openModals.includes('promptModal') ? $('promptModal') : null;
@@ -2385,6 +2395,8 @@ const app = {
             this.openAddModal();
             this.addPatientKey = createKey;
             this.addPatientSentBody = createSentBody;
+            this.addPatientUncertain = createUncertain;
+            this.addPatientDuplicateConfirmation = createConfirmation;
             for (const [id, value, checked] of createDraft) {
                 const node = $(id);
                 if (!node) continue;
@@ -2393,6 +2405,7 @@ const app = {
             }
             this.updateStageFields();
             this.updateClientPathStatus();
+            this.setAddPatientPending(false);
         }
         return epoch;
     },
@@ -2924,6 +2937,7 @@ const app = {
     /* ============================================================ РЕНДЕР: СПИСОК */
 
     fillStaticSelects() {
+        const createSelections=this.addFormActive ? [...$('addForm').querySelectorAll('select')].map(node=>[node.id,node.value]) : null;
         $('filterStage').replaceChildren(frag([
             option('', 'Все этапы', true),
             ...this.stageFilterOrder.map(s => option(s, this.stageNames[s])),
@@ -3028,6 +3042,10 @@ const app = {
         $('treatmentType').replaceChildren(frag(this.treatmentTypeOptions()));
 
         this.fillDoctorSelect();
+        if (createSelections) {
+            for (const [id,value] of createSelections) if ([...$(id).options].some(option=>option.value===value)) $(id).value=value;
+            this.updateStageFields();this.updateClientPathStatus();this.setAddPatientPending(!!this.addPatientPending);
+        }
     },
 
     treatmentTypeOptions(selected = '') {
@@ -7303,31 +7321,58 @@ const app = {
             .map(node => [node.id, node.value, node.checked]));
     },
 
-    async requestCloseAddModal() {
+    async requestCloseAddModal(nextView = 'patients') {
         if (this.addPatientPending || this.addClosePending) return;
+        const owner=this.user?.id, epoch=this.sessionEpoch;
         if (this.addFormState() !== this.addFormBaseline) {
             this.addClosePending = true;
             const discard = await ui.confirm({title: 'Закрыть форму?',
-                text: 'Несохраненные данные будут удалены. Продолжить?', okLabel: 'Удалить черновик'});
+                text: this.addPatientUncertain
+                    ? 'Запрос мог уже создать карточку. Удаление локального черновика не отменяет запись на сервере. Для проверки результата останьтесь в форме. Удалить черновик?'
+                    : 'Несохраненные данные будут удалены. Продолжить?', okLabel: 'Удалить черновик'});
             this.addClosePending = false;
-            if (!discard || this.sessionExpired) return;
+            if (!discard || this.sessionExpired || this.user?.id!==owner || this.sessionEpoch!==epoch) return;
         }
         ui.closeModal('addModal');
+        if (nextView!=='patients') this.showView(nextView);
     },
 
     openAddModal() {
-        // WP2.4-B: новый ключ для новой формы; повтор той же отправки — с тем же ключом.
+        if (!this.can('createPatients') || this.sessionExpired) return;
+        if (this.addFormActive) { ui.openModal('addModal'); return; }
+        // WP2.4-B: one new operation; uncertain outcomes retain this key/body.
         this.addPatientKey = newIdempotencyKey();
         this.addPatientSentBody = null;
-        this.addPatientDuplicateConfirmation = null;   // WP2.4-C: подтверждение дубля — только для этой формы
+        this.addPatientUncertain = false;
+        this.addPatientDuplicateConfirmation = null;
+        this.addFormActive = true;
         $('addForm').reset();
+        this.clearCreateFieldErrors();
         $('addFormError').classList.add('is-hidden');
         this.clearPgiResultDateError();
         this.resetDiagnosisSelect();
         this.updateClientPathStatus();
         this.updateStageFields();
+        this.setAddPatientPending(false);
         this.addFormBaseline = this.addFormState();
         ui.openModal('addModal');
+    },
+
+    clearCreateFieldErrors() {
+        const removed=new Set([...$('addForm').querySelectorAll('[data-create-error]')].map(node=>node.id));
+        for (const input of $('addForm').querySelectorAll('[aria-describedby]')) { const ids=input.getAttribute('aria-describedby').split(' ').filter(id=>!removed.has(id));if(ids.length)input.setAttribute('aria-describedby',ids.join(' '));else input.removeAttribute('aria-describedby'); }
+        for (const node of $('addForm').querySelectorAll('[data-create-error]')) node.remove();
+        for (const node of $('addForm').querySelectorAll('[aria-invalid]')) node.removeAttribute('aria-invalid');
+    },
+
+    showCreateFieldError(id) {
+        const input=$(id); if (!input) return;
+        const visible=input.type==='hidden' ? $('diagnosisSearch') : input;
+        visible.setAttribute('aria-invalid','true');
+        let message=$(id+'CreateError');
+        if (!message) { message=el('p',{id:id+'CreateError',class:'field__hint field__hint--danger','data-create-error':'true',text:'Проверьте значение поля.'}); visible.after(message); }
+        const described=(visible.getAttribute('aria-describedby')||'').split(' ').filter(Boolean);
+        if (!described.includes(message.id)) visible.setAttribute('aria-describedby',[...described,message.id].join(' '));
     },
 
     resetDiagnosisSelect() {
@@ -7480,6 +7525,7 @@ const app = {
         const box = $('addFormError');
         box.textContent = message;
         box.classList.remove('is-hidden');
+        box.focus();
     },
 
     clearPgiResultDateError() {
@@ -7512,12 +7558,16 @@ const app = {
         if (!button) return;
         button.disabled = pending;
         button.setAttribute('aria-busy', pending ? 'true' : 'false');
-        button.textContent = pending ? 'Добавление…' : 'Добавить пациента';
+        button.textContent = pending ? 'Добавление…' : this.addPatientUncertain ? 'Проверить результат' : 'Добавить пациента';
+        for (const node of $('addForm').querySelectorAll('input,select,textarea')) node.disabled=pending || !!this.addPatientUncertain || (node.id==='doctor' && ['doctor','consilium_chair'].includes(this.user?.roleId));
+        $('createSaveStatus').textContent=this.addPatientUncertain ? 'Результат запроса не подтвержден. Поля зафиксированы. Проверка повторит тот же запрос с прежним ключом. Проверьте результат сейчас, не заводите карточку заново.' : pending ? 'Сохранение. Дождитесь результата.' : '';
     },
 
     async addPatient(event) {
         event.preventDefault();
         if (this.addPatientPending) return;
+        if (!this.can('createPatients') || this.sessionExpired) return;
+        this.clearCreateFieldErrors();
         const fio = $('fio').value.trim();
         const stage = $('stage').value;
         const head = $('head').value;
@@ -7541,7 +7591,7 @@ const app = {
         const doctorLabel = doctorSelect.selectedOptions.length
             ? (doctorUserId ? doctorSelect.selectedOptions[0].textContent : '')
             : '';
-        const payload = {
+        let payload = {
             name: fio,
             age: parseInt($('age').value, 10) || 0,
             phone: $('phone').value,
@@ -7563,6 +7613,7 @@ const app = {
         // (сервер вернет уже созданную карточку). Сервер сверяет его с актуальным списком.
         if (this.addPatientDuplicateConfirmation) payload.duplicateConfirmation = this.addPatientDuplicateConfirmation;
 
+        if (this.addPatientUncertain && this.addPatientSentBody) payload=JSON.parse(this.addPatientSentBody);
         let created;
         for (;;) {
             // Изменились отправляемые данные — это новая операция и новый ключ
@@ -7577,8 +7628,11 @@ const app = {
                 created = await apiPostIdempotent('/api/patients', payload, this.addPatientKey);
                 break;
             } catch (e) {
-                // Введенные данные остаются в форме, кнопка снова доступна.
+                // Unknown outcomes freeze the exact body/key; only an explicit replay is permitted.
+                this.addPatientUncertain = this.addPatientUncertain || !e.status || e.status>=500 || e.status===401 || !!e.obsolete || e.data?.code==='ACCESS_CONTEXT_CHANGED';
                 this.setAddPatientPending(false);
+                const fields={name:'fio',age:'age',phone:'phone',policyNumber:'policyNumber',diagnosis:'diagnosis',treatingDoctorUserId:'doctor',head:'head',pgiResultDate:'pgiResultDate'};
+                if (e.status===422 && Array.isArray(e.data?.detail)) for (const issue of e.data.detail) for (const part of issue.loc||[]) if (fields[part]) this.showCreateFieldError(fields[part]);
                 if (this.isDuplicateLimitExceeded(e)) {
                     this.showFormError('Карточка не создана. ' + apiErrorMessage(e.status, e.data));
                     return;
@@ -7603,6 +7657,7 @@ const app = {
             }
         }
         this.setAddPatientPending(false);
+        this.addPatientUncertain = false;
         this.addPatientKey = null;
         this.addPatientSentBody = null;
         this.addPatientDuplicateConfirmation = null;
@@ -11127,6 +11182,7 @@ const app = {
 
         // Новый пациент
         on('openAddBtn', 'click', () => this.openAddModal());
+        on('createBackBtn', 'click', () => this.requestCloseAddModal());
         on('closeAddBtn', 'click', () => this.requestCloseAddModal());
         on('closeAddIconBtn', 'click', () => this.requestCloseAddModal());
         $('addForm').addEventListener('submit', (event) => this.addPatient(event));
@@ -11363,6 +11419,7 @@ const app = {
                     this.dismissModal(top);
                     return;
                 }
+                if (this.currentView==='create') { this.requestCloseAddModal(); return; }
                 if ($('appScreen').classList.contains('is-nav-open')) {
                     $('appScreen').classList.remove('is-nav-open');
                     $('sidebarScrim').hidden = true;

@@ -45,11 +45,11 @@ const assert = require('node:assert/strict');
         await page.locator('#diagnosisSearch').press('Escape');
         assert.equal(await page.locator('#addModal').evaluate(e => e.hidden), false);
         assert.equal(await page.locator('#diagnosisSearch').getAttribute('aria-expanded'), 'false');
-        for (const action of ['escape', 'cross', 'cancel', 'backdrop']) {
+        for (const action of ['escape', 'cross', 'cancel', 'navigation']) {
             if (action === 'escape') await page.locator('#diagnosisSearch').press('Escape');
             if (action === 'cross') await page.locator('#closeAddIconBtn').click();
             if (action === 'cancel') await page.locator('#closeAddBtn').click();
-            if (action === 'backdrop') await page.locator('#addModal').click({position: {x: 2, y: 2}});
+            if (action === 'navigation') await page.locator('.nav__item[data-view=patients]').click();
             await page.locator('#confirmCancelBtn').click();
             assert.equal(await page.locator('#fio').inputValue(), 'Синтетический Черновик');
             assert.equal(await page.locator('#addModal').evaluate(e => e.hidden), false);
@@ -67,7 +67,7 @@ const assert = require('node:assert/strict');
         assert.equal(await page.locator('#addModal').evaluate(e => e.hidden), true);
         await page.evaluate(() => app.openAddModal());
         assert.equal(await page.locator('#fio').inputValue(), '');
-        log('AUD-33: Escape, cross, cancel, backdrop and reload preserve draft; explicit discard closes');
+        log('AUD-33: Escape, cross, cancel, page navigation and reload preserve draft; explicit discard closes');
 
         // Все сообщения проходят через настоящий сетевой слой, без сырых detail.
         for (const status of [400, 403, 404, 409, 422, 429, 500, 503]) {

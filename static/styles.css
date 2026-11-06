@@ -3068,3 +3068,19 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .patient-workspace .chip--danger { color:#fca5a5; }
 
 html[data-theme="light"] .patient-workspace .chip--danger { color:#b91c1c; }
+
+/* WP-I I-4: Staff-UX full creation page; original medical controls and IDs. */
+.create-patient { min-width:0; }
+.create-patient__layout { display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:var(--sp-5);align-items:start; }
+.create-patient__form { min-width:0; }
+.create-patient__form .fieldset { padding:var(--sp-5);border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);margin-bottom:var(--sp-4);min-width:0; }
+.create-patient__form .fieldset__legend { font-size:var(--text-lg);text-transform:none;letter-spacing:normal;color:var(--text); }
+.create-patient__aside h2 { font-size:var(--text-lg);margin:0 0 var(--sp-3); }
+.create-patient__aside p { color:var(--text-2);line-height:1.6; }
+.create-patient__actions { display:flex;gap:var(--sp-3);justify-content:flex-end;padding:var(--sp-4) 0;border-top:1px solid var(--border); }
+.create-patient input,.create-patient select,.create-patient textarea { min-width:0;max-width:100%; }
+@media(max-width:1000px){.create-patient__layout{grid-template-columns:minmax(0,1fr);}.create-patient__aside{grid-row:2;}}
+@media(max-width:600px){.create-patient__form .grid-2{grid-template-columns:minmax(0,1fr);}.create-patient__form .fieldset{padding:var(--sp-4);}.create-patient__actions{flex-wrap:wrap;}.create-patient__actions .btn{flex:1 1 140px;}}
+
+/* Error text must retain AA contrast on the light creation surface. */
+html[data-theme="light"] .create-patient .alert--danger { color: #b91c1c; }
