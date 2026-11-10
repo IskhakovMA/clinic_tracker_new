@@ -12,7 +12,7 @@ import threading
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--count', type=int, choices=(100, 1000, 10000), default=1000)
-    parser.add_argument('--suite', choices=('schedule', 'zoom', 'workflows', 'loading', 'decisions', 'decisionzoom'), default='schedule')
+    parser.add_argument('--suite', choices=('schedule', 'zoom', 'workflows', 'loading', 'decisions', 'decisionzoom', 'records', 'recordszoom'), default='schedule')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,7 @@ def main():
         port = sock.getsockname()[1]
     ready = threading.Event()
     with (args.out / 'server.log').open('wb') as server_log:
-        server = subprocess.Popen([sys.executable, str(here.parent / 'wp_h/server.py'), '--count', str(args.count), '--port', str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        server = subprocess.Popen([sys.executable, str(here / 'server.py') if args.suite=='records' else str(here.parent / 'wp_h/server.py'), '--count', str(args.count), '--port', str(port)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         def drain():
             for line in iter(server.stdout.readline, b''):
                 server_log.write(line)
@@ -34,7 +34,7 @@ def main():
         try:
             if not ready.wait(180):
                 raise RuntimeError('Synthetic server did not start; inspect server.log')
-            env = {**os.environ, 'WP_H_ORIGIN': f'http://127.0.0.1:{port}', 'COUNT': str(args.count), 'OUT': str(args.out.resolve())}
+            env = {**os.environ, 'I5C_PYTHON':sys.executable,'WP_H_ORIGIN': f'http://127.0.0.1:{port}', 'COUNT': str(args.count), 'OUT': str(args.out.resolve())}
             with (args.out / 'card.log').open('w') as log:
                 result = subprocess.run(['node', str(here / (args.suite + '.cjs'))], env=env, stdout=log, stderr=subprocess.STDOUT)
             print(f'WP-I consilium: count={args.count}, exit={result.returncode}', flush=True)

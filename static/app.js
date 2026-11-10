@@ -1969,6 +1969,7 @@ const app = {
         $('readOnlyChip').classList.toggle('is-hidden', !this.isReadOnly());
         $('openAddBtn').classList.toggle('is-hidden', !this.can('createPatients'));
         $('openConsiliumBookingBtn').classList.add('is-hidden');
+        $('openConsiliumHistoryBtn').classList.toggle('is-hidden',!this.can('accessConsilium'));
         $('openConsiliumArchiveBtn').classList.toggle('is-hidden', !this.can('bookConsilium'));
         $('appScreen').classList.toggle('can-collapse-sidebar', chair);
         if (!chair) $('appScreen').classList.remove('is-sidebar-collapsed');
@@ -8220,6 +8221,7 @@ const app = {
 
     setConsiliumReadPresentation(state) {
         $('consiliumReviewWorkspace').classList.add('is-hidden');
+        if(state!=='ready') {this.beginRead('consilium-analytics');$('consiliumAnalyticsBody').replaceChildren();$('consiliumAnalyticsState').textContent='Обновите показатели для получения актуальных серверных данных.'; $('consiliumFavorites').classList.add('is-hidden');$('consiliumFavoritesList').replaceChildren(); }
         const ready = state === 'ready';
         this.consilium.readState = state;
         if (state==='loading') { $('consiliumLoadState').textContent='Загрузка расписания…';$('consiliumLoadState').classList.remove('is-hidden'); }
@@ -8369,7 +8371,7 @@ const app = {
                 type: 'button',
                 class: `btn btn--ghost btn--sm${item.isFavorite ? ' is-favorite' : ''}`,
                 text: item.isFavorite ? '★ В избранном' : '☆ В избранное',
-                on: { click: () => this.toggleConsiliumFavorite(item) },
+                on: { click: () => {if(epoch===this.sessionEpoch&&this.consiliumGridReady(generation))this.toggleConsiliumFavorite(item);} },
             }),
         ]);
     },
@@ -8476,6 +8478,8 @@ const app = {
             ]);
         })));
         this.renderConsiliumRegistries();
+        this.renderConsiliumFavorites();
+        $('consiliumInsights').classList.toggle('is-hidden',!this.can('consiliumChair'));
         this.renderConsiliumSchedule(rows);
         if (this.consilium.focusId) {
             const focused = $(`consilium-grid-row-${this.consilium.focusId}`) || $(`consilium-row-${this.consilium.focusId}`);
@@ -8715,12 +8719,14 @@ const app = {
 
     renderConsiliumRegistries() {
         const chair = this.can('consiliumChair');
-        $('consiliumRegistries').classList.toggle('is-hidden', !chair);
-        if (!chair) return;
-        const surgical = this.consilium.registries.surgical || [];
-        const chemotherapy = this.consilium.registries.chemotherapy || [];
-        const goc = this.consilium.registries.goc || [];
-        const goc65 = this.consilium.registries.goc65Plus || [];
+        $('consiliumRegistries').classList.toggle('is-hidden', !chair || !this.consiliumGridReady() || !this.consilium.registries);
+        if (!chair || !this.consiliumGridReady() || !this.consilium.registries) return;
+        const query=$('consiliumRegistrySearch').value.trim().toLocaleLowerCase('ru');
+        const matches=item=>!query || [item.patientName,item.policyNumber,item.primaryDiagnosis].some(v=>String(v||'').toLocaleLowerCase('ru').includes(query));
+        const surgical = (this.consilium.registries.surgical || []).filter(matches);
+        const chemotherapy = (this.consilium.registries.chemotherapy || []).filter(matches);
+        const goc = (this.consilium.registries.goc || []).filter(matches);
+        const goc65 = (this.consilium.registries.goc65Plus || []).filter(matches);
         $('surgicalRegistryEmpty').classList.toggle('is-hidden', surgical.length > 0);
         $('chemoRegistryEmpty').classList.toggle('is-hidden', chemotherapy.length > 0);
         $('gocRegistryEmpty').classList.toggle('is-hidden', goc.length > 0);
@@ -8728,7 +8734,7 @@ const app = {
         $('surgicalRegistryBody').replaceChildren(frag(surgical.map(item => el('tr', {}, [
             el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
             el('td', {}, [
-                el('div', { class: 'person__name', text: item.patientName }),
+                el('button',{type:'button',class:'consilium-patient-button',text:item.patientName,on:{click:()=>{if(epoch===this.sessionEpoch&&this.consiliumGridReady(generation))this.openConsiliumDetails(item);}}}),
                 el('div', { class: 'person__meta', text: item.treatingDoctorName }),
             ]),
             el('td', { text: item.policyNumber || 'Не указан' }),
@@ -8738,7 +8744,7 @@ const app = {
                     type: 'checkbox', checked: item.referralCompleted,
                     // Отдельное право; сервер проверяет его же.
                     disabled: !this.can('markReferralCompletion'),
-                    on: { change: event => this.setSurgicalReferralCompleted(item.id, event.target.checked) },
+                    on: { change: event => this.setSurgicalReferralCompleted(item.id, event.target.checked, event.target) },
                 }),
                 el('span', { text: item.referralCompleted ? 'Отмечено' : 'Поставить отметку' }),
             ])),
@@ -8746,7 +8752,7 @@ const app = {
         $('chemoRegistryBody').replaceChildren(frag(chemotherapy.map(item => el('tr', {}, [
             el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
             el('td', {}, [
-                el('div', { class: 'person__name', text: item.patientName }),
+                el('button',{type:'button',class:'consilium-patient-button',text:item.patientName,on:{click:()=>{if(epoch===this.sessionEpoch&&this.consiliumGridReady(generation))this.openConsiliumDetails(item);}}}),
                 el('div', { class: 'person__meta', text: item.treatingDoctorName }),
             ]),
             el('td', { text: item.policyNumber || 'Не указан' }),
@@ -8756,7 +8762,7 @@ const app = {
         $('gocRegistryBody').replaceChildren(frag(goc.map(item => el('tr', {}, [
             el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
             el('td', {}, [
-                el('div', { class: 'person__name', text: item.patientName }),
+                el('button',{type:'button',class:'consilium-patient-button',text:item.patientName,on:{click:()=>{if(epoch===this.sessionEpoch&&this.consiliumGridReady(generation))this.openConsiliumDetails(item);}}}),
                 el('div', { class: 'person__meta', text: item.treatingDoctorName }),
             ]),
             el('td', { text: item.policyNumber || 'Не указан' }),
@@ -8768,7 +8774,7 @@ const app = {
         $('goc65RegistryBody').replaceChildren(frag(goc65.map(item => el('tr', {}, [
             el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
             el('td', {}, [
-                el('div', { class: 'person__name', text: item.patientName }),
+                el('button',{type:'button',class:'consilium-patient-button',text:item.patientName,on:{click:()=>{if(epoch===this.sessionEpoch&&this.consiliumGridReady(generation))this.openConsiliumDetails(item);}}}),
                 el('div', { class: 'person__meta', text: item.treatingDoctorName }),
             ]),
             el('td', { text: item.policyNumber || 'Не указан' }),
@@ -8777,6 +8783,14 @@ const app = {
                 ? `${item.treatmentTypeLabel}: ${item.treatmentSchemeCode ? item.treatmentSchemeCode + ' — ' : ''}${item.treatmentScheme}`
                 : item.treatmentTypeLabel || 'Не указано' }),
         ]))));
+        const generation=this.consilium.gridGeneration,epoch=this.sessionEpoch;
+        for(const table of $('consiliumRegistries').querySelectorAll('table')) {
+            const labels=[...table.querySelectorAll('thead th')].map(n=>n.textContent);
+            for(const row of table.querySelectorAll('tbody tr')) [...row.cells].forEach((cell,i)=>cell.dataset.label=labels[i]);
+            for(const input of table.querySelectorAll('input')) input.addEventListener('change',event=>{
+                if(epoch!==this.sessionEpoch || !this.consiliumGridReady(generation)) {event.preventDefault();event.stopImmediatePropagation();}
+            },true);
+        }
     },
 
     async deleteConsiliumAppointment(item) {
@@ -8849,6 +8863,8 @@ const app = {
     },
 
     async toggleConsiliumFavorite(item) {
+        if(!this.can('useConsiliumFavorites') || !this.consiliumGridReady() || this.consilium.favoritePending)return;
+        const epoch=this.sessionEpoch;this.consilium.favoritePending=true;
         try {
             if (item.isFavorite) {
                 await apiDelete(`/api/consilium/favorites/${encodeURIComponent(item.patientId)}`);
@@ -8860,9 +8876,11 @@ const app = {
             // Избранное — закладка внутри консилиума, доступ к карточке оно не даёт.
             this.consilium.loaded = false;
             await this.renderConsilium();
+            if(epoch!==this.sessionEpoch || this.sessionExpired)return;
         } catch (error) {
+            if(epoch!==this.sessionEpoch || this.sessionExpired || error.obsolete)return;
             ui.toast('Не удалось изменить избранное: ' + error.message, 'danger');
-        }
+        } finally {if(epoch===this.sessionEpoch)this.consilium.favoritePending=false;}
     },
 
     openConsiliumDetails(item) {
@@ -8930,16 +8948,19 @@ const app = {
 
     async toggleConsiliumArchive() {
         const item = this.consilium.detailsItem;
-        if (!item) return;
+        if (!item || this.consilium.archivePending || this.sessionExpired || !$('consiliumDetailsConflict').classList.contains('is-hidden')) return;
+        const epoch=this.sessionEpoch;this.consilium.archivePending=true;$('consiliumArchiveToggleBtn').disabled=true;
         const action = item.archived ? 'restore' : 'archive';
         try {
             await apiPost(`/api/consilium/appointments/${encodeURIComponent(item.id)}/${action}`, { version: item.version });
-            ui.closeModal('consiliumDetailsModal');
+            ui.closeModal('consiliumDetailsModal',{force:true});
             this.consilium.detailsItem = null;
             this.consilium.loaded = false;
             await this.renderConsilium();
+            if(epoch!==this.sessionEpoch || this.sessionExpired)return;
             ui.toast(action === 'archive' ? 'Запись перенесена в архив.' : 'Запись восстановлена из архива.', 'good');
         } catch (error) {
+            if(epoch!==this.sessionEpoch || this.sessionExpired || error.obsolete)return;
             if (this.isConsiliumVersionConflict(error)) {
                 // Повтор с прежней версией невозможен, пока данные не обновлены.
                 $('consiliumDetailsConflictText').textContent = error.message;
@@ -8947,93 +8968,76 @@ const app = {
                 $('consiliumArchiveToggleBtn').disabled = true;
                 return;
             }
-            ui.toast('Не удалось изменить архив: ' + error.message, 'danger');
-        }
+            if(epoch===this.sessionEpoch&&!this.sessionExpired){$('consiliumDetailsConflictText').textContent='Результат не подтвержден. Проверьте состояние перед повтором. '+error.message;$('consiliumDetailsConflict').classList.remove('is-hidden');}
+        } finally {if(epoch===this.sessionEpoch)this.consilium.archivePending=false;}
     },
 
-    async setSurgicalReferralCompleted(appointmentId, completed) {
+    async setSurgicalReferralCompleted(appointmentId, completed, control=null) {
+        if(!this.can('markReferralCompletion') || !this.consiliumGridReady() || this.consilium.referralPending)return;
+        const epoch=this.sessionEpoch;this.consilium.referralPending=true;
+        for(const node of $('surgicalRegistryBody').querySelectorAll('input'))node.disabled=true;
         try {
             await apiPost(`/api/consilium/appointments/${encodeURIComponent(appointmentId)}/referral-completion`, { completed });
             this.consilium.loaded = false;
             await this.renderConsilium();
+            if(epoch!==this.sessionEpoch || this.sessionExpired)return;
             ui.toast(completed ? 'Направление отмечено как созданное.' : 'Отметка направления снята.', 'good');
         } catch (error) {
+            if(epoch!==this.sessionEpoch || this.sessionExpired || error.obsolete)return;
             ui.toast('Не удалось сохранить отметку: ' + error.message, 'danger');
             this.consilium.loaded = false;
             await this.renderConsilium();
-        }
+            if(epoch!==this.sessionEpoch || this.sessionExpired)return;
+        } finally {if(epoch===this.sessionEpoch)this.consilium.referralPending=false;}
     },
 
-    async exportChemotherapyRegistry() {
+    async exportConsiliumRegistry(kind) {
+        if(!['chemotherapy','goc','goc-65-plus'].includes(kind) || !this.can('consiliumChair') || !this.consiliumGridReady() || this.consilium.exportPending)return;
+        const epoch=this.sessionEpoch,generation=this.consilium.gridGeneration;this.consilium.exportPending=true;
+        const buttons=['exportChemoRegistryBtn','exportGocRegistryBtn','exportGoc65RegistryBtn'];buttons.forEach(id=>$(id).disabled=true);
         try {
-            const query = this.consilium.dateFilter
-                ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-            const response = await apiFetch(`/api/consilium/registries/chemotherapy.xlsx${query}`, {
-                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
-            });
-            const blob = await response.blob();
-            const disposition = response.headers.get('content-disposition') || '';
-            const match = disposition.match(/filename="([^"]+)"/);
-            const link = el('a', {
-                href: URL.createObjectURL(blob),
-                download: match ? match[1] : 'chemotherapy_registry.xlsx',
-            });
-            document.body.append(link);
-            link.click();
-            URL.revokeObjectURL(link.href);
-            link.remove();
-            ui.toast('Excel-реестр сформирован.', 'good');
-        } catch (error) {
-            ui.toast('Не удалось сформировать Excel: ' + error.message, 'danger');
-        }
+            const query=this.consilium.dateFilter?`?date=${encodeURIComponent(this.consilium.dateFilter)}`:'';
+            const response=await apiFetch(`/api/consilium/registries/${kind}.xlsx${query}`,{headers:{'X-CSRF-Token':getCookie('clinic_csrf')||''}});
+            const blob=await response.blob();
+            if(!await this.checkSessionIdentity(epoch || 0))return;
+            if(epoch!==this.sessionEpoch || !this.consiliumGridReady(generation))return;
+            const match=(response.headers.get('content-disposition')||'').match(/filename="([^"]+)"/);
+            const link=el('a',{href:URL.createObjectURL(blob),download:match?match[1]:kind+'.xlsx'});
+            document.body.append(link);link.click();URL.revokeObjectURL(link.href);link.remove();
+            ui.toast('Серверный Excel-реестр сформирован.','good');
+        } catch(error) {if(epoch===this.sessionEpoch&&!this.sessionExpired)ui.toast('Не удалось сформировать Excel: '+error.message,'danger');}
+        finally {if(epoch===this.sessionEpoch){this.consilium.exportPending=false;buttons.forEach(id=>$(id).disabled=!this.consiliumGridReady());}}
+    },
+    async exportChemotherapyRegistry() {await this.exportConsiliumRegistry('chemotherapy');},
+    async exportGocRegistry() {await this.exportConsiliumRegistry('goc');},
+    async exportGoc65Registry() {await this.exportConsiliumRegistry('goc-65-plus');},
+
+    renderConsiliumFavorites() {
+        const allowed=this.can('useConsiliumFavorites')&&this.consiliumGridReady();
+        $('consiliumFavorites').classList.toggle('is-hidden',!allowed);
+        if(!allowed)return;
+        const rows=(this.consilium.appointments||[]).filter(x=>x.isFavorite),generation=this.consilium.gridGeneration,epoch=this.sessionEpoch;
+        $('consiliumFavoritesList').replaceChildren(frag(rows.length?rows.map(item=>el('li',{class:'consilium-review-record'},[
+            el('div',{},[el('strong',{text:item.patientName}),el('p',{class:'muted',text:item.statusLabel+' · '+this.formatConsiliumDate(item.scheduledDate,item.scheduledTime)})]),
+            el('button',{type:'button',class:'btn btn--ghost',text:'Решение и история',on:{click:()=>{if(epoch===this.sessionEpoch&&this.consiliumGridReady(generation))this.openConsiliumDetails(item);}}}),
+        ])):[el('li',{class:'empty',text:'Избранных записей пока нет. Добавьте пациента кнопкой «В избранное» в расписании.'})]));
     },
 
-    async exportGocRegistry() {
+    async loadConsiliumAnalytics(event) {
+        event?.preventDefault();if(!this.can('consiliumChair') || this.sessionExpired)return;
+        const epoch=this.sessionEpoch,version=this.beginRead('consilium-analytics');
+        const current=()=>epoch===this.sessionEpoch&&!this.sessionExpired&&this.isCurrentRead('consilium-analytics',version);
+        const body=$('consiliumAnalyticsBody');body.replaceChildren();body.inert=true;$('consiliumAnalyticsState').textContent='Загрузка показателей…';
+        const query=new URLSearchParams();if($('consiliumAnalyticsFrom').value)query.set('date_from',$('consiliumAnalyticsFrom').value);if($('consiliumAnalyticsTo').value)query.set('date_to',$('consiliumAnalyticsTo').value);
         try {
-            const query = this.consilium.dateFilter
-                ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-            const response = await apiFetch(`/api/consilium/registries/goc.xlsx${query}`, {
-                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
-            });
-            const blob = await response.blob();
-            const disposition = response.headers.get('content-disposition') || '';
-            const match = disposition.match(/filename="([^"]+)"/);
-            const link = el('a', {
-                href: URL.createObjectURL(blob),
-                download: match ? match[1] : 'goc_registry.xlsx',
-            });
-            document.body.append(link);
-            link.click();
-            URL.revokeObjectURL(link.href);
-            link.remove();
-            ui.toast('Excel-реестр ГОК сформирован.', 'good');
-        } catch (error) {
-            ui.toast('Не удалось сформировать реестр ГОК: ' + error.message, 'danger');
-        }
-    },
-
-    async exportGoc65Registry() {
-        try {
-            const query = this.consilium.dateFilter
-                ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-            const response = await apiFetch(`/api/consilium/registries/goc-65-plus.xlsx${query}`, {
-                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
-            });
-            const blob = await response.blob();
-            const disposition = response.headers.get('content-disposition') || '';
-            const match = disposition.match(/filename="([^"]+)"/);
-            const link = el('a', {
-                href: URL.createObjectURL(blob),
-                download: match ? match[1] : 'goc_65_plus_registry.xlsx',
-            });
-            document.body.append(link);
-            link.click();
-            URL.revokeObjectURL(link.href);
-            link.remove();
-            ui.toast('Excel-реестр ГОК 65+ сформирован.', 'good');
-        } catch (error) {
-            ui.toast('Не удалось сформировать реестр ГОК 65+: ' + error.message, 'danger');
-        }
+            const data=await apiGetJson('/api/consilium/analytics?'+query);if(!current())return;
+            const metric=(label,value)=>el('p',{},[document.createTextNode(label),el('strong',{text:String(value??'—')})]);
+            body.replaceChildren(el('div',{class:'consilium-insight-values'},[
+                ...Object.entries({total:'Всего',signed:'Подписано',inReview:'На рассмотрении',awaiting:'Ожидают',returned:'На доработке',needsSpecialists:'Нужны специалисты'}).map(([key,label])=>metric(label,data.summary[key])),
+                metric('Слоты',data.schedule.slots),metric('Занято',data.schedule.occupied),metric('Загрузка',data.schedule.loadPercent===null?'Нет расписания':data.schedule.loadPercent+'%'),metric('Вне расписания',data.schedule.outsideSchedule),
+            ]),el('details',{},[el('summary',{text:'Детализация назначений и схем'}),el('ul',{},[...data.treatments,...data.schemes].map(x=>el('li',{text:[x.code,x.label,x.count].filter(v=>v!==undefined&&v!=='').join(' · ')})))]));
+            body.inert=false;$('consiliumAnalyticsState').textContent='Актуальные серверные показатели за выбранный период.';
+        }catch(error){if(current()){$('consiliumAnalyticsState').textContent='Не удалось обновить показатели: '+error.message;body.replaceChildren();}}
     },
 
     consiliumLocalizationKey(value = $('consiliumLocalization').value) {
@@ -9372,11 +9376,14 @@ const app = {
     // Тексты причин — только председателю и заведующему; сервер проверяет права и
     // фиксирует обращение в журнале. Выводится только как текст (textContent).
     async showConsiliumBackdatingReasons(item) {
+        const epoch=this.sessionEpoch,read=this.beginRead('consilium-backdating');
+        const current=()=>epoch===this.sessionEpoch&&!this.sessionExpired&&this.isCurrentRead('consilium-backdating',read)&&this.consilium.detailsItem?.id===item.id&&!$('consiliumDetailsModal').hidden;
         const box = $('consiliumDetailsBody');
         const previous = $('consiliumBackdatingReasonsBox');
         if (previous) previous.remove();
         try {
             const data = await apiGetJson(`/api/consilium/appointments/${encodeURIComponent(item.id)}/backdating`);
+            if(!current())return;
             const block = (label, reason) => reason ? el('div', { class: 'field field--wide' }, [
                 el('span', { class: 'field__label', text: label }),
                 el('div', { class: 'consilium-detail-value', text: reason.text }),
@@ -9388,24 +9395,38 @@ const app = {
                 block('Причина позднего создания слота', data.slotReason),
             ]));
         } catch (error) {
+            if(!current())return;
             ui.toast('Не удалось показать причины: ' + error.message, 'danger');
         }
     },
 
-    async openConsiliumArchive() {
+    async openConsiliumArchive(history=false) {
+        if(!this.can('accessConsilium') || (!history&&!this.can('bookConsilium')) || this.sessionExpired)return;
+        this.consilium.archiveHistory=history;
+        $('consiliumArchiveSubtitle').textContent=history?(this.can('consiliumChair')?'Все разрешенные подписанные решения, включая архивные.':'Подписанные записи в работе. Архив открывается отдельно кнопкой «Архив».'):'Архивные подписанные записи в вашей разрешенной области. Откройте медицинский снимок или восстановите запись.';
+        $('consiliumArchiveTitle').textContent=history?'История подписанных решений':'Архив консилиумов';
+        $('consiliumArchiveDate').value='';$('consiliumArchiveSearch').value='';
+        ui.openModal('consiliumArchiveModal');await this.loadConsiliumArchive();
+    },
+
+    async loadConsiliumArchive() {
+        const epoch=this.sessionEpoch,read=this.beginRead('consilium-archive');
+        const current=()=>epoch===this.sessionEpoch&&!this.sessionExpired&&this.isCurrentRead('consilium-archive',read);
+        this.consilium.archiveReady=false;this.consilium.archiveAppointments=[];
+        $('consiliumArchiveBody').replaceChildren();$('consiliumArchiveTableWrap').classList.add('is-hidden');$('consiliumArchiveEmpty').classList.add('is-hidden');$('consiliumArchiveState').textContent='Загрузка подписанных записей…';
         try {
-            const data = await apiGetJson('/api/consilium/appointments?archived=true');
-            this.consilium.archiveAppointments = data.appointments || [];
-            $('consiliumArchiveDate').value = '';
-            $('consiliumArchiveSearch').value = '';
-            this.renderConsiliumArchive();
-            ui.openModal('consiliumArchiveModal');
-        } catch (error) {
-            ui.toast('Не удалось открыть архив: ' + error.message, 'danger');
-        }
+            const history=this.consilium.archiveHistory;
+            const data=await apiGetJson('/api/consilium/appointments'+(history?'':'?archived=true'));if(!current())return;
+            // Chairman receives all records regardless of archived query by the existing API.
+            this.consilium.archiveAppointments=(data.appointments||[]).filter(item=>item.status==='signed'&&(history||item.archived));
+            this.consilium.archiveReady=true;this.consilium.archiveEpoch=epoch;this.consilium.archiveRead=read;
+            $('consiliumArchiveState').textContent='Серверные подписанные записи. Фильтры применяются к вашей разрешенной области.';this.renderConsiliumArchive();
+        }catch(error){if(current()){$('consiliumArchiveState').textContent='Не удалось обновить список: '+error.message;this.consilium.archiveAppointments=[];}}
     },
 
     renderConsiliumArchive() {
+        if(!this.consilium.archiveReady || this.consilium.archiveEpoch!==this.sessionEpoch || this.sessionExpired)return;
+        const epoch=this.sessionEpoch,read=this.consilium.archiveRead;
         const date = $('consiliumArchiveDate').value;
         const query = $('consiliumArchiveSearch').value.trim().toLocaleLowerCase('ru');
         const rows = (this.consilium.archiveAppointments || []).filter(item => {
@@ -9415,30 +9436,17 @@ const app = {
                 || String(item.policyNumber || '').toLocaleLowerCase('ru').includes(query);
         });
         const openDetails = (item) => {
+            if(epoch!==this.sessionEpoch || !this.consilium.archiveReady || !this.isCurrentRead('consilium-archive',read))return;
             ui.closeModal('consiliumArchiveModal');
             this.openConsiliumDetails(item);
         };
-        $('consiliumArchiveBody').replaceChildren(frag(rows.map(item => el('tr', {
-            class: 'consilium-archive-row',
-            tabindex: '0',
-            role: 'button',
-            'aria-label': `Открыть архивный консилиум: ${item.patientName}`,
-            on: {
-                click: () => openDetails(item),
-                keydown: (event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        openDetails(item);
-                    }
-                },
-            },
-        }, [
-            el('td', { text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
-            el('td', null, [el('strong', { text: item.patientName }), el('div', { class: 'table__muted', text: item.policyNumber || 'Полис не указан' })]),
-            el('td', { text: item.consiliumGroupLabel }),
-            el('td', { text: item.primaryDiagnosis || '—' }),
-            el('td', { text: item.treatmentTypeLabel || '—' }),
-            el('td', null, [el('span', { class: 'status status--good', text: 'В архиве' })]),
+        $('consiliumArchiveBody').replaceChildren(frag(rows.map(item=>el('tr',{class:'consilium-archive-row'},[
+            el('td',{'data-label':'Дата и время',text:this.formatConsiliumDate(item.scheduledDate,item.scheduledTime)}),
+            el('td',{'data-label':'Пациент'},[el('button',{type:'button',class:'consilium-patient-button',text:item.patientName,on:{click:()=>openDetails(item),keydown:event=>{if (event.key === 'Enter' || event.key === ' ') {event.preventDefault();openDetails(item);}}}}),el('div',{class:'muted',text:item.policyNumber||'Полис не указан'})]),
+            el('td',{'data-label':'Группа',text:item.consiliumGroupLabel}),
+            el('td',{'data-label':'Диагноз',text:item.primaryDiagnosis||'—'}),
+            el('td',{'data-label':'Лечение',text:item.treatmentTypeLabel||'—'}),
+            el('td',{'data-label':'Состояние',text:item.archived?'В архиве':'Подписано'}),
         ]))));
         $('consiliumArchiveEmpty').classList.toggle('is-hidden', rows.length !== 0);
         $('consiliumArchiveTableWrap').classList.toggle('is-hidden', rows.length === 0);
@@ -9517,19 +9525,25 @@ const app = {
     },
 
     async refreshConsiliumDetailsAfterConflict() {
+        const epoch=this.sessionEpoch,read=this.beginRead('consilium-detail-refresh');
+        const current=()=>epoch===this.sessionEpoch&&!this.sessionExpired&&this.isCurrentRead('consilium-detail-refresh',read);
         const appointmentId = this.consilium.detailsItem && this.consilium.detailsItem.id;
         this.consilium.loaded = false;
         try {
             await this.loadConsilium();
         } catch (error) {
+            if(!current())return;
             ui.toast('Не удалось обновить данные: ' + error.message, 'danger');
             return;
         }
+        if(!current())return;
         ui.closeModal('consiliumDetailsModal');
         await this.renderConsilium();
+        if(!current())return;
         let fresh = this.consilium.appointments.find(item => item.id === appointmentId);
         if (!fresh && this.can('bookConsilium') && !this.can('consiliumChair')) {
             const archive = await apiGetJson('/api/consilium/appointments?archived=true');
+            if(!current())return;
             fresh = (archive.appointments || []).find(item => item.id === appointmentId);
         }
         if (fresh) this.openConsiliumDetails(fresh);
@@ -9716,6 +9730,8 @@ const app = {
     },
 
     allowConsiliumDecisionClose(id) {
+        if(id==='consiliumDetailsModal'&&this.consilium.archivePending&&!this.sessionExpired)return false;
+        if(id==='consiliumArchiveModal'){this.consilium.archiveReady=false;this.beginRead('consilium-archive');}
         if(id==='consiliumModal' && !this.sessionExpired && (this.consilium.formPending || this.consilium.refreshPending)) {ui.toast('Дождитесь завершения запроса. Автоматического повтора нет.','warning');return false;}
         if (!['consiliumDecisionModal','consiliumRevisionModal'].includes(id) || $(id).hidden || this.sessionExpired) return true;
         const ctx=this.consilium.decisionContext;
@@ -11086,6 +11102,10 @@ const app = {
         // Онкологический консилиум
         on('openConsiliumBookingBtn', 'click', () => this.openConsiliumModal());
         on('openConsiliumArchiveBtn', 'click', () => this.openConsiliumArchive());
+        on('openConsiliumHistoryBtn','click',()=>this.openConsiliumArchive(true));
+        on('consiliumArchiveRefreshBtn','click',()=>this.loadConsiliumArchive());
+        on('consiliumRegistrySearch','input',()=>this.renderConsiliumRegistries());
+        $('consiliumAnalyticsForm').addEventListener('submit',event=>this.loadConsiliumAnalytics(event));
         on('closeConsiliumArchiveBtn', 'click', () => ui.closeModal('consiliumArchiveModal'));
         on('closeConsiliumArchiveIconBtn', 'click', () => ui.closeModal('consiliumArchiveModal'));
         on('consiliumRefreshBtn','click',()=>this.renderConsilium());

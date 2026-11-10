@@ -278,6 +278,7 @@
                     <div class="pagehead__actions">
                         <button type="button" class="btn btn--ghost" id="consiliumRefreshBtn">Обновить расписание</button>
                         <button type="button" class="btn btn--ghost is-hidden" id="openConsiliumArchiveBtn">Архив</button>
+                        <button type="button" class="btn btn--ghost is-hidden" id="openConsiliumHistoryBtn">История решений</button>
                         <button type="button" class="btn btn--primary is-hidden" id="openConsiliumBookingBtn">Запись</button>
                     </div>
                 </div>
@@ -397,7 +398,15 @@
                     <div class="empty is-hidden" id="consiliumEmpty"></div>
                 </div>
 
+                <section class="panel panel--pad is-hidden" id="consiliumInsights" aria-labelledby="consiliumInsightsTitle">
+                    <h2 id="consiliumInsightsTitle">Показатели консилиума</h2>
+                    <form class="consilium-insight-filters" id="consiliumAnalyticsForm"><label class="field"><span class="field__label">Дата от</span><input class="input" type="date" id="consiliumAnalyticsFrom"></label><label class="field"><span class="field__label">Дата до</span><input class="input" type="date" id="consiliumAnalyticsTo"></label><button class="btn btn--primary" type="submit">Обновить показатели</button></form>
+                    <p class="field__hint">Показатели возвращает сервер за выбранный период, независимо от фильтра расписания. Ожидают — все неподписанные записи по действующему серверному определению.</p>
+                    <p id="consiliumAnalyticsState" role="status"></p><div id="consiliumAnalyticsBody"></div>
+                </section>
+                <section class="panel panel--pad is-hidden" id="consiliumFavorites" aria-labelledby="consiliumFavoritesTitle"><h2 id="consiliumFavoritesTitle">Избранные пациенты председателя</h2><p class="field__hint">Закладки в разрешенных записях консилиума. Они не предоставляют доступ к карточке пациента.</p><ul class="consilium-review-list" id="consiliumFavoritesList"></ul></section>
                 <div class="consilium-registries is-hidden" id="consiliumRegistries">
+                    <div class="panel panel--pad"><h2>Реестры назначений</h2><p class="field__hint">Выбранный день расписания. Поиск ниже меняет только представление; XLSX содержит полный серверный реестр за этот день. Хирургическая XLSX-выгрузка не предусмотрена.</p><label class="field"><span class="field__label">Поиск в реестрах</span><input class="input" type="search" id="consiliumRegistrySearch" autocomplete="off"></label></div>
                     <section class="panel panel--pad">
                         <div class="section-head">
                             <div>
@@ -1284,13 +1293,14 @@
         <div class="modal__head">
             <div>
                 <h2 class="modal__title" id="consiliumArchiveTitle">Архив консилиумов</h2>
-                <p class="modal__subtitle">Подписанные консилиумы, которые вы перенесли в архив. Нажмите на случай, чтобы открыть его или восстановить.</p>
+                <p class="modal__subtitle" id="consiliumArchiveSubtitle">Подписанные записи в вашей разрешенной области. Откройте медицинский снимок и историю доработок.</p>
             </div>
             <button type="button" class="btn btn--icon" id="closeConsiliumArchiveIconBtn" aria-label="Закрыть">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
             </button>
         </div>
         <div class="modal__body">
+            <p id="consiliumArchiveState" role="status"></p><button type="button" class="btn btn--ghost" id="consiliumArchiveRefreshBtn">Обновить список</button>
             <div class="consilium-archive-filters">
                 <label class="field">
                     <span class="field__label">Дата консилиума</span>
@@ -1302,7 +1312,7 @@
                 </label>
             </div>
             <div class="table-wrap" id="consiliumArchiveTableWrap">
-                <table class="table">
+                <table class="table consilium-registry-table">
                     <thead><tr><th>Дата и время</th><th>Пациент</th><th>Группа</th><th>МКБ-10</th><th>Назначение</th><th>Статус</th></tr></thead>
                     <tbody id="consiliumArchiveBody"></tbody>
                 </table>
