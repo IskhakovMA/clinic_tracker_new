@@ -3124,3 +3124,20 @@ html[data-theme="light"] .consilium-workspace .alert--info { color:#1e40af; }
 #consiliumForm>.fieldset { min-width:0;margin:0; }
 html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 @media(max-width:700px){#consiliumForm{grid-template-columns:minmax(0,1fr);}}
+
+/* I-5B: Staff-UX session list and separate clinical decision workspace. */
+.consilium-review-heading { display:flex; justify-content:space-between; gap:1rem; flex-wrap:wrap; align-items:start; }
+.consilium-review-heading h2 { margin:0; font-size:1.15rem; }
+.consilium-review-heading .field { min-width:12rem; }
+.consilium-review-list { list-style:none; margin:1rem 0 0; padding:0; display:grid; gap:.6rem; }
+.consilium-review-record { display:flex; gap:1rem; justify-content:space-between; align-items:center; padding:1rem; border:1px solid var(--border); border-radius:12px; background:var(--surface); }
+.consilium-review-record > div { min-width:0; overflow-wrap:anywhere; }
+.consilium-review-record .consilium-actions { flex-shrink:0; }
+.consilium-decision-workspace { max-width:860px; }
+.consilium-decision-context { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem; padding:1rem; border:1px solid var(--border); border-radius:12px; }
+.consilium-decision-context p { margin:0; overflow-wrap:anywhere; }
+.consilium-decision-context strong { display:block; }
+.consilium-decision-actions { flex-wrap:wrap; }
+@media(max-width:600px) { .consilium-review-record { align-items:stretch; flex-direction:column; } .consilium-review-record .consilium-actions { flex-wrap:wrap; } .consilium-decision-context { grid-template-columns:1fr; } .consilium-decision-actions .btn { flex:1 1 100%; } }
+
+#consiliumDecisionPatient { color:var(--text); }

@@ -27,3 +27,11 @@ FIX1 loading regressions: `--suite loading` checks delayed genuine200 responses,
 blocked old grid actions, hidden dependent aggregates, injected503 and recovery,
 separate active form input/focus, real401/role revocation and shared-cookie identity
 switch. It uses explicit response barriers, never sleep or transport retries.
+
+## I-5B — decisions and revisions
+
+`run.py --suite decisions --out <outside-worktree>` runs real synthetic FastAPI/Chromium transitions, six-role/theme/viewport axe checks, concurrent review, version conflicts, return/correction/resubmit, immutable signed projection, shared-cookie identity change and explicitly labeled transport faults. No clinical writes are retried automatically.
+
+`run.py --suite decisionzoom --out <outside-worktree>` uses a throwaway Chromium extension/profile for actual tab zoom 100/200/400% on the medical decision dialog (not CSS zoom).
+
+Both require the same PLAYWRIGHT_MODULE, AXE_SOURCE, BROWSER_EXECUTABLE and WP_H_FULL_CHROMIUM variables as the existing suites. No real database, account or browser profile is used.

@@ -370,6 +370,11 @@
                     </div>
                 </section>
 
+                <section class="panel panel--pad consilium-review-workspace is-hidden" id="consiliumReviewWorkspace" aria-labelledby="consiliumReviewWorkspaceTitle">
+                    <div class="consilium-review-heading"><div><h2 id="consiliumReviewWorkspaceTitle">Заседание · рассмотрение записей</h2><p class="muted">Выбранные день и группы. Решение и история открываются отдельно; открытие записи ничего не изменяет.</p></div>
+                    <label class="field"><span class="field__label">Статус рассмотрения</span><select class="select" id="consiliumReviewFilter"><option value="all">Все записи</option><option value="awaiting">Ожидают рассмотрения</option><option value="in_review">На рассмотрении</option><option value="needs_revision">На доработке</option><option value="signed">Подписаны</option></select></label></div>
+                    <ul class="consilium-review-list" id="consiliumReviewList"></ul>
+                </section>
                 <div class="stats" id="consiliumStatsRow"></div>
 
                 <div class="panel is-hidden" id="consiliumAppointmentsPanel">
@@ -1312,15 +1317,18 @@
 
 <!-- МОДАЛКА: РЕШЕНИЕ ПРЕДСЕДАТЕЛЯ КОНСИЛИУМА -->
 <div class="modal" id="consiliumDecisionModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDecisionTitle" hidden>
-    <div class="modal__box modal__box--narrow">
+    <div class="modal__box consilium-decision-workspace">
         <div class="modal__head">
-            <h2 class="modal__title" id="consiliumDecisionTitle">Подписание консилиума</h2>
+            <h2 class="modal__title" id="consiliumDecisionTitle">Решение консилиума</h2>
             <button type="button" class="btn btn--icon" id="closeConsiliumDecisionIconBtn" aria-label="Закрыть">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
             </button>
         </div>
         <form class="modal__body form" id="consiliumDecisionForm">
             <p class="alert alert--info" id="consiliumDecisionPatient"></p>
+            <div class="consilium-decision-context" id="consiliumDecisionContext"></div>
+            <p class="field__hint">Ввод хранится только в этой вкладке до явного подписания. Подпись фиксирует решение и медицинский снимок; этап пациента автоматически не меняется.</p>
+            <p class="alert alert--warning is-hidden" id="consiliumDecisionUncertain" role="status">Действие не повторено. Проверьте серверное состояние перед следующим действием; введенный текст сохранен отдельно от сведений сервера.</p>
             <p class="alert alert--warning is-hidden" id="consiliumReviewHint">Рассмотрение ещё не начато. Подписать решение можно после того, как вы начнёте рассмотрение.</p>
             <p class="alert alert--danger is-hidden" id="consiliumDecisionError" role="alert"></p>
             <section class="consilium-revision-history is-hidden" id="consiliumDecisionRevisions" aria-label="История возвратов"></section>
@@ -1358,6 +1366,7 @@
             </fieldset>
         </form>
         <div class="modal__foot consilium-decision-actions">
+            <button type="button" class="btn btn--ghost" id="refreshConsiliumDecisionBtn">Проверить состояние</button>
             <button type="button" class="btn btn--ghost" id="returnConsiliumBtn">Вернуть на доработку</button>
             <button type="button" class="btn btn--primary" id="startConsiliumReviewBtn">Начать рассмотрение</button>
             <button type="submit" class="btn btn--primary" form="consiliumDecisionForm" id="signConsiliumBtn">Подписать</button>
@@ -1372,6 +1381,7 @@
             <h2 class="modal__title" id="consiliumRevisionTitle">Вернуть на доработку</h2>
         </div>
         <form class="modal__body form" id="consiliumRevisionForm">
+            <p class="muted">Комментарий сохранится в истории доработок. Возврат не меняет этап пациента.</p>
             <div class="field">
                 <label class="field__label" for="consiliumRevisionComment">Комментарий врачу <span class="req">*</span></label>
                 <textarea class="textarea" id="consiliumRevisionComment" rows="5" maxlength="4000" required placeholder="Укажите, что необходимо уточнить или исправить"></textarea>
@@ -1379,6 +1389,7 @@
             <p class="alert alert--danger is-hidden" id="consiliumRevisionError" role="alert"></p>
         </form>
         <div class="modal__foot">
+            <button type="button" class="btn btn--ghost" id="refreshConsiliumRevisionBtn">Проверить состояние</button>
             <button type="button" class="btn btn--ghost" id="cancelConsiliumRevisionBtn">Отмена</button>
             <button type="submit" class="btn btn--danger" form="consiliumRevisionForm" id="confirmConsiliumRevisionBtn">Вернуть врачу</button>
         </div>
@@ -1399,6 +1410,7 @@
             <button type="button" class="btn btn--primary btn--sm" id="consiliumDetailsConflictRefreshBtn">Обновить данные</button>
         </div>
         <div class="modal__body form" id="consiliumDetailsBody"></div>
+        <section class="consilium-revision-history is-hidden" id="consiliumDetailsRevisions" aria-label="История доработок"></section>
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost is-hidden" id="consiliumBackdatingReasonsBtn">Показать причины</button>
             <button type="button" class="btn btn--ghost is-hidden" id="consiliumArchiveToggleBtn"></button>
