@@ -8187,7 +8187,7 @@ const app = {
                 type: 'button',
                 class: `consilium-date-picker__day${value === today ? ' is-today' : ''}${value === selected ? ' is-selected' : ''}`,
                 text: String(day),
-                disabled: isPast || isOpened,
+                disabled: isPast,
                 title: isPast ? 'Дата уже прошла' : (isOpened ? 'Расписание для этой группы уже открыто' : ''),
                 on: { click: () => {
                     $('consiliumScheduleDate').value = value;
@@ -8204,67 +8204,103 @@ const app = {
     syncConsiliumScheduleDateForGroup() {
         const selected = $('consiliumScheduleDate').value;
         const today = this.consiliumToday();
-        if (selected && (selected < today || this.consiliumScheduleOpenedDates().has(selected))) {
+        if (selected && selected < today) {
             $('consiliumScheduleDate').value = '';
             $('consiliumScheduleDateButton').textContent = 'Выберите дату';
         }
         this.renderConsiliumScheduleCalendar();
     },
 
+    consiliumGridReady(generation = this.consilium.gridGeneration) {
+        return !this.sessionExpired && this.can('accessConsilium') && this.consilium.loaded
+            && !this.consilium.loading && this.consilium.readState === 'ready'
+            && this.consilium.snapshotEpoch === this.sessionEpoch && generation === this.consilium.gridGeneration;
+    },
+
+    setConsiliumReadPresentation(state) {
+        const ready = state === 'ready';
+        this.consilium.readState = state;
+        if (state==='loading') { $('consiliumLoadState').textContent='Загрузка расписания…';$('consiliumLoadState').classList.remove('is-hidden'); }
+        if (!ready) this.consilium.gridGeneration = (this.consilium.gridGeneration || 0) + 1;
+        const roots = ['consiliumChairScheduleWrap','consiliumDoctorScheduleWrap'];
+        const focused = document.activeElement;
+        if (!ready && !ui.openModals.length && roots.some(id => $(id).contains(focused))) $('consiliumRefreshBtn').focus();
+        for (const id of roots) {
+            $(id).inert = !ready;
+            if (!ready) for (const button of $(id).querySelectorAll('button')) button.disabled = true;
+        }
+        $('consiliumScheduleEditor').setAttribute('aria-busy',state === 'loading' ? 'true' : 'false');
+        $('consiliumStatsRow').classList.toggle('is-hidden',!ready);
+        if (!ready) {
+            $('consiliumRegistries').classList.add('is-hidden');
+            $('consiliumRegistries').inert = true;
+            $('consiliumAppointmentsPanel').classList.add('is-hidden');
+            // A separate active clinical form retains its own input and original version.
+            for (const id of ['consiliumDetailsModal','consiliumModal','consiliumDecisionModal']) {
+                const modal=$(id); if (modal.hidden) continue;
+                let notice=modal.querySelector('[data-consilium-read-notice]');
+                if (!notice) { notice=el('p',{class:'alert','data-consilium-read-notice':'true',role:'status'});modal.querySelector('.modal__body').prepend(notice); }
+                notice.textContent='Открытые данные и ввод относятся к предыдущему чтению расписания. Перед новым действием проверьте актуальность; автоматической записи нет.';
+            }
+        } else $('consiliumRegistries').inert = false;
+        if (state === 'error') {
+            $('consiliumLoadState').textContent='Не удалось обновить расписание. Повторите действие после проверки доступа.';
+            $('consiliumLoadState').classList.remove('is-hidden');
+            $('consiliumStatsRow').replaceChildren();
+            for (const body of $('consiliumRegistries').querySelectorAll('tbody')) body.replaceChildren();
+            this.consilium.registries = null;
+        }
+    },
+
     async loadConsilium() {
+        const version=this.beginRead('consilium-load');
+        const epoch=this.sessionEpoch;
+        const current=()=>epoch===this.sessionEpoch&&this.isCurrentRead('consilium-load',version);
+        const check=()=>{if(!current()){const error=new Error('Ответ расписания устарел');error.obsolete=true;throw error;}};
+        this.setConsiliumReadPresentation('loading');
         this.consilium.loading = true;
         try {
-            if (!this.consilium.meta) {
-                this.consilium.meta = await apiGetJson('/api/consilium/meta');
-            }
+            // Publish one complete client snapshot, never partial or superseded reads.
+            const meta=this.consilium.meta || await apiGetJson('/api/consilium/meta');check();
+            const chair=this.can('consiliumChair');
+            const data=await apiGetJson('/api/consilium/appointments');check();
+            const bookedData=this.can('bookConsilium')
+                ? await apiGetJson('/api/consilium/booked-patients') : {patientIds:[]};check();
+            const scheduleData=await apiGetJson('/api/consilium/schedule');check();
+            const schedule=scheduleData.slots || [];
+            const dates=[...new Set(schedule.map(slot=>slot.scheduledDate))].sort();
+            const fallback=dates.find(date=>date>=this.consiliumToday()) || dates[0] || this.consiliumToday();
+            const dateFilter=this.consilium.dateFilter || fallback;
+            let registries=null;
             if (this.can('consiliumChair')) {
-                $('consiliumScheduleGroup').replaceChildren(frag(
-                    (this.consilium.meta.groups || []).map(group => option(group.value, group.label))
-                ));
+                const query = `?date=${encodeURIComponent(dateFilter)}`;
+                registries=await apiGetJson(`/api/consilium/registries${query}`);
             }
-            const data = await apiGetJson('/api/consilium/appointments');
-            this.consilium.appointments = data.appointments || [];
-            // Список уже записанных пациентов нужен только тем, кто записывает.
-            const bookedData = this.can('bookConsilium')
-                ? await apiGetJson('/api/consilium/booked-patients') : { patientIds: [] };
-            this.consilium.blockedPatientIds = bookedData.patientIds || [];
-            const scheduleData = await apiGetJson('/api/consilium/schedule');
-            this.consilium.schedule = scheduleData.slots || [];
-            if (this.can('consiliumChair')) {
-                this.syncConsiliumScheduleDateForGroup();
-                this.renderConsiliumGroupPicker('chair');
-                if (!this.consilium.dateFilter) {
-                    const today = this.consiliumToday();
-                    const dates = [...new Set(this.consilium.schedule.map(slot => slot.scheduledDate))].sort();
-                    this.consilium.dateFilter = dates.find(date => date >= today) || dates[0] || today;
-                }
-                $('consiliumDateFilter').value = this.consilium.dateFilter;
-            }
-            if (!this.can('consiliumChair')) {
+            check();
+            Object.assign(this.consilium,{snapshotEpoch:epoch,meta,appointments:data.appointments || [],blockedPatientIds:bookedData.patientIds || [],schedule});
+            if(chair){
+                this.consilium.registries=registries;
+                this.consilium.dateFilter=dateFilter;
+                $('consiliumScheduleGroup').replaceChildren(frag(meta.groups.map(group=>option(group.value,group.label))));
+                this.syncConsiliumScheduleDateForGroup();this.renderConsiliumGroupPicker('chair');
+                $('consiliumDateFilter').value=dateFilter;
+            }else{
                 this.renderConsiliumGroupPicker('doctor');
-                if (this.consilium.focusId) {
-                    const focused = this.consilium.appointments.find(item => item.id === this.consilium.focusId);
-                    if (focused) {
-                        this.consilium.doctorDate = focused.scheduledDate;
-                        this.consilium.groupFilters = [focused.consiliumGroup];
-                        this.renderConsiliumGroupPicker('doctor');
-                    }
-                }
-                if (!this.consilium.doctorDate) {
-                    const today = this.consiliumToday();
-                    const dates = [...new Set(this.consilium.schedule.map(slot => slot.scheduledDate))].sort();
-                    this.consilium.doctorDate = dates.find(date => date >= today) || dates[0] || today;
-                }
-                $('consiliumDoctorDate').value = this.consilium.doctorDate;
+                const focused=this.consilium.focusId && this.consilium.appointments.find(item=>item.id===this.consilium.focusId);
+                if(focused){this.consilium.doctorDate=focused.scheduledDate;this.consilium.groupFilters=[focused.consiliumGroup];this.renderConsiliumGroupPicker('doctor');}
+                this.consilium.doctorDate ||= fallback;
+                $('consiliumDoctorDate').value=this.consilium.doctorDate;
             }
-            if (this.can('consiliumChair')) {
-                const query = this.consilium.dateFilter
-                    ? `?date=${encodeURIComponent(this.consilium.dateFilter)}` : '';
-                this.consilium.registries = await apiGetJson(`/api/consilium/registries${query}`);
+            this.consilium.loaded=true;
+        } catch(error) {
+            if(current()&&!error.obsolete){
+                this.consilium.loaded=false;this.consilium.schedule=[];this.consilium.appointments=[];
+                $('consiliumChairScheduleTables').replaceChildren();$('consiliumDoctorScheduleTables').replaceChildren();
+                this.setConsiliumReadPresentation('error');
             }
-            this.consilium.loaded = true;
+            throw error;
         } finally {
-            this.consilium.loading = false;
+            if(current())this.consilium.loading=false;
         }
     },
 
@@ -8334,9 +8370,14 @@ const app = {
     },
 
     async renderConsilium({ reuseData = false } = {}) {
+        const version=this.beginRead('consilium-render'),epoch=this.sessionEpoch;
+        const current=()=>epoch===this.sessionEpoch&&this.isCurrentRead('consilium-render',version);
         const body = $('consiliumBody');
         const empty = $('consiliumEmpty');
         const chair = this.can('consiliumChair');
+        const loadState=$('consiliumLoadState');
+        loadState.textContent='Загрузка расписания…';loadState.classList.remove('is-hidden');
+        this.setConsiliumReadPresentation('loading');
         $('consiliumAppointmentsPanel').classList.add('is-hidden');
         if (!this.consilium.loaded) {
             body.replaceChildren(el('tr', {}, el('td', { colspan: '6', class: 'muted', text: 'Загрузка записей…' })));
@@ -8344,12 +8385,19 @@ const app = {
         try {
             if (!reuseData || !this.consilium.loaded) await this.loadConsilium();
         } catch (error) {
+            if (!current() || error.obsolete) return;
             body.replaceChildren();
+            this.consilium.loaded=false;this.consilium.schedule=[];this.consilium.appointments=[];
+            $('consiliumChairScheduleTables').replaceChildren();$('consiliumDoctorScheduleTables').replaceChildren();
+            this.setConsiliumReadPresentation('error');
+            loadState.textContent='Не удалось обновить расписание. Повторите действие после проверки доступа.';
             empty.textContent = `Не удалось загрузить записи: ${error.message}`;
             empty.classList.remove('is-hidden');
             return;
         }
 
+        if(!current())return;
+        loadState.classList.add('is-hidden');this.setConsiliumReadPresentation('ready');
         const allRows = this.consilium.appointments || [];
         let rows = allRows;
         if (chair) {
@@ -8424,7 +8472,7 @@ const app = {
         this.renderConsiliumRegistries();
         this.renderConsiliumSchedule(rows);
         if (this.consilium.focusId) {
-            const focused = $(`consilium-row-${this.consilium.focusId}`);
+            const focused = $(`consilium-grid-row-${this.consilium.focusId}`) || $(`consilium-row-${this.consilium.focusId}`);
             if (focused) {
                 focused.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 window.setTimeout(() => focused.classList.remove('consilium-row--focused'), 3500);
@@ -8434,7 +8482,9 @@ const app = {
     },
 
     renderConsiliumSchedule(appointmentRows = this.consilium.appointments || []) {
+        if (!this.consiliumGridReady()) return;
         const chair = this.can('consiliumChair');
+        this.renderConsiliumDayNavigation();
         $('consiliumChairOnlyFreeBtn').setAttribute('aria-pressed', this.consilium.onlyFree ? 'true' : 'false');
         $('consiliumDoctorOnlyFreeBtn').setAttribute('aria-pressed', this.consilium.onlyFree ? 'true' : 'false');
         $('consiliumMineOnly').setAttribute('aria-pressed', this.consilium.mineOnly ? 'true' : 'false');
@@ -8486,7 +8536,7 @@ const app = {
                     appointment,
                 })),
         ].sort((a, b) => keyFor(a.slot).localeCompare(keyFor(b.slot), 'ru'));
-        if (this.consilium.onlyFree) gridRows = gridRows.filter(({ appointment }) => !appointment);
+        if (this.consilium.onlyFree) gridRows = gridRows.filter(({ slot, appointment }) => !appointment && !slot.occupied);
         const groups = (this.consilium.meta?.groups || []).filter(group => selectedGroupSet.has(group.value));
         $('consiliumScheduleEmpty').textContent = searchActive
             ? 'По вашему запросу записей в сетке не найдено.'
@@ -8496,49 +8546,74 @@ const app = {
             const rows = gridRows.filter(({ slot }) => slot.consiliumGroup === group.value);
             return el('section', { class: 'consilium-schedule-group' }, [
                 el('h3', { class: 'consilium-schedule-group__title', text: group.label }),
-                rows.length ? el('div', { class: 'table-wrap' }, [
-                    el('table', { class: 'table consilium-schedule-table consilium-schedule-grid-table' }, [
-                        el('thead', {}, el('tr', {}, [
-                            el('th', { text: 'Время записи' }), el('th', { text: 'ФИО пациента' }),
-                            el('th', { text: 'Код МКБ-10' }), el('th', { text: 'ФИО врача' }),
-                            el('th', { text: '' }),
-                        ])),
-                        el('tbody', {}, rows.map(({ slot, appointment }) => el('tr', {
-                            id: appointment ? `consilium-grid-row-${appointment.id}` : '',
-                            class: appointment && this.consilium.focusId === appointment.id ? 'consilium-row--focused' : '',
-                        }, [
-                            el('td', { class: 'consilium-slot-time', text: slot.scheduledTime }),
-                            el('td', {}, appointment ? [
-                                el('button', {
-                                    type: 'button', class: 'consilium-patient-button', text: appointment.patientName,
-                                    on: { click: () => this.openConsiliumDetails(appointment) },
-                                }),
-                                appointment.comment ? el('div', { class: 'consilium-comment', text: appointment.comment }) : null,
-                            ] : el('span', { class: 'muted', text: '—' })),
-                            el('td', { class: 'consilium-diagnosis', text: appointment ? (appointment.primaryDiagnosis || '—') : '—' }),
-                            el('td', { text: appointment ? appointment.treatingDoctorName : '—' }),
-                            el('td', { class: 'cell-actions' }, appointment
-                                ? el('div', { class: 'consilium-grid-markers' }, [
-                                    appointment.uvRuv ? el('span', { class: 'chip chip--danger', text: 'УВ/РУВ' }) : null,
-                                    appointment.outsideSchedule
-                                        ? el('span', { class: 'chip chip--warning', text: 'Вне расписания' }) : null,
-                                    appointment.backdated
-                                        ? el('span', { class: 'chip chip--neutral', text: 'Оформлено задним числом' }) : null,
-                                    this.renderConsiliumChairActions(appointment),
-                                ])
-                                : el('div', { class: 'consilium-grid-markers' }, [
-                                    slot.backdated ? el('span', { class: 'chip chip--neutral', text: 'Слот задним числом' }) : null,
-                                    el('button', {
-                                        type: 'button', class: 'btn btn--ghost btn--sm', text: 'Удалить',
-                                        on: { click: () => this.deleteConsiliumScheduleSlot(slot.id) },
-                                    }),
-                                ])),
-                        ]))),
-                    ]),
-                ]) : el('div', {
+                rows.length ? this.renderConsiliumSlotCards(rows, true) : el('div', {
                     class: 'empty consilium-schedule-group__empty',
                     text: searchActive ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.',
                 }),
+            ]);
+        })));
+    },
+
+    renderConsiliumSlotCards(rows, chair, recordActions = null) {
+        const generation=this.consilium.gridGeneration,epoch=this.sessionEpoch;
+        const list=el('ul', {class:'consilium-slots', 'aria-label':'Сохраненные слоты'}, rows.map(({slot, appointment, record:scopedRecord, unavailableText}) => {
+            const record = chair ? appointment : scopedRecord;
+            const occupied = !!appointment || slot.occupied;
+            const state = occupied ? 'busy' : slot.bookable ? 'free' : 'off';
+            const actions = chair
+                ? (appointment ? el('div', {class:'consilium-grid-markers'}, [
+                    appointment.uvRuv ? el('span',{class:'chip chip--danger',text:'УВ/РУВ'}) : null,
+                    appointment.outsideSchedule ? el('span',{class:'chip chip--warning',text:'Вне расписания'}) : null,
+                    appointment.backdated ? el('span',{class:'chip chip--neutral',text:'Оформлено задним числом'}) : null,
+                    this.renderConsiliumChairActions(appointment),
+                ]) : occupied ? el('span',{class:'chip chip--neutral',text:'Занято'}) : el('div', {class:'consilium-grid-markers'}, [
+                    slot.backdated ? el('span',{class:'chip chip--neutral',text:'Слот задним числом'}) : null,
+                    el('button',{type:'button',class:'btn btn--ghost btn--sm',text: 'Удалить',
+                        'aria-label':`Удалить свободный слот ${slot.scheduledTime}`,
+                        on:{click:()=>this.deleteConsiliumScheduleSlot(slot.id)}}),
+                ]))
+                : record ? recordActions(record, appointment.isMine)
+                    : occupied ? el('span',{class:'chip chip--neutral',text:'Занято'})
+                    : slot.bookable ? el('button',{type:'button',class:'btn btn--primary btn--sm',text:'Запись',
+                        'aria-label':`${slot.scheduledTime}: записать пациента`,on:{click:()=>this.openConsiliumModal(null, slot)}})
+                    : el('span',{class:'muted',text:unavailableText || 'Время прошло'});
+            return el('li', {class:`consilium-slot consilium-slot--${state}${appointment && this.consilium.focusId===appointment.id ? ' consilium-row--focused' : ''}`,
+                ...(appointment ? {id:`consilium-grid-row-${appointment.id}`} : {}),
+                'data-slot-state':state}, [
+                el('div',{class:'consilium-slot__head'},[
+                    el('strong',{class:'consilium-slot-time',text: slot.scheduledTime}),
+                    el('span',{class:'consilium-slot__state',text:occupied?'Занято':slot.bookable?'Свободно':'Недоступно'}),
+                ]),
+                appointment ? (record ? el('button',{type:'button',class:'consilium-patient-button',text:appointment.patientName,
+                    on:{click:()=>this.openConsiliumDetails(record)}}) : el('span',{text:appointment.patientName}))
+                    : el('p',{class:'muted',text:occupied?'Сведения о пациенте недоступны':'Сохраненный слот председателя'}),
+                appointment ? el('p',{class:'consilium-slot__clinical',text:`${appointment.primaryDiagnosis || '—'} · ${appointment.treatingDoctorName || '—'}`}) : null,
+                chair && appointment?.comment ? el('p',{class:'consilium-comment',text:appointment.comment}) : null,
+                el('div',{class:'consilium-slot__actions'},actions),
+            ]);
+        }));
+        for (const button of list.querySelectorAll('button')) button.addEventListener('click',event=>{
+            if (epoch!==this.sessionEpoch || !this.consiliumGridReady(generation)) {event.preventDefault();event.stopImmediatePropagation();}
+        },true);
+        return list;
+    },
+
+    renderConsiliumDayNavigation() {
+        const chair=this.can('consiliumChair');
+        const selected=(chair?this.consilium.dateFilter:this.consilium.doctorDate)||this.consiliumToday();
+        const center=new Date(selected+'T12:00:00Z');
+        if (!Number.isFinite(center.getTime())) return;
+        $('consiliumDayNavigation').replaceChildren(frag(Array.from({length:7},(_,i)=>{
+            const date=new Date(center);date.setUTCDate(date.getUTCDate()+i-3);
+            const iso=date.toISOString().slice(0,10);
+            return el('button',{type:'button',class:'consilium-day','aria-pressed':iso===selected?'true':'false',
+                'aria-label':new Intl.DateTimeFormat('ru-RU',{dateStyle:'full',timeZone:'UTC'}).format(date),
+                on:{click:async()=>{const epoch=this.sessionEpoch;if(chair){this.consilium.dateFilter=iso;$('consiliumDateFilter').value=iso;}
+                    else {this.consilium.doctorDate=iso;$('consiliumDoctorDate').value=iso;}
+                    await this.renderConsilium();
+                    if(epoch===this.sessionEpoch&&!this.sessionExpired&&this.currentView==='consilium') $('consiliumDayNavigation').querySelector('[aria-pressed="true"]')?.focus();}}},[
+                el('span',{text:new Intl.DateTimeFormat('ru-RU',{weekday:'short',timeZone:'UTC'}).format(date)}),
+                el('strong',{text:String(date.getUTCDate())}),
             ]);
         })));
     },
@@ -8590,44 +8665,11 @@ const app = {
             const groupSlots = slots.filter(slot => slot.consiliumGroup === group.value);
             return el('section', { class: 'consilium-schedule-group' }, [
                 el('h3', { class: 'consilium-schedule-group__title', text: group.label }),
-                groupSlots.length ? el('div', { class: 'table-wrap' }, [
-                    el('table', { class: 'table consilium-doctor-schedule-table' }, [
-                        el('thead', {}, el('tr', {}, [
-                            el('th', { text: 'Время записи' }), el('th', { text: 'ФИО пациента' }),
-                            el('th', { text: 'Код МКБ-10' }), el('th', { text: 'ФИО врача' }),
-                            el('th', { text: '' }),
-                        ])),
-                        el('tbody', {}, groupSlots.map(slot => {
-                            const appointment = slot.appointment || null;
-                            const record = appointment && appointment.canManage ? manageable.get(appointment.id) : null;
-                            return el('tr', {}, [
-                                el('td', { class: 'consilium-slot-time', text: slot.scheduledTime }),
-                                el('td', {}, appointment
-                                    ? (record
-                                        ? el('button', {
-                                            type: 'button', class: 'consilium-patient-button', text: appointment.patientName,
-                                            on: { click: () => this.openConsiliumDetails(record) },
-                                        })
-                                        : el('span', { text: appointment.patientName }))
-                                    : el('span', { class: 'muted', text: slot.occupied ? 'Занято' : '—' })),
-                                el('td', { class: 'consilium-diagnosis', text: appointment ? (appointment.primaryDiagnosis || '—') : '—' }),
-                                el('td', { text: appointment ? (appointment.treatingDoctorName || '—') : '—' }),
-                                el('td', { class: 'cell-actions' }, record
-                                    ? recordActions(record, appointment.isMine)
-                                    : slot.occupied
-                                        // Запись чужого пациента: сервер отдает только факт занятости слота.
-                                        ? el('span', { class: 'chip chip--neutral', text: 'Занято' })
-                                        : (slot.bookable
-                                            ? el('button', {
-                                                type: 'button', class: 'btn btn--primary btn--sm', text: 'Запись',
-                                                on: { click: () => this.openConsiliumModal(null, slot) },
-                                            })
-                                            // Время по Москве уже прошло: запись невозможна.
-                                            : el('span', { class: 'muted', text: 'Время прошло' }))),
-                            ]);
-                        })),
-                    ]),
-                ]) : el('div', {
+                groupSlots.length ? this.renderConsiliumSlotCards(groupSlots.map(slot => {
+                    const appointment=slot.appointment || null;
+                    return {slot,appointment,record:appointment && appointment.canManage ? manageable.get(appointment.id) : null,
+                        unavailableText:slot.bookable ? '' : 'Время прошло'};
+                }), false, recordActions) : el('div', {
                     class: 'empty consilium-schedule-group__empty',
                     text: search ? 'По вашему запросу записей не найдено.' : 'На выбранный день слотов нет.',
                 }),
@@ -8787,6 +8829,7 @@ const app = {
     },
 
     async deleteConsiliumScheduleSlot(slotId) {
+        if (!this.consiliumGridReady() || !(this.consilium.schedule || []).some(slot=>slot.id===slotId&&!slot.occupied&&slot.scheduledDate===(this.can('consiliumChair')?this.consilium.dateFilter:this.consilium.doctorDate))) return;
         try {
             await apiDelete(`/api/consilium/schedule/${encodeURIComponent(slotId)}`);
             const schedule = await apiGetJson('/api/consilium/schedule');
@@ -9112,6 +9155,9 @@ const app = {
         const selected=record?.patientId || $('consiliumPatient').value;
         const q=$('consiliumPatientSearch')?.value || '';
         $('submitConsiliumBtn').disabled=true;
+        $('consiliumPatient').replaceChildren(option('','Загрузка кандидатов…',true));
+        $('consiliumPatientHint').textContent='Проверка доступных пациентов…';
+        $('consiliumCandidatePager')?.replaceChildren();
         try {
             const p=new URLSearchParams({limit:'50',q});if(known)p.set('group',group);if(cursor)p.set('cursor',cursor);
             const data=await apiGetJson('/api/patients/workspace/patients?'+p);
@@ -9136,21 +9182,35 @@ const app = {
         } catch(error) {
             if(!this.isCurrentRead('consilium-candidates',version))return [];
             if(!restarted&&[409,410].includes(error.status)&&['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code))return this.fillConsiliumPatientsForGroup(record,null,true);
+            this.candidateRows=[];$('consiliumPatient').replaceChildren(option('','Список недоступен',true));
+            $('consiliumPatientHint').textContent='Не удалось получить доступных кандидатов. Повторите поиск после проверки доступа.';
+            $('submitConsiliumBtn').disabled=true;
             ui.toast(error.message,'danger');return [];
         }
     },
 
     async openConsiliumModal(appointmentId = null, selectedSlot = null, options = {}) {
+        if (this.sessionExpired || this.consilium.loading) return;
+        if (selectedSlot) {
+            if (!this.consiliumGridReady()) return;
+            const fresh=this.consilium.schedule.find(slot=>slot.id===selectedSlot.id
+                &&slot.scheduledDate===selectedSlot.scheduledDate&&slot.scheduledTime===selectedSlot.scheduledTime
+                &&slot.consiliumGroup===selectedSlot.consiliumGroup&&slot.bookable&&!slot.occupied);
+            if (!fresh || fresh.scheduledDate!==(this.can('consiliumChair')?this.consilium.dateFilter:this.consilium.doctorDate)) return;
+            selectedSlot=fresh;
+        }
         try {
             if (!this.consilium.meta || !this.consilium.loaded) await this.loadConsilium();
         } catch (error) {
             ui.toast('Не удалось подготовить форму: ' + error.message, 'danger');
             return;
         }
+        const prepareEpoch=this.sessionEpoch,prepareVersion=this.readVersions['consilium-load'];
         this.consilium.editingId = appointmentId;
         const record = appointmentId
             ? this.consilium.appointments.find(item => item.id === appointmentId)
             : null;
+        if (appointmentId && !record) return;
         this.consilium.editingVersion = record ? record.version : null;
         // Режим «задним числом» включается только явным действием (ниже).
         this.consilium.backdatedMode = false;
@@ -9177,6 +9237,9 @@ const app = {
             ? record.consiliumGroupLabel
             : (firstFree ? firstFree.consiliumGroupLabel : '');
         const patients = await this.fillConsiliumPatientsForGroup(record);
+        if (prepareEpoch!==this.sessionEpoch || this.sessionExpired || this.consilium.loading || !this.consilium.loaded
+            ||prepareVersion!==this.readVersions['consilium-load']) return;
+        for (const notice of $('consiliumModal').querySelectorAll('[data-consilium-read-notice]')) notice.remove();
         $('consiliumPatient').disabled = !!record;
         $('consiliumGroup').readOnly = !!record;
         this.updateConsiliumAvailableSlots(record);
@@ -9376,6 +9439,7 @@ const app = {
         const node = $('consiliumFormError');
         node.textContent = message;
         node.classList.remove('is-hidden');
+        $('consiliumFormError').focus();
         node.scrollIntoView({ block: 'nearest' });
     },
 
@@ -9400,6 +9464,7 @@ const app = {
         $('resubmitConsiliumBtn').disabled = true;
         $('deleteConsiliumBtn').disabled = true;
         $('consiliumConflict').scrollIntoView({ block: 'nearest' });
+        $('consiliumConflict').focus();
     },
 
     async refreshConsiliumAfterConflict() {
@@ -10915,6 +10980,7 @@ const app = {
         on('openConsiliumArchiveBtn', 'click', () => this.openConsiliumArchive());
         on('closeConsiliumArchiveBtn', 'click', () => ui.closeModal('consiliumArchiveModal'));
         on('closeConsiliumArchiveIconBtn', 'click', () => ui.closeModal('consiliumArchiveModal'));
+        on('consiliumRefreshBtn','click',()=>this.renderConsilium());
         on('consiliumArchiveDate', 'change', () => this.renderConsiliumArchive());
         on('consiliumArchiveSearch', 'input', () => this.renderConsiliumArchive());
         on('closeConsiliumBtn', 'click', () => ui.closeModal('consiliumModal'));
@@ -10980,6 +11046,10 @@ const app = {
             picker.classList.toggle('is-hidden', !opening);
             $('consiliumScheduleDateButton').setAttribute('aria-expanded', opening ? 'true' : 'false');
             if (opening) this.renderConsiliumScheduleCalendar();
+        });
+        on('consiliumScheduleDatePicker','keydown',event=>{
+            if(event.key==='Escape'){event.stopPropagation();$('consiliumScheduleDatePicker').classList.add('is-hidden');
+                $('consiliumScheduleDateButton').setAttribute('aria-expanded','false');$('consiliumScheduleDateButton').focus();}
         });
         on('consiliumSchedulePrevMonthBtn', 'click', () => {
             const [year, month] = this.consilium.scheduleCalendarMonth.split('-').map(Number);

@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-create-v4">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a">
 </head>
 <body>
 
@@ -269,20 +269,21 @@
             </section>
 
             <!-- ОНКОЛОГИЧЕСКИЙ КОНСИЛИУМ -->
-            <section class="view is-hidden" id="view-consilium">
+            <section class="view is-hidden consilium-workspace" id="view-consilium" aria-labelledby="consiliumWorkspaceTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Онкологический консилиум</h1>
+                        <h1 class="pagehead__title" id="consiliumWorkspaceTitle">Онкологический консилиум</h1>
                         <p class="pagehead__subtitle" id="consiliumSubtitle">Ваши пациенты, записанные на рассмотрение консилиумной группой</p>
                     </div>
                     <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="consiliumRefreshBtn">Обновить расписание</button>
                         <button type="button" class="btn btn--ghost is-hidden" id="openConsiliumArchiveBtn">Архив</button>
                         <button type="button" class="btn btn--primary is-hidden" id="openConsiliumBookingBtn">Запись</button>
                     </div>
                 </div>
 
                 <div class="alert alert--info consilium-schedule-note" id="consiliumScheduleNote" role="note">
-                    Свободные слоты пока работают в тестовом режиме. В дальнейшем расписание и доступность времени будет определять председатель онкологического консилиума.
+                    Запись доступна только в сохраненные свободные слоты председателя. Время указывается по Москве.
                 </div>
 
                 <div class="panel panel--pad consilium-calendar" id="consiliumChairCalendar">
@@ -314,10 +315,12 @@
                     </div>
                 </div>
 
-                <section class="panel panel--pad consilium-schedule-editor is-hidden" id="consiliumScheduleEditor">
+                <p class="consilium-load-state is-hidden" id="consiliumLoadState" role="status" aria-live="polite"></p>
+                <nav class="consilium-days" id="consiliumDayNavigation" aria-label="Выбор дня расписания"></nav>
+                <section class="panel panel--pad consilium-schedule-editor is-hidden" id="consiliumScheduleEditor" aria-labelledby="consiliumScheduleTitle">
                     <div class="section-head">
                         <div>
-                            <h2 class="panel__title">Сетка расписания консилиума</h2>
+                            <h2 class="panel__title" id="consiliumScheduleTitle">Расписание и слоты</h2>
                             <p class="panel__text" id="consiliumScheduleDescription">Создайте свободные слоты — они сразу появятся в форме записи у врача.</p>
                         </div>
                         <div class="consilium-schedule-toolbar" id="consiliumChairScheduleToolbar">
@@ -330,11 +333,12 @@
                             <button type="button" class="btn btn--ghost btn--sm is-hidden" id="consiliumBackdatedApptBtn">Оформить консилиум задним числом</button>
                         </div>
                     </div>
+                    <ul class="consilium-legend" aria-label="Обозначения слотов"><li>Свободно — открыто для записи</li><li>Занято — запись сохранена</li><li>Недоступно — время прошло</li></ul>
                     <div id="consiliumScheduleManagement">
                         <form class="consilium-schedule-form" id="consiliumScheduleForm">
                             <div class="field consilium-schedule-date-field">
-                                <span class="field__label">Дата</span>
-                                <button class="input consilium-schedule-date-button" type="button" id="consiliumScheduleDateButton" aria-expanded="false">Выберите дату</button>
+                                <span class="field__label" id="consiliumScheduleDateLabel">Дата открытия слотов</span>
+                                <button aria-labelledby="consiliumScheduleDateLabel consiliumScheduleDateButton" class="input consilium-schedule-date-button" type="button" id="consiliumScheduleDateButton" aria-expanded="false">Выберите дату</button>
                                 <input type="hidden" id="consiliumScheduleDate">
                                 <span class="consilium-date-picker is-hidden" id="consiliumScheduleDatePicker">
                                     <span class="consilium-date-picker__head">
@@ -344,7 +348,7 @@
                                     </span>
                                     <span class="consilium-date-picker__weekdays" aria-hidden="true"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></span>
                                     <span class="consilium-date-picker__days" id="consiliumScheduleCalendarDays"></span>
-                                    <span class="field__hint">Серым отмечены прошедшие дни и даты с уже открытым расписанием для выбранной группы.</span>
+                                    <span class="field__hint">Прошедшие дни недоступны. На уже открытый день можно явно добавить новый интервал.</span>
                                 </span>
                             </div>
                             <label class="field"><span class="field__label">Группа</span><select class="select" id="consiliumScheduleGroup" required></select></label>
@@ -353,6 +357,7 @@
                             <label class="field"><span class="field__label">Интервал</span><select class="select" id="consiliumScheduleInterval"><option value="15" selected>15 минут</option><option value="30">30 минут</option><option value="60">60 минут</option></select></label>
                             <button type="submit" class="btn btn--primary" id="consiliumScheduleGenerateBtn">Создать слоты</button>
                         </form>
+                        <p class="field__hint">Повторное создание интервала выполняется только по кнопке и может заново открыть ранее удаленное время. Для расширения выберите новый интервал.</p>
                         <p class="alert alert--danger is-hidden" id="consiliumScheduleError" role="alert"></p>
                     </div>
                     <div id="consiliumChairScheduleWrap">
@@ -1128,8 +1133,8 @@
         </div>
 
         <form class="modal__body form" id="consiliumForm">
-            <p class="alert alert--danger is-hidden" id="consiliumFormError" role="alert"></p>
-            <div class="alert alert--warning is-hidden" id="consiliumConflict" role="alert">
+            <p class="alert alert--danger is-hidden" id="consiliumFormError" role="alert" tabindex="-1"></p>
+            <div class="alert alert--warning is-hidden" id="consiliumConflict" role="alert" tabindex="-1">
                 <p id="consiliumConflictText"></p>
                 <button type="button" class="btn btn--primary btn--sm" id="consiliumConflictRefreshBtn">Обновить данные</button>
             </div>
@@ -1144,7 +1149,7 @@
                 <div class="field">
                     <label class="field__label" for="consiliumPatient">ФИО пациента <span class="req">*</span></label>
                     <input class="input" type="search" id="consiliumPatientSearch" aria-label="Поиск пациента для консилиума" placeholder="Поиск по всему доступному списку"><select class="select" id="consiliumPatient" required></select>
-                    <p class="field__hint" id="consiliumPatientHint">Список содержит пациентов, подходящих выбранной консилиумной группе по коду МКБ‑10.</p>
+                    <p class="field__hint" id="consiliumPatientHint" aria-live="polite">Список содержит пациентов, подходящих выбранной консилиумной группе по коду МКБ‑10.</p>
                 </div>
                 <div class="field">
                     <label class="field__label" for="consiliumPolicyNumber">Номер полиса ОМС</label>
@@ -1841,6 +1846,6 @@
 
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
-<script src="/static/app.js?v=wp-i-create-v4"></script>
+<script src="/static/app.js?v=wp-i-consilium-v5a"></script>
 </body>
 </html>

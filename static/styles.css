@@ -3084,3 +3084,43 @@ html[data-theme="light"] .patient-workspace .chip--danger { color:#b91c1c; }
 
 /* Error text must retain AA contrast on the light creation surface. */
 html[data-theme="light"] .create-patient .alert--danger { color: #b91c1c; }
+
+/* I-5A: Staff-UX day/slot composition, using the existing server projection. */
+.consilium-workspace .consilium-calendar { background:var(--surface);border-top:3px solid var(--accent);grid-template-columns:minmax(0,1fr) minmax(0,1fr); }
+.consilium-workspace .consilium-calendar__actions { grid-column:1 / -1; }
+.consilium-days { display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px;margin:0 0 var(--sp-5); }
+.consilium-day { display:grid;gap:4px;justify-items:center;border:1px solid var(--border);border-radius:var(--r-md);padding:10px 2px;min-height:54px;background:var(--surface);color:var(--text);cursor:pointer; }
+.consilium-day[aria-pressed="true"] { background:var(--accent);color:#fff;border-color:var(--accent); }
+.consilium-legend { display:flex;gap:var(--sp-4);flex-wrap:wrap;list-style:none;padding:0;margin:var(--sp-4) 0;color:var(--text-2);font-size:var(--text-sm); }
+.consilium-slots { display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,240px),1fr));gap:var(--sp-3);list-style:none;padding:0;margin:0; }
+.consilium-slot { display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-4);border:1px solid var(--border);border-radius:var(--r-md);background:var(--surface);overflow-wrap:anywhere; }
+.consilium-slot--free { border-top:3px solid var(--good); }
+.consilium-slot--busy { border-top:3px solid var(--accent);background:var(--surface-2); }
+.consilium-slot--off { border-top:3px solid var(--border); }
+.consilium-slot__head { display:flex;gap:var(--sp-2);align-items:center;justify-content:space-between; }
+.consilium-slot__state { color:var(--text-2);font-size:var(--text-sm); }
+.consilium-slot__clinical { color:var(--text-2);margin:0;font-size:var(--text-sm); }
+.consilium-slot__actions { margin-top:auto; }
+.consilium-slot .consilium-patient-button { text-align:left;white-space:normal; }
+.consilium-slot .consilium-actions { min-width:0;flex-wrap:wrap; }
+.consilium-workspace .consilium-schedule-form { grid-template-columns:repeat(3,minmax(0,1fr));padding:var(--sp-4);background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-md); }
+.consilium-load-state { padding:var(--sp-3);background:var(--surface-2);border-radius:var(--r-sm); }
+@media(max-width:600px){
+ .consilium-workspace .consilium-calendar,.consilium-workspace .consilium-schedule-form { grid-template-columns:minmax(0,1fr); }
+ .consilium-workspace .consilium-group-picker,.consilium-workspace .consilium-group-picker__summary { min-width:0;width:100%; }
+ .consilium-workspace .consilium-group-picker__option { white-space:normal; }
+ .consilium-workspace .consilium-group-picker__menu { max-width:100%;width:100%; }
+ .consilium-slot .consilium-grid-markers { flex-wrap:wrap; }
+}
+
+.consilium-workspace .consilium-free-filter,.consilium-workspace .consilium-mine-filter-btn { opacity:1;background:var(--surface);color:var(--text);border:1px solid var(--border); }
+.consilium-workspace .consilium-free-filter[aria-pressed="true"],.consilium-workspace .consilium-mine-filter-btn[aria-pressed="true"] { background:var(--accent);color:#fff;border-color:var(--accent); }
+html[data-theme="light"] .consilium-workspace .alert--info { color:#1e40af; }
+
+#consiliumModal .modal__box { max-width:960px; }
+#consiliumModal .modal__head { border-top:3px solid var(--accent); }
+#consiliumForm { display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.9fr);align-items:start;gap:var(--sp-4); }
+#consiliumForm>.alert,#consiliumForm>.fieldset:last-of-type,#consiliumForm>#consiliumFormRevisions { grid-column:1/-1; }
+#consiliumForm>.fieldset { min-width:0;margin:0; }
+html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
+@media(max-width:700px){#consiliumForm{grid-template-columns:minmax(0,1fr);}}
