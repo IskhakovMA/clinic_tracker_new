@@ -5932,16 +5932,11 @@ const app = {
         });
     },
 
-    async loadAnalytics() {
-        const params = this.analyticsParams();
-        const dashboard = await apiGetJson(`/api/analytics/dashboard?${params}`);
-        Object.assign(this.analytics, {
-            dashboard,
-            summary: dashboard.summary,
-            stages: dashboard.stages,
-            workload: dashboard.workload,
-            dataQuality: dashboard.data_quality,
-        });
+    async loadAnalytics(params, ticket) {
+        const dashboard=await apiGetJson(`/api/analytics/dashboard?${params}`);
+        if(!this.managementReadCurrent(ticket,this.analyticsParams().toString()))return false;
+        Object.assign(this.analytics,{dashboard,summary:dashboard.summary,stages:dashboard.stages,workload:dashboard.workload,dataQuality:dashboard.data_quality});
+        return true;
     },
 
     async renderAnalytics() {
@@ -5949,6 +5944,11 @@ const app = {
             await this.renderChairAnalytics();
             return;
         }
+        const params=this.analyticsParams().toString(),ticket=this.managementReadTicket('analytics-dashboard',params);
+        this.analyticsDashboardTicket=ticket;this.analyticsReadState='loading';
+        const current=()=>this.managementReadCurrent(ticket,this.analyticsParams().toString());
+        $('analyticsExportBtn').disabled=true;
+        document.querySelector('.analytics-dashboard').setAttribute('aria-busy','true');
         $('analyticsSubtitle').textContent = 'Организационные показатели маршрутов, просрочек и заполненности данных';
         $('chairAnalyticsDashboard').classList.add('is-hidden');
         document.querySelector('.analytics-dashboard').classList.remove('is-hidden');
@@ -5969,7 +5969,7 @@ const app = {
         this.analytics.detailsToken += 1;
         $('analyticsDetailsPanel').replaceChildren();
         try {
-            await this.loadAnalytics();
+            if(!await this.loadAnalytics(params,ticket)||!current())return;
             this.renderAnalyticsFilterOptions();
             this.updateAnalyticsPeriodPresetState();
             this.renderAnalyticsSummary();
@@ -5990,10 +5990,11 @@ const app = {
                 onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, row.filter || {}) : null,
             });
             this.renderAnalyticsOperations();
+            this.analyticsReadState='ready';$('analyticsExportBtn').disabled=false;
         } catch (e) {
-            console.error('analytics render failed', e);
+            if(!current())return;this.analyticsReadState='error';
             $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику. Попробуйте обновить данные.' }));
-        }
+        } finally {if(current())document.querySelector('.analytics-dashboard').setAttribute('aria-busy','false');}
     },
 
     async renderChairAnalytics() {
@@ -10175,33 +10176,43 @@ const app = {
         this.doctorsWithoutDepartment = data.doctorsWithoutDepartment || [];
     },
 
+    managementReadTicket(key, params) {
+        return {key, version:this.beginRead(key), epoch:this.sessionEpoch, owner:this.user?.id, access:this.user?.accessContext, params};
+    },
+    managementReadCurrent(ticket, params) {
+        return !!ticket && !!this.user && !this.sessionExpired && !this.sessionReconciling &&
+            ticket.owner===this.user.id && ticket.access===this.user.accessContext && ticket.epoch===this.sessionEpoch &&
+            this.isCurrentRead(ticket.key,ticket.version) && ticket.params===params;
+    },
+    staffActionCurrent(user, ticket=this.staffReadTicket) {
+        return this.can('manageUsers') && this.staffReadState==='ready' && this.managementReadCurrent(ticket,JSON.stringify(this.staffFilters)) &&
+            (!user || this.staffUsers.includes(user));
+    },
+    setStaffReadState(state) {
+        this.staffReadState=state;
+        $('view-staff').setAttribute('aria-busy',String(state==='loading'));
+        $('openStaffCreateBtn').disabled=state!=='ready';
+        if(state==='ready')return;
+        this.staffUsers=[];$('staffBody').replaceChildren();
+        $('staffEmpty').classList.remove('is-hidden');
+        $('staffEmpty').replaceChildren(el('span',{text:state==='loading'?'Загрузка сотрудников…':'Не удалось загрузить сотрудников. Фильтры сохранены.'}));
+        if(state==='error')$('staffEmpty').append(el('button',{type:'button',class:'btn btn--ghost',text:'Повторить загрузку сотрудников',on:{click:()=>this.renderStaff()}}));
+    },
     async renderStaff() {
-        if (!this.can('manageUsers')) return;
+        if (!this.can('manageUsers') || this.sessionExpired || this.sessionReconciling) return;
+        const filters=structuredClone(this.staffFilters), ticket=this.managementReadTicket('staff',JSON.stringify(filters));
+        this.staffReadTicket=ticket;this.setStaffReadState('loading');
+        const current=()=>this.can('manageUsers')&&this.managementReadCurrent(ticket,JSON.stringify(this.staffFilters));
         try {
-            await this.loadStructureData();
-            const params = new URLSearchParams();
-            if (this.staffFilters.query) params.set('query', this.staffFilters.query);
-            if (this.staffFilters.role) params.set('role', this.staffFilters.role);
-            if (this.staffFilters.department) params.set('department', this.staffFilters.department);
-            if (this.staffFilters.status) params.set('status', this.staffFilters.status);
-            const qs = params.toString();
-            this.staffUsers = (await apiGetJson('/api/users' + (qs ? `?${qs}` : ''))).users;
-        } catch (e) {
-            $('staffEmpty').classList.remove('is-hidden');
-            $('staffEmpty').textContent = 'Не удалось загрузить сотрудников: ' + e.message;
-            return;
-        }
-        this.fillStaffFilterSelects();
-        const body = $('staffBody');
-        const empty = $('staffEmpty');
-        if (!this.staffUsers.length) {
-            body.replaceChildren();
-            empty.classList.remove('is-hidden');
-            empty.textContent = 'Сотрудники не найдены. Измените фильтры или создайте учётную запись.';
-            return;
-        }
-        empty.classList.add('is-hidden');
-        body.replaceChildren(frag(this.staffUsers.map(u => this.staffRow(u))));
+            const structure=await apiGetJson('/api/departments');if(!current())return;
+            const params=new URLSearchParams();for(const [key,value] of Object.entries(filters))if(value)params.set(key,value);
+            const data=await apiGetJson('/api/users'+(params.size?'?'+params:''));if(!current())return;
+            this.departments=structure.departments||[];this.doctorsWithoutDepartment=structure.doctorsWithoutDepartment||[];
+            this.staffUsers=data.users;this.setStaffReadState('ready');this.fillStaffFilterSelects();
+            const empty=$('staffEmpty');empty.classList.toggle('is-hidden',!!this.staffUsers.length);
+            empty.textContent='Сотрудники не найдены. Измените фильтры или создайте учетную запись.';
+            $('staffBody').replaceChildren(frag(this.staffUsers.map(user=>this.staffRow(user))));
+        } catch(error) { if(current())this.setStaffReadState('error'); }
     },
 
     fillStaffFilterSelects() {
@@ -10227,8 +10238,9 @@ const app = {
     staffRow(u) {
         const deptNames = (u.departments || []).map(d => d.name).join(', ') || '—';
         const statusChipClass = { active: 'chip--good', blocked: 'chip--danger', deactivated: 'chip--neutral' }[u.status] || 'chip--neutral';
+        const ticket=this.staffReadTicket;
         const actionBtn = (label, handler) => el('button', {
-            type: 'button', class: 'btn btn--ghost btn--sm', text: label, on: { click: handler },
+            type: 'button', class: 'btn btn--ghost btn--sm', text: label, on: { click:()=>{if(this.staffActionCurrent(u,ticket))handler();} },
         });
         const actions = [actionBtn('Изменить', () => this.openStaffModal(u))];
         if (u.status === 'active') {
@@ -10251,6 +10263,8 @@ const app = {
     },
 
     openStaffModal(existing) {
+        if(!this.staffActionCurrent(existing))return;
+        this.staffEditorIdentity={owner:this.user.id,epoch:this.sessionEpoch,access:this.user.accessContext};
         this.staffModalUserId = existing ? existing.id : null;
         $('staffModalTitle').textContent = existing ? 'Изменить сотрудника' : 'Новый сотрудник';
         $('staffForm').reset();
@@ -10282,6 +10296,8 @@ const app = {
 
     async submitStaffForm(event) {
         event.preventDefault();
+        const identity=this.staffEditorIdentity;
+        if(!this.can('manageUsers')||this.sessionExpired||this.sessionReconciling||!identity||identity.owner!==this.user?.id||identity.epoch!==this.sessionEpoch||identity.access!==this.user.accessContext)return;
         const errorBox = $('staffFormError');
         errorBox.classList.add('is-hidden');
         const departmentIds = [...$('staffDepartments').selectedOptions].map(o => o.value);
@@ -10320,6 +10336,7 @@ const app = {
     },
 
     async setStaffStatus(u, status) {
+        const ticket=this.staffReadTicket;if(!this.staffActionCurrent(u,ticket))return;
         const texts = {
             blocked: `Заблокировать «${u.fullName}»? Все активные сессии будут завершены, вход станет невозможен.`,
             deactivated: `Деактивировать «${u.fullName}»? Учётная запись сохранится, но вход станет невозможен.`,
@@ -10331,7 +10348,7 @@ const app = {
             okLabel: 'Подтвердить',
             danger: status !== 'active',
         });
-        if (!confirmed) return;
+        if (!confirmed || !this.staffActionCurrent(u,ticket)) return;
         try {
             await apiPatch(`/api/users/${u.id}`, { status });
             ui.toast('Статус обновлён.', 'good');
@@ -10349,6 +10366,7 @@ const app = {
     },
 
     async resetStaffPassword(u) {
+        const ticket=this.staffReadTicket;if(!this.staffActionCurrent(u,ticket))return;
         // Временный пароль показывается ровно один раз — в этом подтверждении.
         const tempPassword = this.generateTempPassword();
         const confirmed = await ui.confirm({
@@ -10358,7 +10376,7 @@ const app = {
                 + 'Все сессии сотрудника будут завершены, при входе потребуется смена пароля.',
             okLabel: 'Сбросить',
         });
-        if (!confirmed) return;
+        if (!confirmed || !this.staffActionCurrent(u,ticket)) return;
         try {
             await apiPost(`/api/users/${u.id}/reset-password`,
                 { newPassword: tempPassword, mustChangePassword: true });
@@ -10369,12 +10387,13 @@ const app = {
     },
 
     async terminateStaffSessions(u) {
+        const ticket=this.staffReadTicket;if(!this.staffActionCurrent(u,ticket))return;
         const confirmed = await ui.confirm({
             title: 'Завершить сессии?',
             text: `Все активные сессии «${u.fullName}» будут завершены немедленно.`,
             okLabel: 'Завершить',
         });
-        if (!confirmed) return;
+        if (!confirmed || !this.staffActionCurrent(u,ticket)) return;
         try {
             const r = await apiPost(`/api/users/${u.id}/terminate-sessions`);
             ui.toast(`Завершено сессий: ${r.terminated}.`, 'good');

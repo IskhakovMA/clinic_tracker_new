@@ -3254,3 +3254,6 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 .ai-message--assistant { border-left:3px solid var(--accent); }
 .ai-composer { border-top:1px solid var(--border); padding-top:var(--sp-3); }
 @media(max-width:700px){.ai-drawer { width:100%; padding:var(--sp-3); overflow-y:auto; }.ai-safety{font-size:var(--text-xs);}.ai-suggestions{max-height:80px;}.ai-composer__input{min-height:72px;}.ai-chat{flex:1 0 140px;}.ai-message{max-width:100%;}}
+
+/* I-7 U01: contain absolute screen-reader labels inside the horizontal scroller. */
+#view-staff .table-wrap { position: relative; }
