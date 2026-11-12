@@ -3238,3 +3238,19 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
  .workspace-table td:last-child button { width:100%; }
 }
 [data-theme="light"] .patient-workspace-list .chip--danger { color:#9f1239; }
+
+/* I-6C: Staff-UX assistant panel, scoped to the existing secure drawer. */
+.ai-drawer { max-width:100vw; gap:var(--sp-3); }
+.ai-drawer__head { border-bottom:1px solid var(--border); padding-bottom:var(--sp-3); }
+.ai-drawer__head h2 { color:var(--accent-text); }
+.ai-provider-state { color:var(--text-2); font-size:var(--text-sm); line-height:1.5; }
+.ai-context { overflow-wrap:anywhere; align-items:center; }
+.ai-context span { min-width:0; }
+.ai-suggestions { max-height:110px; overflow:auto; flex-shrink:0; }
+.ai-chat { min-height:110px; }
+.ai-message__text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.ai-result-card { grid-template-columns:minmax(0,1fr); }
+.ai-result-card__body strong,.ai-result-card__body span { white-space:normal; overflow-wrap:anywhere; }
+.ai-message--assistant { border-left:3px solid var(--accent); }
+.ai-composer { border-top:1px solid var(--border); padding-top:var(--sp-3); }
+@media(max-width:700px){.ai-drawer { width:100%; padding:var(--sp-3); overflow-y:auto; }.ai-safety{font-size:var(--text-xs);}.ai-suggestions{max-height:80px;}.ai-composer__input{min-height:72px;}.ai-chat{flex:1 0 140px;}.ai-message{max-width:100%;}}

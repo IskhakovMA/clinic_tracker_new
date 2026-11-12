@@ -27,6 +27,8 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    let legacy=0,medicalWrites=0;const errors=[],pageRequests=[];
    p.on('pageerror',e=>errors.push(e.message));p.on('request',r=>{const u=new URL(r.url());if(u.pathname==='/api/patients'&&r.method()==='GET'){pageRequests.push(r.url());if(u.searchParams.get('view')!=='page')legacy++;}if(u.pathname.startsWith('/api/patients')&&!['GET','HEAD'].includes(r.method()))medicalWrites++;});
    await p.goto(origin);await p.locator('#username').fill(username);await p.locator('#password').fill(password);await p.locator('#loginSubmit').click();await ready(p);
+   // Registry fixture owns request ordering; notification polling has its own suites.
+   await p.evaluate(()=>clearInterval(app.internalNotifications.pollTimer));await apiQueue;
    assert.equal(await p.locator('#patientsBody tr').count(),Math.min(50,total));assert.equal(await p.locator('#patientRegistryCount').textContent(),String(total));
    assert.deepEqual(await p.locator('#statsRow .stat__value').allTextContents(),[String(total),String(total),'0','0']);
    assert.equal(await p.locator('#filterDoctor,#filterPriority').count(),0);
@@ -78,7 +80,9 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('n
    }
    assert.equal(legacy,0);assert.equal(medicalWrites,0);assert.deepEqual(errors,[]);
    const metrics=await (await c.request.get(origin+'/synthetic/wph/metrics')).json();assert(metrics.samples.filter(s=>s.status===200).every(s=>s.audit_hash_matches));
-   results.roles.push({role,total,legacy,medicalWrites,rendered,requests:pageRequests.length,technicalCommits:metrics.samples.filter(s=>s.technical_commit).map(s=>({status:s.status,...s.technical_commit}))});await c.close();
+   results.roles.push({role,total,legacy,medicalWrites,rendered,requests:pageRequests.length,technicalCommits:metrics.samples.filter(s=>s.technical_commit).map(s=>({status:s.status,...s.technical_commit}))});
+   // Drain forwarding callbacks before disposing their request context. Assertions above remain unchanged.
+   await apiQueue;await p.unrouteAll({behavior:'wait'});await c.close();
   }
   // Malicious values pass through the real API, then render as inert text in the new row.
   const xss='Синтетический <img src=x onerror="window.i2Xss=1">';const card=await api(admin,'POST','/api/patients',{name:xss,diagnosis:'C34.1',priority:'normal',stage:'exam',head:'Синтетический Заведующий'});

@@ -2172,6 +2172,7 @@ const app = {
         if (this.currentView==='create' && view!=='create' && !this.leavingCreate && !this.sessionExpired) { void this.requestCloseAddModal(view); return; }
         this.capturePatientEdits();
         if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';
+        if(this.ai?.request){const active=view==='patient'?this.currentPatientId:null;if(active!==this.ai.request.active){this.cancelAIRequest();this.ai.messages=[];this.ai.references=[];this.ai.lastError='Контекст экрана изменился. Предыдущий ответ не используется; запрос не повторяется автоматически.';this.renderAIDrawer();}}
         const previousView = this.currentView;
         this.currentView = view;
         for (const section of document.querySelectorAll('.view')) {
@@ -3413,7 +3414,7 @@ const app = {
                         class: 'btn btn--ghost',
                         text: 'Спросить помощника',
                         'aria-label': `Спросить помощника по пациенту: ${p.name}`,
-                        on: { click: () => this.openAIDrawer(p.id) },
+                        'data-ai-open':'true',on: { click: () => this.openAIDrawer(p.id) },
                     }),
                     this.can('deletePatients') ? el('button', {
                         type: 'button', class: 'btn btn--quiet', text: 'Удалить пациента',
@@ -4989,23 +4990,27 @@ const app = {
 
     /* ============================================================= ИИ-ПОМОЩНИК */
 
-    async refreshAIStatus(force = false) {
-        try {
-            this.ai.status = await apiGetJson(`/api/ai/status${force ? '?refresh=true' : ''}`);
-        } catch (e) {
-            this.ai.status = { enabled: true, available: false, state: 'unavailable', reason: 'provider_unreachable', message: 'ИИ-помощник временно недоступен' };
-        }
-        this.updateAIButtonState();
-        this.renderAIDrawer();
+    aiReadTicket(key) { return {key,version:this.beginRead(key),epoch:this.sessionEpoch||0,owner:this.user?.id}; },
+    aiReadCurrent(t) { return !!this.user&&!this.sessionExpired&&!this.sessionReconciling&&t.owner===this.user.id&&t.epoch===(this.sessionEpoch||0)&&this.isCurrentRead(t.key,t.version); },
+    cancelAIRequest() {
+        this.beginRead('ai-chat');this.ai.request=null;this.ai.loading=false;
+        this.ai.messages=this.ai.messages.filter(m=>!m.pending);
     },
-
+    async refreshAIStatus(force = false) {
+        const ticket=this.aiReadTicket('ai-status');this.ai.probing=true;this.updateAIButtonState();this.renderAIDrawer();
+        try {
+            const status=await apiGetJson(`/api/ai/status${force ? '?refresh=true' : ''}`);if(!this.aiReadCurrent(ticket))return;
+            this.ai.status=status;
+        } catch(error) {if(this.aiReadCurrent(ticket))this.ai.status={enabled:true,available:false,state:'unavailable'};}
+        finally {if(this.aiReadCurrent(ticket)){this.ai.probing=false;this.updateAIButtonState();this.renderAIDrawer();}}
+    },
+    aiProviderLabel() {
+        if(this.ai.probing||this.ai.status?.state==='probing')return 'Проверяем доступность модели…';
+        return {disabled:'Модель выключена',available:'Модель доступна',unavailable:'ИИ-помощник временно недоступен'}[this.ai.status?.state]||'Доступность модели не проверена';
+    },
     updateAIButtonState() {
-        const button = $('aiAssistantBtn');
-        if (!button) return;
-        const status = this.ai.status || {};
-        button.classList.toggle('is-muted', !status.available);
-        button.setAttribute('aria-label', status.available ? 'Открыть ИИ-помощник' : 'Открыть состояние ИИ-помощника');
-        button.title = status.available ? 'ИИ-помощник' : (status.message || 'ИИ-помощник не настроен');
+        const button=$('aiAssistantBtn');if(!button)return;
+        button.classList.toggle('is-muted',!this.ai.status?.available);button.setAttribute('aria-label','Открыть ИИ-помощник');button.title=this.aiProviderLabel();
     },
 
     roleAISuggestions() {
@@ -5032,11 +5037,8 @@ const app = {
     },
 
     openAIDrawer(patientId) {
-        if (patientId) {
-            const patient = this.getPatient(patientId);
-            this.ai.patientContextId = patientId;
-            this.ai.patientContextLabel = patient ? patient.name : 'Пациент';
-        }
+        if(patientId)this.setAIPatientContext(patientId);
+        this.ai.returnFocusTarget=document.activeElement;
         this.ai.lastFocusId = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
         this.closeInternalNotificationsDrawer(false);
         $('aiAssistantScrim').classList.remove('is-hidden');
@@ -5044,7 +5046,7 @@ const app = {
         $('aiAssistantDrawer').setAttribute('aria-hidden', 'false');
         $('aiAssistantBtn').setAttribute('aria-expanded', 'true');
         this.renderAIDrawer();
-        if (this.ai.status && this.ai.status.available) {
+        if (!this.ai.loading) {
             $('aiAssistantInput').focus();
         } else {
             $('aiAssistantClose').focus();
@@ -5057,22 +5059,17 @@ const app = {
         $('aiAssistantDrawer').setAttribute('aria-hidden', 'true');
         $('aiAssistantBtn').setAttribute('aria-expanded', 'false');
         if (returnFocus) {
-            const focusId = this.ai.lastFocusId || 'aiAssistantBtn';
-            if ($(focusId)) $(focusId).focus();
+            const target=this.ai.returnFocusTarget;
+            if(target?.isConnected&&!target.closest('[hidden],.is-hidden,[inert]'))target.focus();else $('aiAssistantBtn').focus();
         }
     },
 
     setAIPatientContext(patientId) {
-        const patient = this.getPatient(patientId);
-        this.ai.patientContextId = patientId;
-        this.ai.patientContextLabel = patient ? patient.name : 'Пациент';
-        this.renderAIContext();
+        if(this.ai.patientContextId!==patientId){this.cancelAIRequest();this.ai.messages=[];this.ai.references=[];this.ai.lastError='';$('aiAssistantInput').value='';}
+        const patient=this.getPatient(patientId);this.ai.patientContextId=patientId;this.ai.patientContextLabel=patient?patient.name:'Выбранный пациент';this.renderAIDrawer();
     },
-
     clearAIPatientContext() {
-        this.ai.patientContextId = null;
-        this.ai.patientContextLabel = '';
-        this.renderAIContext();
+        this.cancelAIRequest();this.ai.patientContextId=null;this.ai.patientContextLabel='';this.ai.messages=[];this.ai.references=[];this.ai.lastError='';$('aiAssistantInput').value='';this.renderAIDrawer();
     },
 
     renderAIContext() {
@@ -5100,7 +5097,7 @@ const app = {
         const box = $('aiAssistantSuggestions');
         if (!box) return;
         const status = this.ai.status || {};
-        if (!status.available) {
+        if (this.ai.loading) {
             box.replaceChildren();
             box.classList.add('is-hidden');
             return;
@@ -5121,9 +5118,9 @@ const app = {
     },
 
     renderAIMessage(message) {
-        const mine = message.role === 'user';
+        const mine = message.role === 'user',epoch=this.sessionEpoch,owner=this.user?.id;
         const children = [
-            el('div', { class: 'ai-message__role', text: mine ? 'Вы' : 'Помощник' }),
+            el('div', { class: 'ai-message__role', text: mine ? (message.pending?'Вы · ожидается ответ':message.failed?'Вы · ответ не получен':'Вы') : 'Ответ сервера · только чтение' }),
             el('div', { class: 'ai-message__text', text: message.content }),
         ];
         if (!mine && message.references && message.references.length) {
@@ -5139,7 +5136,7 @@ const app = {
                         class: 'btn btn--ghost btn--sm',
                         text: ref.label || 'Открыть',
                         'aria-label': `${ref.label || 'Открыть'}: ${ref.title || 'пациент'}`,
-                        on: { click: () => this.openPatientTab(ref.patientId, 'overview') },
+                        on: { click: async()=>{if(this.ai.loading||this.sessionEpoch!==epoch||this.user?.id!==owner||!this.ai.messages.includes(message))return;const opened=await this.openNotificationPatient(ref.patientId,'overview');if(opened&&epoch===this.sessionEpoch)this.closeAIDrawer();} },
                     }),
                 ]);
             })));
@@ -5147,103 +5144,52 @@ const app = {
         return el('article', { class: `ai-message ${mine ? 'ai-message--user' : 'ai-message--assistant'}` }, children);
     },
 
-    aiUnavailableText(status) {
-        if (!status || status.available) return '';
-        if (status.reason === 'model_missing') return status.message || 'Локальная модель не загружена.';
-        if (status.reason === 'timeout') return 'Локальный AI-сервис не ответил вовремя.';
-        if (status.reason === 'provider_error') return 'Локальный AI-сервис вернул некорректный ответ.';
-        return 'Локальный AI-сервис недоступен.';
-    },
-
     renderAIDrawer() {
-        const status = this.ai.status || {};
-        const messages = $('aiAssistantMessages');
-        if (!messages) return;
-        $('aiAssistantSubtitle').textContent = status.available
-            ? 'Ответы по доступным данным системы'
-            : 'Основная система продолжает работать';
-        this.renderAIContext();
-        this.renderAISuggestions();
-        const statusBox = $('aiAssistantStatus');
-        statusBox.classList.toggle('is-hidden', !this.ai.loading && !this.ai.lastError && status.available);
-        statusBox.textContent = this.ai.loading
-            ? 'Помощник готовит ответ…'
-            : this.ai.lastError || (!status.available ? (status.message || 'ИИ-помощник недоступен') : '');
-        $('aiAssistantInput').disabled = this.ai.loading || !status.available;
-        $('aiAssistantSendBtn').disabled = this.ai.loading || !status.available;
-        $('aiAssistantClearBtn').disabled = this.ai.loading || this.ai.messages.length === 0;
-        $('aiAssistantForm').classList.toggle('is-hidden', !status.available);
-        if (!status.available) {
-            messages.replaceChildren(el('div', { class: 'ai-empty ai-empty--unavailable' }, [
-                el('h3', { text: 'ИИ-помощник временно недоступен' }),
-                el('p', { text: 'Основная система продолжает работать.' }),
-                el('p', { text: this.aiUnavailableText(status) }),
-                el('button', {
-                    type: 'button',
-                    class: 'btn btn--ghost btn--sm',
-                    text: 'Проверить снова',
-                    on: { click: () => this.refreshAIStatus(true) },
-                }),
-            ]));
-        } else {
-            messages.replaceChildren(this.ai.messages.length
-                ? frag(this.ai.messages.map(message => this.renderAIMessage(message)))
-                : el('div', { class: 'ai-empty' }, [
-                    el('h3', { text: 'Спросите о доступных пациентах, внимании или просрочках' }),
-                    el('p', { text: 'История чата хранится только в текущей вкладке и очищается при выходе или перезагрузке.' }),
-                ]));
-        }
-        messages.scrollTop = messages.scrollHeight;
+        const messages=$('aiAssistantMessages'),status=this.ai.status||{};if(!messages)return;
+        $('aiAssistantSubtitle').textContent='История чата хранится только в текущей вкладке и очищается при смене сотрудника или перезагрузке.';
+        this.renderAIContext();this.renderAISuggestions();
+        $('aiProviderState').textContent=this.aiProviderLabel()+'. Основная система продолжает работать. Сервер может отвечать на поддерживаемые запросы без модели.';
+        $('aiAssistantRefresh').disabled=!!this.ai.probing;$('aiAssistantRefresh').textContent=this.ai.probing?'Проверка…':'Проверить снова';
+        const busy=!!this.ai.loading;$('aiAssistantStatus').classList.toggle('is-hidden',!busy&&!this.ai.lastError);
+        $('aiAssistantStatus').textContent=busy?'Запрос отправлен. Ожидается ответ сервера…':this.ai.lastError||'';
+        $('aiAssistantInput').disabled=busy;$('aiAssistantSendBtn').disabled=busy||this.sessionExpired||this.sessionReconciling;
+        $('aiAssistantClearBtn').disabled=busy||!this.ai.messages.length;$('aiAssistantForm').classList.toggle('is-hidden', !status.available);
+        $('aiFallbackForm').classList.toggle('is-hidden',!!status.available);$('aiFallbackLabel').classList.toggle('is-hidden',!!status.available);
+        const source=status.available?$('aiFallbackForm'):$('aiAssistantForm'),target=status.available?$('aiAssistantForm'):$('aiFallbackForm');
+        if(source.children.length){const focused=document.activeElement;target.append(...source.children);if(target.contains(focused)&&!focused.disabled)focused.focus({preventScroll:true});}
+        $('aiAssistantMessages').setAttribute('aria-busy',String(busy));
+        messages.replaceChildren(this.ai.messages.length?frag(this.ai.messages.map(m=>this.renderAIMessage(m))):el('div',{class:'ai-empty'},[
+            el('h3',{text:'Вопрос по доступным данным'}),el('p',{text:'Попробуйте: «Что у меня на сегодня?» или «Какие пациенты требуют внимания?». Если сервер не поддерживает запрос и модель недоступна, ответ не будет создан.'}),
+        ]));messages.scrollTop=messages.scrollHeight;
     },
-
+    aiUnsafeAnswer(text) { return /(?:tool_calls?|function_call|system_prompt|api_key|authorization\s*:\s*bearer|-----BEGIN.*PRIVATE KEY)/i.test(text); },
     async sendAIMessage(event) {
-        if (event) event.preventDefault();
-        const input = $('aiAssistantInput');
-        const text = input.value.trim();
-        if (!text || this.ai.loading) return;
-        this.ai.loading = true;
-        this.ai.lastError = '';
-        this.ai.messages.push({ role: 'user', content: text });
-        input.value = '';
-        this.renderAIDrawer();
+        event?.preventDefault();const input=$('aiAssistantInput'),text=input.value.trim();
+        if(!text||this.ai.loading||this.sessionExpired||this.sessionReconciling)return;
+        const ticket=this.aiReadTicket('ai-chat'),context=this.ai.patientContextId||null,active=this.currentView==='patient'?this.currentPatientId:null;
+        const pending={role:'user',content:text,pending:true};const op={ticket,context,active};this.ai.request=op;this.ai.loading=true;this.ai.lastError='';
+        const history=this.ai.messages.filter(m=>!m.pending&&!m.failed&&['user','assistant'].includes(m.role)).slice(-12).map(m=>({role:m.role,content:m.content.slice(0,4000)}));
+        this.ai.messages.push(pending);this.renderAIDrawer();
+        const current=()=>this.aiReadCurrent(ticket)&&this.ai.request===op&&(this.ai.patientContextId||null)===context&&(this.currentView==='patient'?this.currentPatientId:null)===active;
         try {
-            const history = this.ai.messages
-                .slice(0, -1)
-                .filter(message => message.role === 'user' || message.role === 'assistant')
-                .slice(-12)
-                .map(message => ({ role: message.role, content: message.content }));
-            const response = await apiPost('/api/ai/chat', {
-                message: text,
-                history,
-                patientContextId: this.ai.patientContextId,
-            });
-            const refs = response.references || [];
-            this.ai.references = refs;
-            this.ai.status = { ...(this.ai.status || {}), enabled: true, available: true, state: 'available', reason: 'ok', message: 'ИИ-помощник доступен' };
-            this.ai.messages.push({
-                role: 'assistant',
-                content: response.answer || 'В доступных данных системы такой информации нет.',
-                references: refs,
-            });
-        } catch (e) {
-            if (e.status === 503) {
-                this.ai.status = { ...(this.ai.status || {}), enabled: true, available: false, state: 'unavailable', reason: 'provider_unreachable', message: 'ИИ-помощник временно недоступен' };
-                this.ai.lastError = 'ИИ-помощник временно недоступен. Попробуйте ещё раз позже.';
-            } else {
-                this.ai.lastError = 'Не удалось получить ответ. Попробуйте ещё раз позже.';
+            const response=await apiPost('/api/ai/chat',{message:text,history,patientContextId:context});if(!current())return;
+            if(context){await apiGetJson('/api/patients/'+encodeURIComponent(context));if(!current())return;}
+            if(typeof response.answer!=='string'||this.aiUnsafeAnswer(response.answer)){pending.pending=false;pending.failed=true;this.ai.lastError='Ответ не удалось безопасно показать. Вопрос сохранен; автоматической повторной отправки нет.';return;}
+            pending.pending=false;const refs=(response.references||[]).filter(ref=>ref.type==='patient'&&typeof ref.patientId==='string');
+            this.ai.references=refs;this.ai.messages.push({role:'assistant',content:response.answer||'Сервер не вернул текст ответа.',references:refs});
+            if(input.value.trim()===text)input.value='';
+        } catch(error) {
+            if(!current())return;pending.pending=false;pending.failed=true;
+            if([403,404].includes(error.status)){this.ai.messages=[];this.ai.references=[];this.ai.patientContextId=null;this.ai.patientContextLabel='';input.value='';this.ai.lastError='Контекст недоступен. Данные диалога очищены. Проверьте доступ к карточке.';
+                if(context&&context===this.currentPatientId){try{await apiGetJson('/api/patients/'+encodeURIComponent(context));}catch(check){if(this.aiReadCurrent(ticket)&&[403,404].includes(check.status)){this.discardSessionAndReload();return;}}}
             }
+            else this.ai.lastError=({401:'Сессия завершена. Войдите повторно.',429:'Слишком много запросов. Вопрос сохранен; повторите отправку вручную позже.',502:'Сервер не получил корректный ответ модели. Вопрос сохранен.',503:'Сервис не дал ответа. Вопрос сохранен; поддерживаемые сервером запросы могут работать без модели.'})[error.status]||'Ответ не получен. Вопрос сохранен. Автоматической повторной отправки нет.';
         } finally {
-            this.ai.loading = false;
-            this.renderAIDrawer();
+            if(this.ai.request===op){this.ai.request=null;this.ai.loading=false;if(this.aiReadCurrent(ticket)){this.renderAIDrawer();if(!$('aiAssistantDrawer').classList.contains('is-hidden'))input.focus({preventScroll:true});}}
         }
     },
-
     clearAIConversation() {
-        this.ai.messages = [];
-        this.ai.references = [];
-        this.ai.lastError = '';
-        this.renderAIDrawer();
-        $('aiAssistantInput').focus();
+        if(this.ai.loading)return;this.cancelAIRequest();this.ai.messages=[];this.ai.references=[];this.ai.lastError='';$('aiAssistantInput').value='';this.renderAIDrawer();$('aiAssistantInput').focus();
     },
 
     /* =============================================== РЕНДЕР: ЦЕНТР УВЕДОМЛЕНИЙ */
@@ -7097,12 +7043,12 @@ const app = {
     bindPatientNavigation() {
         const selector='#patientTabs button,#backToList,.nav__item,#patientSide button,#patientFacts button,.tl-step,#themeToggle,[data-card-save]';
         document.addEventListener('pointerdown',event=>{
-            if (!event.target.closest(selector+',#internalNotificationsBell,.internal-notification__actions button,#notificationsBody button') || this.sessionExpired) return;
+            if (!event.target.closest(selector+',#internalNotificationsBell,#aiAssistantBtn,.ai-result-card button,.internal-notification__actions button,#notificationsBody button') || this.sessionExpired) return;
             const c=this.patientDraftControls?.get(document.activeElement);if(c)c.navigationBlur=true;
         },{capture:true,signal:this.globalControls.signal});
         document.addEventListener('click',event=>{
             const target=event.target.closest(selector);
-            if(!target || this.sessionExpired || !this.user || target.matches('[data-card-save]'))return;
+            if(!target || this.sessionExpired || !this.user || target.matches('[data-card-save],[data-ai-open]'))return;
             const dirty=this.dirtyClinicalControls();if(!dirty.length)return;
             event.preventDefault();event.stopImmediatePropagation();
             if (this.clinicalWriteInFlight) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }
@@ -11509,9 +11455,12 @@ const app = {
         // ИИ-помощник
         on('aiAssistantBtn', 'click', () => this.openAIDrawer());
         on('aiAssistantClose', 'click', () => this.closeAIDrawer());
+        on('aiAssistantRefresh','click',()=>this.refreshAIStatus(true));
+        on('aiAssistantDrawer','keydown',event=>{if(event.key!=='Tab'||ui.topModal())return;const list=[...$('aiAssistantDrawer').querySelectorAll('button:not([disabled]),textarea:not([disabled]),a[href]')].filter(n=>n.offsetParent!==null);const first=list[0],last=list.at(-1);if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}});
         on('aiAssistantScrim', 'click', () => this.closeAIDrawer());
         on('aiAssistantClearBtn', 'click', () => this.clearAIConversation());
         $('aiAssistantForm').addEventListener('submit', (event) => this.sendAIMessage(event));
+        $('aiFallbackForm').addEventListener('submit',event=>this.sendAIMessage(event));
         $('aiAssistantInput').addEventListener('keydown', (event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
                 event.preventDefault();

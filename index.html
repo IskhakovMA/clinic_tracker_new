@@ -150,11 +150,11 @@
         </aside>
 
         <div class="drawer-scrim is-hidden" id="aiAssistantScrim"></div>
-        <aside class="ai-drawer is-hidden" id="aiAssistantDrawer" aria-labelledby="aiAssistantTitle" aria-hidden="true">
+        <aside class="ai-drawer is-hidden" id="aiAssistantDrawer" role="dialog" aria-modal="true" aria-labelledby="aiAssistantTitle" aria-describedby="aiAssistantSafety" aria-hidden="true">
             <div class="ai-drawer__head">
                 <div>
                     <h2 id="aiAssistantTitle">ИИ-помощник</h2>
-                    <p id="aiAssistantSubtitle">Read-only ответы по доступным данным</p>
+                    <p id="aiAssistantSubtitle">Ответы сервера по доступным данным</p>
                 </div>
                 <button type="button" class="btn btn--icon" id="aiAssistantClose" aria-label="Закрыть ИИ-помощник">
                     <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
@@ -163,6 +163,8 @@
             <div class="ai-safety" id="aiAssistantSafety" role="note">
                 Помощник работает только в режиме просмотра, не изменяет данные и не заменяет медицинское решение.
             </div>
+            <div class="ai-provider-state" id="aiProviderState" role="status"></div>
+            <button type="button" class="btn btn--ghost btn--sm" id="aiAssistantRefresh" aria-label="Проверить доступность модели">Проверить снова</button>
             <div class="ai-context is-hidden" id="aiAssistantContext"></div>
             <div class="ai-suggestions" id="aiAssistantSuggestions"></div>
             <div class="ai-chat" id="aiAssistantMessages" role="log" aria-live="polite" aria-relevant="additions"></div>
@@ -178,6 +180,8 @@
                     </button>
                 </div>
             </form>
+            <div id="aiFallbackLabel" class="ai-provider-state is-hidden">Серверный запрос без модели — только поддерживаемые операции чтения</div>
+            <form class="ai-composer is-hidden" id="aiFallbackForm" aria-labelledby="aiFallbackLabel"></form>
         </aside>
 
         <main class="content" id="content">
