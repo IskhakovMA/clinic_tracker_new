@@ -1,0 +1,5 @@
+const assert=require('assert/strict');const {setup:base,login,password}=require('../wp_i_consilium/fixtures.cjs');
+async function setup(browser,origin){const f=await base(browser,origin);let patient=await f.api('POST','/api/patients',{name:'ЯЯЯ Синтетический Повторный I6B',age:45,priority:'normal',stage:'exam',diagnosis:'C34.1',nosology:'lung34',head:'Синтетический Заведующий',treatingDoctorUserId:f.roles.doctor.id,events:[{date:'2000-01-01',time:'09:00'},{date:'2001-01-01',time:'10:00',actualDate:'2001-01-01',actualTime:'10:00'},{}]});const event=patient.history[0].events.find(x=>x.date==='2000-01-01');for(const stage of ['appointment','exam'])patient=await f.api('POST','/api/patients/'+patient.id+'/stage',{newStage:stage,expectedStage:patient.stage,expectedHistoryEntryId:patient.history.at(-1).id});
+return {...f,patient,event};}
+async function enter(page,view){await page.evaluate(v=>{clearInterval(app.internalNotifications.pollTimer);app.showView(v)},view);await page.waitForFunction(v=>app.workspacePages?.[v==='calendar'?'events':'checklists']?.ready,view);}
+module.exports={setup,login,password,enter};

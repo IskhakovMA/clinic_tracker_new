@@ -4404,7 +4404,7 @@ const app = {
                     statusNode = this.dateChip(this.getDaysUntil(ev.date), ev.time);
                 }
 
-                return el('div', { class: 'event-card' }, [
+                return el('div', { class: 'event-card', id:'patient-event-'+ev.id, tabindex:'-1' }, [
                     el('div', { class: 'event-card__head' }, [
                         el('span', { class: 'event-card__title', text: events.length > 1 ? `Событие ${idx + 1}` : 'Дата события' }),
                         el('button', {
@@ -4540,7 +4540,7 @@ const app = {
         const optional = (isExam ? nosology.checklistOptional : nosology.checklistOptionalStage2) || [];
 
         if (!required.length && !optional.length) {
-            return el('div', { class: 'panel' }, el('div', { class: 'empty', text: 'Для текущего этапа чек-лист не предусмотрен.' }));
+            return el('div', { class: 'panel panel--pad' }, [el('div', { class: 'empty', text: 'Для текущего этапа чек-лист не предусмотрен.' }),this.workspaceChecklistHistory(p,nosology)]);
         }
 
         const checklist = occ.checklist || {};
@@ -4560,6 +4560,24 @@ const app = {
             ...required.map(name => item(name, true)),
             optional.length ? el('h3', { class: 'section-title', text: 'Опционально / по показаниям' }) : null,
             ...optional.map(name => item(name, false)),
+            this.workspaceChecklistHistory(p,nosology),
+        ]);
+    },
+
+    workspaceChecklistHistory(p,nosology={}) {
+        const history=p.history||[];if(history.length<2)return null;
+        return el('details',{class:'workspace-checklist-history'},[
+            el('summary',{text:'Предыдущие вхождения этапов — только чтение'}),
+            ...history.slice(0,-1).map((old,index)=>{
+                const req=(old.stage==='exam'?nosology.checklistRequired:old.stage==='consult'?nosology.checklistRequiredStage2:[])||[];
+                const opt=(old.stage==='exam'?nosology.checklistOptional:old.stage==='consult'?nosology.checklistOptionalStage2:[])||[];
+                const names=[...new Set([...req,...opt,...Object.keys(old.checklist||{})])];
+                return el('section',{'data-checklist-occurrence':old.id},[
+                    el('h3',{class:'section-title',text:`${index+1}. ${this.getStageLabel(old)}`}),el('p',{class:'muted',text:this.formatDateTime(old.enteredAt)}),
+                    el('p',{class:'muted',text:'Сохраненные отметки этого вхождения. Категории пунктов указаны по текущему справочнику.'}),
+                    names.length?el('ul',{},names.map(name=>el('li',{},[el('span',{text:old.checklist?.[name]===true?'Выполнено: ':'Не выполнено: '}),el('span',{text:name+(req.includes(name)?' — обязательный пункт':opt.includes(name)?' — по показаниям':' — сохраненный исторический пункт')})]))):el('p',{text:'Для этого этапа чек-лист не предусмотрен.'}),
+                ]);
+            }),
         ]);
     },
 
@@ -6827,32 +6845,75 @@ const app = {
     /* ==================================================== РЕНДЕР: ПРОЧИЕ РАЗДЕЛЫ */
 
     async renderCalendar(cursor = null) {
-        await this.renderWorkspacePage('events', 'calendarPanel', 'calendar', cursor, row => el('div', {class:'list-row'}, [
-            el('div', {class:'list-row__main'}, [el('div',{class:'list-row__title',text:row.patientName}),el('div',{class:'list-row__sub',text:`${this.stageNames[row.stage]} · ${row.head || 'заведующий не указан'}`})]),
-            this.dateChip(this.getDaysUntil(row.date),row.time),el('span',{text:row.date}),
-            el('button',{type:'button',class:'btn btn--ghost btn--sm',text:'Открыть','aria-label':`Открыть карточку: ${row.patientName}`,on:{click:()=>this.openPatient(row.patientId)}}),
-        ]));
+        return this.renderWorkspacePage('events','calendarPanel','calendar',cursor);
     },
-
-    async renderWorkspacePage(kind, hostId, view, cursor, renderRow, restarted = false) {
-        const version=this.beginRead('workspace-'+kind);
+    workspaceListState(kind) {
+        this.workspacePages ||= {};
+        return this.workspacePages[kind] ||= {query:'',trail:[null],index:0,ready:false,rows:[]};
+    },
+    async renderWorkspacePage(kind,hostId,view,cursor=null,_unused=null,restarted=false) {
+        const state=this.workspaceListState(kind),epoch=this.sessionEpoch,owner=this.user?.id;
+        const version=this.beginRead('workspace-'+kind),host=$(hostId),returnFocus=host.contains(document.activeElement);
+        const current=()=>this.isCurrentRead('workspace-'+kind,version)&&this.sessionEpoch===epoch&&this.user?.id===owner&&!this.sessionReconciling&&this.currentView===view;
+        state.ready=false;state.rows=[];host.setAttribute('aria-busy','true');
+        host.replaceChildren(el('p',{class:'empty',role:'status',text:'Загрузка актуальных данных…'}));
+        if(!cursor){state.trail=[null];state.index=0;}
         try {
-            const data=await apiGetJson('/api/patients/workspace/'+kind+'?limit=50'+(cursor?'&cursor='+encodeURIComponent(cursor):''));
-            if (!this.isCurrentRead('workspace-'+kind,version) || this.currentView!==view) return;
-            this.workspacePages ||= {};
-            const state=this.workspacePages[kind] ||= {trail:[null],index:0};
-            if (!cursor) {state.trail=[null];state.index=0;}
-            const rows=data[kind];
-            const host=$(hostId);host.replaceChildren(frag(rows.length?rows.map(renderRow):[el('div',{class:'empty',text:'Нет записей по выбранным условиям.'})]));
-            host.append(this.boundedPager(data,state,next=>this.renderWorkspacePage(kind,hostId,view,next,renderRow)));
+            const query=new URLSearchParams({limit:'50',q:state.query||''});if(cursor)query.set('cursor',cursor);
+            const data=await apiGetJson('/api/patients/workspace/'+kind+'?'+query);
+            if(!current())return;
+            state.rows=data[kind];state.page=data.page;state.ready=true;state.epoch=epoch;
+            const event=kind==='events',headers=event?['Пациент и этап','Плановая дата и время','Заведующий','Действие']:['Пациент и этап','Обязательные пункты','Лечащий врач','Действие'];
+            const rows=state.rows.map(row=>{
+                const name=event?row.patientName:row.patient_name,stage=this.stageNames[row.stage]||row.stage;
+                return el('tr',{class:'list-row','data-workspace-row':event?row.id:row.patient_id},[
+                    el('td',{'data-label':headers[0]},[el('div',{class:'person__name',text:name}),el('div',{class:'person__meta',text:stage})]),
+                    el('td',{'data-label':headers[1]},event?[el('div',{class:'workspace-date',text:row.date+(row.time?' · '+row.time:' · Время не указано')}),this.dateChip(this.getDaysUntil(row.date),row.time)]:[
+                        el('div',{class:'workspace-progress',role:'progressbar','aria-label':'Выполнение обязательных пунктов','aria-valuemin':'0','aria-valuemax':String(row.total_required),'aria-valuenow':String(row.completed_required)},el('span',{class:'workspace-progress__fill','data-complete':String(row.completed_required===row.total_required)},String(row.completed_required)+' / '+String(row.total_required))),
+                        el('span',{class:row.incomplete_required?'chip chip--warning':'chip chip--good',text:row.incomplete_required?'Не выполнено: '+row.incomplete_required:'Обязательные пункты выполнены'})]),
+                    el('td',{'data-label':headers[2],text:(event?row.head:row.treating_doctor_name)||'Не указан'}),
+                    el('td',{'data-label':headers[3]},el('button',{type:'button',class:'btn btn--ghost btn--sm',text:event?'К событию':'К чек-листу','aria-label':(event?'Открыть карточку: ':'Открыть чек-лист: ')+name,on:{click:()=>this.openWorkspacePatient(kind,row,version)}})),
+                ]);
+            });
+            const table=el('div',{class:'workspace-table-scroll'},el('table',{class:'workspace-table'},[
+                el('caption',{class:'visually-hidden',text:event?'Плановые события без отмеченного факта':'Обязательные чек-листы последнего вхождения этапа'}),
+                el('thead',{},el('tr',{},headers.map(text=>el('th',{scope:'col',text})))),el('tbody',{},rows),
+            ]));
+            const load=next=>this.renderWorkspacePage(kind,hostId,view,next);
+            host.replaceChildren(el('div',{class:'workspace-result',role:'status','aria-live':'polite',tabindex:'-1',text:`Найдено в разрешенной области: ${data.page.total}`}),rows.length?table:el('div',{class:'empty',text:state.query?'По вашему запросу ничего не найдено. Измените поиск.':event?'Плановых событий без факта нет.':'Чек-листов с обязательными пунктами нет.'}),this.boundedPager(data,state,load));
+            if(returnFocus)host.querySelector('.workspace-result').focus({preventScroll:true});
         } catch(error) {
-            if (!this.isCurrentRead('workspace-'+kind,version)) return;
-            if (!restarted && [409,410].includes(error.status) && ['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code)) {
-                ui.toast('Набор изменился. Обновлена первая страница; карточка и черновики сохранены.','warning');
-                return this.renderWorkspacePage(kind,hostId,view,null,renderRow,true);
+            if(!current())return;
+            if(!restarted&&[409,410].includes(error.status)&&['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code)){
+                ui.toast('Набор изменился. Обновлена первая страница; поиск, карточка и черновики сохранены.','warning');
+                return this.renderWorkspacePage(kind,hostId,view,null,null,true);
             }
-            if (!error.obsolete) $(hostId).replaceChildren(el('p',{role:'alert',text:error.message}));
-        }
+            state.ready=false;state.rows=[];
+            if(!error.obsolete)host.replaceChildren(el('p',{class:'alert alert--danger',role:'alert',text:'Нет актуальных данных. '+error.message}),el('button',{type:'button',class:'btn btn--ghost',text:'Повторить загрузку',on:{click:()=>loadWorkspace()}}));
+        } finally {if(current())host.removeAttribute('aria-busy');}
+        const loadWorkspace=()=>this.renderWorkspacePage(kind,hostId,view);
+    },
+    async openWorkspacePatient(kind,row,version) {
+        const state=this.workspaceListState(kind),view=kind==='events'?'calendar':'checklists';
+        const live=()=>state.ready&&state.rows.includes(row)&&state.epoch===this.sessionEpoch&&this.currentView===view&&this.isCurrentRead('workspace-'+kind,version);
+        if(!live())return false;
+        const ticket=this.notificationTicket('workspace-open');
+        if(!await this.confirmClinicalNavigation()||!live()||!this.notificationCurrent(ticket))return false;
+        try {
+            const id=row.patientId||row.patient_id,patient=await apiGetJson('/api/patients/'+encodeURIComponent(id));
+            if(!live()||!this.notificationCurrent(ticket))return false;
+            if(this.clinicalWriteInFlight||this.dirtyClinicalControls().length){ui.toast('Появился новый несохраненный ввод. Переход отменен.','warning');return false;}
+            let index=-1;
+            if(kind==='events'){
+                index=(patient.history||[]).findIndex(occ=>occ.id===row.historyEntryId&&occ.events.some(ev=>ev.id===row.id));
+                if(index<0){ui.toast('Событие больше недоступно. Обновите расписание.','warning');return false;}
+            }
+            this.patientDetails=new Map([[id,patient]]);this.currentPatientId=id;this.currentTab=kind==='events'?'events':'checklist';
+            if(index>=0)this.selectedTimelineNodes[id]='occ:'+index;
+            this.showView('patient');this.renderPatientView();
+            const target=index>=0?$('patient-event-'+row.id):$('patientPanels');if(target){target.setAttribute('tabindex','-1');target.focus({preventScroll:true});target.scrollIntoView({block:'nearest'});}
+            return true;
+        } catch(error){if(this.notificationCurrent(ticket)){if([403,404].includes(error.status))this.discardSessionAndReload();else ui.toast('Не удалось открыть карточку. '+error.message,'warning');}return false;}
     },
 
     boundedPager(data,state,load) {
@@ -6865,11 +6926,7 @@ const app = {
     },
 
     async renderChecklistsView(cursor = null) {
-        await this.renderWorkspacePage('checklists','checklistsPanel','checklists',cursor,row=>el('div',{class:'list-row'},[
-            el('div',{class:'list-row__main'},[el('div',{class:'list-row__title',text:row.patient_name}),el('div',{class:'list-row__sub',text:this.stageNames[row.stage]||row.stage})]),
-            el('span',{class:row.incomplete_required?'chip chip--warning':'chip chip--good',text:`${row.completed_required} из ${row.total_required}`}),
-            el('button',{type:'button',class:'btn btn--ghost btn--sm',text:'Открыть','aria-label':`Открыть чек-лист: ${row.patient_name}`,on:{click:async()=>{await this.openPatient(row.patient_id);if(this.currentPatientId!==row.patient_id)return;this.currentTab='checklist';this.renderTabs();this.renderTabPanel(this.getPatient(row.patient_id));}}}),
-        ]));
+        return this.renderWorkspacePage('checklists','checklistsPanel','checklists',cursor);
     },
 
     async renderAudit() {
@@ -11278,6 +11335,13 @@ const app = {
         on('closeConsiliumBtn', 'click', () => ui.closeModal('consiliumModal'));
         on('closeConsiliumIconBtn', 'click', () => ui.closeModal('consiliumModal'));
         on('resubmitConsiliumBtn', 'click', () => this.resubmitConsiliumAppointment());
+        for(const [kind,view] of [['events','calendar'],['checklists','checklists']]){
+            const load=()=>view==='calendar'?this.renderCalendar():this.renderChecklistsView();
+            on(kind+'WorkspaceSearch','submit',event=>{event.preventDefault();if(this.currentView!==view||this.sessionExpired)return;this.workspaceListState(kind).query=$(kind+'WorkspaceQuery').value.trim();void load();});
+            on(kind+'WorkspaceReset','click',()=>{if(this.currentView!==view||this.sessionExpired)return;$(kind+'WorkspaceQuery').value='';this.workspaceListState(kind).query='';void load();});
+            on(kind+'WorkspaceRefresh','click',()=>{if(this.currentView===view&&!this.sessionExpired)void load();});
+        }
+
         on('consiliumBackdatedApptBtn', 'click', () => this.openConsiliumModal(null, null, { backdated: true }));
         on('consiliumBackdatedSlot', 'change', () => this.applyConsiliumBackdatedSlot());
         on('consiliumBackdatedSlotBtn', 'click', () => this.openConsiliumBackdatedSlotModal());

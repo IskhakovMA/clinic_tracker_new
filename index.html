@@ -661,24 +661,32 @@
             </section>
 
             <!-- ВСПОМОГАТЕЛЬНЫЕ РАЗДЕЛЫ -->
-            <section class="view is-hidden" id="view-calendar">
+            <section class="view is-hidden patient-workspace-list" id="view-calendar">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Календарь</h1>
-                        <p class="pagehead__subtitle">Ближайшие плановые события по всем пациентам</p>
+                        <h1 class="pagehead__title">Расписание пациентских событий</h1>
+                        <p class="pagehead__subtitle">События с плановой датой без отмеченного факта, включая просроченные. Время учреждения — МСК.</p>
                     </div>
                 </div>
-                <div class="panel" id="calendarPanel"></div>
+                <form class="workspace-search panel panel--pad" id="eventsWorkspaceSearch" role="search" aria-label="Поиск событий">
+                    <div class="field"><label class="field__label" for="eventsWorkspaceQuery">Поиск по ФИО пациента</label><input class="input" type="search" id="eventsWorkspaceQuery" maxlength="200" autocomplete="off" placeholder="Фамилия, имя или отчество"></div>
+                    <button class="btn btn--primary" type="submit">Найти</button><button class="btn btn--ghost" type="button" id="eventsWorkspaceReset">Сбросить</button><button class="btn btn--ghost" type="button" id="eventsWorkspaceRefresh">Обновить</button>
+                </form>
+                <div class="panel" id="calendarPanel" aria-label="Плановые события"></div>
             </section>
 
-            <section class="view is-hidden" id="view-checklists">
+            <section class="view is-hidden patient-workspace-list" id="view-checklists">
                 <div class="pagehead">
                     <div class="pagehead__text">
                         <h1 class="pagehead__title">Чек-листы</h1>
-                        <p class="pagehead__subtitle">Готовность обследований у пациентов на этапе обследования</p>
+                        <p class="pagehead__subtitle">Обязательные пункты последнего вхождения этапа. Дополнительные пункты и история — в карточке пациента.</p>
                     </div>
                 </div>
-                <div class="panel" id="checklistsPanel"></div>
+                <form class="workspace-search panel panel--pad" id="checklistsWorkspaceSearch" role="search" aria-label="Поиск чек-листов">
+                    <div class="field"><label class="field__label" for="checklistsWorkspaceQuery">Поиск по ФИО пациента</label><input class="input" type="search" id="checklistsWorkspaceQuery" maxlength="200" autocomplete="off" placeholder="Фамилия, имя или отчество"></div>
+                    <button class="btn btn--primary" type="submit">Найти</button><button class="btn btn--ghost" type="button" id="checklistsWorkspaceReset">Сбросить</button><button class="btn btn--ghost" type="button" id="checklistsWorkspaceRefresh">Обновить</button>
+                </form>
+                <div class="panel" id="checklistsPanel" aria-label="Чек-листы пациентов"></div>
             </section>
 
             <section class="view is-hidden notifications-workspace" id="view-notifications">

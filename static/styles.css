@@ -3207,3 +3207,34 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 #confirmModal { z-index: 90; }
 
 .notification-template__server { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+
+/* I-6B: bounded workspace lists use the accepted Staff-UX palette and cards. */
+.workspace-search { display:flex; align-items:flex-end; gap:var(--sp-3); margin-bottom:var(--sp-5); flex-wrap:wrap; }
+.workspace-search .field { flex:1 1 260px; margin:0; }
+.workspace-result { padding:var(--sp-4); color:var(--text-2); }
+.workspace-table-scroll { overflow-x:auto; }
+.workspace-table { width:100%; border-collapse:collapse; }
+.workspace-table th { text-align:left; padding:var(--sp-4); color:var(--text-2); font-size:var(--text-sm); background:var(--surface-2); }
+.workspace-table .list-row { display:table-row; }
+.workspace-table td { padding:var(--sp-4); border-top:1px solid var(--border); vertical-align:middle; }
+.workspace-table td:first-child { min-width:180px; }
+.workspace-date { font-variant-numeric:tabular-nums; margin-bottom:var(--sp-2); }
+.workspace-progress { border:1px solid var(--border); border-radius:var(--r-md); padding:var(--sp-2); margin-bottom:var(--sp-2); }
+.workspace-progress__fill { color:var(--text); }
+.workspace-progress__fill[data-complete="true"] { color:var(--accent-text); }
+.workspace-checklist-history { margin-top:var(--sp-5); border-top:1px solid var(--border); padding-top:var(--sp-4); }
+.workspace-checklist-history summary { cursor:pointer; font-weight:600; }
+.workspace-checklist-history section { margin-top:var(--sp-4); padding:var(--sp-4); border:1px solid var(--border); border-radius:var(--r-md); }
+.workspace-table button { white-space:normal; }
+@media(max-width:700px){
+ .workspace-search { display:grid; grid-template-columns:1fr 1fr; }
+ .workspace-search .field { grid-column:1/-1; min-width:0; }
+ .workspace-search button:last-child { grid-column:1/-1; }
+ .workspace-table,.workspace-table tbody { display:block; }
+ .workspace-table thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+ .workspace-table .list-row { display:block; margin:var(--sp-3); padding:var(--sp-3); border:1px solid var(--border); border-radius:var(--r-md); }
+ .workspace-table td { display:block; padding:var(--sp-2) 0; border:0; min-width:0!important; overflow-wrap:anywhere; }
+ .workspace-table td:before { content:attr(data-label); display:block; color:var(--text-2); font-size:var(--text-sm); margin-bottom:var(--sp-1); }
+ .workspace-table td:last-child button { width:100%; }
+}
+[data-theme="light"] .patient-workspace-list .chip--danger { color:#9f1239; }
