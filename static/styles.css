@@ -3161,3 +3161,49 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 }
 #consiliumAnalyticsBody li { overflow-wrap:anywhere; }
 .consilium-registry-table .consilium-patient-button { max-width:100%;overflow-wrap:anywhere; }
+
+/* I-6A: Staff-UX shell, Stage 3.5 notification functions; real server state only. */
+.notifications-workspace .pagehead { align-items:flex-start; }
+.notifications-workspace .notification-center-panel { border-top:3px solid var(--accent); }
+.notification-header-actions { display:flex; flex-wrap:wrap; gap:var(--sp-2); }
+.notification-group { min-width:0; margin-bottom:var(--sp-4); }
+.notification-group__title { font-size:var(--text-sm); color:var(--text-secondary); padding:var(--sp-3) 0; margin:0; border-bottom:1px solid var(--border); }
+.notification-group .internal-notification { margin-top:var(--sp-2); border-radius:var(--r-md); }
+.internal-notification__actions { flex-wrap:wrap; }
+.internal-notification__title,.internal-notification__text,.internal-notification__meta { overflow-wrap:anywhere; }
+.notification-consent { border:1px solid var(--border); border-left:3px solid var(--accent); border-radius:var(--r-md); padding:var(--sp-4); background:var(--surface-2); }
+#patientNotificationsBlock { display:grid; gap:var(--sp-4); }
+#patientNotificationsBlock .section-title { margin:0; }
+.notification-bell__badge { min-width:18px; width:auto; padding:1px 4px; }
+.notifications-workspace .pagination { flex-wrap:wrap; gap:var(--sp-2); }
+@media(max-width:760px) {
+ .notifications-workspace .pagehead__actions { display:grid;grid-template-columns:minmax(0,1fr);width:100%; }
+ .notifications-workspace .pagehead__actions .btn { min-width:0;white-space:normal;overflow-wrap:anywhere; }
+ .notifications-workspace .toolbar,.notifications-workspace .toolbar__filters { display:flex; flex-wrap:wrap; }
+ .notifications-workspace .search,.notifications-workspace .toolbar__filters,.notifications-workspace .toolbar__filters>* { min-width:0; max-width:100%; }
+ .notifications-workspace .toolbar__filters>* { flex:1 1 140px; }
+ .notifications-workspace .notification-tabs { flex-wrap:wrap; }
+ .notification-drawer { max-width:100vw; }
+ .notifications-workspace .notification-table thead { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
+ .notifications-workspace .notification-table,.notifications-workspace .notification-table tbody,.notifications-workspace .notification-table tr,.notifications-workspace .notification-table td { display:block; width:100%; }
+ .notifications-workspace .notification-table tr { padding:var(--sp-4); border-bottom:1px solid var(--border); }
+ .notifications-workspace .notification-table td { border:0; padding:var(--sp-2) 0; overflow-wrap:anywhere; }
+ .notification-table .cell-notification-template::before { content:'Шаблон: ';font-weight:600; }
+ .notification-table .cell-notification-source::before { content:'Источник: ';font-weight:600; }
+ .notification-table .cell-notification-scheduled::before { content:'Отправка (МСК): ';font-weight:600; }
+ .notification-table .cell-notification-attempts::before { content:'Попытки: ';font-weight:600; }
+ .notification-table .cell-notification-reason::before { content:'Причина: ';font-weight:600; }
+ .notification-header-actions { width:100%; }
+ .internal-notification { flex-direction:column; }
+ #patientNotificationsBlock .notification-form { grid-template-columns:minmax(0,1fr); }
+}
+
+[data-theme="light"] .notifications-workspace .chip--danger, [data-theme="light"] .notification-drawer .chip--danger { color:#9f1239; }
+[data-theme="light"] .notifications-workspace .chip--info, [data-theme="light"] .notification-drawer .chip--info { color:#1e40af; }
+.notifications-workspace .internal-notification__unread, .notification-drawer .internal-notification__unread { color:var(--accent-text); }
+
+[data-theme="light"] .notifications-workspace #notificationsMockBanner { color:#1e40af; }
+/* Подтверждение отмены ввода остается доступным поверх панели уведомлений. */
+#confirmModal { z-index: 90; }
+
+.notification-template__server { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }

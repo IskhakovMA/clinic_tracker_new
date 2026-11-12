@@ -143,7 +143,7 @@
             <div class="notification-drawer__actions">
                 <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsReadAllBtn">Отметить все прочитанными</button>
             </div>
-            <div class="notification-list" id="internalNotificationsDrawerList"></div>
+            <div class="notification-list" aria-live="polite" id="internalNotificationsDrawerList"></div>
             <div class="notification-drawer__footer">
                 <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsFullBtn">Все уведомления</button>
             </div>
@@ -681,7 +681,7 @@
                 <div class="panel" id="checklistsPanel"></div>
             </section>
 
-            <section class="view is-hidden" id="view-notifications">
+            <section class="view is-hidden notifications-workspace" id="view-notifications">
                 <div class="pagehead">
                     <div class="pagehead__text">
                         <h1 class="pagehead__title">Уведомления</h1>
@@ -748,7 +748,7 @@
                                 <tbody id="notificationsBody"></tbody>
                             </table>
                         </div>
-                        <div class="empty is-hidden" id="notificationsEmpty"></div>
+                        <div class="empty is-hidden" id="notificationsEmpty" role="status"></div><div class="pagination"><button type="button" class="btn btn--ghost" id="notificationsPrevBtn">Назад</button><span id="notificationsPageInfo" role="status"></span><button type="button" class="btn btn--ghost" id="notificationsNextBtn">Вперед</button></div>
                     </div>
 
                     <div class="panel panel--pad is-hidden" id="notificationTemplatesPanel"></div>
@@ -757,10 +757,10 @@
                 <div class="panel panel--pad notification-center-panel" id="notificationsInboxPanel" role="tabpanel" aria-labelledby="notificationsInboxTab">
                     <div class="section-head">
                         <div>
-                            <h2 class="section-title">Системные уведомления</h2>
-                            <p class="pagehead__subtitle">Персональный список событий по доступным пациентам</p>
+                            <h2 class="section-title">Центр уведомлений сотрудников</h2>
+                            <p class="pagehead__subtitle">Системные уведомления: события по доступным пациентам</p>
                         </div>
-                        <button type="button" class="btn btn--ghost" id="internalNotificationsRefreshBtn">Обновить</button>
+                        <div class="notification-header-actions"><button type="button" class="btn btn--ghost" id="internalNotificationsFullReadAllBtn">Прочитать все</button><button type="button" class="btn btn--ghost" id="internalNotificationsRefreshBtn">Обновить</button></div>
                     </div>
                     <div class="toolbar">
                         <div class="search">
@@ -779,7 +779,7 @@
                     <div class="notification-list notification-list--full" id="internalNotificationsFullList"></div>
                     <div class="pagination">
                         <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsPrevBtn">Назад</button>
-                        <span id="internalNotificationsPageInfo"></span>
+                        <span role="status" id="internalNotificationsPageInfo"></span>
                         <button type="button" class="btn btn--ghost btn--sm" id="internalNotificationsNextBtn">Вперёд</button>
                     </div>
                 </div>

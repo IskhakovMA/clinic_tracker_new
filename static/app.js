@@ -511,6 +511,7 @@ const app = {
         loading: false,
         error: '',
         activeTab: 'inbox',
+        limit: 20, offset: 0, ready: false,
         filters: {
             query: '',
             status: '',
@@ -2339,6 +2340,8 @@ const app = {
 
     rebuildAuthorizedWorkspace(user, fresh, allowed, doctors, page, heads, listSettings) {
         const drafts = this.collectSessionFieldDrafts(user, fresh, allowed);
+        const sameOwner=this.user?.id===user.id;
+        const notificationInputs={owner:user.id,patientId:this.currentPatientId,patient:sameOwner&&allowed.has(this.currentPatientId)&&user.permissions.editPatients?this.notificationInputSnapshot('patient'):[],outbound:sameOwner&&user.permissions.manageNotificationTemplates?this.notificationInputSnapshot('outbound'):[]};
         const createDraft = !$('addModal').hidden && user.permissions.createPatients
             ? [...$('addForm').querySelectorAll('input, select, textarea')].map(node => [node.id, node.value, node.checked]) : null;
         const createKey = this.addPatientKey;
@@ -2361,6 +2364,7 @@ const app = {
         document.body.replaceChildren(...pristineWorkspace.map(node => node.cloneNode(true)));
         for (const [key, value] of Object.entries(this)) if (typeof value !== 'function') delete this[key];
         Object.assign(this, structuredClone(pristineAppState), {user, sessionEpoch: epoch, sessionReconciling: true});
+        this.notificationReauthDraft={...notificationInputs,epoch};
         this.bindStaticControls();
         this.patientRows = page.patients; this.patientPage = page;
         this.setPatientListState('ready');
@@ -5226,6 +5230,150 @@ const app = {
 
     /* =============================================== РЕНДЕР: ЦЕНТР УВЕДОМЛЕНИЙ */
 
+    // I-6A: notification reads are fenced by session AND failure generation.
+    notificationTicket(key) { return {key, version:this.beginRead(key), epoch:this.sessionEpoch||0, generation:this.notificationGeneration||0}; },
+    notificationCurrent(t) { return !!this.user && !this.sessionExpired && !this.sessionReconciling && t.epoch===(this.sessionEpoch||0) && t.generation===(this.notificationGeneration||0) && this.isCurrentRead(t.key,t.version); },
+    notificationLive(t) { return !!this.user && !this.sessionExpired && !this.sessionReconciling && t.epoch===(this.sessionEpoch||0) && t.generation===(this.notificationGeneration||0); },
+    notificationControls() {
+        const blocked=!!(this.notificationMutation||this.notificationTemplateChecking);
+        for(const id of ['internalNotificationsReadAllBtn','internalNotificationsFullReadAllBtn']) if($(id)) $(id).disabled=blocked||!this.internalSummaryReady||!this.internalNotifications.summary?.unread_count||!(this.internalReady?.full||this.internalReady?.drawer);
+        for(const id of ['notificationsGenerateBtn','notificationsProcessBtn']) if($(id)) $(id).disabled=blocked||!this.notifications.ready;
+        document.querySelectorAll('#patientNotificationsBlock button:not([data-notification-refresh]), #notificationTemplatesPanel button:not([data-notification-refresh]), .internal-notification__actions button, #notificationsBody button').forEach(b=>{
+            const stale=b.closest('#patientNotificationsBlock')?!this.patientNotificationReady:b.closest('#notificationTemplatesPanel,#notificationsBody')?!this.notifications.ready:b.closest('#internalNotificationsDrawerList')?!this.internalReady?.drawer:!this.internalReady?.full;
+            if(blocked||stale){if(!Object.hasOwn(b.dataset,'notificationDisabled'))b.dataset.notificationDisabled=String(b.disabled);b.disabled=true;}
+            else if(Object.hasOwn(b.dataset,'notificationDisabled')){b.disabled=b.dataset.notificationDisabled==='true';delete b.dataset.notificationDisabled;}
+        });
+        for(const node of this.notificationInputNodes('patient')){
+            if(this.notificationMutation?.pending&&this.notificationMutation.scope==='patient'){if(!Object.hasOwn(node.dataset,'writeDisabled'))node.dataset.writeDisabled=String(node.disabled);node.disabled=true;}
+            else if(Object.hasOwn(node.dataset,'writeDisabled')){node.disabled=node.dataset.writeDisabled==='true';delete node.dataset.writeDisabled;}
+        }
+    },
+    notificationReadFinished(scope) { if((scope==='patient'&&!this.notificationPatientFresh(this.currentPatientId))||(scope==='outbound'&&!this.notificationOutboundFresh())||(scope==='internal'&&!this.internalReadReady()))return; if(this.notificationMutation?.unknown&&!this.notificationMutation.pending&&this.notificationMutation.scope===scope&&(scope!=='patient'||this.notificationMutation.patientId===this.currentPatientId))this.notificationMutation=null; this.notificationControls(); },
+    notificationInputNodes(scope) {
+        return scope==='patient'?[...document.querySelectorAll('#patientNotificationTemplate,#patientNotificationSchedule')]:[...document.querySelectorAll('#notificationTemplatesPanel textarea,#notificationTemplatesPanel input[type="checkbox"]')];
+    },
+    notificationInputValue(node) { return JSON.stringify(node.type==='checkbox'?node.checked:node.value); },
+    stampNotificationInputs(scope) {
+        this.notificationInputBaselines ||= new WeakMap();
+        for(const node of this.notificationInputNodes(scope)){const t=scope==='outbound'?this.notifications.templates.find(t=>t.code===this.notificationTemplateCode(node)):null;this.notificationInputBaselines.set(node,{initial:this.notificationInputValue(node),retain:false,origin:t?this.notificationTemplateState(t):null});}
+    },
+    notificationInputSnapshot(scope,force=false) {
+        const nodes=this.notificationInputNodes(scope);
+        const dirty=n=>{const c=this.notificationInputBaselines?.get(n);return c&&this.notificationInputValue(n)!==c.initial;};
+        if(scope==='outbound')return nodes.filter(dirty).map(n=>{const c=this.notificationInputBaselines.get(n);return {id:n.id,value:n.value,checked:n.checked,focused:document.activeElement===n,initial:c.initial,origin:c.origin};});
+        if(!nodes.some(n=>{const c=this.notificationInputBaselines?.get(n);return force||c?.retain||dirty(n);}))return [];
+        return nodes.map(n=>({id:n.id,value:n.value,checked:n.checked,focused:document.activeElement===n}));
+    },
+    notificationTemplateCode(node) { return node.id.replace(/^template-(?:body|enabled)-/,''); },
+    notificationTemplateState(t) { return JSON.stringify({body:t.body,enabled:!!t.enabled,version:t.version}); },
+    restoreNotificationInputs(scope,draft) {
+        for(const item of draft){const node=$(item.id);if(!node)continue;
+            const c=this.notificationInputBaselines?.get(node);
+            if(scope==='outbound'){
+                const value=JSON.stringify(node.type==='checkbox'?item.checked:item.value);
+                // A confirmed server value also resolves an acknowledged or lost response.
+                if(this.notificationInputValue(node)===value){if(item.focused&&!node.disabled)node.focus({preventScroll:true});continue;}
+                if(!c||!item.origin)continue;
+                c.conflict=c.origin!==item.origin;c.initial=item.initial;c.origin=item.origin;
+            }
+            if(node.tagName==='SELECT'&&![...node.options].some(o=>o.value===item.value)){const unavailable=option(item.value,'Сохраненный выбор — шаблон больше недоступен',true);unavailable.disabled=true;node.append(unavailable);}
+            node.value=item.value;if(node.type==='checkbox')node.checked=item.checked;
+            if(c)c.retain=true;
+            if(item.focused&&!node.disabled)node.focus({preventScroll:true});
+        }
+        if(draft.length)this.notificationFormNotice(scope,'Введенные значения сохранены отдельно от обновленного состояния сервера. Проверьте результат перед новым действием.');
+    },
+    renderNotificationTemplateDraftStates() {
+        for(const t of this.notifications.templates){
+            const body=$(`template-body-${t.code}`),enabled=$(`template-enabled-${t.code}`);if(!body||!enabled)continue;
+            const host=body.closest('.notification-template');host.querySelector('[data-template-draft-state]')?.remove();
+            const dirty=[body,enabled].filter(n=>{const c=this.notificationInputBaselines?.get(n);return c&&this.notificationInputValue(n)!==c.initial;});
+            const conflict=dirty.some(n=>this.notificationInputBaselines.get(n).conflict);
+            const save=host.querySelector('button');save.disabled=conflict;
+            if(!dirty.length)continue;
+            host.append(el('div',{class:'alert alert--warning','data-template-draft-state':t.code},[
+                el('p',{role:'alert',text:conflict?'Конфликт шаблона: серверное состояние изменилось. Черновик не сохранен; отправка заблокирована. Скопируйте нужный ввод перед его отменой.':'Несохраненный черновик. Он отличается от подтвержденных данных сервера.'}),
+                conflict?el('div',{},[el('p',{text:`Сейчас на сервере: ${t.enabled?'включен':'выключен'}, версия ${t.version}`}),el('pre',{class:'notification-template__server',text:t.body})]):null,
+                el('button',{type:'button',class:'btn btn--ghost','data-template-discard':t.code,text:'Использовать свежие данные сервера',on:{click:()=>this.discardNotificationTemplateDraft(t.code)}}),
+            ]));
+        }
+    },
+    async discardNotificationTemplateDraft(code) {
+        if(!this.notificationOutboundFresh()||this.notificationMutation||this.notificationTemplateChecking)return;
+        const epoch=this.sessionEpoch,t=this.notifications.templates.find(t=>t.code===code);if(!t)return;
+        const state=this.notificationTemplateState(t);
+        if(!await ui.confirm({title:'Отменить черновик шаблона?',text:'Несохраненный ввод этого шаблона будет заменен показанными данными сервера. Другие черновики сохранятся.',okLabel:'Использовать данные сервера',danger:false}))return;
+        if(epoch!==this.sessionEpoch||!this.notificationOutboundFresh()||this.notificationMutation||this.notificationTemplateChecking||!this.can('manageNotificationTemplates')||state!==this.notificationTemplateState(this.notifications.templates.find(t=>t.code===code)||{}))return;
+        for(const node of this.notificationInputNodes('outbound').filter(n=>this.notificationTemplateCode(n)===code)){
+            if(node.type==='checkbox')node.checked=!!t.enabled;else node.value=t.body;
+            this.notificationInputBaselines.set(node,{initial:this.notificationInputValue(node),origin:state,retain:false});
+        }
+        this.renderNotificationTemplateDraftStates();if(!this.notificationInputSnapshot('outbound').length)$('notificationTemplatesPanel').querySelector('[data-notification-form-state]')?.remove();
+        $(`template-body-${code}`).focus();
+    },
+    notificationFormNotice(scope,message) {
+        const host=scope==='patient'?$('patientNotificationsBlock'):$('notificationTemplatesPanel');if(!host)return;
+        let notice=host.querySelector('[data-notification-form-state]');
+        if(!notice){notice=el('div',{class:'alert alert--warning','data-notification-form-state':scope},[el('p',{role:'alert'}),el('button',{type:'button',class:'btn btn--ghost','data-notification-refresh':'true',text:'Проверить состояние на сервере',on:{click:()=>scope==='patient'?this.renderPatientNotificationsBlock(this.currentPatientId):this.renderNotifications()}})]);host.prepend(notice);}
+        notice.querySelector('p').textContent=message;
+    },
+    notificationFailure(t) {
+        if(!this.notificationLive(t))return;
+        const keys=t.key?[t.key]:t.scope==='patient'?['patient-notifications']:t.scope==='outbound'?['notifications']:t.scope==='internal'?['internal-summary','internal-drawer','internal-full']:[];
+        for(const key of keys){this.beginRead(key);
+            if(key==='internal-summary'){this.internalSummaryReady=false;this.internalNotifications.summary=null;}
+            if(key==='internal-drawer'||key==='internal-full'){
+                const target=key==='internal-drawer'?'drawer':'full';this.internalReady||={};this.internalReady[target]=false;this.internalNotifications[target==='drawer'?'drawerItems':'fullItems']=[];
+                $(target==='drawer'?'internalNotificationsDrawerList':'internalNotificationsFullList').replaceChildren();
+                if(target==='full'){this.internalNotifications.total=0;$('internalNotificationsPageInfo').textContent='Нет актуальных данных';for(const id of ['internalNotificationsPrevBtn','internalNotificationsNextBtn'])$(id).disabled=true;}
+            }
+            if(key==='notifications'){
+                Object.assign(this.notifications,{summary:null,items:[],ready:false,total:0});$('notificationsBody').replaceChildren();$('notificationsStatsRow').replaceChildren();$('notificationsPageInfo').textContent='Нет актуальных данных';
+                for(const id of ['notificationsPrevBtn','notificationsNextBtn'])$(id).disabled=true;
+                this.notificationFormNotice('outbound','Нет актуальных данных исходящей очереди. Ввод шаблонов сохранен; обновите состояние перед записью.');
+            }
+            if(key==='patient-notifications'){
+                const keep=this.notificationInputSnapshot('patient',t.scope==='patient');
+                this.patientNotificationReady=false;this.patientNotificationItems=[];this.patientNotificationCanWrite=false;this.patientNotificationCanCreate=false;
+                const box=$('patientNotificationsBlock');if(box){
+                    if(!keep.length)box.replaceChildren();
+                    else {for(const node of box.querySelectorAll('.notification-consent,.notification-list,.notification-row'))node.remove();for(const n of this.notificationInputNodes('patient')){const c=this.notificationInputBaselines?.get(n);if(c)c.retain=true;}}
+                    this.notificationFormNotice('patient','Нет актуальных данных уведомлений пациента. Введенные значения сохранены; проверьте историю перед повторной записью.');
+                }
+            }
+        }
+        this.updateInternalNotificationsBadge();this.notificationControls();
+    },
+    notificationPatientFresh(id) { return this.patientNotificationReady&&this.patientNotificationId===id&&this.currentPatientId===id&&this.currentView==='patient'&&this.currentTab==='notifications'&&!this.sessionExpired; },
+    notificationOutboundFresh() { return this.notifications.ready&&this.currentView==='notifications'&&this.notifications.activeTab==='outbound'&&!this.sessionExpired&&!this.sessionReconciling; },
+    internalReadReady() { return !this.sessionExpired&&!this.sessionReconciling&&(this.internalReady?.drawer||(this.internalReady?.full&&this.currentView==='notifications'&&this.notifications.activeTab==='inbox')); },
+    internalItemCurrent(item) { return this.internalReadReady()&&((this.internalReady?.drawer&&this.internalNotifications.drawerItems.includes(item))||(this.internalReady?.full&&this.currentView==='notifications'&&this.notifications.activeTab==='inbox'&&this.internalNotifications.fullItems.includes(item))); },
+    async notificationWrite(scope,guard,write,refresh) {
+        if(this.notificationMutation||this.sessionExpired||this.sessionReconciling||!guard())return false;
+        const op={scope,pending:true,unknown:false,epoch:this.sessionEpoch||0,generation:this.notificationGeneration||0,view:this.currentView,patientId:this.currentPatientId};this.notificationMutation=op;this.notificationControls();
+        try {
+            await write();op.acknowledged=true;
+            if(!this.notificationLive(op))return false;
+            if(op.view!==this.currentView||(scope==='patient'&&op.patientId!==this.currentPatientId)){if(this.notificationMutation===op)this.notificationMutation=null;return false;}
+            await refresh();
+            if(!this.notificationLive(op))return false;
+            const ready=scope==='patient'?this.notificationPatientFresh(op.patientId):scope==='outbound'?this.notificationOutboundFresh():this.internalReadReady();
+            if(!ready){if(scope!=='internal')this.notificationFormNotice(scope,'Сервер подтвердил запись, но актуальное состояние не получено. Ввод сохранен; проверьте сервер перед новым действием.');return false;}
+            if(this.notificationMutation===op)this.notificationMutation=null;
+            ui.toast('Состояние уведомлений обновлено с сервера.','good');
+            return true;
+        } catch(e) {
+            if(this.notificationLive(op)){if([403,404].includes(e.status)){this.discardSessionAndReload();return false;}this.notificationFailure(op);ui.toast('Результат операции не подтвержден. Сначала обновите данные с сервера. '+e.message,'warning');}
+            return false;
+        } finally {
+            if(this.notificationMutation===op){op.pending=false;op.unknown=true;}
+            this.notificationControls();
+        }
+    },
+    internalGroups(rows,compact) {
+        const groups=new Map();for(const item of rows){const key=item.type||'other';if(!groups.has(key))groups.set(key,[]);groups.get(key).push(item);}
+        return frag([...groups].map(([key,items])=>el('section',{class:'notification-group'},[el('h3',{class:'notification-group__title',text:(this.INTERNAL_NOTIFICATION_TYPE_LABELS[key]||key)+' · '+items.length}),...items.map(item=>this.renderInternalNotificationCard(item,compact))])));
+    },
     internalNotificationParams(target) {
         const state = this.internalNotifications;
         const params = new URLSearchParams();
@@ -5246,37 +5394,39 @@ const app = {
     },
 
     async refreshInternalNotificationSummary() {
+        const ticket=this.notificationTicket('internal-summary');this.internalSummaryReady=false;this.updateInternalNotificationsBadge();this.notificationControls();
         try {
-            this.internalNotifications.summary = await apiGetJson('/api/internal-notifications/summary');
-            this.updateInternalNotificationsBadge();
-        } catch (e) {
-            this.internalNotifications.summary = null;
-            this.updateInternalNotificationsBadge();
-        }
+            const summary=await apiGetJson('/api/internal-notifications/summary');if(!this.notificationCurrent(ticket))return;
+            this.internalNotifications.summary=summary;this.internalSummaryReady=true;this.updateInternalNotificationsBadge();this.notificationControls();
+        } catch(e) { if(this.notificationCurrent(ticket))this.notificationFailure(ticket); }
     },
 
     updateInternalNotificationsBadge() {
         const badge = $('internalNotificationsBadge');
         const bell = $('internalNotificationsBell');
         if (!badge || !bell) return;
-        const unread = Number((this.internalNotifications.summary || {}).unread_count || 0);
-        badge.classList.toggle('is-hidden', unread <= 0);
-        badge.textContent = unread > 99 ? '99+' : String(unread);
-        bell.setAttribute('aria-label', unread
+        const unread = this.internalSummaryReady ? Number(this.internalNotifications.summary?.unread_count||0) : null;
+        if($('internalNotificationsSubtitle'))$('internalNotificationsSubtitle').textContent=unread===null?'Счетчик временно недоступен':unread?`${unread} ${this.pluralize(unread,'новое','новых','новых')}`:'Новых уведомлений нет';
+        badge.classList.toggle('is-hidden', unread === null || unread <= 0);
+        badge.textContent = unread === null ? '' : String(unread);
+        bell.setAttribute('aria-label', unread === null ? 'Уведомления: счетчик временно недоступен' : unread
             ? `Открыть уведомления, новых: ${unread}`
             : 'Открыть уведомления');
     },
 
     async loadInternalNotifications(target, version) {
+        const summaryTicket=this.notificationTicket('internal-summary');
         const searchText = target === 'drawer' ? '' : (this.internalNotifications.filters || {}).query;
         const data = await apiFetch(`/api/internal-notifications?${this.internalNotificationParams(target)}`, { headers: searchHeaders(searchText) });
-        if (!this.isCurrentRead('internal-' + target, version)) return false;
+        if (!this.notificationCurrent(version)) return false;
         if (target === 'drawer') this.internalNotifications.drawerItems = data.items || [];
         else {
             this.internalNotifications.fullItems = data.items || [];
             this.internalNotifications.total = data.total || 0;
         }
-        this.internalNotifications.summary = data.summary || this.internalNotifications.summary;
+        this.internalReady=this.internalReady||{};this.internalReady[target]=true;
+        if(this.notificationCurrent(summaryTicket)){this.internalNotifications.summary=data.summary;this.internalSummaryReady=!!data.summary;}
+        this.notificationReadFinished('internal');
         this.updateInternalNotificationsBadge();
         return data;
     },
@@ -5321,13 +5471,13 @@ const app = {
                 item.patient_id ? el('button', {
                     type: 'button',
                     class: 'btn btn--ghost btn--sm',
-                    text: 'Открыть',
+                    text: 'Открыть', disabled:!!this.notificationMutation,
                     on: { click: () => this.openInternalNotificationPatient(item) },
                 }) : null,
                 unread ? el('button', {
                     type: 'button',
                     class: 'btn btn--ghost btn--sm',
-                    text: 'Прочитано',
+                    text: 'Прочитано', disabled:!!this.notificationMutation,
                     on: { click: () => this.markInternalNotificationRead(item.id) },
                 }) : null,
             ]),
@@ -5345,6 +5495,8 @@ const app = {
     },
 
     closeInternalNotificationsDrawer() {
+        this.beginRead('internal-drawer');this.internalReady=this.internalReady||{};this.internalReady.drawer=false;this.internalNotifications.drawerItems=[];
+        $('internalNotificationsDrawerList').replaceChildren();
         $('internalNotificationsScrim').classList.add('is-hidden');
         $('internalNotificationsDrawer').classList.add('is-hidden');
         $('internalNotificationsDrawer').setAttribute('aria-hidden', 'true');
@@ -5354,10 +5506,10 @@ const app = {
     },
 
     async renderInternalNotificationsDrawer() {
-        const version = this.beginRead('internal-drawer');
+        const version = this.notificationTicket('internal-drawer');this.internalReady=this.internalReady||{};this.internalReady.drawer=false;this.internalNotifications.drawerItems=[];this.notificationControls();
         const list = $('internalNotificationsDrawerList');
         const summary = this.internalNotifications.summary || {};
-        $('internalNotificationsSubtitle').textContent = summary.unread_count
+        $('internalNotificationsSubtitle').textContent = !this.internalSummaryReady?'Счетчик временно недоступен':summary.unread_count
             ? `${summary.unread_count} ${this.pluralize(summary.unread_count, 'новое', 'новых', 'новых')}`
             : 'Новых уведомлений нет';
         this.renderInternalNotificationTabs('internalNotificationsDrawerTabs', this.internalNotifications.drawerFilter, (value) => {
@@ -5368,14 +5520,15 @@ const app = {
         try {
             if (!await this.loadInternalNotifications('drawer', version)) return;
             const rows = this.internalNotifications.drawerItems || [];
-            $('internalNotificationsReadAllBtn').disabled = !((this.internalNotifications.summary || {}).unread_count);
+            this.notificationControls();
             if (!rows.length) {
                 list.replaceChildren(el('div', { class: 'empty', text: 'По выбранному фильтру уведомлений нет.' }));
                 return;
             }
-            list.replaceChildren(frag(rows.map(item => this.renderInternalNotificationCard(item, true))));
+            list.replaceChildren(this.internalGroups(rows,true));
         } catch (e) {
-            if (!this.isCurrentRead('internal-drawer', version)) return;
+            if (!this.notificationCurrent(version)) return;
+            this.notificationFailure(version);
             list.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить уведомления: ${e.message}` }));
         }
     },
@@ -5402,7 +5555,8 @@ const app = {
     },
 
     async renderInternalNotificationCenter() {
-        const version = this.beginRead('internal-full');
+        $('internalNotificationsPageInfo').textContent='Загрузка…';$('internalNotificationsPrevBtn').disabled=true;$('internalNotificationsNextBtn').disabled=true;
+        const version = this.notificationTicket('internal-full');this.internalReady=this.internalReady||{};this.internalReady.full=false;this.internalNotifications.fullItems=[];this.notificationControls();
         this.renderInternalNotificationFiltersOptions();
         this.renderInternalNotificationTabs('internalNotificationsFullTabs', this.internalNotifications.fullTab, (value) => {
             this.internalNotifications.fullTab = value;
@@ -5417,7 +5571,7 @@ const app = {
             if (!rows.length) {
                 list.replaceChildren(el('div', { class: 'empty', text: 'По выбранным условиям уведомлений нет.' }));
             } else {
-                list.replaceChildren(frag(rows.map(item => this.renderInternalNotificationCard(item, false))));
+                list.replaceChildren(this.internalGroups(rows,false));
             }
             const { offset, limit } = this.internalNotifications.filters;
             const total = this.internalNotifications.total || 0;
@@ -5427,7 +5581,8 @@ const app = {
             $('internalNotificationsPrevBtn').disabled = offset <= 0;
             $('internalNotificationsNextBtn').disabled = offset + limit >= total;
         } catch (e) {
-            if (!this.isCurrentRead('internal-full', version)) return;
+            if (!this.notificationCurrent(version)) return;
+            this.notificationFailure(version);
             list.replaceChildren(el('div', { class: 'empty', text: `Не удалось загрузить уведомления: ${e.message}` }));
             $('internalNotificationsPageInfo').textContent = '';
             $('internalNotificationsPrevBtn').disabled = true;
@@ -5435,25 +5590,35 @@ const app = {
         }
     },
 
+    async refreshInternalNotificationLists() {
+        if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) await this.renderInternalNotificationsDrawer();
+        if (this.currentView==='notifications')await this.renderInternalNotificationCenter();
+        await this.refreshInternalNotificationSummary();
+    },
     async markInternalNotificationRead(id) {
-        await apiPost(`/api/internal-notifications/${encodeURIComponent(id)}/read`, {});
-        await this.refreshInternalNotificationSummary();
-        if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) await this.renderInternalNotificationsDrawer();
-        if (this.currentView === 'notifications') await this.renderInternalNotificationCenter();
+        return this.notificationWrite('internal',()=>[...this.internalNotifications.drawerItems,...this.internalNotifications.fullItems].some(i=>i.id===id&&!i.read_at&&this.internalItemCurrent(i)),()=>apiPost(`/api/internal-notifications/${encodeURIComponent(id)}/read`,{}),()=>this.refreshInternalNotificationLists());
     },
-
     async markAllInternalNotificationsRead() {
-        await apiPost('/api/internal-notifications/read-all', {});
-        await this.refreshInternalNotificationSummary();
-        if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) await this.renderInternalNotificationsDrawer();
-        if (this.currentView === 'notifications') await this.renderInternalNotificationCenter();
+        return this.notificationWrite('internal',()=>this.internalSummaryReady&&!!this.internalNotifications.summary?.unread_count&&this.internalReadReady(),()=>apiPost('/api/internal-notifications/read-all',{}),()=>this.refreshInternalNotificationLists());
     },
 
+    async openNotificationPatient(id,tab) {
+        const ticket=this.notificationTicket('notification-navigation');
+        if(!await this.confirmClinicalNavigation()||!this.notificationCurrent(ticket))return false;
+        try {
+            const patient=await apiGetJson('/api/patients/'+encodeURIComponent(id));if(!this.notificationCurrent(ticket))return false;
+            if(this.clinicalWriteInFlight||this.dirtyClinicalControls().length){ui.toast('Во время загрузки появился новый несохраненный ввод. Переход отменен.','warning');return false;}
+            this.patientDetails=new Map([[id,patient]]);this.currentPatientId=id;this.currentTab=tab||'overview';this.showView('patient');this.renderPatientView();return true;
+        } catch(e) {if(this.notificationCurrent(ticket)){this.notificationFailure(ticket);ui.toast('Карточка недоступна. '+e.message,'warning');}}
+    },
     async openInternalNotificationPatient(item) {
+        if(!this.internalItemCurrent(item)||this.notificationMutation)return;const epoch=this.sessionEpoch||0;
         if (item.source_type === 'consilium_revision') {
+            if(!await this.confirmClinicalNavigation()||epoch!==(this.sessionEpoch||0)||!this.internalItemCurrent(item))return;
             if (!item.read_at) {
-                await apiPost(`/api/internal-notifications/${encodeURIComponent(item.id)}/read`, {});
+                if(!await this.markInternalNotificationRead(item.id))return;
             }
+            if(epoch!==(this.sessionEpoch||0)||this.sessionExpired)return;
             this.closeInternalNotificationsDrawer();
             this.consilium.focusId = item.source_id;
             this.consilium.search = '';
@@ -5464,14 +5629,14 @@ const app = {
             $('consiliumDoctorDate').value = '';
             this.renderConsiliumGroupPicker('doctor');
             await this.refreshInternalNotificationSummary();
+            if(epoch!==(this.sessionEpoch||0)||this.sessionExpired||this.clinicalWriteInFlight||this.dirtyClinicalControls().length)return;
             this.showView('consilium');
             return;
         }
-        this.closeInternalNotificationsDrawer();
         const tab = item.source_type === 'checklist' ? 'checklist'
             : item.source_type === 'data_quality' ? 'data'
             : 'events';
-        this.openPatientTab(item.patient_id, tab);
+        if(await this.openNotificationPatient(item.patient_id, tab))this.closeInternalNotificationsDrawer();
     },
 
     /* ============================================================ РЕНДЕР: УВЕДОМЛЕНИЯ */
@@ -5505,6 +5670,7 @@ const app = {
     },
 
     resetNotificationsFilters() {
+        this.notifications.offset=0;
         this.notifications.filters = {
             query: '',
             status: '',
@@ -5541,8 +5707,8 @@ const app = {
         if (f.doctor) params.set('treating_doctor', f.doctor);
         if (f.department) params.set('department', f.department);
         params.set('sort', f.sort || 'scheduled_asc');
-        params.set('limit', '100');
-        params.set('offset', '0');
+        params.set('limit', String(this.notifications.limit));
+        params.set('offset', String(this.notifications.offset));
         return params.toString();
     },
 
@@ -5552,12 +5718,12 @@ const app = {
         const summary = await apiGetJson('/api/notifications/summary');
         const templates = await apiGetJson('/api/notifications/templates');
         const list = await apiFetch(`/api/notifications?${query}`, { headers: searchHeaders(search) });
-        if (!this.isCurrentRead('notifications', version)) return false;
+        if (!this.notificationCurrent(version)) return false;
         this.notifications.summary = summary;
         this.notifications.templates = templates.templates || [];
         this.notifications.placeholders = templates.placeholders || [];
         this.notifications.items = list.notifications || [];
-        this.notifications.total = list.total || 0;
+        this.notifications.total = list.total || 0;this.notifications.ready=true;this.notificationReadFinished('outbound');
         return true;
     },
 
@@ -5587,8 +5753,10 @@ const app = {
     },
 
     async renderNotifications() {
-        const version = this.beginRead('notifications');
+        const version = this.notificationTicket('notifications');this.notifications.ready=false;this.notifications.items=[];this.notificationControls();
+        $('notificationsStatsRow').replaceChildren();
         this.updateNotificationsFiltersButton();
+        $('notificationsPageInfo').textContent='Загрузка…';$('notificationsPrevBtn').disabled=true;$('notificationsNextBtn').disabled=true;
         const body = $('notificationsBody');
         const empty = $('notificationsEmpty');
         body.replaceChildren();
@@ -5602,11 +5770,15 @@ const app = {
             this.renderNotificationsFiltersOptions();
             this.renderNotificationsStats();
             this.renderNotificationsRows();
-            this.renderNotificationTemplatesPanel();
+            this.renderNotificationTemplatesPanel();this.notificationControls();
+            const {offset,limit}=this.notifications,total=this.notifications.total||0;
+            $('notificationsPageInfo').textContent=total?`${offset+1}–${Math.min(offset+limit,total)} из ${total}`:'0 из 0';
+            $('notificationsPrevBtn').disabled=offset<=0;$('notificationsNextBtn').disabled=offset+limit>=total;
         } catch (e) {
-            if (!this.isCurrentRead('notifications', version)) return;
+            if (!this.notificationCurrent(version)) return;
+            this.notificationFailure(version);
             $('notificationsStatsRow').replaceChildren();
-            $('notificationTemplatesPanel').classList.add('is-hidden');
+            if(this.can('manageNotificationTemplates'))$('notificationTemplatesPanel').classList.remove('is-hidden');
             empty.classList.remove('is-hidden');
             empty.textContent = `Не удалось загрузить уведомления: ${e.message}`;
         }
@@ -5616,8 +5788,8 @@ const app = {
         const selectedTemplate = this.notifications.filters.template;
         const selectedDoctor = this.notifications.filters.doctor;
         const selectedDept = this.notifications.filters.department;
-        const doctors = [...new Set(this.notifications.items.map(n => n.treating_doctor_name).filter(Boolean))].sort();
-        const departments = [...new Set(this.notifications.items.flatMap(n => n.department_names || []))].sort();
+        const doctors = [...new Set([...this.doctors.map(d=>d.fullName),selectedDoctor,...this.notifications.items.map(n=>n.treating_doctor_name)].filter(Boolean))].sort();
+        const departments = [...new Set([...this.departments.map(d=>d.name),this.notifications.filters.department,...this.notifications.items.flatMap(n=>n.department_names||[])].filter(Boolean))].sort();
         $('notificationsTemplateFilter').replaceChildren(frag([
             option('', 'Любой шаблон', !selectedTemplate),
             ...this.notifications.templates.map(t => option(t.code, t.name, t.code === selectedTemplate)),
@@ -5695,7 +5867,7 @@ const app = {
             el('td', { class: 'cell-actions' }, [
                 el('button', {
                     type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть пациента',
-                    on: { click: () => this.openPatientTab(item.patient_id, 'notifications') },
+                    on: { click: () => {if(this.notifications.ready&&!this.notificationMutation)this.openNotificationPatient(item.patient_id, 'notifications');} },
                 }),
                 item.status === 'pending' && this.can('manageNotifications') ? el('button', {
                     type: 'button', class: 'btn btn--ghost btn--sm', text: 'Отменить',
@@ -5710,6 +5882,9 @@ const app = {
     },
 
     renderNotificationTemplatesPanel() {
+        const resumed=this.notificationReauthDraft;
+        const draft=this.notificationInputSnapshot('outbound');
+        const retained=draft.length?draft:resumed?.owner===this.user?.id&&resumed.epoch===(this.sessionEpoch||0)?resumed.outbound:[];
         const panel = $('notificationTemplatesPanel');
         if (!this.can('manageNotificationTemplates')) {
             panel.classList.add('is-hidden');
@@ -5740,6 +5915,7 @@ const app = {
                 }),
             ])),
         ]));
+        this.stampNotificationInputs('outbound');this.restoreNotificationInputs('outbound',retained);this.renderNotificationTemplateDraftStates();if(resumed)resumed.outbound=[];
     },
 
     /* =============================================================== РЕНДЕР: АНАЛИТИКА */
@@ -6441,16 +6617,19 @@ const app = {
 
     tabNotifications() {
         return el('div', { class: 'panel panel--pad', id: 'patientNotificationsBlock' }, [
-            el('h2', { class: 'section-title', text: 'Уведомления' }),
+            el('h2', { class: 'section-title', text: 'Сообщения пациенту' }),
             el('div', { class: 'empty', text: 'Загрузка…' }),
         ]);
     },
 
     async renderPatientNotificationsBlock(patientId) {
         const box = $('patientNotificationsBlock');
-        if (!box) return;
-        box.replaceChildren(frag([
-            el('h2', { class: 'section-title', text: 'Уведомления' }),
+        if (!box||this.currentView!=='patient'||this.currentTab!=='notifications'||this.currentPatientId!==patientId) return;
+        const ticket=this.notificationTicket('patient-notifications');this.patientNotificationReady=false;this.patientNotificationItems=[];this.patientNotificationCanWrite=false;this.patientNotificationCanCreate=false;
+        const current=()=>this.notificationCurrent(ticket)&&box.isConnected&&this.currentPatientId===patientId&&this.currentTab==='notifications'&&this.currentView==='patient';
+        this.notificationControls();
+        if(!this.notificationInputNodes('patient').length)box.replaceChildren(frag([
+            el('h2', { class: 'section-title', text: 'Сообщения пациенту' }),
             el('div', { class: 'empty', text: 'Загрузка…' }),
         ]));
         try {
@@ -6458,20 +6637,23 @@ const app = {
                 apiGetJson(`/api/notifications/patients/${patientId}`),
                 apiGetJson('/api/notifications/templates'),
             ]);
+            if(!current())return;const localDraft=this.notificationInputSnapshot('patient',this.notificationMutation?.scope==='patient'&&this.notificationMutation.patientId===patientId);
+            const resumed=this.notificationReauthDraft;const draft=localDraft.length?localDraft:resumed?.owner===this.user?.id&&resumed.epoch===(this.sessionEpoch||0)&&resumed.patientId===patientId?resumed.patient:[];this.patientNotificationId=patientId;this.patientNotificationItems=data.notifications||[];this.patientNotificationCanWrite=!!data.can_write;this.patientNotificationReady=true;this.notificationReadFinished('patient');
             const pref = data.preference || {};
             this.notifications.templates = templatesData.templates || [];
             this.notifications.placeholders = templatesData.placeholders || [];
             const templates = (templatesData.templates || []).filter(t => t.enabled);
             const canWrite = !!data.can_write && !this.isReadOnly();
+            this.patientNotificationCanCreate=canWrite&&pref.sms_enabled&&pref.consent_status==='granted';
             const consentLabel = {
                 not_recorded: 'Согласие не зафиксировано',
                 granted: 'Согласие получено',
                 revoked: 'Согласие отозвано',
             }[pref.consent_status] || 'Согласие не зафиксировано';
             box.replaceChildren(frag([
-                el('h2', { class: 'section-title', text: 'Уведомления' }),
+                el('h2', { class: 'section-title', text: 'Сообщения пациенту' }),
                 el('p', { class: 'alert alert--info', text: 'Тестовый режим: реальные SMS не отправляются' }),
-                el('div', { class: 'summary' }, [
+                el('div', { class: 'summary notification-consent' }, [
                     el('div', { text: pref.sms_enabled ? 'SMS включены' : 'SMS выключены' }),
                     el('div', { text: consentLabel }),
                     pref.consent_recorded_at ? el('div', { text: `Дата фиксации: ${this.formatDateTime(pref.consent_recorded_at)}` }) : null,
@@ -6491,15 +6673,17 @@ const app = {
                             el('div', { class: 'muted', text: this.notificationReasonText(item) }),
                         ]),
                         this.notificationStatusChip(item.status),
+                        canWrite&&item.status==='pending'?el('button',{type:'button',class:'btn btn--ghost btn--sm',text:'Отменить',on:{click:()=>this.cancelNotification(item.id)}}):null,
+                        this.can('runNotificationWorker')&&item.status==='failed'?el('button',{type:'button',class:'btn btn--ghost btn--sm',text:'Повторить',on:{click:()=>this.retryNotification(item.id)}}):null,
                     ])))
                     : el('div', { class: 'empty', text: 'Уведомления ещё не создавались.' }),
             ]));
-            this.updatePatientNotificationPreview();
+            this.stampNotificationInputs('patient');if(canWrite)this.restoreNotificationInputs('patient',draft);if(resumed&&resumed.patientId===patientId)resumed.patient=[];
+            this.updatePatientNotificationPreview();this.notificationControls();
         } catch (e) {
-            box.replaceChildren(frag([
-                el('h2', { class: 'section-title', text: 'Уведомления' }),
-                el('div', { class: 'empty', text: 'Не удалось загрузить уведомления.' }),
-            ]));
+            if(!current())return;
+            if([403,404].includes(e.status)){this.discardSessionAndReload();return;}
+            this.notificationFailure(ticket);
         }
     },
 
@@ -6551,7 +6735,7 @@ const app = {
                 ]),
                 el('button', {
                     type: 'button', class: 'btn btn--primary', text: 'Создать напоминание',
-                    disabled: !templates.length,
+                    disabled: !templates.length||!this.patientNotificationCanCreate,
                     on: { click: () => this.createPatientNotification(patientId) },
                 }),
             ]),
@@ -6578,92 +6762,66 @@ const app = {
 
     },
 
-    async savePatientNotificationPreference(patientId, smsEnabled, consentStatus) {
-        try {
-            await apiPut(`/api/notifications/patients/${patientId}/preferences`, {
-                smsEnabled,
-                consentStatus,
-            });
-            ui.toast(consentStatus === 'granted' ? 'Согласие зафиксировано.' : 'Согласие отозвано.', 'success');
-            this.renderPatientNotificationsBlock(patientId);
-        } catch (e) {
-            ui.toast(`Не удалось изменить согласие: ${e.message}`, 'danger');
-        }
+    async savePatientNotificationPreference(patientId,smsEnabled,consentStatus) {
+        return this.notificationWrite('patient',()=>this.notificationPatientFresh(patientId)&&!this.isReadOnly(),()=>apiPut(`/api/notifications/patients/${patientId}/preferences`,{smsEnabled,consentStatus}),()=>this.renderPatientNotificationsBlock(patientId));
     },
-
     async createPatientNotification(patientId) {
-        const templateCode = $('patientNotificationTemplate').value;
-        const scheduledValue = $('patientNotificationSchedule').value;
-        const scheduled = scheduledValue ? new Date(scheduledValue + '+03:00') : null;
-        if (!templateCode || !scheduled || Number.isNaN(scheduled.getTime())) {
-            ui.toast('Укажите шаблон, дату и время отправки.', 'warning');
-            return;
-        }
-        try {
-            const result = await apiPost('/api/notifications', {
-                patientId,
-                templateCode,
-                scheduledAt: scheduled.toISOString(),
-            });
-            ui.toast(result.duplicate ? 'Такое напоминание уже ожидает отправки.' : 'Напоминание создано.', 'success');
-            await this.renderPatientNotificationsBlock(patientId);
-            if (this.currentView === 'notifications') this.renderNotifications();
-        } catch (e) {
-            ui.toast(`Не удалось создать напоминание: ${e.message}`, 'danger');
-        }
+        if(!this.notificationPatientFresh(patientId)||!this.patientNotificationCanCreate||this.notificationMutation)return;
+        const templateCode=$('patientNotificationTemplate').value,scheduledValue=$('patientNotificationSchedule').value;
+        const scheduled=scheduledValue?new Date(scheduledValue+'+03:00'):null;
+        if(!templateCode||$('patientNotificationTemplate').selectedOptions[0]?.disabled||!scheduled||Number.isNaN(scheduled.getTime())){ui.toast('Укажите шаблон, дату и время отправки.','warning');return;}
+        return this.notificationWrite('patient',()=>this.notificationPatientFresh(patientId)&&!this.isReadOnly(),()=>apiPost('/api/notifications',{patientId,templateCode,scheduledAt:scheduled.toISOString()}),()=>this.renderPatientNotificationsBlock(patientId));
     },
-
-    async cancelNotification(notificationId) {
-        try {
-            await apiPost(`/api/notifications/${notificationId}/cancel`);
-            ui.toast('Уведомление отменено.', 'success');
-            if (this.currentView === 'notifications') this.renderNotifications();
-            if (this.currentView === 'patient' && this.currentTab === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
-        } catch (e) {
-            ui.toast(`Не удалось отменить уведомление: ${e.message}`, 'danger');
-        }
+    async cancelNotification(id) {
+        const patient=this.notificationPatientFresh(this.currentPatientId),scope=patient?'patient':'outbound';
+        return this.notificationWrite(scope,()=>patient?this.patientNotificationCanWrite&&this.patientNotificationItems.some(i=>i.id===id&&i.status==='pending'):this.notificationOutboundFresh()&&this.can('manageNotifications')&&this.notifications.items.some(i=>i.id===id&&i.status==='pending'),()=>apiPost(`/api/notifications/${id}/cancel`),()=>patient?this.renderPatientNotificationsBlock(this.currentPatientId):this.renderNotifications());
     },
-
-    async retryNotification(notificationId) {
-        try {
-            await apiPost(`/api/notifications/${notificationId}/retry`);
-            ui.toast('Повтор запланирован.', 'success');
-            this.renderNotifications();
-        } catch (e) {
-            ui.toast(`Не удалось запланировать повтор: ${e.message}`, 'danger');
-        }
+    async retryNotification(id) {
+        const patient=this.notificationPatientFresh(this.currentPatientId),scope=patient?'patient':'outbound';
+        return this.notificationWrite(scope,()=>this.can('runNotificationWorker')&&(patient?this.patientNotificationItems:this.notificationOutboundFresh()?this.notifications.items:[]).some(i=>i.id===id&&i.status==='failed'),()=>apiPost(`/api/notifications/${id}/retry`),()=>patient?this.renderPatientNotificationsBlock(this.currentPatientId):this.renderNotifications());
     },
-
     async generateNotificationsDue() {
-        try {
-            const result = await apiPost('/api/notifications/generate-due');
-            ui.toast(`Сформировано: ${result.created || 0}, пропущено: ${result.skipped || 0}.`, 'success');
-            this.renderNotifications();
-        } catch (e) {
-            ui.toast(`Не удалось сформировать уведомления: ${e.message}`, 'danger');
-        }
+        return this.notificationWrite('outbound',()=>this.notificationOutboundFresh()&&this.can('runNotificationWorker'),()=>apiPost('/api/notifications/generate-due'),()=>this.renderNotifications());
     },
-
     async processNotificationsDue() {
-        try {
-            const result = await apiPost('/api/notifications/process-due?limit=100');
-            ui.toast(`Отправлено в тестовом режиме: ${result.processed || 0}.`, 'success');
-            this.renderNotifications();
-        } catch (e) {
-            ui.toast(`Не удалось отправить ожидающие сообщения: ${e.message}`, 'danger');
-        }
+        return this.notificationWrite('outbound',()=>this.notificationOutboundFresh()&&this.can('runNotificationWorker'),()=>apiPost('/api/notifications/process-due?limit=100'),()=>this.renderNotifications());
     },
-
     async saveNotificationTemplate(code) {
+        if(!this.notificationOutboundFresh()||this.notificationMutation||this.notificationTemplateChecking||!this.can('manageNotificationTemplates'))return false;
+        const nodes=this.notificationInputNodes('outbound').filter(n=>this.notificationTemplateCode(n)===code);
+        const dirty=this.notificationInputSnapshot('outbound').filter(x=>nodes.some(n=>n.id===x.id));
+        if(!dirty.length)return false;
+        if(nodes.some(n=>this.notificationInputBaselines.get(n)?.conflict)){ui.toast('Сначала разрешите обнаруженный конфликт шаблона.','warning');return false;}
+        const ticket=this.notificationTicket('notification-template-check'),baseline=this.notifications.templates.find(t=>t.code===code),outboundVersion=this.readVersions.notifications;
+        this.notificationTemplateChecking=ticket;this.notificationControls();
         try {
-            const body = $(`template-body-${code}`).value;
-            const enabled = $(`template-enabled-${code}`).checked;
-            await apiPut(`/api/notifications/templates/${encodeURIComponent(code)}`, { body, enabled });
-            ui.toast('Шаблон сохранён.', 'success');
-            this.renderNotifications();
-        } catch (e) {
-            ui.toast(`Не удалось сохранить шаблон: ${e.message}`, 'danger');
-        }
+            const fresh=await apiGetJson('/api/notifications/templates');
+            if(!this.notificationCurrent(ticket)||this.readVersions.notifications!==outboundVersion||!this.notificationOutboundFresh()||!this.can('manageNotificationTemplates'))return false;
+            const target=fresh.templates.find(t=>t.code===code);
+            if(!target){this.notificationFailure({...ticket,key:'notifications'});return false;}
+            const changed=this.notificationTemplateState(target)!==this.notificationTemplateState(baseline);
+            const changedInput=dirty.some(x=>{const n=$(x.id);return !n||this.notificationInputValue(n)!==JSON.stringify(n.type==='checkbox'?x.checked:x.value);});
+            this.notifications.templates=fresh.templates;this.notifications.placeholders=fresh.placeholders||[];
+            this.renderNotificationTemplatesPanel();
+            if(changed||changedInput){ui.toast('Состояние шаблона или ввод изменились. Проверьте показанные данные перед сохранением.','warning');return false;}
+            const payload={};for(const x of dirty)payload[x.id.startsWith('template-body-')?'body':'enabled']=x.id.startsWith('template-body-')?x.value:x.checked;
+            this.notificationTemplateChecking=null;this.notificationControls();
+            return await this.notificationWrite('outbound',()=>this.notificationOutboundFresh()&&this.can('manageNotificationTemplates'),async()=>{
+                const saved=await apiPut(`/api/notifications/templates/${encodeURIComponent(code)}`,payload);
+                if(!this.notificationLive(ticket))return;
+                for(const node of this.notificationInputNodes('outbound').filter(n=>this.notificationTemplateCode(n)===code)){
+                    const c=this.notificationInputBaselines.get(node);if(!c)continue;
+                    const field=node.type==='checkbox'?'enabled':'body',value=field==='enabled'?!!saved.enabled:saved.body;
+                    const expected=Object.hasOwn(payload,field)?JSON.stringify(payload[field]):c.initial;
+                    // A server-side change to an untouched field must not become a phantom draft.
+                    if(this.notificationInputValue(node)===expected){if(field==='enabled')node.checked=value;else node.value=value;}
+                    c.initial=JSON.stringify(value);c.origin=this.notificationTemplateState(saved);c.conflict=false;c.retain=false;
+                }
+            },()=>this.renderNotifications());
+        } catch(e) {
+            if(this.notificationCurrent(ticket)&&this.readVersions.notifications===outboundVersion){if([403,404].includes(e.status))this.discardSessionAndReload();else{this.notificationFailure({...ticket,key:'notifications'});ui.toast('Не удалось проверить шаблоны. Ввод сохранен; запись не отправлена. '+e.message,'warning');}}
+            return false;
+        } finally {if(this.notificationTemplateChecking===ticket)this.notificationTemplateChecking=null;this.notificationControls();}
     },
 
     /* ==================================================== РЕНДЕР: ПРОЧИЕ РАЗДЕЛЫ */
@@ -6863,10 +7021,26 @@ const app = {
         }
     },
 
+    async confirmClinicalNavigation() {
+        if(this.sessionExpired||this.sessionReconciling||!this.user)return false;
+        if(this.clinicalWriteInFlight){ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.','warning');return false;}
+        const dirty=this.dirtyClinicalControls();if(!dirty.length)return true;
+        const epoch=this.sessionEpoch,user=this.user.id,patientId=this.currentPatientId;
+        const current=()=>!this.sessionExpired&&!this.sessionReconciling&&this.user?.id===user&&this.sessionEpoch===epoch&&this.currentPatientId===patientId&&!this.clinicalWriteInFlight;
+        const ok=await ui.confirm({title:'Отменить несохраненный ввод?',text:'Поля события или заметки еще не сохранены. Остаться в форме или явно отменить ввод перед переходом?',okLabel:'Отменить ввод и перейти',danger:false});
+        if(!ok||!current())return false;
+        if(dirty.some(node=>this.patientDraftControls.get(node).error)){
+            try{await this.refreshPatientRecord(patientId);}catch(error){if([403,404].includes(error.status))this.discardSessionAndReload();else ui.toast('Не удалось обновить карточку. Ввод сохранен.','warning');return false;}
+            if(!current())return false;
+        }
+        for(const node of dirty){const c=this.patientDraftControls.get(node);node.value=JSON.parse(c.initial);c.touched=false;c.error=null;c.blocked=false;}
+        return true;
+    },
+
     bindPatientNavigation() {
         const selector='#patientTabs button,#backToList,.nav__item,#patientSide button,#patientFacts button,.tl-step,#themeToggle,[data-card-save]';
         document.addEventListener('pointerdown',event=>{
-            if (!event.target.closest(selector) || this.sessionExpired) return;
+            if (!event.target.closest(selector+',#internalNotificationsBell,.internal-notification__actions button,#notificationsBody button') || this.sessionExpired) return;
             const c=this.patientDraftControls?.get(document.activeElement);if(c)c.navigationBlur=true;
         },{capture:true,signal:this.globalControls.signal});
         document.addEventListener('click',event=>{
@@ -6875,17 +7049,7 @@ const app = {
             const dirty=this.dirtyClinicalControls();if(!dirty.length)return;
             event.preventDefault();event.stopImmediatePropagation();
             if (this.clinicalWriteInFlight) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }
-            const epoch=this.sessionEpoch,user=this.user.id;
-            void ui.confirm({title:'Отменить несохраненный ввод?',text:'Поля события или заметки еще не сохранены. Остаться в форме или явно отменить ввод перед переходом?',okLabel:'Отменить ввод и перейти',danger:false}).then(async ok=>{
-                if(!ok || this.sessionExpired || this.user?.id!==user || this.sessionEpoch!==epoch)return;
-                if (dirty.some(node=>this.patientDraftControls.get(node).error)) {
-                    try { await this.refreshPatientRecord(this.currentPatientId); }
-                    catch (error) { if ([403,404].includes(error.status)) this.discardSessionAndReload(); else ui.toast('Не удалось обновить карточку. Ввод сохранен.', 'warning'); return; }
-                    if (this.sessionExpired || this.user?.id!==user || this.sessionEpoch!==epoch) return;
-                }
-                for(const node of dirty){const c=this.patientDraftControls.get(node);node.value=JSON.parse(c.initial);c.touched=false;c.error=null;c.blocked=false;}
-                target.click();
-            });
+            void this.confirmClinicalNavigation().then(ok=>{if(ok)target.click();});
         },{capture:true,signal:this.globalControls.signal});
     },
 
@@ -11297,8 +11461,18 @@ const app = {
             this.openInternalNotificationsDrawer();
         });
         on('internalNotificationsClose', 'click', () => this.closeInternalNotificationsDrawer());
+        on('internalNotificationsDrawer','keydown',(event)=>{
+            if(event.key!=='Tab')return;
+            const nodes=[...$('internalNotificationsDrawer').querySelectorAll('button:not([disabled]),input:not([disabled]),select:not([disabled])')].filter(n=>n.offsetParent!==null);
+            if(!nodes.length)return;const first=nodes[0],last=nodes[nodes.length-1];
+            if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+            else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+        });
         on('internalNotificationsScrim', 'click', () => this.closeInternalNotificationsDrawer());
         on('internalNotificationsReadAllBtn', 'click', () => this.markAllInternalNotificationsRead());
+        on('internalNotificationsFullReadAllBtn','click',()=>this.markAllInternalNotificationsRead());
+        on('notificationsPrevBtn','click',()=>{this.notifications.offset=Math.max(0,this.notifications.offset-this.notifications.limit);this.renderNotifications();});
+        on('notificationsNextBtn','click',()=>{this.notifications.offset+=this.notifications.limit;this.renderNotifications();});
         on('internalNotificationsFullBtn', 'click', () => {
             this.closeInternalNotificationsDrawer();
             this.showView('notifications');
@@ -11475,35 +11649,35 @@ const app = {
             });
         });
         on('notificationsSearchInput', 'input', (event) => {
-            this.notifications.filters.query = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.query = event.target.value;
             this.scheduleRead('notifications', this.renderNotifications, !event.target.value);
         });
         on('notificationsStatusFilter', 'change', (event) => {
-            this.notifications.filters.status = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.status = event.target.value;
             this.renderNotifications();
         });
         on('notificationsTemplateFilter', 'change', (event) => {
-            this.notifications.filters.template = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.template = event.target.value;
             this.renderNotifications();
         });
         on('notificationsDateFromFilter', 'change', (event) => {
-            this.notifications.filters.dateFrom = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.dateFrom = event.target.value;
             this.renderNotifications();
         });
         on('notificationsDateToFilter', 'change', (event) => {
-            this.notifications.filters.dateTo = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.dateTo = event.target.value;
             this.renderNotifications();
         });
         on('notificationsDoctorFilter', 'change', (event) => {
-            this.notifications.filters.doctor = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.doctor = event.target.value;
             this.renderNotifications();
         });
         on('notificationsDepartmentFilter', 'change', (event) => {
-            this.notifications.filters.department = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.department = event.target.value;
             this.renderNotifications();
         });
         on('notificationsSortSelect', 'change', (event) => {
-            this.notifications.filters.sort = event.target.value;
+            this.notifications.offset=0; this.notifications.filters.sort = event.target.value;
             this.renderNotifications();
         });
         on('openNotificationsFiltersSheetBtn', 'click', () => this.openNotificationsFiltersSheet());

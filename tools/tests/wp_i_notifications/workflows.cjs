@@ -1,0 +1,43 @@
+/* Real synthetic FastAPI workflow failures, separate from transport fault injection. */
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('assert/strict'),fs=require('fs'),path=require('path');
+const {setup,login,password}=require('../wp_i_consilium/fixtures.cjs');
+(async()=>{const origin=process.env.WP_H_ORIGIN,out=process.env.OUT,b=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE}),results={checks:[],axe:[],serverDenials:[],transportFaults:[]};
+try{
+const f=await setup(b,origin),c=await b.newContext({reducedMotion:'reduce'}),p=await c.newPage();await login(p,origin,'wph.dev');
+const template=(await f.api('GET','/api/notifications/templates')).templates.find(t=>t.enabled);
+const create=async name=>f.api('POST','/api/patients',{name,age:45,phone:'+79991234567',priority:'normal',stage:'exam',diagnosis:'C34.1',nosology:'lung34',head:'Синтетический Заведующий',treatingDoctorUserId:f.roles.doctor.id,events:[]});
+const first=await create('Синтетический I6 workflow A'),second=await create('Синтетический I6 workflow B');
+const open=async id=>{await p.evaluate(id=>app.openNotificationPatient(id,'notifications'),id);await p.waitForFunction(()=>app.patientNotificationReady)};
+await open(first.id);assert.equal(await p.getByRole('button',{name:'Создать напоминание',exact:true}).isDisabled(),true);
+await p.getByRole('button',{name:'Зафиксировать согласие',exact:true}).click();await p.waitForFunction(()=>app.patientNotificationReady&&!app.notificationMutation&&app.patientNotificationCanCreate);assert((await f.api('GET','/api/notifications/patients/'+first.id)).preference.sms_enabled);
+// Single UI create and one UTC conversion from the displayed Moscow institution time.
+let resolve,release;const arrived=new Promise(r=>resolve=r),held=new Promise(r=>release=r);let count=0,payload;
+await p.route('**/api/notifications',async route=>{if(route.request().method()!=='POST')return route.continue();count++;payload=route.request().postDataJSON();resolve();await held;await route.continue()});
+const shown=await p.locator('#patientNotificationSchedule').inputValue();await p.evaluate(()=>{window.create=app.createPatientNotification(app.currentPatientId)});await arrived;await p.evaluate(()=>app.createPatientNotification(app.currentPatientId));assert.equal(count,1);release();await p.evaluate(()=>window.create);await p.unrouteAll({behavior:'wait'});assert.equal(payload.scheduledAt,new Date(shown+'+03:00').toISOString());
+let history=await f.api('GET','/api/notifications/patients/'+first.id);assert.equal(history.notifications.length,1);assert.equal(history.notifications[0].status,'pending');results.checks.push('consent admission, single create under double click, Moscow→UTC, server pending (not delivered)');
+// Commit succeeds but response is lost. UI must not issue an automatic retry.
+const id=history.notifications[0].id;let cancelled=0;
+await p.route('**/api/notifications/'+id+'/cancel',async route=>{cancelled++;const r=await route.fetch();assert.equal(r.status(),200);await route.abort('failed')});
+await p.evaluate(id=>app.cancelNotification(id),id);assert.equal(cancelled,1);assert.equal(await p.evaluate(()=>app.notificationMutation.unknown),true);await p.evaluate(id=>app.cancelNotification(id),id);assert.equal(cancelled,1);await p.unrouteAll({behavior:'wait'});await p.evaluate(()=>app.renderPatientNotificationsBlock(app.currentPatientId));assert.equal(await p.evaluate(()=>app.notificationMutation),null);history=await f.api('GET','/api/notifications/patients/'+first.id);assert.equal(history.notifications[0].status,'cancelled');results.transportFaults.push('real commit200 then aborted response; no retry; explicit GET reconciles cancelled');
+// Revoke cancels pending server-side, hides create admission, and granting restores it.
+await p.getByRole('button',{name:'Отозвать согласие',exact:true}).click();await p.waitForFunction(()=>app.patientNotificationReady&&!app.notificationMutation&&!app.patientNotificationCanCreate);assert.equal(await p.getByRole('button',{name:'Создать напоминание',exact:true}).isDisabled(),true);assert.equal((await f.api('GET','/api/notifications/patients/'+first.id)).preference.consent_status,'revoked');
+await p.getByRole('button',{name:'Зафиксировать согласие',exact:true}).click();await p.waitForFunction(()=>app.patientNotificationCanCreate&&!app.notificationMutation);
+results.checks.push('revoke/grant and consent UI gate');
+// Old patient200 cannot populate the next patient card.
+let rr,rel;const ar=new Promise(r=>rr=r),hold=new Promise(r=>rel=r);
+await p.route('**/api/notifications/patients/'+first.id,async route=>{const response=await route.fetch();rr();await hold;await route.fulfill({response})});await p.evaluate(()=>{window.old=app.renderPatientNotificationsBlock(app.currentPatientId)});await ar;await open(second.id);rel();await p.evaluate(()=>window.old);await p.unrouteAll({behavior:'wait'});assert.equal(await p.evaluate(()=>app.patientNotificationId),second.id);assert.equal(await p.locator('#patientNotificationsBlock .notification-row').count(),0);results.checks.push('older patient read cannot replace current card');
+// Own-role object denial is a real server404, no injected responses.
+const outsider=await b.newContext();await f.call(outsider,'POST','/api/auth/login',{username:'i5a.outside',password});const denied=await f.request(outsider,'GET','/api/notifications/patients/'+first.id);assert.equal(denied.status(),404);await outsider.close();results.serverDenials.push('real404 notification patient object scope (non-disclosure)');
+// Patient panel reflow and full-page accessibility in both themes.
+await p.waitForFunction(()=>!document.querySelectorAll('#toasts .toast').length);
+await p.evaluate(fs.readFileSync(process.env.AXE_SOURCE,'utf8'));
+for(const theme of ['light','dark'])for(const width of [1440,375,320]){await p.setViewportSize({width,height:1000});await p.evaluate(t=>app.applyTheme(t),theme);await p.evaluate(()=>Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{}))));const violations=await p.evaluate(async()=>{const a=await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}});return a.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}))});assert.deepEqual(violations,[]);assert.equal(await p.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);results.axe.push({theme,width,violations});await p.screenshot({path:path.join(out,`patient-${theme}-${width}.png`),fullPage:true});}
+// True notification_create rate limit: finite31-request burst; actual server429.
+const body={patientId:second.id,templateCode:template.code,scheduledAt:new Date(Date.now()+3600000).toISOString()};let limited=false;const statuses=[];
+for(let i=0;i<31;i++){const r=await f.request(c,'POST','/api/notifications',body);statuses.push(r.status());if(r.status()===429){limited=true;break;}assert.equal(r.status(),422)}
+assert(limited);results.serverDenials.push({kind:'real429 finite notification create burst',statuses});
+// Technical queue uses only existing mock backend and explicit developer action.
+await p.evaluate(async()=>{app.showView('notifications');app.notifications.activeTab='outbound';await app.renderNotificationsPage()});const reflow=await p.evaluate(()=>({width:innerWidth,scroll:document.documentElement.scrollWidth,offenders:[...document.querySelectorAll('#view-notifications *')].filter(n=>n.getBoundingClientRect().right>innerWidth+1).slice(0,8).map(n=>({tag:n.tagName,id:n.id,class:n.className,right:n.getBoundingClientRect().right}))}));fs.writeFileSync(path.join(out,'outbound-reflow.json'),JSON.stringify(reflow,null,2));assert.equal(reflow.scroll,reflow.width,'outbound must not overflow viewport');let requests=0;const handler=r=>{if(r.method()==='POST'&&r.url().includes('/api/notifications/process-due'))requests++};p.on('request',handler);await p.evaluate(()=>app.processNotificationsDue());assert.equal(requests,1);assert.equal(await p.evaluate(()=>app.notifications.ready),true);results.checks.push('explicit developer process-due, existing mock queue only');
+await p.evaluate(()=>app.showView('patients'));requests=0;await p.evaluate(()=>app.processNotificationsDue());assert.equal(requests,0,'stale outbound action after leaving notification view must not POST');p.off('request',handler);results.checks.push('stale hidden outbound action cannot issue a write after leaving view');
+await c.close();await f.admin.close();await f.chair.close();fs.writeFileSync(path.join(out,'results.json'),JSON.stringify(results,null,2));
+}finally{await b.close()}})().catch(e=>{console.error(e.stack);process.exitCode=1});
