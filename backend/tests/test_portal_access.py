@@ -4,7 +4,9 @@
 смена, отзыв и область видимости. Аутентификации пациента в этом этапе нет,
 поэтому ни OTP, ни сессий, ни enrollment тесты не трогают.
 """
+import re
 import sqlite3
+from uuid import UUID
 
 import pytest
 
@@ -352,7 +354,44 @@ def test_permissions_payload_exposes_portal_flags(auth_client):
 # --- аудит ---------------------------------------------------------------
 
 
-def test_audit_records_lifecycle_without_pii(auth_client):
+def _assert_portal_audit_without_pii(row, *, patient_id, actor_user_id):
+    # Only these known technical columns are exempt from the short fragment
+    # check. Every other column, including any future text field, is scanned.
+    technical_ids = {
+        "id", "patient_id", "actor_user_id", "request_id",
+        "actor_department_id", "target_user_id", "target_department_id",
+    }
+    assert type(row["id"]) is int and row["id"] > 0, "invalid audit row id"
+    for key, expected in (("patient_id", patient_id), ("actor_user_id", actor_user_id)):
+        value = row[key]
+        assert isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value), key
+        parsed = UUID(hex=value)
+        assert parsed.version == 4 and parsed.hex == value, key
+        assert value == expected, f"unexpected {key}"
+    # These lifecycle events use record_required: no request/target/department ID.
+    for key in technical_ids - {"id", "patient_id", "actor_user_id"}:
+        assert row[key] is None, f"unexpected {key}"
+
+    for key in row.keys():
+        text = str(row[key] if row[key] is not None else "")
+        lowered = text.casefold()
+        assert not any(pii in lowered for pii in ("audited", "example.com", "@", "тестов")), f"PII in {key}"
+        # Full phone checks apply even to technical columns. Check formatted,
+        # international digits and national representations without separators.
+        assert "+7 999 555-44-33" not in text, f"phone in {key}"
+        digits = re.sub(r"\D", "", text)
+        assert not any(phone in digits for phone in ("79995554433", "89995554433", "9995554433")), f"phone in {key}"
+        if key not in technical_ids:
+            assert "555" not in text, f"phone fragment in {key}"
+
+
+def test_audit_records_lifecycle_without_pii(auth_client, monkeypatch):
+    from backend.app import audit
+
+    # Keep the audit clock deterministic too: fractional seconds are not PII,
+    # but all non-ID columns still undergo the same short-fragment check.
+    monkeypatch.setattr(audit, "now_iso", lambda: "2026-10-01T06:00:00+00:00")
+    actor_user_id = auth_client.get("/api/auth/me").json()["user"]["id"]
     pid = _create_patient(auth_client, phone="+7 999 555-44-33")["id"]
     _link(auth_client, pid, "audited@example.com")
     _link(auth_client, pid, "audited-2@example.com")
@@ -367,12 +406,65 @@ def test_audit_records_lifecycle_without_pii(auth_client):
         assert row["patient_id"] == pid
         assert row["result"] == "ok"
         assert row["actor_role"] == "developer"
-        blob = " ".join(str(row[key] or "") for key in row.keys())
-        assert "audited" not in blob
-        assert "example.com" not in blob
-        assert "@" not in blob
-        assert "555" not in blob
-        assert "Тестов" not in blob
+        _assert_portal_audit_without_pii(row, patient_id=pid, actor_user_id=actor_user_id)
+
+
+
+def _synthetic_privacy_audit_row():
+    # Captured UUIDv4 from the original failed run, not a changed ID generator.
+    return {
+        "id": 1, "created_at": "2026-10-01T06:00:00+00:00",
+        "event_type": "portal_access_linked", "actor": None,
+        "patient_id": "123456789abc4def8123456789abcdef", "result": "ok",
+        "request_id": None, "detail": "status=linked previous=none",
+        "actor_user_id": "1c491a55582744999ce0da396f6ce27b", "actor_role": "developer",
+        "actor_department_id": None, "target_user_id": None, "target_department_id": None,
+    }
+
+
+def test_audit_privacy_accepts_555_in_valid_expected_uuid():
+    row = _synthetic_privacy_audit_row()
+    assert "555" in row["actor_user_id"]
+    _assert_portal_audit_without_pii(row, patient_id=row["patient_id"], actor_user_id=row["actor_user_id"])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("detail", "+7 999 555-44-33"),
+    ("detail", "79995554433"),
+    ("detail", "89995554433"),
+    ("detail", "9995554433"),
+    ("detail", "fragment=555"),
+    ("detail", "audited@example.com"),
+    ("detail", "AUDITED-2@EXAMPLE.COM"),
+    ("detail", "Тестов Пациент"),
+    ("actor", "555"),
+    ("future_text_field", "555"),
+    ("future_text_field", "audited@example.com"),
+    ("actor_role", "example.com"),
+])
+def test_audit_privacy_rejects_pii_in_current_and_future_text_fields(field, value):
+    row = _synthetic_privacy_audit_row()
+    row[field] = value
+    # Negative control: a PII-bearing row must fail the actual lifecycle helper.
+    # The match also prevents an unrelated assertion from satisfying this test.
+    with pytest.raises(AssertionError, match=f"(?:PII|phone|phone fragment) in {field}"):
+        _assert_portal_audit_without_pii(row, patient_id=row["patient_id"], actor_user_id=row["actor_user_id"])
+
+
+@pytest.mark.parametrize("field,value", [
+    ("id", "1"), ("id", True), ("id", 0),
+    ("actor_user_id", "not-a-uuid"),
+    ("actor_user_id", "1c491a55582714999ce0da396f6ce27b"),  # v1, not v4
+    ("actor_user_id", "123456789abc4def8123456789abcdef"),  # valid, wrong owner
+    ("patient_id", "1c491a55582744999ce0da396f6ce27b"),  # valid, wrong patient
+    ("request_id", "unexpected"), ("target_user_id", "unexpected"),
+])
+def test_audit_privacy_validates_technical_identifier_types_and_ownership(field, value):
+    row = _synthetic_privacy_audit_row()
+    patient_id, actor_user_id = row["patient_id"], row["actor_user_id"]
+    row[field] = value
+    with pytest.raises(AssertionError, match=field if field != "id" else "audit row id"):
+        _assert_portal_audit_without_pii(row, patient_id=patient_id, actor_user_id=actor_user_id)
 
 
 def test_denied_attempt_is_audited_without_email(client, auth_client):

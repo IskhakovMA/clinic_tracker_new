@@ -5997,18 +5997,32 @@ const app = {
         } finally {if(current())document.querySelector('.analytics-dashboard').setAttribute('aria-busy','false');}
     },
 
+    chairAnalyticsRequestParams() {
+        const params=new URLSearchParams();
+        if(this.analytics.filters.dateFrom)params.set('date_from',this.analytics.filters.dateFrom);
+        if(this.analytics.filters.dateTo)params.set('date_to',this.analytics.filters.dateTo);
+        return params.toString();
+    },
+    setChairAnalyticsReadState(state) {
+        this.chairAnalyticsReadState=state;
+        $('chairAnalyticsDashboard').setAttribute('aria-busy',String(state==='loading'));
+        if(state==='ready')return;
+        for(const id of ['chairAnalyticsStats','chairTreatmentAnalytics','chairSchemeAnalytics','chairScheduleAnalytics'])$(id).replaceChildren();
+        $('chairAnalyticsStats').append(el('div',{class:'empty',role:state==='error'?'alert':'status',text:state==='loading'?'Загрузка аналитики консилиума…':'Не удалось загрузить аналитику консилиума. Актуальные показатели недоступны; обновите данные.'}));
+    },
     async renderChairAnalytics() {
+        if(!this.user||this.sessionExpired||this.sessionReconciling||!this.can('consiliumChair')){this.setChairAnalyticsReadState('error');return;}
+        const params=this.chairAnalyticsRequestParams(),ticket=this.managementReadTicket('chair-analytics',params);this.chairAnalyticsReadTicket=ticket;
+        const current=()=>this.can('consiliumChair')&&this.managementReadCurrent(ticket,this.chairAnalyticsRequestParams());
+        this.setChairAnalyticsReadState('loading');
         $('analyticsSubtitle').textContent = 'Назначения консилиума и фактическая загрузка расписания';
         document.querySelector('.analytics-dashboard').classList.add('is-hidden');
         document.querySelector('.analytics-note').classList.add('is-hidden');
         document.querySelector('.analytics-controls__filters').classList.add('is-hidden');
         $('analyticsExportBtn').classList.add('is-hidden');
         $('chairAnalyticsDashboard').classList.remove('is-hidden');
-        const params = new URLSearchParams();
-        if (this.analytics.filters.dateFrom) params.set('date_from', this.analytics.filters.dateFrom);
-        if (this.analytics.filters.dateTo) params.set('date_to', this.analytics.filters.dateTo);
         try {
-            const data = await apiGetJson(`/api/consilium/analytics${params.toString() ? '?' + params : ''}`);
+            const data=await apiGetJson(`/api/consilium/analytics${params?'?'+params:''}`);if(!current())return;
             const stat = (label, value, meta) => el('div', { class: 'stat' }, [
                 el('div', { class: 'stat__label', text: label }),
                 el('div', { class: 'stat__value', text: String(value) }),
@@ -6042,7 +6056,7 @@ const app = {
                         ? el('div', { class: 'consilium-load-card__meta', text: `Записей вне расписания: ${schedule.outsideSchedule}` })
                         : null,
                 ]));
-                return;
+                this.setChairAnalyticsReadState('ready');return;
             }
             $('chairScheduleAnalytics').replaceChildren(el('div', { class: 'consilium-load-card' }, [
                 el('div', { class: 'consilium-load-card__value', text: `${schedule.loadPercent || 0}%` }),
@@ -6054,11 +6068,9 @@ const app = {
                     : null,
                 el('div', { class: 'consilium-load-card__extra', text: `Дополнительно: специалистов требуют ${data.summary.needsSpecialists || 0} записей.` }),
             ]));
+            this.setChairAnalyticsReadState('ready');
         } catch (error) {
-            $('chairAnalyticsStats').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику консилиума.' }));
-            $('chairTreatmentAnalytics').replaceChildren();
-            $('chairSchemeAnalytics').replaceChildren();
-            $('chairScheduleAnalytics').replaceChildren();
+            if(current())this.setChairAnalyticsReadState('error');
         }
     },
 
@@ -6876,13 +6888,26 @@ const app = {
         return this.renderWorkspacePage('checklists','checklistsPanel','checklists',cursor);
     },
 
+    auditRequestParams() { return 'limit=100'; },
+    setAuditReadState(state) {
+        this.auditReadState=state;
+        const panel=$('auditPanel');panel.setAttribute('aria-busy',String(state==='loading'));
+        if(state==='ready')return;
+        panel.replaceChildren(el('div',{class:'empty',role:state==='error'?'alert':'status',text:state==='loading'?'Загрузка выборки журнала…':'Не удалось загрузить выборку журнала. Это не означает отсутствия записей в журнале. Повторите обновление.'}));
+    },
     async renderAudit() {
-        const panel = $('auditPanel');
-        panel.replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
+        const panel=$('auditPanel');
+        if(!this.user||this.sessionExpired||this.sessionReconciling||!this.can('viewAudit')){this.setAuditReadState('error');return;}
+        const params=this.auditRequestParams(),ticket=this.managementReadTicket('audit-log',params);this.auditReadTicket=ticket;
+        const current=()=>this.can('viewAudit')&&this.managementReadCurrent(ticket,this.auditRequestParams());
+        if(panel.contains(document.activeElement))$('auditRefreshBtn').focus({preventScroll:true});
+        this.setAuditReadState('loading');
         try {
-            const data = await apiGetJson('/api/audit?limit=100');
+            const data=await apiGetJson('/api/audit?'+params);if(!current())return;
+            if(!Array.isArray(data.events))throw new Error('Invalid audit response');
             if (!data.events.length) {
-                panel.replaceChildren(el('div', { class: 'empty', text: 'Журнал пуст.' }));
+                this.setAuditReadState('ready');
+                panel.replaceChildren(el('div',{class:'empty',role:'status',text:'В полученной выборке нет событий. Это не подтверждает отсутствие записей в журнале.'}));
                 return;
             }
             const labels = {
@@ -6905,7 +6930,7 @@ const app = {
                 head_assigned: 'Назначен заведующий', membership_changed: 'Изменён состав отделения',
                 treating_doctor_changed: 'Смена лечащего врача', access_denied: 'Отказ в доступе',
             };
-            panel.replaceChildren(frag(data.events.map(event => el('div', { class: 'list-row' }, [
+            panel.replaceChildren(el('p',{class:'panel__text',text:`Показано событий: ${data.events.length}. Лимит выборки — 100; это не полный журнал.`}),frag(data.events.map(event => el('div', { class: 'list-row' }, [
                 el('div', { class: 'list-row__main' }, [
                     el('div', { class: 'list-row__title', text: labels[event.event_type] || event.event_type }),
                     el('div', { class: 'list-row__sub', text: event.detail ? `${event.detail}` : (event.patient_id ? `запись ${event.patient_id.slice(0, 8)}…` : '—') }),
@@ -6913,8 +6938,9 @@ const app = {
                 el('span', { class: `chip chip--${event.result === 'ok' ? 'good' : event.result === 'denied' ? 'danger' : 'warning'}`, text: event.result }),
                 el('span', { class: 'list-row__side', text: this.formatDateTime(event.created_at) }),
             ]))));
+            this.setAuditReadState('ready');
         } catch (e) {
-            panel.replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить журнал: ' + e.message }));
+            if(current())this.setAuditReadState('error');
         }
     },
 
