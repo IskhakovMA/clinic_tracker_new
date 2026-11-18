@@ -10,7 +10,7 @@ import re
 from contextlib import closing
 from starlette.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
-from . import audit, config, db, policy, security, session_context, request_security, patient_pages
+from . import audit, config, db, policy, security, session_context, request_security, patient_pages, quality_pages
 
 RELEASE = 'medical_read_release'
 DENIED = 'medical_read_denied'
@@ -88,6 +88,9 @@ def _fresh_reader(conn, state):
 
 def _persist(state, route, raw, params, denied):
     from fastapi import HTTPException
+    quality_check = state.scoped_release if isinstance(state.scoped_release, quality_pages.QualityScopedRelease) else None
+    if not denied and quality_check is not None and len(raw) > quality_pages.MAX_BODY_BYTES:
+        quality_pages.error('QUALITY_READ_UNAVAILABLE', 503)
     payload = None if denied or state.export_recorded else json.loads(raw) if raw else None
     objects = attempted_manifest(params) if denied else manifest(payload, params)
     if not denied:
@@ -117,6 +120,8 @@ def _persist(state, route, raw, params, denied):
                     raise HTTPException(status_code=401, detail='Not authenticated')
                 if fresh.id != state.user.id or session_context.access_context(fresh) != state.access:
                     raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
+                if quality_check is not None:
+                    quality_pages.validate_admission(fresh, state, quality_check)
                 if version is not None:
                     # Check identity/access FIRST: these failures cannot become
                     # an innocuous list refresh, even if the DB also changed.
@@ -191,6 +196,8 @@ def install(app):
                     except Exception:
                         code = 503
                 body = {'detail': 'Not authenticated' if code == 401 else 'Read audit unavailable'}
+                if isinstance(exc, quality_pages.QualityError):
+                    body = {'detail': exc.detail, 'code': exc.code}
                 if code == 503 and state.export_recorded:
                     body['code'] = 'AUDIT_UNAVAILABLE'
                 if query_changed and code == 409:

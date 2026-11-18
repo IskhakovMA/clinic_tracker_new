@@ -308,6 +308,8 @@ def test_v30_offline_migration_preserves_medical_and_no_assurance(client,backup_
         from backend.app.mfa_lifecycle_schema import TABLES as LIFECYCLE_TABLES
         for table in reversed(LIFECYCLE_TABLES):raw.execute('DROP TABLE '+table)
         for table in reversed(mfa_schema.TABLES):raw.execute('DROP TABLE '+table)
+        from .conftest import strip_gq_v33
+        strip_gq_v33(raw)
         raw.execute('UPDATE schema_version SET version=30');raw.commit();raw.close()
         from backend.app import maintenance
         assert maintenance.identify_backup_build(config.DB_PATH,30)=='wpg-fd7e6ec'
@@ -317,7 +319,7 @@ def test_v30_offline_migration_preserves_medical_and_no_assurance(client,backup_
         operations_state.verify_database(confirm_offline=True)
         raw=db._connect(config.DB_PATH)
         try:
-            assert raw.execute('SELECT version FROM schema_version').fetchone()[0]==32
+            assert raw.execute('SELECT version FROM schema_version').fetchone()[0]== 33
             assert raw.execute('SELECT mode FROM mfa_policy').fetchone()[0]=='stage1_compatibility'
             assert raw.execute('SELECT COUNT(*) FROM mfa_session_assurance').fetchone()[0]==0
             for table,rows in expected.items():assert [tuple(r) for r in raw.execute('SELECT * FROM '+table)]==rows

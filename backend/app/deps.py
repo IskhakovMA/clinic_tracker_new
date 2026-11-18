@@ -26,6 +26,8 @@ def get_db():
         else:
             conn = _connect(config.DB_PATH)
         try:
+            from . import quality_revision
+            quality_revision.require_valid(conn)
             yield conn
         finally:
             conn.close()

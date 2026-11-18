@@ -2,6 +2,7 @@
 from datetime import datetime, timedelta
 import sqlite3
 import pytest
+from .conftest import strip_gq_v33
 from .conftest import get_conn, event_patch, card_version, app_stopped, synthetic_export_key
 from .test_wp_e_time_notifications import freeze, stand, recorder, legacy_row
 
@@ -181,6 +182,7 @@ def test_v28_upgrade_is_explicit_atomic_and_keeps_old_rows(auth_client, monkeypa
         conn.execute('DROP INDEX idx_notifications_idempotency_active')
         conn.execute('ALTER TABLE notifications DROP COLUMN event_at')
         conn.execute("UPDATE notifications SET idempotency_key = REPLACE(idempotency_key, 'event_msk_v1:', '')")
+        strip_gq_v33(conn)
         conn.execute('UPDATE schema_version SET version=28')
         conn.execute("CREATE UNIQUE INDEX idx_notifications_idempotency_active ON notifications(patient_id,source_type,source_id,template_code,scheduled_at) WHERE status IN ('pending','processing','sent')")
     before = [tuple(r) for r in conn.execute('SELECT * FROM notifications')]
@@ -196,7 +198,7 @@ def test_v28_upgrade_is_explicit_atomic_and_keeps_old_rows(auth_client, monkeypa
         assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 28
         monkeypatch.setattr(db, 'migrate_v28_to_v29', migrate)
         db.init_db(conn)
-        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 32
+        assert conn.execute('SELECT version FROM schema_version').fetchone()[0] == 33
         assert [tuple(r)[:-1] for r in conn.execute('SELECT * FROM notifications')] == before
         assert conn.execute('SELECT event_at FROM notifications').fetchone()[0] is None
         db.init_db(conn)
@@ -300,6 +302,7 @@ def test_exact_v28_backup_validates_and_restores_to_v29(auth_client, monkeypatch
             conn.execute('DROP INDEX idx_notifications_idempotency_active')
             conn.execute('ALTER TABLE notifications DROP COLUMN event_at')
             conn.execute("UPDATE notifications SET idempotency_key = REPLACE(idempotency_key, 'event_msk_v1:', '')")
+            strip_gq_v33(conn)
             conn.execute('UPDATE schema_version SET version=28')
             conn.execute("CREATE UNIQUE INDEX idx_notifications_idempotency_active ON notifications(patient_id,source_type,source_id,template_code,scheduled_at) WHERE status IN ('pending','processing','sent')")
         original = dict(conn.execute('SELECT * FROM notifications').fetchone())
@@ -319,7 +322,7 @@ def test_exact_v28_backup_validates_and_restores_to_v29(auth_client, monkeypatch
         assert result['migrated_from_schema_version'] == 28
         restored = sqlite3.connect(config.DB_PATH); restored.row_factory = sqlite3.Row
         try:
-            assert restored.execute('SELECT version FROM schema_version').fetchone()[0] == 32
+            assert restored.execute('SELECT version FROM schema_version').fetchone()[0] == 33
             assert dict(restored.execute('SELECT * FROM notifications').fetchone()) == {**original, 'event_at':None}
             assert restored.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
             assert restored.execute('PRAGMA foreign_key_check').fetchall() == []

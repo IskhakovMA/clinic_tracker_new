@@ -176,11 +176,20 @@ def checklist_state(patient_id: str, occ_index: int, item: str) -> bool:
     return bool(checklist.get(item, False))
 
 
+def strip_gq_v33(conn) -> None:
+    """Synthetic historical reconstruction ONLY: v32 and older had no GQ."""
+    from backend.app import quality_revision
+    for name, _ in quality_revision.trigger_definitions():
+        conn.execute('DROP TRIGGER IF EXISTS '+name)
+    conn.execute('DROP TABLE IF EXISTS quality_revision_state')
+
+
 def strip_v28(conn) -> None:
     """Убрать из свежей базы объекты v28 (WP-C), чтобы смоделировать файл более старой
     схемы: защитные триггеры v28, столбец patients.version и таблицу истории фактов.
     В настоящей базе v27 и старше этих объектов нет."""
     from backend.app import db
+    strip_gq_v33(conn)
     # Remove v31 technical storage when reconstructing a pre-v28 database.
     from backend.app.mfa_lifecycle_schema import TABLES as LIFECYCLE_TABLES
     for table in reversed(LIFECYCLE_TABLES):

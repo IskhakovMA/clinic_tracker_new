@@ -208,6 +208,14 @@ def _fill_check_report(conn: sqlite3.Connection, report: dict) -> None:
             report["ok"] = False
             report["problems"].append(
                 f"structure of {table} differs from this build: {', '.join(differs)}")
+        from . import quality_revision
+        try:
+            quality_revision.require_valid(conn, structure=True)
+            report["quality_revision_valid"] = True
+        except quality_revision.QualityRevisionError:
+            report["quality_revision_valid"] = False
+            report["ok"] = False
+            report["problems"].append("quality_revision_unavailable")
         # WP-C (AUD-14): определения триггеров сверяются с эталоном этой сборки по тексту,
         # а не только по именам. Подмененная или отсутствующая защита — проблема;
         # посторонний триггер — предупреждение (о нем сообщается, работа не блокируется).
@@ -400,7 +408,7 @@ def _structure(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
 # проверенную сборку portal-a3fbe00 от ранней или измененной таблицы.
 from .mfa_lifecycle_schema import TABLES as MFA_LIFECYCLE_TABLES
 
-STRICT_TABLES = MFA_LIFECYCLE_TABLES + ("patient_portal_access", "read_access_manifests", "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance")
+STRICT_TABLES = MFA_LIFECYCLE_TABLES + ("quality_revision_state", "patient_portal_access", "read_access_manifests", "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance")
 
 _SQL_TOKEN = re.compile(
     r"""(?P<skip>\s+|--[^\n]*(?:\n|$)|/\*.*?(?:\*/|$))

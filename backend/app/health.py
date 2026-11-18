@@ -27,6 +27,8 @@ def readiness() -> dict:
                 return {"status": "not_ready", "reason": "migration_required"}
             if versions[0][0] != config.SCHEMA_VERSION or any(db.trigger_drift(conn).values()):
                 return {"status": "not_ready", "reason": "database_check_required"}
+            from . import quality_revision
+            quality_revision.require_valid(conn, structure=True)
         finally:
             conn.close()
         operations_state.require_permit()

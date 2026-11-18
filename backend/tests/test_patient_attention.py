@@ -179,6 +179,8 @@ def test_schema_v5_to_v6_preserves_internal_notification_state_and_patients(auth
                        '2026-01-01T00:01:00+00:00', NULL)""",
             (user_id, patient["id"]),
         )
+        from .conftest import strip_gq_v33
+        strip_gq_v33(conn)  # Synthetic v5 never contained additive v33 metadata.
         conn.execute("UPDATE schema_version SET version = 5")
     db.init_db(conn)
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == current_schema_version()

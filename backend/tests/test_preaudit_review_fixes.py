@@ -163,7 +163,7 @@ def test_migration_succeeds_once_a_person_resolves_the_conflict(client, tmp_path
     conn.commit()
     rows = _portal_rows(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 32   # WP-C: текущая схема v28
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 33   # WP-C: текущая схема v28
     assert _portal_rows(conn) == rows
     assert "COLLATE NOCASE" in _table_sql(conn).upper()
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE tbl_name IN "

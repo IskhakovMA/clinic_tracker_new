@@ -60,7 +60,7 @@ def test_portal_v10_database_migrates_to_v27_keeping_every_row(client, tmp_path)
     assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 10
     before = _snapshot(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 32   # WP-C: текущая схема v28
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 33   # WP-C: текущая схема v28
     after = _snapshot(conn)
     reference = ("roles", "notification_templates")                     # справочники дополняются сидами
     for table, rows in before.items():
@@ -96,7 +96,7 @@ def test_v26_database_migrates_to_v27_keeping_registry_and_guards(client, tmp_pa
     conn = _open(path)
     before = _snapshot(conn)
     db.init_db(conn)
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 32   # WP-C: текущая схема v28
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 33   # WP-C: текущая схема v28
     after = _snapshot(conn)
     assert {t: after[t] for t in before} == before
     assert after["patient_portal_access"] == []
@@ -116,7 +116,7 @@ def test_backups_of_both_lines_restore_to_v27(auth_client, tmp_path, backup_key,
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 32   # WP-E FIX1: v29; WP-C: текущая схема v28
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 33   # WP-E FIX1: v29; WP-C: текущая схема v28
     expected_portal = 2 if header == 10 else 0
     assert conn.execute("SELECT COUNT(*) FROM patient_portal_access").fetchone()[0] == expected_portal
     if header == 26:

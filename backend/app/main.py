@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import audit, config, db_guard, idempotency, process_guard, security, session_context, operations_state, health
+from . import audit, config, db_guard, idempotency, process_guard, security, session_context, operations_state, health, quality_pages
 from .db import SchemaVersionError, get_connection
 from .db import reset_singleton_for_tests as reset_singleton
 from .routes import ai, analytics, audit_log, auth, consilium, data_quality, duplicate_review, importexport, internal_notifications, migrate, notifications, patients, staff, structure
@@ -298,6 +298,11 @@ def _is_erroneous_write(exc: BaseException) -> bool:
             return True
         exc = exc.__cause__ or exc.__context__
     return False
+
+
+@app.exception_handler(quality_pages.QualityError)
+async def quality_error_handler(request: Request, exc: quality_pages.QualityError):
+    return JSONResponse({'detail': exc.detail, 'code': exc.code}, status_code=exc.status_code)
 
 
 @app.exception_handler(operations_state.AdmissionRequired)

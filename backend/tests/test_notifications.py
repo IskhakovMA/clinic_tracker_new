@@ -71,6 +71,8 @@ def test_v2_like_database_migrates_to_v3_notifications_tables(auth_client):
     with conn:
         for table in ("notifications", "notification_templates", "patient_notification_preferences"):
             conn.execute(f"DROP TABLE {table}")
+        from .conftest import strip_gq_v33
+        strip_gq_v33(conn)  # Reconstruct only pre-GQ technical layout.
         conn.execute("UPDATE schema_version SET version = 2")
 
     db.init_db(conn)

@@ -679,6 +679,7 @@ ROLE_SEED = (
 from .mfa_lifecycle_schema import TABLES as MFA_LIFECYCLE_TABLES
 
 REQUIRED_TABLES = MFA_LIFECYCLE_TABLES + (
+    "quality_revision_state",
     "mfa_policy", "mfa_user_state", "mfa_credentials", "mfa_flows", "mfa_session_assurance",
     "schema_version",
     "app_login",
@@ -790,7 +791,13 @@ def _harden_permissions(db_path: Path) -> None:
 
 class _ClinicConnection(sqlite3.Connection):
     def execute(self, sql, parameters=()):
-        result = super().execute(sql, parameters)
+        try:
+            result = super().execute(sql, parameters)
+        except sqlite3.IntegrityError as exc:
+            from . import quality_revision
+            if str(exc) == quality_revision.REASON:
+                raise quality_revision.QualityRevisionError() from exc
+            raise
         if sql.strip().upper() == 'BEGIN IMMEDIATE':
             from .request_security import require_live_session
             try:
@@ -799,6 +806,15 @@ class _ClinicConnection(sqlite3.Connection):
                 self.rollback()
                 raise
         return result
+
+    def executemany(self, sql, parameters):
+        try:
+            return super().executemany(sql, parameters)
+        except sqlite3.IntegrityError as exc:
+            from . import quality_revision
+            if str(exc) == quality_revision.REASON:
+                raise quality_revision.QualityRevisionError() from exc
+            raise
 
     def commit(self):
         from .request_security import require_live_session
@@ -2604,6 +2620,13 @@ _reference_state = threading.local()
 
 
 
+def migrate_v32_to_v33(conn):
+    """Add GQ metadata only; existing medical writes/release rules stay unchanged."""
+    from . import quality_revision
+    version = conn.execute('SELECT version FROM schema_version').fetchone()
+    quality_revision.migrate(conn, new_layout=version is None or version[0] < 33)
+
+
 def migrate_v31_to_v32(conn):
     """Explicit additive lifecycle storage; no authority or factors are enabled."""
     from .mfa_lifecycle_schema import SQL
@@ -2742,6 +2765,8 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
             _require_no_upgrade(conn)      # старая схема — только явный migrate-db
             if _has_existing_schema(conn):
                 _require_no_trigger_drift(conn)   # AUD-14: подмененная защита — отказ без изменений
+                from . import quality_revision
+                quality_revision.require_valid(conn, structure=True)
         _execute_script(conn, SCHEMA_SQL)  # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД
@@ -2773,6 +2798,7 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
         migrate_v29_to_v30(conn)         # WP-G: atomic release manifest, explicit upgrade only
         migrate_v30_to_v31(conn)         # MFA storage; explicit offline upgrade only
         migrate_v31_to_v32(conn)         # disabled enrollment/recovery lifecycle
+        migrate_v32_to_v33(conn)         # GQ-M1 metadata; release remains v1
         _assert_no_duplicate_consilium_slots(conn)
         _execute_script(conn, INDEX_SQL)   # индексы — когда все колонки уже есть
         _seed_roles(conn)
@@ -2887,6 +2913,8 @@ def get_connection() -> sqlite3.Connection:
         # отказ без изменений, обновление только командой migrate-db. При отказе
         # соединение закрывается и не остаётся для следующих вызовов.
         _singleton_conn = connect_live(config.DB_PATH)
+    from . import quality_revision
+    quality_revision.require_valid(_singleton_conn)
     return _singleton_conn
 
 

@@ -7,9 +7,9 @@ patient endpoints and keep their existing RBAC, CSRF and audit behavior.
 import sqlite3
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
-from .. import policy
+from .. import policy, quality_pages
 from ..deps import abuse_rate_limit, get_db, require_active_password, search_text
 from ..services import data_quality
 
@@ -39,7 +39,16 @@ def summary(
     return data_quality.evaluate(conn, user, identity_signals=True)["summary"]
 
 
-@router.get("/issues", dependencies=[Depends(abuse_rate_limit("data_quality_issues", 60))])
+def _issues_mode_gate(
+    request: Request,
+    _user: policy.CurrentUser = Depends(require_active_password),
+    _rate: None = Depends(abuse_rate_limit("data_quality_issues", 60)),
+):
+    if "mode" in request.query_params:
+        quality_pages.reject_public_mode(request)
+
+
+@router.get("/issues", dependencies=[Depends(_issues_mode_gate)])
 def issues(
     severity: Literal["critical", "warning", "info"] | None = None,
     category: QualityCategory | None = None,

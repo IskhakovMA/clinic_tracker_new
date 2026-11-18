@@ -35,6 +35,8 @@ def test_explicit_v29_migration_requires_operator_and_preserves_medical_data(dat
     c.execute("INSERT INTO history_entries (id,patient_id,seq,stage,entered_at,note) VALUES ('v29-history','v29-patient',0,'exam','2026-01-01','synthetic history marker')")
     c.execute("INSERT INTO events (id,history_entry_id,seq,date) VALUES ('v29-event','v29-history',0,'2026-01-02')")
     expected={table:[tuple(row) for row in c.execute('SELECT * FROM '+table+' ORDER BY id')] for table in ('patients','history_entries','events')}
+    from .conftest import strip_gq_v33
+    strip_gq_v33(c)
     # Remove only v31 technical storage when reconstructing the historical v29 fixture.
     from backend.app.mfa_lifecycle_schema import TABLES as LIFECYCLE_TABLES
     for table in reversed(LIFECYCLE_TABLES):

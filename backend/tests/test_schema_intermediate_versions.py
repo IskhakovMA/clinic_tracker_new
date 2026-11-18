@@ -202,6 +202,8 @@ def test_v4_v5_branches_keep_revision_notification_type(client, tmp_path, old_ve
     path = tmp_path / f"v{old_version}.sqlite"
     conn = connect_readonly_check(path)
     init_db(conn)
+    from .conftest import strip_gq_v33
+    strip_gq_v33(conn)  # This intentionally relabelled v4/v5 fixture predates GQ.
     conn.execute("UPDATE schema_version SET version = ?", (old_version,))
     conn.commit()
     init_db(conn)

@@ -636,7 +636,7 @@ def test_migration_v23_to_v24_keeps_every_clinical_row_and_is_idempotent(client,
     before = {t: pre_v28_rows(conn, t) for t in CLINICAL}
     db.init_db(conn)
     # WP2.4-C/D: цепочка доводит v23 до текущей схемы (v26), а не только до v24.
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 32   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == config.SCHEMA_VERSION == 33   # WP-C: v28 (история фактов, защита истории); combined-preaudit: v27 — мобильный доступ пациента
     for table in CLINICAL:
         assert pre_v28_rows(conn, table) == before[table], table
     assert conn.execute("SELECT COUNT(*) FROM idempotency_keys").fetchone()[0] == 0
@@ -661,7 +661,7 @@ def test_restore_of_a_v23_backup_migrates_to_v24(auth_client, tmp_path, backup_k
         maintenance.restore_database(backup, live, confirm_offline=True)
     assert maintenance.check_database(live)["ok"]
     conn = sqlite3.connect(str(live))
-    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 32   # WP-E FIX1: v29; WP-C: v28 (история фактов, защита истории); combined-preaudit (v27); WP2.4-C/D: текущая схема
+    assert conn.execute("SELECT version FROM schema_version").fetchone()[0] == 33   # WP-E FIX1: v29; WP-C: v28 (история фактов, защита истории); combined-preaudit (v27); WP2.4-C/D: текущая схема
     assert sorted(r[0] for r in conn.execute("SELECT creation_source FROM patients")) == (
         ["form", "import"] + ["legacy"] * 7 + ["migration"])
     assert conn.execute("SELECT COUNT(*) FROM oncology_consilium_appointments WHERE status = 'signed'").fetchone()[0] == 1

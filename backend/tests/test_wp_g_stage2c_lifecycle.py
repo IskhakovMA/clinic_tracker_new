@@ -453,6 +453,8 @@ def test_explicit_v31_to_v32_migration_preserves_clinical_and_offline_admission(
     c.execute("INSERT INTO events(id,history_entry_id,seq,date) VALUES('stage2c-e','stage2c-h',0,'2026-01-01')")
     before={t:[tuple(r) for r in c.execute('SELECT * FROM '+t)] for t in ('patients','history_entries','events','audit_events')}
     for table in reversed(TABLES):c.execute('DROP TABLE '+table)
+    from .conftest import strip_gq_v33
+    strip_gq_v33(c)
     c.execute('UPDATE schema_version SET version=31');c.commit();c.close()
     assert maintenance.identify_backup_build(config.DB_PATH,31)=='wpg2b-be4adab'
     assert _cli(data_dir,'verify-db','--confirm-offline').returncode==1
@@ -462,7 +464,7 @@ def test_explicit_v31_to_v32_migration_preserves_clinical_and_offline_admission(
     assert _cli(data_dir,'verify-db','--confirm-offline').returncode==0
     c=db.connect_live(config.DB_PATH)
     try:
-        assert c.execute('SELECT version FROM schema_version').fetchone()[0]==config.SCHEMA_VERSION==32
+        assert c.execute('SELECT version FROM schema_version').fetchone()[0]==config.SCHEMA_VERSION== 33
         for t,rows in before.items():
             # CLI adds its own maintenance audit, never edits any previous record.
             current=[tuple(r) for r in c.execute('SELECT * FROM '+t)]

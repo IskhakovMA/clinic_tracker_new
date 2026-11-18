@@ -64,6 +64,8 @@ def test_v9_database_migrates_to_portal_access(tmp_path):
     db_path = tmp_path / "v9.db"
     conn = _connect(db_path)
     init_db(conn)
+    from .conftest import strip_gq_v33
+    strip_gq_v33(conn)  # Synthetic v9 has no v33 revision state.
     conn.execute("UPDATE schema_version SET version = 9")
     conn.execute("DROP TABLE patient_portal_access")
     conn.execute(
@@ -675,6 +677,7 @@ def test_existing_v10_database_gains_the_collation(tmp_path):
     init_db(conn)
     from .conftest import strip_v28
     strip_v28(conn)   # WP-C: объектов v28 в ранней сборке v10 не было
+    conn.execute("UPDATE schema_version SET version = 32")  # Reconstruct the pre-M1 technical base.
     conn.commit()
     # Воспроизводим раннюю схему v10 — UNIQUE без коллации. Триггера пометки
     # (v27, ссылается на таблицу) в ранней сборке не было.

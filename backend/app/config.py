@@ -150,7 +150,7 @@ MAX_HISTORY_ENTRIES_PER_PATIENT = 200
 # v29: WP-E FIX1 — original event instant for verified reminders, no historical backfill.
 # v31: technical MFA core; no production activation or WP-F v1 change.
 # v32: additive enrollment/recovery/notice storage, authority disabled.
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 # Импорт принимает и прежние выгрузки (v0/v1) — формат обратно совместим.
 IMPORT_ACCEPTED_SCHEMA_VERSIONS = tuple(range(0, SCHEMA_VERSION + 1))
 
