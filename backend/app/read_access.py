@@ -101,12 +101,12 @@ def _persist(state, route, raw, params, denied):
     encoded_size = len(encoded.encode('utf-8'))
     response_sha256 = hashlib.sha256(raw).hexdigest()
     if quality_check is not None:
-        # Prove membership of the actual audited objects outside the write lock.
-        # The policy projection is unchanged at release if its GQ stamp and
-        # the freshly loaded access context still match the snapshot.
+        # Match the complete manifest outside the write lock. The prepared
+        # response supplies the technical IDs and the snapshot supplies patient
+        # contributors to the whole-scope aggregates.
         quality_manifest_valid = (
             not state.export_recorded and response_sha256 == quality_check.response_sha256
-            and {o['id'] for o in objects if o['type'] == 'patient'} == quality_check.patients
+            and {(obj['type'], obj['id']) for obj in objects} == quality_check.audited_objects
         )
     with closing(db.connect_live(config.DB_PATH)) as conn:
         version = None
