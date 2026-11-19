@@ -258,15 +258,26 @@ def test_whole_input_change_after_serialization_refuses(lab, monkeypatch, mutati
 
 @pytest.mark.parametrize('commit', [True, False])
 def test_same_connection_data_version_covers_validation_lock_gap(lab, monkeypatch, commit):
-    qp = lab['qp']; original = qp.validate_release
-    def validated(conn, user, check):
-        result = original(conn, user, check)
-        _other_write('UPDATE patients SET name=? WHERE id=?', ('Gap synthetic', lab['ids'][-1]), commit=commit)
-        return result
-    monkeypatch.setattr(qp, 'validate_release', validated)
+    from backend.app import read_access
+
+    # Keep the original ID. The Quality fence now compares GQ after acquiring
+    # the lock. Inject the write after the release connection opens.
+    original = read_access.closing
+    writes = []
+
+    def before_lock(conn):
+        _other_write('UPDATE patients SET name=? WHERE id=?',
+                     ('Gap synthetic', lab['ids'][-1]), commit=commit)
+        writes.append(commit)
+        return original(conn)
+
+    monkeypatch.setattr(read_access, 'closing', before_lock)
     r = lab['get']('&limit=1')
+    assert writes == [commit]
     assert r.status_code == (409 if commit else 200), r.text
-    if commit:assert r.json()['code'] == 'PATIENT_QUERY_CHANGED'; _safe(r)
+    if commit:
+        assert r.json()['code'] == 'PATIENT_QUERY_CHANGED'
+        _safe(r)
 
 
 @pytest.mark.parametrize('mutation', ['revoke_session', 'role', 'department'])
@@ -288,8 +299,9 @@ def test_auth_access_refusal_precedes_ordinary_query_change(lab, monkeypatch, mu
     _safe(r)
 
 
-@pytest.mark.parametrize('fault', ['event', 'manifest'])
+@pytest.mark.parametrize('fault', ['event', 'manifest', 'missing_manifest_row', 'missing_audit_row'])
 def test_audit_failure_rolls_back_and_releases_no_body(lab, monkeypatch, fault):
+    from types import SimpleNamespace
     from backend.app import audit, db, read_access
     before = _count(); manifests = get_conn().execute('SELECT COUNT(*) FROM read_access_manifests').fetchone()[0]
     if fault == 'event':
@@ -302,7 +314,13 @@ def test_audit_failure_rolls_back_and_releases_no_body(lab, monkeypatch, fault):
         original = db._connect
         class Broken(db._ClinicConnection):
             def execute(self, sql, *a, **kw):
-                if sql.startswith('INSERT INTO read_access_manifests'):raise __import__('sqlite3').OperationalError('synthetic manifest failure')
+                if fault == 'missing_audit_row' and sql == 'SELECT last_insert_rowid(), changes()':
+                    return SimpleNamespace(fetchone=lambda: (0, 0))
+                if sql.startswith('INSERT INTO read_access_manifests'):
+                    if fault == 'missing_manifest_row':
+                        return SimpleNamespace(rowcount=0)
+                    if fault == 'manifest':
+                        raise __import__('sqlite3').OperationalError('synthetic manifest failure')
                 return super().execute(sql, *a, **kw)
         def connect(*a, **kw):kw['factory'] = Broken;return original(*a, **kw)
         monkeypatch.setattr(db, '_connect', connect)
@@ -349,27 +367,35 @@ def test_no_expensive_validation_under_write_lock(lab, monkeypatch):
         return previous(conn, user, binding)
     monkeypatch.setattr(qp, '_input', measured)
     assert lab['get']('&limit=1').status_code == 200
-    assert observed == [True, True]
+    assert observed == [True]
 
 
 def test_two_concurrent_releases_cover_audit_only_commits(lab, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
-    import threading
+    from threading import Barrier
     from backend.app import read_access
-    qp = lab['qp']; old = qp.validate_release; barrier = threading.Barrier(2)
-    def together(*a, **kw):
-        result = old(*a, **kw)
-        barrier.wait(timeout=10)
-        return result
-    monkeypatch.setattr(qp, 'validate_release', together)
+
+    original = read_access._persist
+    barrier = Barrier(2)
+
+    def together(state, route, raw, params, denied):
+        if not denied and route.endswith('/_a1-lab'):
+            barrier.wait(timeout=10)
+        return original(state, route, raw, params, denied)
+
+    monkeypatch.setattr(read_access, '_persist', together)
     before = _count()
     with ThreadPoolExecutor(max_workers=2) as pool:
         responses = list(pool.map(lambda _: lab['get']('&limit=1'), range(2)))
-    assert sorted(r.status_code for r in responses) == [200, 409]
-    assert _count() == before+1
-    refused = next(r for r in responses if r.status_code == 409)
-    assert refused.json()['code'] == 'PATIENT_QUERY_CHANGED'
-    _safe(refused)
+
+    assert [r.status_code for r in responses] == [200, 200]
+    assert _count() == before + 2
+    hashes = {hashlib.sha256(r.content).hexdigest() for r in responses}
+    manifests = get_conn().execute(
+        'SELECT snapshot_sha256 FROM read_access_manifests ORDER BY audit_event_id DESC LIMIT 2'
+    ).fetchall()
+    assert len(manifests) == 2
+    assert {row[0] for row in manifests} == hashes
 
 
 @pytest.mark.parametrize('model,payload', [

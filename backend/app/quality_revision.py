@@ -1,4 +1,4 @@
-"""GQ-M1 schema only. Quality release still uses the unchanged v1 guard.
+"""Transactional revision state for the inputs to Quality.
 
 Every source hook and the counter update share the caller's SQLite transaction.
 No clock, session, audit, queue or process-local variable substitutes for this
@@ -122,14 +122,14 @@ def require_valid(conn: sqlite3.Connection, *, structure: bool = False) -> Revis
     """Read-only fail-closed validation. Never seed, repair or reset metadata."""
     try:
         if structure:
-            row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone()
+            row = conn.execute("SELECT sql FROM main.sqlite_master WHERE type='table' AND name=?", (TABLE,)).fetchone()
             if row is None or _normalize_sql(row[0]) != _reference_table_sql():
                 raise QualityRevisionError()
-        actual = dict(conn.execute("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name GLOB 'trg_gq_*'").fetchall())
+        actual = dict(conn.execute("SELECT name,sql FROM main.sqlite_master WHERE type='trigger' AND name GLOB 'trg_gq_*'").fetchall())
         for name, sql in trigger_definitions():
             if name not in actual or _normalize_sql(actual[name]) != _normalize_sql(sql):
                 raise QualityRevisionError()
-        rows = conn.execute('SELECT singleton,layout_version,incarnation,revision FROM quality_revision_state LIMIT 2').fetchall()
+        rows = conn.execute('SELECT singleton,layout_version,incarnation,revision FROM main.quality_revision_state LIMIT 2').fetchall()
         if len(rows) != 1:
             raise QualityRevisionError()
         key, layout, incarnation, revision = rows[0]
