@@ -1,4 +1,4 @@
-"""Strict wire shapes for Quality v1. No A2 selectors or public activation."""
+"""Strict wire shapes for Quality v1."""
 from __future__ import annotations
 
 from typing import Annotated, Generic, Literal, TypeVar, Union, get_args, get_origin
@@ -197,8 +197,8 @@ class GroupRow(StrictDTO):
     group_id: Digest
     reason_codes: Annotated[list[Literal['policy', 'phone', 'name_age', 'name_diagnosis', 'name_nosology']], Field(min_length=1, max_length=5)]
     reason: Annotated[str, Field(max_length=2048)]
-    member_total: Annotated[int, Field(ge=2)]
-    matching_member_total: Annotated[int, Field(ge=1)]
+    member_total: Annotated[Count, Field(ge=2)]
+    matching_member_total: Annotated[Count, Field(ge=1)]
     manual_review_required: Literal[True]
 
     @model_validator(mode='after')

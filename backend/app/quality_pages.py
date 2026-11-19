@@ -1,4 +1,4 @@
-"""Quality v1 server foundation. Public reads remain unavailable until A2.
+"""Internal Quality v1 read preparation. Public mode remains closed.
 
 No environment switch, UI flag or query parameter can activate an incomplete
 response. prepare() is an internal building block, not a public route provider.
@@ -6,14 +6,17 @@ response. prepare() is an internal building block, not a public route provider.
 from __future__ import annotations
 
 import base64
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from functools import cached_property
 import hashlib
 import hmac
 import json
 import re
 import secrets
 import sqlite3
+from types import MappingProxyType
 from typing import Callable
 from urllib.parse import unquote_to_bytes
 
@@ -180,8 +183,8 @@ def normalize(request: Request) -> Normalized:
 
 def reject_public_mode(request: Request) -> None:
     normalize(request)
-    # Deliberate unconditional fail-closed. A2 must replace this in a reviewed
-    # code change; there is no runtime activation flag or test-only bypass.
+    # Deliberate unconditional fail-closed. Public activation requires a
+    # reviewed code change. There is no runtime switch.
     error('QUALITY_NOT_AVAILABLE', 503)
 
 
@@ -259,12 +262,21 @@ def _check_claims(claims: dict, binding: str, query: str):
 
 
 @dataclass(frozen=True)
+class DepartmentLink:
+    department_id: str
+    display_name: str
+
+
+@dataclass(frozen=True)
 class QualityInput:
     revision: str
     patients: tuple[str, ...]
     doctors: frozenset[str]
     departments: frozenset[str]
     day: str
+    doctor_by_patient: Mapping[str, str | None]
+    doctor_names: Mapping[str, str]
+    departments_by_doctor: Mapping[str, tuple[DepartmentLink, ...]]
 
 
 def _input(conn: sqlite3.Connection, user, binding: str) -> QualityInput:
@@ -274,7 +286,10 @@ def _input(conn: sqlite3.Connection, user, binding: str) -> QualityInput:
     release record. SQL expressions are generated exclusively by server policy.
     """
     cond, args = policy.patient_scope_filter(user)
-    patients, doctors, departments = [], set(), set()
+    doctor_by_patient: dict[str, str | None] = {}
+    doctor_names: dict[str, str] = {}
+    departments: set[str] = set()
+    departments_by_doctor: dict[str, list[DepartmentLink]] = {}
     digest = hmac.new(_KEY, b'clinic:quality-v1:revision\0', hashlib.sha256)
     def record(kind, value):
         raw = _canonical({'kind': kind, 'value': value})
@@ -288,7 +303,8 @@ def _input(conn: sqlite3.Connection, user, binding: str) -> QualityInput:
                            priority,arrival,head,doctor,treating_doctor_user_id,version
                            FROM patients WHERE '''+cond+' ORDER BY patients.id', args)  # nosec B608 - policy-only expression
     for row in rows:
-        patients.append(row['id']); record('patient', dict(row))
+        doctor_by_patient[row['id']] = row['treating_doctor_user_id']
+        record('patient', dict(row))
     rows = conn.execute('''SELECT h.id,h.patient_id,h.seq,h.stage,h.entered_at,h.checklist_json
         FROM history_entries h JOIN patients ON patients.id=h.patient_id WHERE '''+cond+' ORDER BY h.id', args)  # nosec B608 - policy-only expression
     for row in rows:
@@ -302,14 +318,24 @@ def _input(conn: sqlite3.Connection, user, binding: str) -> QualityInput:
     related = 'SELECT DISTINCT treating_doctor_user_id FROM patients WHERE '+cond
     rows = conn.execute('SELECT id,full_name,role_id,status FROM users WHERE id IN ('+related+') ORDER BY id', args)  # nosec B608 - policy-only expression
     for row in rows:
-        doctors.add(row['id']); record('doctor', dict(row))
+        doctor_names[row['id']] = row['full_name']
+        record('doctor', dict(row))
     rows = conn.execute('''SELECT ud.user_id,ud.department_id,d.name,d.status FROM user_departments ud
         JOIN departments d ON d.id=ud.department_id WHERE ud.user_id IN ('''+related+') ORDER BY ud.user_id,ud.department_id', args)  # nosec B608 - policy-only expression
     for row in rows:
         if row['status'] == 'active':
-            departments.add(row['department_id'])
+            department_id = row['department_id']
+            departments.add(department_id)
+            departments_by_doctor.setdefault(row['user_id'], []).append(
+                DepartmentLink(department_id, row['name'])
+            )
         record('department_link', dict(row))
-    return QualityInput(digest.hexdigest(), tuple(patients), frozenset(doctors), frozenset(departments), day)
+    return QualityInput(
+        digest.hexdigest(), tuple(doctor_by_patient), frozenset(doctor_names),
+        frozenset(departments), day, MappingProxyType(doctor_by_patient),
+        MappingProxyType(doctor_names),
+        MappingProxyType({doctor: tuple(links) for doctor, links in departments_by_doctor.items()}),
+    )
 
 
 @dataclass(frozen=True)
@@ -319,7 +345,7 @@ class QualityScopedRelease:
     day: str
     issued_at: int
     expires_at: int
-    patients: frozenset[str]
+    audited_objects: frozenset[tuple[str, str]]
     response_sha256: str
 
 
@@ -350,10 +376,19 @@ class QualityContext:
         return _mac('group', _canonical({'binding': self.root['b'], 'members': sorted(source_group['patient_ids']),
                                         'reasons': source_group['reason_codes']}))
 
+    @cached_property
+    def source_groups(self) -> Mapping[str, dict]:
+        return MappingProxyType({
+            self.group_id(group): group for group in self.quality['duplicate_groups']
+        })
+
+    def finding_key(self, finding: dict) -> str:
+        return _mac('finding', _canonical({'binding': self.root['b'], 'finding': finding}))
+
 
 @clock.consistent
 def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callable[[QualityContext], dict]) -> Response:
-    """Internal A1 integration seam. A2 must supply reviewed complete builders.
+    """Build a response with a trusted internal projection.
 
     There is intentionally no production route that accepts a builder/provider.
     All synthetic HTTP adapters live in tests or external evidence tooling.
@@ -386,7 +421,7 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
             revision = _mac('root-revision', _canonical((q, source.revision)))
             if root is not None and not hmac.compare_digest(revision, root['r']):
                 error('PATIENT_QUERY_CHANGED', 409)
-            if parsed.selector.owner_patient_id is not None and parsed.selector.owner_patient_id not in source.patients:
+            if parsed.selector.owner_patient_id is not None and parsed.selector.owner_patient_id not in source.doctor_by_patient:
                 raise HTTPException(404, 'Not found')
             quality = data_quality.evaluate(conn, reader, identity_signals=True)
             if root is None:
@@ -395,7 +430,7 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
                         'b': binding, 'iat': issued, 'exp': issued+ROOT_TTL}
             context = QualityContext(parsed, source, quality, root, parsed.snapshot or _seal(root, 'snapshot'),
                                      cursor['o'] if cursor else 0, clock.current_moscow().isoformat())
-            groups = {context.group_id(group): group for group in quality['duplicate_groups']}
+            groups = context.source_groups
             if parsed.selector.group_id is not None and parsed.selector.group_id not in groups:
                 raise HTTPException(404, 'Not found')
             supplied = builder(context)
@@ -406,7 +441,7 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
                 error('QUALITY_READ_UNAVAILABLE', 503)
             model = _ADAPTER.validate_python({**supplied, **common}, strict=True)
             payload = model.model_dump(mode='json')
-            _validate_source_response(payload, context, groups)
+            audited_objects = _validate_source_response(payload, context, groups)
             raw = _canonical(payload)
             if len(raw) > MAX_BODY_BYTES:
                 error('QUALITY_READ_UNAVAILABLE', 503)
@@ -415,7 +450,7 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
             # Only technical IDs/digests retained until the coordinator commits.
             request_security.aggregate_patients(source.patients, resources=('/api/data-quality/',))
             state.scoped_release = QualityScopedRelease(
-                binding, gq, source.day, root['iat'], root['exp'], frozenset(source.patients),
+                binding, gq, source.day, root['iat'], root['exp'], audited_objects,
                 hashlib.sha256(raw).hexdigest(),
             )
         return Response(raw, media_type='application/json')
@@ -426,22 +461,46 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
 
 def _validate_source_response(payload, context, groups):
     from .read_access import manifest
+    selector = context.parsed.selector
+    allowed_selection = {
+        'group_id': selector.group_id, 'facet': selector.facet,
+        'owner_patient_id': selector.owner_patient_id,
+    }
+    if payload['view'] != 'page' and payload['selection'] != allowed_selection:
+        error('QUALITY_READ_UNAVAILABLE', 503)
+    allowed_by_kind = {
+        'patient': context.source.doctor_by_patient,
+        'user': context.source.doctors,
+        'department_id': context.source.departments,
+        'group_id': groups,
+        'owner_patient_id': {selector.owner_patient_id},
+    }
+    objects = {('patient', identity) for identity in context.source.patients}
     for obj in manifest(payload):
-        permitted = {'patient': context.source.patients, 'user': context.source.doctors,
-                     'department_id': context.source.departments, 'group_id': groups}.get(obj['type'])
-        if permitted is not None and obj['id'] not in permitted:
+        kind, identity = obj['type'], obj['id']
+        if kind not in allowed_by_kind or identity not in allowed_by_kind[kind]:
             error('QUALITY_READ_UNAVAILABLE', 503)
+        objects.add((kind, identity))
     totals = payload['totals']; summary = payload['scope_summary']
     if totals['patients'] > summary['total_patients'] or totals['findings'] > summary['total_issues'] or totals['duplicate_groups'] > summary['possible_duplicate_groups']:
         error('QUALITY_READ_UNAVAILABLE', 503)
     if payload['view'] == 'page':
         if payload['patients']['page']['total'] != totals['patients'] or payload['duplicate_groups']['page']['total'] != totals['duplicate_groups']:
             error('QUALITY_READ_UNAVAILABLE', 503)
-    if payload['view'] == 'patient_issues' and (payload['patient']['patient_id'] != context.parsed.selector.owner_patient_id or payload['collection']['page']['total'] != payload['patient']['issue_count']):
+    if payload['view'] == 'patient_issues' and (
+        payload['patient']['patient_id'] != selector.owner_patient_id
+        or payload['collection']['page']['total'] != payload['patient']['issue_count']
+        or any(finding['patient_id'] != selector.owner_patient_id for finding in payload['collection']['items'])
+    ):
         error('QUALITY_READ_UNAVAILABLE', 503)
-    if payload['view'] == 'members' and (payload['group']['group_id'] != context.parsed.selector.group_id or payload['collection']['page']['total'] != payload['group']['member_total']):
-        error('QUALITY_READ_UNAVAILABLE', 503)
-    # A1 validates group source membership/semantics, not A2 selection/paging.
+    if payload['view'] == 'members':
+        members = set(groups[selector.group_id]['patient_ids'])
+        if (payload['group']['group_id'] != selector.group_id
+            or payload['collection']['page']['total'] != len(members)
+            or any(item['patient_id'] not in members for item in payload['collection']['items'])
+        ):
+            error('QUALITY_READ_UNAVAILABLE', 503)
+    # Compare group metadata to the evaluator's unmodified source groups.
     def walk(value):
         if isinstance(value, dict):
             if 'group_id' in value and 'member_total' in value:
@@ -454,6 +513,7 @@ def _validate_source_response(payload, context, groups):
             for item in value:
                 walk(item)
     walk(payload)
+    return frozenset(objects)
 
 
 def validate_admission(conn, user, state, check: QualityScopedRelease):
