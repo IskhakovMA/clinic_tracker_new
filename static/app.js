@@ -169,9 +169,12 @@ async function apiFetch(path, options) {
         if (!response.ok) {
             let data = null;
             try { data = await response.json();if(data?.detail?.code)data=data.detail; } catch (e) { /* ответ без JSON */ }
+            if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
+                const error = new Error(apiErrorMessage(401)); error.status = 401; error.obsolete = true; throw error;
+            }
             if (response.status === 401 && !authRequest) app.expireSession();
             if (data && data.code === 'SESSION_IDENTITY_CHANGED') app.discardSessionAndReload();
-            if (data && data.code === 'ACCESS_CONTEXT_CHANGED') app.expireSession();
+            if (data && data.code === 'ACCESS_CONTEXT_CHANGED') app.expireSession(true);
             const err = new Error(apiErrorMessage(response.status, data, path));
             err.status = response.status;
             if (data && data.code === 'SESSION_IDENTITY_CHANGED') err.obsolete = true;
@@ -2175,6 +2178,13 @@ const app = {
         if(this.ai?.request){const active=view==='patient'?this.currentPatientId:null;if(active!==this.ai.request.active){this.cancelAIRequest();this.ai.messages=[];this.ai.references=[];this.ai.lastError='Контекст экрана изменился. Предыдущий ответ не используется; запрос не повторяется автоматически.';this.renderAIDrawer();}}
         const previousView = this.currentView;
         this.currentView = view;
+        if (this.qualityV1 && previousView !== view) {
+            if (previousView === 'quality') this.qualityV1.workspace.clear(false);
+            if (previousView === 'patient') {
+                this.qualityV1.card?.clear(true);
+                this.qualityV1.card = null;
+            }
+        }
         for (const section of document.querySelectorAll('.view')) {
             section.classList.toggle('is-hidden', section.id !== `view-${view}`);
         }
@@ -2248,7 +2258,8 @@ const app = {
 
     /* ------------------------------------------------------------ Авторизация */
 
-    expireSession() {
+    expireSession(accessChanged = false) {
+        this.clearQualityV1(accessChanged);
         if (this.sessionExpired || !this.user) return;
         this.sessionExpired = true;
         this.sessionEpoch = (this.sessionEpoch || 0) + 1;
@@ -2283,6 +2294,7 @@ const app = {
     },
 
     discardSessionAndReload() {
+        this.clearQualityV1(true);
         document.body.classList.add('session-locked');
         this.sessionExpired = true;
         this.sessionEpoch = (this.sessionEpoch || 0) + 1;
@@ -2293,11 +2305,15 @@ const app = {
     async checkSessionIdentity(epoch) {
         let me;
         try { me = await this.serverIdentity(); }
-        catch (error) { this.expireSession(); throw error; }
+        catch (error) {
+            if (epoch !== (this.sessionEpoch || 0)) return false;
+            this.expireSession();
+            throw error;
+        }
         if (epoch !== (this.sessionEpoch || 0)) return false;
         if (!me.authenticated) { this.expireSession(); return false; }
         if (me.user.id !== this.user.id) { this.discardSessionAndReload(); return false; }
-        if (this.accessSignature(me.user) !== this.accessSignature(this.user)) { this.expireSession(); return false; }
+        if (this.accessSignature(me.user) !== this.accessSignature(this.user)) { this.expireSession(true); return false; }
         return !this.sessionExpired;
     },
 
@@ -2334,6 +2350,11 @@ const app = {
         if (this.sessionEpoch !== rebuiltEpoch || this.sessionExpired) return;
         this.sessionReconciling = false;
         document.body.classList.remove('session-locked');
+        if (this.qualityV1) {
+            if (this.currentView === 'patient') this.renderPatientQualityBlock(this.currentPatientId);
+            else if (this.qualityV1.reopenWorkspace) this.showView('quality');
+            this.qualityV1.reopenWorkspace = false;
+        }
         $('loginScreen').classList.add('is-hidden');
         $('appScreen').classList.remove('is-hidden');
         ui.toast('Доступ проверен. Проверьте черновик и сохраните самостоятельно.', 'warning');
@@ -2342,6 +2363,13 @@ const app = {
     rebuildAuthorizedWorkspace(user, fresh, allowed, doctors, page, heads, listSettings) {
         const drafts = this.collectSessionFieldDrafts(user, fresh, allowed);
         const sameOwner=this.user?.id===user.id;
+        const sameQualityAccess = sameOwner && this.accessSignature(this.user) === this.accessSignature(user);
+        const qualitySetup = this.qualityV1 && {
+            endpoint: this.qualityV1.endpoint,
+            filters: sameQualityAccess ? {...this.qualityV1.workspace.filters} : {},
+            facets: sameQualityAccess ? new Map(this.qualityV1.workspace.selectedFacets) : new Map(),
+            reopenWorkspace: this.currentView === 'quality' && user.roleId !== 'consilium_chair',
+        };
         const notificationInputs={owner:user.id,patientId:this.currentPatientId,patient:sameOwner&&allowed.has(this.currentPatientId)&&user.permissions.editPatients?this.notificationInputSnapshot('patient'):[],outbound:sameOwner&&user.permissions.manageNotificationTemplates?this.notificationInputSnapshot('outbound'):[]};
         const createDraft = !$('addModal').hidden && user.permissions.createPatients
             ? [...$('addForm').querySelectorAll('input, select, textarea')].map(node => [node.id, node.value, node.checked]) : null;
@@ -2365,6 +2393,10 @@ const app = {
         document.body.replaceChildren(...pristineWorkspace.map(node => node.cloneNode(true)));
         for (const [key, value] of Object.entries(this)) if (typeof value !== 'function') delete this[key];
         Object.assign(this, structuredClone(pristineAppState), {user, sessionEpoch: epoch, sessionReconciling: true});
+        if (qualitySetup) {
+            this.mountQualityV1(qualitySetup.endpoint, qualitySetup.filters, qualitySetup.facets);
+            this.qualityV1.reopenWorkspace = qualitySetup.reopenWorkspace;
+        }
         this.notificationReauthDraft={...notificationInputs,epoch};
         this.bindStaticControls();
         this.patientRows = page.patients; this.patientPage = page;
@@ -3619,6 +3651,7 @@ const app = {
                     if (tab.key === 'overview') {
                         this.renderPatientAttentionBlock(this.currentPatientId);
                         this.renderPatientPortalAccessBlock(this.currentPatientId);
+                        if (this.qualityV1) this.renderPatientQualityBlock(this.currentPatientId);
                     }
                     if (tab.key === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
                 },
@@ -4718,10 +4751,108 @@ const app = {
         this.qualitySearchTimer = setTimeout(() => this.renderDataQuality(), this.quality.filters.query ? 300 : 0);
     },
 
+    // The bounded component is dormant in the normal bootstrap. A trusted
+    // embedding can mount it without changing the server's public admission.
+    mountQualityV1(endpoint, filters = {}, selectedFacets = new Map()) {
+        if (typeof endpoint !== 'string' || !/^\/api\/[a-zA-Z0-9_/-]+$/.test(endpoint)) throw new Error('Invalid Quality endpoint');
+        this.clearQualityV1(true);
+        clearTimeout(this.qualitySearchTimer);
+        this.qualityRequest = (this.qualityRequest || 0) + 1;
+        Object.assign(this.quality, {summary: null, issues: [], patients: [], duplicateGroups: []});
+        for (const id of ['qualityStatsRow', 'qualityBody', 'qualityDuplicatesPanel']) $(id).replaceChildren();
+        const host = $('qualityV1Workspace');
+        for (const element of host.parentElement.children) {
+            if (element !== host) element.classList.add('is-hidden');
+        }
+        host.hidden = false;
+        const config = {
+            context: () => this.user && !this.sessionExpired && !this.sessionReconciling
+                ? JSON.stringify([this.user.id, this.accessSignature(this.user), this.sessionEpoch || 0])
+                : null,
+            visible: owner => owner ? this.currentView === 'patient' && this.currentPatientId === owner
+                : this.currentView === 'quality' && this.user?.roleId !== 'consilium_chair',
+            read: request => apiFetch(...ClinicQualityV1.requestPath(endpoint, request)),
+            onAccessLost: (error, owner) => {
+                this.clearQualityV1(true);
+                if (error?.status === 401 || error?.data?.code === 'ACCESS_CONTEXT_CHANGED') {
+                    this.expireSession(true);
+                } else if (owner && error?.status === 403) {
+                    this.forgetDeniedPatient(owner);
+                }
+            },
+            onOwnerUnavailable: owner => {
+                this.clearQualityV1(false);
+                this.forgetDeniedPatient(owner);
+            },
+            navigate: (id, tab, current, action) => this.openQualityV1Target(id, tab, current, action),
+            categories: this.QUALITY_CATEGORY_LABELS,
+            codes: this.QUALITY_CODE_LABELS,
+        };
+        const workspace = new ClinicQualityV1.Panel(host, config);
+        workspace.filters = {...filters};
+        workspace.selectedFacets = new Map(selectedFacets);
+        this.qualityV1 = {endpoint, config, workspace, card: null};
+        if (this.currentView === 'quality' && config.context()) void workspace.start();
+    },
+
+    clearQualityV1(forget) {
+        if (!this.qualityV1) return;
+        this.qualityV1.workspace.clear(forget);
+        this.qualityV1.card?.clear(true);
+    },
+
+    async openQualityV1Target(id, tab, scopeCurrent, action) {
+        const allowed = () => scopeCurrent() && (!action || (action.can_write &&
+            (tab === 'structure'
+                ? action.workflow === 'unresolved_treating_doctor' && this.can('manageDepartments')
+                : this.can('editPatients'))));
+        if (!allowed()) return false;
+        const ticket = this.beginRead('patient-detail');
+        const current = () => allowed() && this.isCurrentRead('patient-detail', ticket);
+        if (!await this.confirmClinicalNavigation() || !current()) return false;
+        try {
+            const patient = await apiGetJson('/api/patients/' + encodeURIComponent(id));
+            if (!current()) return false;
+            if (patient?.id !== id) throw new Error('Invalid patient response');
+            if (this.clinicalWriteInFlight || this.dirtyClinicalControls().length) {
+                ui.toast('Во время загрузки появился несохраненный ввод. Переход отменен.', 'warning');
+                return false;
+            }
+            if (tab === 'structure') {
+                this.showView('structure');
+                const heading = $('view-structure').querySelector('h1');
+                if (heading) { heading.tabIndex = -1; heading.focus({preventScroll: true}); }
+                return true;
+            }
+            this.patientDetails = new Map([[id, patient]]);
+            this.currentPatientId = id;
+            this.currentTab = tab || 'overview';
+            this.showView('patient');
+            this.renderPatientView();
+            const target = $('crumbPatientName');
+            target.tabIndex = -1;
+            target.focus({preventScroll: true});
+            return true;
+        } catch (error) {
+            if (current()) {
+                if ([403, 404].includes(error.status)) {
+                    this.clearQualityV1(error.status === 403);
+                    this.forgetDeniedPatient(id);
+                    if (this.currentView === 'quality') {
+                        this.qualityV1.workspace.publish({state: 'error', key: 'patients', error});
+                    }
+                }
+                ui.toast('Карточка недоступна.', 'warning');
+            }
+            return false;
+        }
+    },
+
     async loadDataQuality(requestId = this.qualityRequest) {
         const search = this.quality.filters.query;
         const query = this.qualityParams();
         const summary = await apiGetJson('/api/data-quality/summary');
+        if (requestId !== this.qualityRequest || this.qualityV1) return false;
         const issues = await apiFetch(`/api/data-quality/issues?${query}`, { headers: searchHeaders(search) });
         if (requestId !== this.qualityRequest) return false;
         this.quality.summary = summary;
@@ -4733,6 +4864,7 @@ const app = {
     },
 
     async renderDataQuality() {
+        if (this.qualityV1) return this.qualityV1.workspace.start();
         clearTimeout(this.qualitySearchTimer);
         const requestId = this.qualityRequest = (this.qualityRequest || 0) + 1;
         this.updateQualityFiltersButton();
@@ -4905,6 +5037,12 @@ const app = {
     async renderPatientQualityBlock(patientId) {
         const box = $('patientQualityBlock');
         if (!box) return;
+        if (this.qualityV1) {
+            this.qualityV1.card?.clear(true);
+            const card = new ClinicQualityV1.Panel(box, this.qualityV1.config, patientId);
+            this.qualityV1.card = card;
+            return card.start();
+        }
         box.replaceChildren(frag([
             el('h2', { class: 'section-title', text: 'Качество данных' }),
             el('div', { class: 'empty', text: 'Загрузка…' }),
@@ -7024,14 +7162,7 @@ const app = {
         } catch (error) {
             if (this.user?.id !== owner || this.sessionEpoch !== epoch || this.sessionExpired || !node.isConnected) return;
             if ([403,404].includes(error.status)) {
-                // Object access can change without a role/access-context change.
-                this.patientDetails.delete(patientId);
-                for (const [key,draft] of this.sessionFieldDrafts) if (draft.patientId === patientId) this.sessionFieldDrafts.delete(key);
-                for (const id of ['patientPanels','patientSide','patientRoute','patientFacts']) $(id).replaceChildren();
-                this.currentPatientId = null;
-                this.renderSessionFieldDrafts();
-                this.showView('patients');
-                void this.reloadPatientsAndRender();
+                this.forgetDeniedPatient(patientId);
                 return;
             }
             c.error = error.status || 'unknown';
@@ -7049,6 +7180,26 @@ const app = {
             if (c.blocked) field.querySelectorAll('[data-card-save]').forEach(button => { button.disabled = true; });
             if (node.isConnected && !this.sessionExpired && this.user?.id === owner && !this.dirtyClinicalControls().length) this.refreshCurrent();
         }
+    },
+
+    forgetDeniedPatient(patientId) {
+        // Object access can change without a role/access-context change.
+        this.patientDetails.delete(patientId);
+        for (const [key, draft] of this.sessionFieldDrafts) {
+            if (draft.patientId === patientId) this.sessionFieldDrafts.delete(key);
+        }
+        this.patientRows = this.patientRows.filter(patient => patient.id !== patientId);
+        this.patientListDirty = true;
+        this.renderSessionFieldDrafts();
+        if (this.currentPatientId !== patientId) {
+            this.renderPatients();
+            return;
+        }
+        for (const id of ['patientPanels', 'patientSide', 'patientRoute', 'patientFacts', 'crumbPatientName']) {
+            $(id).replaceChildren();
+        }
+        this.currentPatientId = null;
+        this.showView('patients');
     },
 
     async confirmClinicalNavigation() {
@@ -7069,13 +7220,14 @@ const app = {
 
     bindPatientNavigation() {
         const selector='#patientTabs button,#backToList,.nav__item,#patientSide button,#patientFacts button,.tl-step,#themeToggle,[data-card-save]';
+        const qualityNavigation = '[data-quality-action="patient"],[data-quality-action="finding"]';
         document.addEventListener('pointerdown',event=>{
-            if (!event.target.closest(selector+',#internalNotificationsBell,#aiAssistantBtn,.ai-result-card button,.internal-notification__actions button,#notificationsBody button') || this.sessionExpired) return;
+            if (!event.target.closest(selector+',#internalNotificationsBell,#aiAssistantBtn,.ai-result-card button,.internal-notification__actions button,#notificationsBody button,'+qualityNavigation) || this.sessionExpired) return;
             const c=this.patientDraftControls?.get(document.activeElement);if(c)c.navigationBlur=true;
         },{capture:true,signal:this.globalControls.signal});
         document.addEventListener('click',event=>{
             const target=event.target.closest(selector);
-            if(!target || this.sessionExpired || !this.user || target.matches('[data-card-save],[data-ai-open]'))return;
+            if(!target || this.sessionExpired || !this.user || target.matches('[data-card-save],[data-ai-open],'+qualityNavigation))return;
             const dirty=this.dirtyClinicalControls();if(!dirty.length)return;
             event.preventDefault();event.stopImmediatePropagation();
             if (this.clinicalWriteInFlight) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }

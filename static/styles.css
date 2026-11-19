@@ -3257,3 +3257,70 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 
 /* I-7 U01: contain absolute screen-reader labels inside the horizontal scroller. */
 #view-staff .table-wrap { position: relative; }
+
+/* Bounded Quality workspace and patient findings */
+.quality-v1 {
+    display: grid;
+    gap: var(--space-4, 1rem);
+    min-width: 0;
+}
+.quality-v1[hidden],
+.quality-v1 [hidden] {
+    display: none !important;
+}
+.quality-v1__filters,
+.quality-v1__facet-search,
+.quality-v1__pager,
+.quality-v1__chips {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 0.75rem;
+}
+.quality-v1__field {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 0;
+    max-width: 100%;
+}
+.quality-v1__field :is(input, select) {
+    min-width: 0;
+    max-width: 100%;
+}
+.quality-v1__part,
+.quality-v1__body,
+.quality-v1__item {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+.quality-v1__items {
+    padding: 0;
+    margin: 0.5rem 0;
+    list-style: none;
+}
+.quality-v1__item {
+    display: grid;
+    justify-items: start;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--line, currentColor);
+    padding: 0.75rem 0;
+}
+.quality-v1__item p,
+.quality-v1__status,
+.quality-v1__summary {
+    margin: 0;
+}
+.quality-v1__item .btn {
+    display: inline-block;
+    max-width: 100%;
+    white-space: normal;
+    text-align: start;
+}
+.quality-v1__pager {
+    align-items: center;
+    margin-top: 0.5rem;
+}
+.quality-v1 :is(h2, h3)[tabindex="-1"]:focus {
+    outline: 2px solid currentColor;
+    outline-offset: 0.2rem;
+}
