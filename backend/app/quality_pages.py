@@ -21,7 +21,8 @@ from fastapi import HTTPException, Request
 from pydantic import TypeAdapter, ValidationError
 from starlette.responses import Response
 
-from . import clock, operations_state, patient_pages, policy, request_security, security, session_context
+from . import clock, operations_state, patient_pages, policy, quality_revision
+from . import request_security, security, session_context
 from .quality_models import ResponseDTO
 from .services import data_quality
 
@@ -31,6 +32,8 @@ MAX_BODY_BYTES = 1024 * 1024
 _MAX_TOKEN = 8192
 _MAX_PAYLOAD = 4096
 _MAX_INTEGER = 2**63-1
+# Bump when the source projection or the Quality/rules semantics change.
+_SOURCE_VERSION = 2
 _KEY = secrets.token_bytes(32)  # independent, process-local, never export/session/witness key
 _ADAPTER = TypeAdapter(ResponseDTO)
 _HEX = re.compile(r'^[a-f0-9]{64}$')
@@ -277,7 +280,8 @@ def _input(conn: sqlite3.Connection, user, binding: str) -> QualityInput:
         raw = _canonical({'kind': kind, 'value': value})
         digest.update(len(raw).to_bytes(8, 'big')); digest.update(raw)
     day = clock.today_moscow().isoformat()
-    record('context', {'binding': binding, 'day': day, 'rules': data_quality.QUALITY_RULES,
+    record('context', {'binding': binding, 'day': day, 'source_version': _SOURCE_VERSION,
+                       'layout': quality_revision.LAYOUT, 'rules': data_quality.QUALITY_RULES,
                        'fields': data_quality.COMPLETENESS_FIELDS, 'required': data_quality.REQUIRED_CHECKLISTS,
                        'stages': data_quality.STAGE_ORDER})
     rows = conn.execute('''SELECT patients.id,name,age,phone,policy_number,diagnosis,nosology,stage,
@@ -311,11 +315,12 @@ def _input(conn: sqlite3.Connection, user, binding: str) -> QualityInput:
 @dataclass(frozen=True)
 class QualityScopedRelease:
     binding: str
-    expected: str
+    revision: quality_revision.Revision
     day: str
     issued_at: int
     expires_at: int
-    kind: str = MODE
+    patients: frozenset[str]
+    response_sha256: str
 
 
 @dataclass(frozen=True)
@@ -329,7 +334,7 @@ class QualityContext:
     computed_at: str
 
     def snapshot(self):
-        return {'token': self.root_token, 'revision': self.source.revision, 'query_hash': self.root['q'],
+        return {'token': self.root_token, 'revision': self.root['r'], 'query_hash': self.root['q'],
                 'computed_at': self.computed_at, 'institution_day': self.source.day,
                 'timezone': clock.INSTITUTION_TIMEZONE,
                 'expires_at': datetime.fromtimestamp(self.root['exp'], timezone.utc).isoformat()}
@@ -353,27 +358,40 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
     There is intentionally no production route that accepts a builder/provider.
     All synthetic HTTP adapters live in tests or external evidence tooling.
     """
+    from .read_access import _fresh_reader
+
     state = request_security.current.get()
-    binding = _binding(user, state); q = parsed.query.digest()
+    if state is None or not state.token or state.user is None:
+        raise HTTPException(401, 'Not authenticated')
+    q = parsed.query.digest()
     root = _open(parsed.snapshot, 'snapshot') if parsed.snapshot else None
     cursor = _open(parsed.cursor, 'cursor') if parsed.cursor else None
-    for claims in (root, cursor):
-        if claims is not None:
-            _check_claims(claims, binding, q)
-    if cursor is not None:
-        if root is None or any(root[k] != cursor[k] for k in ('q', 'r', 'b', 'iat', 'exp')) or cursor['kind'] != parsed.selector.kind() or cursor['s'] != parsed.selector.digest() or cursor['l'] != parsed.limit:
-            error('PATIENT_QUERY_CHANGED', 409)
     try:
         with patient_pages.snapshot(conn):
-            source = _input(conn, user, binding)
-            if root is not None and not hmac.compare_digest(source.revision, root['r']):
+            reader = _fresh_reader(conn, state)
+            binding = _binding(user, state)
+            for claims in (root, cursor):
+                if claims is not None:
+                    _check_claims(claims, binding, q)
+            if cursor is not None and (
+                root is None or any(root[k] != cursor[k] for k in ('q', 'r', 'b', 'iat', 'exp'))
+                or cursor['kind'] != parsed.selector.kind() or cursor['s'] != parsed.selector.digest()
+                or cursor['l'] != parsed.limit
+            ):
+                error('PATIENT_QUERY_CHANGED', 409)
+            gq = quality_revision.require_valid(conn, structure=True)
+            source = _input(conn, reader, binding)
+            # Tokens span requests and describe the authorized projection. Keep
+            # the global GQ stamp private and use it only to fence this release.
+            revision = _mac('root-revision', _canonical((q, source.revision)))
+            if root is not None and not hmac.compare_digest(revision, root['r']):
                 error('PATIENT_QUERY_CHANGED', 409)
             if parsed.selector.owner_patient_id is not None and parsed.selector.owner_patient_id not in source.patients:
                 raise HTTPException(404, 'Not found')
-            quality = data_quality.evaluate(conn, user, identity_signals=True)
+            quality = data_quality.evaluate(conn, reader, identity_signals=True)
             if root is None:
                 issued = _now()
-                root = {'v': 1, 'api': MODE, 'kind': 'snapshot', 'q': q, 'r': source.revision,
+                root = {'v': 1, 'api': MODE, 'kind': 'snapshot', 'q': q, 'r': revision,
                         'b': binding, 'iat': issued, 'exp': issued+ROOT_TTL}
             context = QualityContext(parsed, source, quality, root, parsed.snapshot or _seal(root, 'snapshot'),
                                      cursor['o'] if cursor else 0, clock.current_moscow().isoformat())
@@ -392,13 +410,17 @@ def prepare(conn: sqlite3.Connection, user, parsed: Normalized, builder: Callabl
             raw = _canonical(payload)
             if len(raw) > MAX_BODY_BYTES:
                 error('QUALITY_READ_UNAVAILABLE', 503)
-            # Only technical IDs/digests retained until the coordinator commits.
-            request_security.aggregate_patients(source.patients, resources=('/api/data-quality/',))
             if state.scoped_release is not None:
                 error('QUALITY_READ_UNAVAILABLE', 503)
-            state.scoped_release = QualityScopedRelease(binding, source.revision, source.day, root['iat'], root['exp'])
+            # Only technical IDs/digests retained until the coordinator commits.
+            request_security.aggregate_patients(source.patients, resources=('/api/data-quality/',))
+            state.scoped_release = QualityScopedRelease(
+                binding, gq, source.day, root['iat'], root['exp'], frozenset(source.patients),
+                hashlib.sha256(raw).hexdigest(),
+            )
         return Response(raw, media_type='application/json')
-    except (sqlite3.Error, ValueError, TypeError, UnicodeError, ValidationError):
+    except (sqlite3.Error, quality_revision.QualityRevisionError, ValueError, TypeError,
+            UnicodeError, ValidationError):
         error('QUALITY_READ_UNAVAILABLE', 503)
 
 
@@ -434,19 +456,18 @@ def _validate_source_response(payload, context, groups):
     walk(payload)
 
 
-@clock.consistent
-def validate_release(conn, user, check: QualityScopedRelease):
-    with patient_pages.snapshot(conn):
-        actual = _input(conn, user, check.binding)
-    if not hmac.compare_digest(actual.revision, check.expected) or actual.day != check.day:
-        raise patient_pages.QueryChanged()
-
-
-def validate_admission(user, state, check: QualityScopedRelease):
-    """O(1) checks under the existing lock; never repeat a source scan here."""
+def validate_admission(conn, user, state, check: QualityScopedRelease):
+    """Check the live binding and GQ stamp in the release write transaction."""
     if not hmac.compare_digest(_binding(user, state), check.binding):
         raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
-    if not check.issued_at <= _now() <= check.expires_at:
+    try:
+        actual = quality_revision.require_valid(conn, structure=True)
+    except quality_revision.QualityRevisionError:
+        error('QUALITY_READ_UNAVAILABLE', 503)
+    now = clock.now_moscow()
+    if not check.issued_at <= int(now.timestamp()) <= check.expires_at:
         error('CURSOR_EXPIRED', 410)
-    if clock.now_moscow().date().isoformat() != check.day:
+    if now.date().isoformat() != check.day:
+        raise patient_pages.QueryChanged()
+    if actual != check.revision:
         raise patient_pages.QueryChanged()

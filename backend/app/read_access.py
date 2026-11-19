@@ -87,9 +87,10 @@ def _fresh_reader(conn, state):
 
 
 def _persist(state, route, raw, params, denied):
-    from fastapi import HTTPException
-    quality_check = state.scoped_release if isinstance(state.scoped_release, quality_pages.QualityScopedRelease) else None
-    if not denied and quality_check is not None and len(raw) > quality_pages.MAX_BODY_BYTES:
+    quality_check = state.scoped_release if not denied and isinstance(
+        state.scoped_release, quality_pages.QualityScopedRelease
+    ) else None
+    if quality_check is not None and len(raw) > quality_pages.MAX_BODY_BYTES:
         quality_pages.error('QUALITY_READ_UNAVAILABLE', 503)
     payload = None if denied or state.export_recorded else json.loads(raw) if raw else None
     objects = attempted_manifest(params) if denied else manifest(payload, params)
@@ -97,9 +98,19 @@ def _persist(state, route, raw, params, denied):
         objects = [{'type': kind, 'id': identity} for kind, identity in sorted(
             {(o['type'], o['id']) for o in objects} | state.aggregate_objects | set(state.export_objects))]
     encoded = json.dumps(objects, ensure_ascii=False, separators=(',', ':'))
+    encoded_size = len(encoded.encode('utf-8'))
+    response_sha256 = hashlib.sha256(raw).hexdigest()
+    if quality_check is not None:
+        # Prove membership of the actual audited objects outside the write lock.
+        # The policy projection is unchanged at release if its GQ stamp and
+        # the freshly loaded access context still match the snapshot.
+        quality_manifest_valid = (
+            not state.export_recorded and response_sha256 == quality_check.response_sha256
+            and {o['id'] for o in objects if o['type'] == 'patient'} == quality_check.patients
+        )
     with closing(db.connect_live(config.DB_PATH)) as conn:
         version = None
-        if not denied and state.scoped_release is not None:
+        if not denied and quality_check is None and state.scoped_release is not None:
             # PRAGMA data_version is meaningful only on this same connection.
             # Read validation is optimistic; no O(N) work under a write lock.
             version = conn.execute('PRAGMA data_version').fetchone()[0]
@@ -112,16 +123,11 @@ def _persist(state, route, raw, params, denied):
         conn.execute('BEGIN IMMEDIATE')
         try:
             if not denied:
-                session = security.validate_session(conn, state.token, remove_expired=False)
-                if session is None:
-                    raise HTTPException(status_code=401, detail='Not authenticated')
-                fresh = policy.load_current_user(conn, session['user_id'])
-                if fresh is None or fresh.status != 'active':
-                    raise HTTPException(status_code=401, detail='Not authenticated')
-                if fresh.id != state.user.id or session_context.access_context(fresh) != state.access:
-                    raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
+                fresh = _fresh_reader(conn, state)
                 if quality_check is not None:
-                    quality_pages.validate_admission(fresh, state, quality_check)
+                    quality_pages.validate_admission(conn, fresh, state, quality_check)
+                    if not quality_manifest_valid:
+                        quality_pages.error('QUALITY_READ_UNAVAILABLE', 503)
                 if version is not None:
                     # Check identity/access FIRST: these failures cannot become
                     # an innocuous list refresh, even if the DB also changed.
@@ -138,13 +144,13 @@ def _persist(state, route, raw, params, denied):
                 card_scoped = any(prefix in route for prefix in (
                     '/api/patients', '/api/analytics', '/api/data-quality', '/api/notifications',
                     '/api/internal-notifications', '/api/ai/chat', '/api/export'))
-                if card_scoped:
+                if quality_check is None and card_scoped:
                     for identity in {obj['id'] for obj in objects if obj['type'] == 'patient'}:
                         if not policy.can_read_patient(conn, fresh, identity):
                             raise session_context.ContextChanged('ACCESS_CONTEXT_CHANGED')
 
             # The only limit is SQLite's actual storage bound, not an API page cap.
-            if len(encoded.encode('utf-8')) + 4096 >= conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH):
+            if encoded_size + 4096 >= conn.getlimit(sqlite3.SQLITE_LIMIT_LENGTH):
                 raise audit.AuditWriteFailed()
             actor = state.user
             if denied and actor is None and state.token:
@@ -155,9 +161,21 @@ def _persist(state, route, raw, params, denied):
                 'detail': 'operation=' + route,
                 **(audit.actor_ctx(actor) if actor is not None else {})}
             audit.record_required_or_fail(conn, result=audit.RESULT_DENIED if denied else audit.RESULT_OK, **metadata)
-            event_id = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
-            conn.execute('INSERT INTO read_access_manifests (audit_event_id, objects_json, object_count, snapshot_sha256, access_context) VALUES (?, ?, ?, ?, ?)',
-                         (event_id, encoded, len(objects), hashlib.sha256(raw).hexdigest(), state.access or ''))
+            event_id, event_rows = conn.execute('SELECT last_insert_rowid(), changes()').fetchone()
+            if quality_check is not None and event_rows != 1:
+                raise audit.AuditWriteFailed()
+            manifest_insert = conn.execute(
+                'INSERT INTO read_access_manifests '
+                '(audit_event_id, objects_json, object_count, snapshot_sha256, access_context) VALUES (?, ?, ?, ?, ?)',
+                (event_id, encoded, len(objects), response_sha256, state.access or ''),
+            )
+            if quality_check is not None:
+                if manifest_insert.rowcount != 1:
+                    raise audit.AuditWriteFailed()
+                # Audit/manifest triggers may write to a monitored source in
+                # this transaction. Recheck before either record can commit.
+                fresh = _fresh_reader(conn, state)
+                quality_pages.validate_admission(conn, fresh, state, quality_check)
             conn.commit()
         except BaseException:
             conn.rollback()

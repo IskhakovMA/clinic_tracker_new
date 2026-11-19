@@ -188,9 +188,6 @@ def _workspace_fingerprint(conn, user, rows):
 
 @clock.consistent
 def validate_release(conn, user, check):
-    from .quality_pages import QualityScopedRelease, validate_release as validate_quality_release
-    if isinstance(check, QualityScopedRelease):
-        return validate_quality_release(conn, user, check)
     # Called on the release connection, in a read snapshot OUTSIDE the audit
     # write lock. No retained connection, medical rows, or trust sidecar.
     with snapshot(conn):
