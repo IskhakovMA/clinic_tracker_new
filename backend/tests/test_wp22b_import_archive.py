@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -439,42 +440,45 @@ def test_a18_thread_race_never_records_an_unacknowledged_mark_after_deletion(aut
     card = _card(auth_client, pid)
     a, b = card["history"][0]["events"]
     path = get_conn().execute("PRAGMA database_list").fetchone()["file"]
-    results, barrier = {}, threading.Barrier(2)
+    # Fixture lookup uses the shared app connection. Only the two independent
+    # write connections should race after the barrier.
+    developer_id = _dev_id()
+    doctor_id = decision_doctor_id()
+    barrier = threading.Barrier(2)
 
     def delete():
         conn = sqlite3.connect(path, timeout=5)
         conn.row_factory = sqlite3.Row
-        barrier.wait()
         try:
-            results["delete"] = store.delete_event(conn, pid, a["id"], a["version"], _dev_id()) is not None
+            barrier.wait()
+            return store.delete_event(conn, pid, a["id"], a["version"], developer_id) is not None
         finally:
             conn.close()
 
     def mark():
         conn = sqlite3.connect(path, timeout=5)
         conn.row_factory = sqlite3.Row
-        barrier.wait()
         try:
-            results["mark"] = store.mark_consilium_decision(
+            barrier.wait()
+            return store.mark_consilium_decision(
                 conn, pid, b["id"], "dispensary_observation", b["version"], expected_stage="consult",
-                expected_history_entry_id=card["history"][0]["id"], user_id=decision_doctor_id()) is not None
+                expected_history_entry_id=card["history"][0]["id"], user_id=doctor_id) is not None
         except store.DecisionConflict as e:
-            results["mark"] = e.code
+            return e.code
         finally:
             conn.close()
 
-    threads = [threading.Thread(target=delete), threading.Thread(target=mark)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert results["delete"] is True
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        deletion = workers.submit(delete)
+        marking = workers.submit(mark)
+        assert deletion.result() is True
+        marked = marking.result()
     b_row, a_row = _row(b["id"]), _row(a["id"])
-    if results["mark"] is True:
+    if marked is True:
         # Отметка прошла без подтверждения — значит, на момент ее транзакции событие A еще не было удалено.
         assert b_row["version"] == b["version"] + 1 and a_row["deleted_at"]
     else:
-        assert results["mark"] == "ARCHIVED_DECISION_EXISTS" and b_row["consilium_decision"] is None
+        assert marked == "ARCHIVED_DECISION_EXISTS" and b_row["consilium_decision"] is None
 
 
 def test_a19_repeated_request_does_not_create_a_second_mark(auth_client):
