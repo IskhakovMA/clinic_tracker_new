@@ -10,7 +10,8 @@ const assert = require('node:assert/strict');
 (async () => {
     const root = process.cwd();
     const server = http.createServer((req, res) => {
-        const file = path.join(root, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
+        const pathname = new URL(req.url, 'http://127.0.0.1').pathname;
+        const file = path.join(root, pathname === '/' ? 'index.html' : pathname);
         if (!file.startsWith(root + path.sep) || !fs.existsSync(file)) { res.writeHead(404); res.end(); return; }
         res.setHeader('Content-Type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : file.endsWith('.html') ? 'text/html' : 'image/png');
         res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'");

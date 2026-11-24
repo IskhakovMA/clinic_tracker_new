@@ -18,7 +18,9 @@ const assert = require('node:assert/strict');
         await page.waitForFunction(() => app.appReady && !app.sessionExpired && !document.body.classList.contains('session-locked'));
     }
     async function tab(page, name) {
-        await page.getByRole('tab', {name, exact: true}).click();
+        const target = page.getByRole('tab', {name, exact: true});
+        await target.click();
+        await page.getByRole('tab', {name, exact: true, selected: true}).waitFor();
     }
     try {
         const admin = await browser.newContext();

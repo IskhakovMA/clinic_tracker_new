@@ -224,6 +224,63 @@ async function navigation(browser, fixture) {
     }
 }
 
+function deferred() {
+    let resolve;
+    const promise = new Promise(done => { resolve = done; });
+    return {promise, resolve};
+}
+
+async function saving(browser, fixture) {
+    const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
+    const received = deferred();
+    const release = deferred();
+    try {
+        const page = await context.newPage();
+        const events = monitor(page);
+        await page.goto(origin);
+        await login(page, 'wph.dev');
+        await openFromRegistry(page, fixture.card.name);
+        await page.locator('#tab-data').click();
+        await screen(page, 'patient', 'data');
+        await page.locator('#patientPanels input[type=tel]').fill('+70000000199');
+        await page.locator('#tab-history').click();
+        await page.locator('#confirmOkBtn').click();
+        const current = await screen(page, 'patient', 'history');
+        const edit = await fixture.call('GET', '/api/patients/' + fixture.card.id);
+        await fixture.call('PATCH', '/api/patients/' + fixture.card.id,
+            {field: 'phone', value: '+70000000188', expectedVersion: edit.version});
+        const detail = origin + '/api/patients/' + fixture.card.id;
+        await page.route(detail, async route => {
+            if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+            const reply = await route.fetch();
+            received.resolve(reply.status());
+            await release.promise;
+            await route.fulfill({response: reply});
+        });
+        const outgoing = page.waitForRequest(request => request.url() === detail && request.method() === 'PATCH');
+        await page.getByRole('button', {name: 'Сохранить правку', exact: true}).click();
+        await outgoing;
+        assert.equal(await received.promise, 409, 'actual stale-version backend denial before response released');
+        await page.goBack();
+        const corrected = await screen(page, 'patient', 'history');
+        assert.equal(corrected.state.index, current.state.index);
+        assert.equal(events.medicalWrites, 1);
+        const delivered = page.waitForResponse(response => response.url() === detail
+            && response.request().method() === 'PATCH' && response.status() === 409);
+        release.resolve();
+        await (await delivered).finished();
+        await page.getByRole('button', {name: 'Сохранить правку', exact: true}).waitFor();
+        assert.equal((await fixture.call('GET', '/api/patients/' + fixture.card.id)).phone, '+70000000188');
+        assert.equal(events.medicalWrites, 1);
+        assert.equal(events.pageErrors, 0);
+        receipt.transport.push('Actual stale-version 409 withheld until browser Back is rejected during pending write');
+        record('Pending explicit save blocks Back and never resubmits; real 409 retains manual original-version draft');
+    } finally {
+        release.resolve();
+        await context.close();
+    }
+}
+
 async function transportAndIdentity(browser, fixture) {
     const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
     let release;
@@ -238,33 +295,31 @@ async function transportAndIdentity(browser, fixture) {
         const oldEntry = await openFromRegistry(page, fixture.card.name);
         await nav(page, 'calendar');
         const detail = origin + '/api/patients/' + fixture.card.id;
-        let markFetched;
-        const fetched = new Promise(resolve => { markFetched = resolve; });
+        const fetched = deferred();
         const paused = new Promise(resolve => { release = resolve; });
         await page.route(detail, async route => {
             const reply = await route.fetch();
-            markFetched(reply.status());
+            fetched.resolve(reply.status());
             await paused;
             await route.fulfill({response: reply});
         }, {times: 1});
+        const read = page.waitForRequest(request => request.url() === detail);
         await page.goBack();
-        assert.equal(await fetched, 200, 'auth-scoped backend response obtained before opposite traversal');
+        await read;
+        assert.equal(await fetched.promise, 200, 'auth-scoped backend response obtained before opposite traversal');
         await page.goForward();
         await screen(page, 'calendar');
         const delayed = page.waitForResponse(response => response.url() === detail && response.status() === 200);
         release();
-        await delayed;
-        await page.waitForFunction(() => document.querySelector('#view-calendar').classList.contains('is-hidden') === false);
+        await (await delayed).finished();
+        await page.waitForLoadState('networkidle');
+        await screen(page, 'calendar');
         assert(await page.locator('#view-patient').isHidden());
         receipt.transport.push('Real 200 withheld by Playwright until newer Forward intent');
         record('Opposite browser traversal beats delayed genuine HTTP 200 and retains authorized destination');
 
-        let markLost;
-        const lost = new Promise(resolve => { markLost = resolve; });
-        await page.route(detail, async route => {
-            await route.abort('connectionreset');
-            markLost();
-        }, {times: 1});
+        const lost = page.waitForEvent('requestfailed', request => request.url() === detail);
+        await page.route(detail, route => route.abort('connectionreset'), {times: 1});
         await page.goBack();
         await lost;
         await screen(page, 'calendar');
@@ -278,7 +333,7 @@ async function transportAndIdentity(browser, fixture) {
         await api(context, origin, 'POST', '/api/auth/logout', {});
         const expired = await context.request.get(detail);
         assert.equal(expired.status(), 401, 'real backend reports revoked session');
-        await page.goBack();
+        await page.evaluate(() => history.back());
         await page.locator('#loginForm').waitFor({state: 'visible'});
         assert(await page.locator('#view-patient').isHidden(), 'cached patient screen is not displayed without session');
         receipt.bfcache = await page.evaluate(() => window.historyTestRestored === true);
@@ -334,9 +389,16 @@ async function main() {
     let fixture;
     try {
         fixture = await setup(browser, origin);
-        await navigation(browser, fixture);
-        await transportAndIdentity(browser, fixture);
-        await objectRevocation(browser, fixture);
+        const cases = {navigation, saving, transportAndIdentity, objectRevocation};
+        const requested = process.env.HISTORY_SCENARIO;
+        assert(!requested || Object.hasOwn(cases, requested), 'unknown history test scenario');
+        for (const [name, run] of Object.entries(cases)) {
+            if (requested && name !== requested) continue;
+            receipt.phase = name;
+            save();
+            await run(browser, fixture);
+        }
+        receipt.phase = 'complete';
     } finally {
         save();
         if (fixture) await fixture.admin.close();
