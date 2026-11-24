@@ -65,6 +65,7 @@ const assert = require('node:assert/strict');
         assert.equal(await page.locator('#fio').inputValue(), 'Синтетический Черновик');
         await page.locator('#closeAddIconBtn').click();
         await page.locator('#confirmOkBtn').click();
+        await page.locator('#addModal').waitFor({state: 'hidden'});
         assert.equal(await page.locator('#addModal').evaluate(e => e.hidden), true);
         await page.evaluate(() => app.openAddModal());
         assert.equal(await page.locator('#fio').inputValue(), '');

@@ -156,7 +156,9 @@ async function apiFetch(path, options) {
     if (controller) opts.signal = controller.signal;
     const timer = controller ? setTimeout(() => controller.abort(), 30000) : null;
     const requestStarted = performance.now();
-    const write = !path.startsWith('/api/auth/') && !['GET', 'HEAD'].includes(method) ? {} : null;
+    // AI chat is a read-only assistant exchange, not a clinical mutation.
+    const write = !path.startsWith('/api/auth/') && path !== '/api/ai/chat' &&
+        !['GET', 'HEAD'].includes(method) ? {} : null;
     if (write) browserNavigation.writes.add(write);
     try {
         const response = await fetch(path, opts);
@@ -2357,6 +2359,10 @@ const app = {
         }
         const allowed = new Set(fresh.map(patient => patient.id));
         // Каждый повторный вход сбрасывает производные кэши, а не только текущий список.
+        if (previousHistory && !browserNavigation.matchesSnapshot(previousHistory, user) && this.currentView === 'patient') {
+            this.currentView = 'patients';
+            this.currentPatientId = null;
+        }
         const rebuiltEpoch = this.rebuildAuthorizedWorkspace(user, fresh, allowed, doctors, page, heads.heads, listSettings);
         if (this.sessionEpoch !== rebuiltEpoch || this.sessionExpired) return;
         this.sessionReconciling = false;
@@ -2467,7 +2473,7 @@ const app = {
 
     async reconcilePeerSession({preserveHistory = false} = {}) {
         if (!this.user || this.sessionReconciling) return;
-        const previousHistory = preserveHistory ? browserNavigation.snapshot() : null;
+        const previousHistory = preserveHistory ? browserNavigation.snapshot() || {} : null;
         this.expireSession();
         try {
             const me = await this.serverIdentity();
@@ -7183,12 +7189,13 @@ const app = {
     async confirmClinicalNavigation(intentCurrent = () => true) {
         if(this.sessionExpired||this.sessionReconciling||!this.user)return false;
         if(this.clinicalWriteInFlight){ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.','warning');return false;}
-        const dirty=this.dirtyClinicalControls();if(!dirty.length)return true;
+        const dirty = this.dirtyClinicalControls().map(node => [node, JSON.stringify(this.patientDraftControls.get(node).readValue())]);
+        if (!dirty.length) return true;
         const epoch=this.sessionEpoch,user=this.user.id,patientId=this.currentPatientId;
         const current=()=>intentCurrent()&&!this.sessionExpired&&!this.sessionReconciling&&this.user?.id===user&&this.sessionEpoch===epoch&&this.currentPatientId===patientId&&!this.clinicalWriteInFlight;
         const ok=await ui.confirm({title:'Отменить несохраненный ввод?',text:'Поля события или заметки еще не сохранены. Остаться в форме или явно отменить ввод перед переходом?',okLabel:'Отменить ввод и перейти',danger:false});
         if(!ok||!current())return false;
-        if(dirty.some(node=>this.patientDraftControls.get(node).error)){
+        if (dirty.some(([node]) => this.patientDraftControls.get(node).error)) {
             try { await this.refreshPatientRecord(patientId, current); }
             catch (error) {
                 if (current()) {
@@ -7199,7 +7206,15 @@ const app = {
             }
             if(!current())return false;
         }
-        for(const node of dirty){const c=this.patientDraftControls.get(node);node.value=JSON.parse(c.initial);c.touched=false;c.error=null;c.blocked=false;}
+        if (dirty.some(([node, value]) => !node.isConnected ||
+            JSON.stringify(this.patientDraftControls.get(node).readValue()) !== value)) return false;
+        for (const [node] of dirty) {
+            const control = this.patientDraftControls.get(node);
+            node.value = JSON.parse(control.initial);
+            control.touched = false;
+            control.error = null;
+            control.blocked = false;
+        }
         return true;
     },
 
@@ -7659,7 +7674,8 @@ const app = {
     },
 
     requestCloseAddModal(nextView = 'patients') {
-        return this.navigateView(nextView);
+        const focus = nextView === 'patients' ? () => $('openAddBtn') : undefined;
+        return browserNavigation.navigate({screen: nextView}, {focus});
     },
 
     async confirmCloseAddModal(current) {
@@ -12061,6 +12077,7 @@ const browserNavigation = {
         this.entries.clear();
         this.nonce = null;
         this.committed = null;
+        this.intentPatient = null;
         this.correction = null;
         this.closeNavigationDialog();
     },
@@ -12112,10 +12129,17 @@ const browserNavigation = {
             owner: app.user.id, access: app.accessSignature(app.user)};
     },
 
+    matchesSnapshot(previous, user) {
+        if (!previous?.committed || previous.owner !== user.id || previous.access !== app.accessSignature(user)) return false;
+        const {state} = previous.committed;
+        return state.v === history.state?.v && state.index === history.state?.index &&
+            state.route === history.state?.route && state.nonce === history.state?.nonce;
+    },
+
     resume(previous) {
-        if (!previous || previous.owner !== app.user.id || previous.access !== app.accessSignature(app.user)) return false;
-        const {state, route} = previous.committed;
-        if (history.state?.route !== state.route || history.state?.nonce !== state.nonce || !this.canNavigate(route)) return false;
+        if (!this.matchesSnapshot(previous, app.user)) return false;
+        const {route} = previous.committed;
+        if (!this.canNavigate(route)) return false;
         if (route.screen === 'patient' && (app.currentPatientId !== route.patientId || app.currentTab !== route.tab)) return false;
         if (route.screen === 'create' && !app.addFormActive) return false;
         if (app.currentView !== route.screen) app.showView(route.screen);
@@ -12132,6 +12156,11 @@ const browserNavigation = {
     },
 
     forget(patientId) {
+        if (patientId === this.intentPatient) {
+            this.generation++;
+            this.intentPatient = null;
+            this.closeNavigationDialog();
+        }
         for (const [key, entry] of this.entries) {
             if (entry.route.patientId === patientId) this.entries.delete(key);
         }
@@ -12221,12 +12250,14 @@ const browserNavigation = {
         const access = app.accessSignature(app.user);
         const positionKey = history.state?.route;
         const sourceView = app.currentView, sourcePatient = app.currentPatientId, sourceTab = app.currentTab;
-        const current = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
+        const sameIntent = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
             && user === app.user?.id && app.accessSignature(app.user) === access
-            && !app.sessionExpired && !app.sessionReconciling && positionKey === history.state?.route
-            && sourceView === app.currentView && sourcePatient === app.currentPatientId && sourceTab === app.currentTab;
+            && !app.sessionExpired && !app.sessionReconciling && positionKey === history.state?.route;
+        const current = () => sameIntent() && sourceView === app.currentView &&
+            sourcePatient === app.currentPatientId && sourceTab === app.currentTab;
         let finished = false;
         const id = objectId || route.patientId;
+        this.intentPatient = id;
         try {
             if (!this.canNavigate(route) || (allowed && !allowed())) {
                 if (entry) {
@@ -12262,7 +12293,7 @@ const browserNavigation = {
             finished = true;
             return true;
         } catch (error) {
-            if (!current() || error.obsolete) return false;
+            if (!sameIntent() || error.obsolete) return false;
             if (id && [403, 404].includes(error.status)) {
                 app.forgetDeniedPatient(id);
                 if (entry || registryOnDenial) {
@@ -12276,7 +12307,10 @@ const browserNavigation = {
             return false;
         } finally {
             if (!finished && entry && current()) this.restorePosition();
-            if (generation === this.generation) this.dialog = null;
+            if (generation === this.generation) {
+                this.dialog = null;
+                this.intentPatient = null;
+            }
         }
     },
 
@@ -12301,7 +12335,7 @@ const browserNavigation = {
         }
         const target = focus?.() || (route.tab ? $('tab-' + route.tab) : $('view-' + route.screen)?.querySelector('h1'));
         if (target) {
-            if (!route.tab || focus) target.tabIndex = -1;
+            if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
             target.focus({preventScroll: true});
         }
     },

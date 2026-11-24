@@ -320,6 +320,7 @@ async function ownerReassignment(browser, ui) {
             });
             const denied = page.waitForResponse(ownerIssues);
             await page.getByRole('tab', { name: 'Обзор', exact: true }).click();
+            await page.locator('#confirmOkBtn').click();
             const reply = await denied;
             assert.equal(reply.status(), 404);
             assert.equal(assigned, 1, 'real offline-synthetic actor no longer owns the selected patient');

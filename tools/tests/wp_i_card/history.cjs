@@ -23,13 +23,24 @@ async function login(page, username) {
 }
 
 async function screen(page, target, tab = null, focus = false) {
-    await page.waitForFunction(({ target, tab }) => {
+    try {
+        await page.waitForFunction(({ target, tab }) => {
         const url = new URL(location.href);
         const view = document.getElementById('view-' + target);
         return url.searchParams.get('screen') === target && url.searchParams.get('tab') === tab
             && (target === 'create' ? !document.querySelector('#addModal').hidden : view && !view.classList.contains('is-hidden'))
             && (tab === null || document.querySelector('#patientTabs [aria-selected=true]')?.id === 'tab-' + tab);
-    }, {target, tab});
+        }, {target, tab});
+    } catch (error) {
+        receipt.failure = await page.evaluate(({target, tab}) => ({
+            target, tab, screen: new URL(location.href).searchParams.get('screen'),
+            index: history.state?.index, view: app.currentView, expired: app.sessionExpired,
+            reconciling: app.sessionReconciling, hasPatient: Boolean(app.currentPatientId),
+        }), {target, tab}).catch(() => ({target, tab}));
+        save();
+        console.error(JSON.stringify(receipt.failure));
+        throw error;
+    }
     const observed = await page.evaluate(() => ({
         query: [...new URL(location.href).searchParams], hash: location.hash,
         pathname: location.pathname, state: history.state, length: history.length,
@@ -342,9 +353,9 @@ async function transportAndIdentity(browser, fixture) {
         assert(await page.locator('#view-patient').isHidden());
         const forbidden = await context.request.get(origin + '/api/audit');
         assert.equal(forbidden.status(), 403, 'real audit permission remains denied for doctor');
-        const navLength = freshNonce.length;
         await nav(page, 'calendar');
-        assert.equal((await screen(page, 'calendar')).length, navLength + 1, 'one history entry after login');
+        assert.equal((await screen(page, 'calendar')).state.index, freshNonce.state.index + 1, 'one history entry after login');
+        await historyStep(page, 'back', 'patients');
         assert.equal(events.medicalWrites, 0);
         record('External document, revoked session (real 401), different login and unchanged RBAC (real audit 403)');
     } finally {
@@ -363,6 +374,7 @@ async function objectRevocation(browser, fixture) {
         await openFromRegistry(page, fixture.card.name);
         const epoch = await page.evaluate(() => app.sessionEpoch);
         await historyStep(page, 'back', 'patients');
+        await page.waitForFunction(() => !app.patientListDirty);
         const old = await fixture.call('GET', '/api/patients/' + fixture.card.id);
         await fixture.call('PUT', '/api/patients/' + fixture.card.id + '/treating-doctor',
             {userId: null, expectedVersion: old.version});
