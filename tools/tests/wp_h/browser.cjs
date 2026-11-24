@@ -1,5 +1,6 @@
 // Real isolated FastAPI and synthetic accounts only. No S1 bypass.
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const {waitForCssTransitions}=require('./transition-settle.cjs');
 const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('node:path');
 (async()=>{
  const origin=process.env.WP_H_ORIGIN;assert.match(origin,/^http:\/\/127\.0\.0\.1:\d+$/);
@@ -45,7 +46,7 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
   await page.evaluate(fs.readFileSync(axePath,'utf8'));
   for(const theme of ['dark','light']){
    await page.evaluate(t=>app.applyTheme(t),theme);await settled();
-   await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a instanceof CSSTransition).map(a=>a.finished.catch(()=>{})));});
+   await waitForCssTransitions(page, 'card-data:' + theme);
    const a=await page.evaluate(async()=>{const r=await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}});return r.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}));});
    results.axe.push({view:'card-data',theme,violations:a});
   }
@@ -57,7 +58,7 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
    await page.evaluate(v=>app.showView(v),view);
    for(const theme of ['dark','light']){
     await page.evaluate(t=>app.applyTheme(t),theme);await settled();
-    await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a instanceof CSSTransition).map(a=>a.finished.catch(()=>{})));});
+    await waitForCssTransitions(page, view + ':' + theme);
     const violations=await page.evaluate(async()=>{const r=await axe.run(document,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21aa']}});return r.violations.map(v=>({id:v.id,nodes:v.nodes.map(n=>({target:n.target,summary:n.failureSummary}))}));});
     results.axe.push({view:view==='patient'?'card-overview':'list',theme,violations});
    }

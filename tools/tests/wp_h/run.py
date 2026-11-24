@@ -36,7 +36,16 @@ def main():
                     raise RuntimeError('Synthetic server did not become ready; inspect its log')
                 env = {**os.environ, 'WP_H_ORIGIN': f'http://127.0.0.1:{port}', 'COUNT': str(count), 'OUT': str(args.out.resolve()), 'WP_H_EVIDENCE_OUT': str(args.out.resolve())}
                 with (args.out / f'{args.experiment}-{count}.log').open('w') as log:
-                    result = subprocess.run(['node', str(here / (args.experiment + '.cjs'))], env=env, stdout=log, stderr=subprocess.STDOUT)
+                    try:
+                        result = subprocess.run(
+                            ['node', str(here / (args.experiment + '.cjs'))],
+                            env=env, stdout=log, stderr=subprocess.STDOUT,
+                            timeout=150 if args.experiment == 'browser' else None,
+                        )
+                    except subprocess.TimeoutExpired:
+                        log.write('WP-H browser runner exceeded 150 seconds before completing.\n')
+                        print('browser: host deadline exceeded; inspect browser log', file=sys.stderr)
+                        return 124
                 print(f'{args.experiment}: count={count}, exit={result.returncode}', flush=True)
                 if result.returncode:
                     return result.returncode
