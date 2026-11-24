@@ -520,6 +520,19 @@ async function unknownRace(browser, fixture) {
             await screen(page, 'patient', 'events');
             const input = page.getByRole('textbox', {name: 'Примечание к этапу', exact: true}).first();
             await input.fill('Синтетический черновик гонки истории');
+            // Observe completion of the real recovery handler. A stale fetch can
+            // be dropped before its body is read, so Response.finished() is not a barrier.
+            await page.evaluate(() => {
+                const recover = browserNavigation.recoverUnknown;
+                const completed = [];
+                window.i9CompletedRecoveries = completed;
+                let sequence = 0;
+                browserNavigation.recoverUnknown = async function (...args) {
+                    const id = ++sequence;
+                    try { return await recover.apply(this, args); }
+                    finally { completed.push(id); }
+                };
+            });
             const previous = await prepareUnknownForward(page, 'events');
             const detail = origin + '/api/patients/' + fixture.card.id;
             await holdUnknownStay(page, detail, release);
@@ -547,8 +560,8 @@ async function unknownRace(browser, fixture) {
             const delivered = page.waitForResponse(response => response.request().method() === 'GET'
                 && response.url() === detail && response.status() === 200);
             release.resolve();
-            await (await delivered).finished();
-            await page.waitForLoadState('networkidle');
+            assert.equal((await delivered).status(), 200);
+            await page.waitForFunction(() => window.i9CompletedRecoveries.includes(1));
             const active = await page.evaluate(() => ({state: history.state, length: history.length}));
             assert.deepEqual(active, {state: secured.state, length: secured.length}, 'old HTTP 200 cannot modify the secure history state');
             assert(await page.locator('#view-patient').isHidden());
