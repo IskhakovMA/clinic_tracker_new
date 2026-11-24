@@ -442,6 +442,8 @@ async function unknownDraft(browser, fixture) {
 
 async function unknownDenial(browser, fixture) {
     const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
+    const reloadStarted = deferred();
+    const releaseReload = deferred();
     try {
         const page = await context.newPage();
         const events = monitor(page);
@@ -455,18 +457,37 @@ async function unknownDenial(browser, fixture) {
         const old = await fixture.call('GET', '/api/patients/' + fixture.large.id);
         await fixture.call('PUT', '/api/patients/' + fixture.large.id + '/treating-doctor',
             {userId: null, expectedVersion: old.version});
+        const rowPresent = () => page.evaluate(name => [...document.querySelectorAll('#patientsBody .patient-open')]
+            .some(button => button.textContent === name), fixture.large.name);
+        assert(await rowPresent(), 'the pre-revocation registry still contains the fixture row');
+        const registryPage = url => url.origin === origin && url.pathname === '/api/patients'
+            && url.searchParams.get('view') === 'page';
+        await page.route(registryPage, async route => {
+            const response = await route.fetch();
+            reloadStarted.resolve();
+            await releaseReload.promise;
+            await route.fulfill({response});
+        }, {times: 1});
+        const reloadRequest = page.waitForRequest(request => registryPage(new URL(request.url())));
         const denied = page.waitForResponse(response => response.request().method() === 'GET'
             && new URL(response.url()).pathname === '/api/patients/' + fixture.large.id && response.status() === 404);
         await page.locator('#confirmCancelBtn').click();
         await (await denied).finished();
         const registry = await screen(page, 'patients', null, true);
+        await reloadRequest;
+        await reloadStarted.promise;
         assert.equal(registry.length, previous.length);
         assert(await page.locator('#view-patient').isHidden());
         assert(await page.evaluate(() => app.currentPatientId == null && app.patientDetails.size === 0));
+        assert(!await rowPresent(), 'the revoked row must be purged before the registry response arrives');
+        const reloaded = page.waitForResponse(response => registryPage(new URL(response.url())));
+        releaseReload.resolve();
+        await (await reloaded).finished();
         assert.equal(events.medicalWrites, 0);
         assert.equal(events.pageErrors, 0);
-        record('Unknown entry, stay denied by real 404: only replaceState and purged patient data, zero medical writes');
+        record('Unknown entry, stay denied by real 404: only replaceState, card and registry row purged before reload, zero medical writes');
     } finally {
+        releaseReload.resolve();
         await context.close();
     }
 }
@@ -511,7 +532,7 @@ async function unknownRace(browser, fixture) {
                 secured = await screen(page, 'patients');
                 assert.equal(secured.length, previous.length);
             } else {
-                const epoch = await page.evaluate(() => app.sessionEpoch);
+                const epoch = await page.evaluate(() => app.sessionEpoch || 0);
                 await api(context, origin, 'POST', '/api/auth/logout', {});
                 const status = await page.evaluate(async () => {
                     try { await apiGetJson('/api/patients/head-options'); return 200; }
@@ -519,7 +540,7 @@ async function unknownRace(browser, fixture) {
                 });
                 assert.equal(status, 401, 'backend revoked session during old response delivery');
                 await page.locator('#loginForm').waitFor({state: 'visible'});
-                assert(await page.evaluate(epoch => app.sessionEpoch > epoch, epoch), 'epoch actually advanced');
+                await page.waitForFunction(epoch => app.sessionEpoch > epoch, epoch);
                 assert(await page.locator('#view-patient').isHidden());
                 secured = await page.evaluate(() => ({state: history.state, length: history.length}));
             }

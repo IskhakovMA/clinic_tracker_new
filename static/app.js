@@ -12261,6 +12261,7 @@ const browserNavigation = {
         const activeControl = app.patientDraftControls?.get(originalFocus);
         const marker = {v: 1, index: 0, nonce: this.nonce, route: newIdempotencyKey()};
         // The popped location may contain arbitrary parameters. Scrub it before requests.
+        if (this.entry(history.state)) this.entries.delete(history.state.route);
         history.replaceState(marker, '', location.pathname + '?screen=patients');
         const recovery = {route};
         this.recovery = recovery;
@@ -12333,7 +12334,7 @@ const browserNavigation = {
         } finally {
             if (this.recovery === recovery) {
                 this.recovery = null;
-                this.dialog = null;
+                if (this.generation === generation) this.dialog = null;
             }
             if (activeControl && document.activeElement === originalFocus) activeControl.navigationBlur = false;
         }
@@ -12464,7 +12465,11 @@ const browserNavigation = {
         } else {
             if (clearPatient) app.clearPatientNavigationView();
             if (route.screen === 'patients') {
+                // Never render rows from a previous release while fetching the authorized page.
+                app.patientRows = [];
+                app.patientPage = null;
                 app.patientListDirty = true;
+                $('patientRegistryCount').textContent = '—';
                 app.setPatientListState('loading');
             }
             app.showView(route.screen);
