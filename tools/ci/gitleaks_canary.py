@@ -4,7 +4,7 @@ Runs gitleaks with this repository's own .gitleaks.toml and .gitleaksignore
 against throwaway Git repositories in a temporary directory (the repository
 itself is never modified) and fails unless every planted secret is reported:
 
-1. a fresh random API key in a test file (backend/tests/…) — test code is not
+1. a deterministic synthetic API-key fixture in a test file (backend/tests/…) — test code is not
    exempt from scanning, neither in Git history nor in the working tree;
 2. the old synthetic export key value committed again at the same path and
    line as the reviewed historical finding — .gitleaksignore entries are bound
@@ -16,7 +16,8 @@ this file. Usage: python tools/ci/gitleaks_canary.py /path/to/gitleaks
 from __future__ import annotations
 
 import base64
-import secrets
+import hashlib
+import json
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_FILES = (".gitleaks.toml", ".gitleaksignore")
+FIXTURE_SEED = b"Clinic Tracker CI synthetic canary fixture v1"
+
+
+def _synthetic_sample() -> str:
+    return hashlib.sha256(FIXTURE_SEED).hexdigest()
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -47,20 +53,34 @@ def _new_repo(base: Path, name: str) -> Path:
     return repo
 
 
-def _scan(gitleaks: str, mode: str, repo: Path) -> tuple[int, str]:
-    proc = subprocess.run(
-        [gitleaks, mode, ".", "--no-banner", "--no-color", "--redact", "--verbose"],
-        cwd=repo, capture_output=True, text=True,
-    )
-    return proc.returncode, proc.stdout + proc.stderr
+def _expect_leak(
+    gitleaks: str, mode: str, repo: Path, path: str, line: int, label: str,
+) -> list[str]:
+    # Keep the report outside the scanned tree. Do not echo report values or scanner output.
+    with tempfile.TemporaryDirectory(prefix="gitleaks-report-") as tmp:
+        report = Path(tmp) / "findings.json"
+        try:
+            result = subprocess.run(
+                [gitleaks, mode, ".", "--no-banner", "--no-color", "--redact=100",
+                 "--report-format", "json", "--report-path", str(report)],
+                cwd=repo, capture_output=True,
+            )
+            if result.returncode != 1:
+                return [f"FAIL {label}: gitleaks {mode} exit={result.returncode}, expected finding"]
+            findings = json.loads(report.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return [f"FAIL {label}: gitleaks {mode} did not produce a readable JSON report"]
 
-
-def _expect_leak(gitleaks: str, mode: str, repo: Path, path: str, label: str) -> list[str]:
-    code, output = _scan(gitleaks, mode, repo)
-    if code == 1 and f"File:        {path}" in output:
-        print(f"ok   {label}: gitleaks {mode} reported {path}")
+    if isinstance(findings, list) and any(
+        isinstance(item, dict)
+        and item.get("File") == path
+        and item.get("RuleID") == "generic-api-key"
+        and item.get("StartLine") == line
+        for item in findings
+    ):
+        print(f"ok   {label}: gitleaks {mode} reported {path}:{line}")
         return []
-    return [f"FAIL {label}: gitleaks {mode} exit={code}, {path} not reported\n{output[-2000:]}"]
+    return [f"FAIL {label}: gitleaks {mode} did not report the expected rule and location"]
 
 
 def main() -> int:
@@ -72,16 +92,16 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="gitleaks-canary-") as tmp:
         base = Path(tmp)
 
-        # 1. A fresh high-entropy key in test code.
+        # 1. A deterministic mixed-hex fixture with entropy above the pinned rule threshold.
         repo = _new_repo(base, "fresh-key")
         planted = "backend/tests/test_canary_secret.py"
         target = repo / planted
         target.parent.mkdir(parents=True)
-        target.write_text(f'CANARY_API_KEY = "{secrets.token_urlsafe(30)}"\n', encoding="utf-8")
+        target.write_text(f'CANARY_API_KEY = "{_synthetic_sample()}"\n', encoding="utf-8")
         _git(repo, "add", "-A")
         _git(repo, "commit", "-q", "-m", "plant canary")
-        failures += _expect_leak(gitleaks, "git", repo, planted, "fresh key in history")
-        failures += _expect_leak(gitleaks, "dir", repo, planted, "fresh key in working tree")
+        failures += _expect_leak(gitleaks, "git", repo, planted, 1, "synthetic key in history")
+        failures += _expect_leak(gitleaks, "dir", repo, planted, 1, "synthetic key in working tree")
 
         # 2. The old synthetic value at the ignored path and line, in a new commit.
         repo = _new_repo(base, "old-value-new-commit")
@@ -93,7 +113,7 @@ def main() -> int:
         target.write_text("".join(lines), encoding="utf-8")
         _git(repo, "add", "-A")
         _git(repo, "commit", "-q", "-m", "re-commit old synthetic value")
-        failures += _expect_leak(gitleaks, "git", repo, planted, "ignored value in another commit")
+        failures += _expect_leak(gitleaks, "git", repo, planted, 26, "ignored value in another commit")
 
     for failure in failures:
         print(failure, file=sys.stderr)
