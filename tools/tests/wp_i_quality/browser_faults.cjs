@@ -295,10 +295,12 @@ async function ownerReassignment(browser, ui) {
             await phone.fill('+70000000999');
             const epoch = await page.evaluate(() => app.sessionEpoch || 0);
             const overview = overviewReads();
+            let reassignmentStarted = false;
             let assigned = 0;
             await page.route(qualityRequests, async route => {
                 const query = new URL(route.request().url()).searchParams;
-                if (query.get('view') === 'patient_issues' && query.get('owner_patient_id') === owner && !assigned) {
+                if (query.get('view') === 'patient_issues' && query.get('owner_patient_id') === owner && !reassignmentStarted) {
+                    reassignmentStarted = true;
                     // Finish the other audited Overview reads before changing ownership.
                     // Their concurrent release can lock the session with its own 409.
                     await finishOverviewReads(overview);
