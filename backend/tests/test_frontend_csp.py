@@ -135,8 +135,9 @@ def test_canonical_page_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a">' in body
-    assert '<script src="/static/app.js?v=wp-i-consilium-v5a"></script>' in body
+    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1">' in body
+    assert '<script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>' in body
+    assert '<script src="/static/app.js?v=wp-i-consilium-v5a-wp-i-quality-v1"></script>' in body
     # ни одного <style> и ни одного inline-скрипта в документе
     assert "<style" not in body
     assert not re.search(r"<script(?![^>]*\ssrc=)", body)
