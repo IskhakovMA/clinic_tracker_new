@@ -12,7 +12,7 @@ import threading
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--count', type=int, choices=(100, 1000, 10000), default=100)
-    parser.add_argument('--suite', choices=('card', 'errors', 'zoom', 'clinical'), default='card')
+    parser.add_argument('--suite', choices=('card', 'errors', 'zoom', 'clinical', 'history'), default='card')
     parser.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)

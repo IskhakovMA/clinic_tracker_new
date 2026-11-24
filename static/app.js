@@ -156,6 +156,10 @@ async function apiFetch(path, options) {
     if (controller) opts.signal = controller.signal;
     const timer = controller ? setTimeout(() => controller.abort(), 30000) : null;
     const requestStarted = performance.now();
+    // AI chat is a read-only assistant exchange, not a clinical mutation.
+    const write = !path.startsWith('/api/auth/') && path !== '/api/ai/chat' &&
+        !['GET', 'HEAD'].includes(method) ? {} : null;
+    if (write) browserNavigation.writes.add(write);
     try {
         const response = await fetch(path, opts);
         if (!authRequest && epoch !== (app.sessionEpoch || 0)) {
@@ -215,7 +219,10 @@ async function apiFetch(path, options) {
         throw new Error(cause.name === 'AbortError' ? 'Время ожидания ответа истекло. Проверьте результат перед повторной отправкой.'
             : cause.name === 'SyntaxError' ? 'Не удалось прочитать ответ сервера. Повторите позже.'
                 : 'Нет связи с сервером. Проверьте соединение и повторите действие.');
-    } finally { if (timer) clearTimeout(timer); }
+    } finally {
+        if (timer) clearTimeout(timer);
+        if (write) browserNavigation.writes.delete(write);
+    }
 }
 
 const apiGetJson = (path) => apiFetch(path);
@@ -285,11 +292,11 @@ const ui = {
         if (focusable) focusable.focus();
     },
 
-    closeModal(id, { force = false } = {}) {
+    closeModal(id, { force = false, keepView = false } = {}) {
         if (!force && !app.allowConsiliumDecisionClose(id)) return;
         if (id === 'addModal') {
             $('addModal').hidden=true; app.addFormActive=false;
-            if (app.currentView==='create') { app.leavingCreate=true; app.showView('patients'); app.leavingCreate=false; $('openAddBtn').focus(); }
+            if (app.currentView==='create' && !keepView) { app.showView('patients'); browserNavigation.replaceScreen('patients'); $('openAddBtn').focus(); }
             return;
         }
         const modal = $(id);
@@ -1918,6 +1925,7 @@ const app = {
             }, 30000);
         }
         this.showView('patients');
+        browserNavigation.reset();
         if (this.can('importData')) this.maybeOfferLegacyMigration();
         this.appReady = true;
     },
@@ -1949,22 +1957,7 @@ const app = {
         }
 
         const chair = u.roleId === 'consilium_chair';
-        const navVisibility = {
-            patients: true,
-            // Видимость — подсказка; сервер проверяет каждый эндпоинт консилиума.
-            consilium: this.can('accessConsilium'),
-            calendar: !chair,
-            notifications: !chair,
-            analytics: true,
-            checklists: !chair,
-            quality: !chair,
-            data: !chair && (this.can('importData') || this.can('exportData')),
-            staff: this.can('manageUsers'),
-            structure: this.can('manageDepartments'),
-            duplicates: this.can('viewDuplicateRegistry'),
-            audit: this.can('viewAudit'),
-            settings: !chair,
-        };
+        const navVisibility = this.navigationVisibility();
         for (const item of document.querySelectorAll('.nav__item')) {
             const view = item.dataset.view;
             if (view in navVisibility) item.classList.toggle('is-hidden', !navVisibility[view]);
@@ -2091,7 +2084,7 @@ const app = {
         const allowed=new Set(fresh.map(p=>p.id));
         this.sessionFieldDrafts=this.collectSessionFieldDrafts(this.user,fresh,allowed);
         this.patientDetails=new Map(fresh.map(p=>[p.id,p]));
-        if(this.currentPatientId&&!allowed.has(this.currentPatientId)){this.currentPatientId=null;if(this.currentView==='patient')this.showView('patients');}
+        if (this.currentPatientId && !allowed.has(this.currentPatientId)) this.forgetDeniedPatient(this.currentPatientId);
         this.renderSessionFieldDrafts();
     },
 
@@ -2170,9 +2163,32 @@ const app = {
 
     /* ------------------------------------------------------------ Навигация */
 
+    navigationVisibility() {
+        const chair = this.user?.roleId === 'consilium_chair';
+        return {
+            patients: true,
+            // Видимость — подсказка; сервер проверяет каждый эндпоинт консилиума.
+            consilium: this.can('accessConsilium'),
+            calendar: !chair,
+            notifications: !chair,
+            analytics: true,
+            checklists: !chair,
+            quality: !chair,
+            data: !chair && (this.can('importData') || this.can('exportData')),
+            staff: this.can('manageUsers'),
+            structure: this.can('manageDepartments'),
+            duplicates: this.can('viewDuplicateRegistry'),
+            audit: this.can('viewAudit'),
+            settings: !chair,
+        };
+    },
+
     showView(view) {
         if (view==='create' && !this.can('createPatients')) view='patients';
-        if (this.currentView==='create' && view!=='create' && !this.leavingCreate && !this.sessionExpired) { void this.requestCloseAddModal(view); return; }
+        if (this.currentView === 'create' && view !== 'create' && this.addFormActive && !this.sessionExpired) {
+            void this.requestCloseAddModal(view);
+            return;
+        }
         this.capturePatientEdits();
         if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';
         if(this.ai?.request){const active=view==='patient'?this.currentPatientId:null;if(active!==this.ai.request.active){this.cancelAIRequest();this.ai.messages=[];this.ai.references=[];this.ai.lastError='Контекст экрана изменился. Предыдущий ответ не используется; запрос не повторяется автоматически.';this.renderAIDrawer();}}
@@ -2221,17 +2237,12 @@ const app = {
         window.scrollTo(0, 0);
     },
 
-    async openPatient(id) {
-        const version = this.beginRead('patient-detail');
-        try {
-            const patient = await apiGetJson('/api/patients/' + encodeURIComponent(id));
-            if (!this.isCurrentRead('patient-detail', version)) return;
-            const retained = new Map(); retained.set(id, patient);
-            this.patientDetails = retained;
-            this.currentPatientId = id;
-            this.currentTab = 'overview';
-            this.showView('patient'); this.renderPatientView();
-        } catch (error) { if (!error.obsolete) ui.toast(error.message, 'danger'); }
+    navigateView(screen) {
+        return browserNavigation.navigate({screen});
+    },
+
+    openPatient(id, tab = 'overview', options) {
+        return browserNavigation.navigate({screen: 'patient', tab, patientId: id}, options);
     },
 
     /* ----------------------------------------------------------------- Тема */
@@ -2261,6 +2272,7 @@ const app = {
     expireSession(accessChanged = false) {
         this.clearQualityV1(accessChanged);
         if (this.sessionExpired || !this.user) return;
+        browserNavigation.invalidate();
         this.sessionExpired = true;
         this.sessionEpoch = (this.sessionEpoch || 0) + 1;
         this.draftOwnerId = this.user.id;
@@ -2296,6 +2308,7 @@ const app = {
     discardSessionAndReload() {
         this.clearQualityV1(true);
         document.body.classList.add('session-locked');
+        browserNavigation.invalidate();
         this.sessionExpired = true;
         this.sessionEpoch = (this.sessionEpoch || 0) + 1;
         this.discardingSession = true;
@@ -2317,7 +2330,7 @@ const app = {
         return !this.sessionExpired;
     },
 
-    async resumeSession(expected) {
+    async resumeSession(expected, previousHistory) {
         // До этого барьера DOM и данные остаются закрытыми, даже если cookie уже действительна.
         const epoch = this.sessionEpoch || 0;
         const me = await this.serverIdentity();
@@ -2346,6 +2359,10 @@ const app = {
         }
         const allowed = new Set(fresh.map(patient => patient.id));
         // Каждый повторный вход сбрасывает производные кэши, а не только текущий список.
+        if (previousHistory && !browserNavigation.matchesSnapshot(previousHistory, user) && this.currentView === 'patient') {
+            this.currentView = 'patients';
+            this.currentPatientId = null;
+        }
         const rebuiltEpoch = this.rebuildAuthorizedWorkspace(user, fresh, allowed, doctors, page, heads.heads, listSettings);
         if (this.sessionEpoch !== rebuiltEpoch || this.sessionExpired) return;
         this.sessionReconciling = false;
@@ -2354,6 +2371,11 @@ const app = {
             if (this.currentView === 'patient') this.renderPatientQualityBlock(this.currentPatientId);
             else if (this.qualityV1.reopenWorkspace) this.showView('quality');
             this.qualityV1.reopenWorkspace = false;
+        }
+        if (!browserNavigation.resume(previousHistory)) {
+            browserNavigation.reset(this.currentView === 'patient'
+                ? {screen: 'patient', tab: this.currentTab, patientId: this.currentPatientId}
+                : {screen: this.currentView});
         }
         $('loginScreen').classList.add('is-hidden');
         $('appScreen').classList.remove('is-hidden');
@@ -2449,14 +2471,15 @@ const app = {
         return epoch;
     },
 
-    async reconcilePeerSession() {
+    async reconcilePeerSession({preserveHistory = false} = {}) {
         if (!this.user || this.sessionReconciling) return;
+        const previousHistory = preserveHistory ? browserNavigation.snapshot() || {} : null;
         this.expireSession();
         try {
             const me = await this.serverIdentity();
             if (!me.authenticated) return;
             if (me.user.id !== this.user.id) { this.discardSessionAndReload(); return; }
-            await this.resumeSession(me.user);
+            await this.resumeSession(me.user, previousHistory);
         } catch (error) { this.showLoginFailure(error); }
     },
 
@@ -3362,9 +3385,9 @@ const app = {
         return this.ATTENTION_REASON_LABELS[code] || code || 'Причина не указана';
     },
 
-    async refreshPatientRecord(patientId) {
+    async refreshPatientRecord(patientId, current = () => true) {
         const updated = await apiGetJson(`/api/patients/${encodeURIComponent(patientId)}`);
-        this.replacePatientInCache(updated);
+        if (current()) this.replacePatientInCache(updated);
         return updated;
     },
 
@@ -3642,19 +3665,7 @@ const app = {
                     const next=event.key==='Home'?0:event.key==='End'?this.TABS.length-1:(index+(event.key==='ArrowRight'?1:-1)+this.TABS.length)%this.TABS.length;
                     $('tab-'+this.TABS[next].key).click();
                 },
-                click: () => {
-                    this.currentTab = tab.key;
-                    this.renderTabs();
-                    $('tab-'+tab.key).focus();
-                    this.renderTabPanel(this.getPatient(this.currentPatientId));
-                    this.applyReadOnlyToPatientView();
-                    if (tab.key === 'overview') {
-                        this.renderPatientAttentionBlock(this.currentPatientId);
-                        this.renderPatientPortalAccessBlock(this.currentPatientId);
-                        if (this.qualityV1) this.renderPatientQualityBlock(this.currentPatientId);
-                    }
-                    if (tab.key === 'notifications') this.renderPatientNotificationsBlock(this.currentPatientId);
-                },
+                click: () => this.openPatient(this.currentPatientId, tab.key),
             },
         }))));
     },
@@ -4021,6 +4032,7 @@ const app = {
 
             return el(this.isReadOnly() ? 'div' : 'button', {
                 ...(this.isReadOnly() ? {role:'group'} : {type:'button'}),
+                'data-route-click': !isNext && !this.isReadOnly() ? '' : null,
                 class: `tl-step ${modifier} ${selectedKey === nodeKey ? 'is-selected' : ''}`,
                 'aria-label': this.isReadOnly() ? `${stageLabel}: ${stateText}` : `${stageLabel}: ${stateText}. ${isNext ? 'Перевести пациента на этот этап' : 'Показать даты этапа'}`,
                 on: this.isReadOnly() ? {} : { click: activate },
@@ -4130,13 +4142,9 @@ const app = {
                 el('span', { class: 'checkbox__text', text: item }),
             ]))),
             required.length > 5 ? el('button', {
-                type: 'button', class: 'btn btn--quiet btn--sm', text: 'Открыть полный чек-лист',
+                type: 'button', class: 'btn btn--quiet btn--sm', text: 'Открыть полный чек-лист', 'data-route-click': '',
                 on: {
-                    click: () => {
-                        this.currentTab = 'checklist';
-                        this.renderTabs();
-                        this.renderTabPanel(p);
-                    },
+                    click: () => this.openPatient(p.id, 'checklist'),
                 },
             }) : null,
         ]);
@@ -4801,51 +4809,22 @@ const app = {
         this.qualityV1.card?.clear(true);
     },
 
-    async openQualityV1Target(id, tab, scopeCurrent, action) {
+    openQualityV1Target(id, tab, scopeCurrent, action) {
         const allowed = () => scopeCurrent() && (!action || (action.can_write &&
             (tab === 'structure'
                 ? action.workflow === 'unresolved_treating_doctor' && this.can('manageDepartments')
                 : this.can('editPatients'))));
-        if (!allowed()) return false;
-        const ticket = this.beginRead('patient-detail');
-        const current = () => allowed() && this.isCurrentRead('patient-detail', ticket);
-        if (!await this.confirmClinicalNavigation() || !current()) return false;
-        try {
-            const patient = await apiGetJson('/api/patients/' + encodeURIComponent(id));
-            if (!current()) return false;
-            if (patient?.id !== id) throw new Error('Invalid patient response');
-            if (this.clinicalWriteInFlight || this.dirtyClinicalControls().length) {
-                ui.toast('Во время загрузки появился несохраненный ввод. Переход отменен.', 'warning');
-                return false;
-            }
-            if (tab === 'structure') {
-                this.showView('structure');
-                const heading = $('view-structure').querySelector('h1');
-                if (heading) { heading.tabIndex = -1; heading.focus({preventScroll: true}); }
-                return true;
-            }
-            this.patientDetails = new Map([[id, patient]]);
-            this.currentPatientId = id;
-            this.currentTab = tab || 'overview';
-            this.showView('patient');
-            this.renderPatientView();
-            const target = $('crumbPatientName');
-            target.tabIndex = -1;
-            target.focus({preventScroll: true});
-            return true;
-        } catch (error) {
-            if (current()) {
-                if ([403, 404].includes(error.status)) {
-                    this.clearQualityV1(error.status === 403);
-                    this.forgetDeniedPatient(id);
-                    if (this.currentView === 'quality') {
-                        this.qualityV1.workspace.publish({state: 'error', key: 'patients', error});
-                    }
+        const options = {
+            allowed,
+            denied: error => {
+                this.clearQualityV1(error.status === 403);
+                if (this.currentView === 'quality') {
+                    this.qualityV1.workspace.publish({state: 'error', key: 'patients', error});
                 }
-                ui.toast('Карточка недоступна.', 'warning');
-            }
-            return false;
-        }
+            },
+        };
+        if (tab === 'structure') return browserNavigation.navigate({screen: 'structure'}, {...options, objectId: id});
+        return this.openPatient(id, tab || 'overview', {...options, focus: () => $('crumbPatientName')});
     },
 
     async loadDataQuality(requestId = this.qualityRequest) {
@@ -5112,18 +5091,14 @@ const app = {
 
     followQualityAction(patientId, action) {
         if (action && action.workflow === 'unresolved_treating_doctor' && action.tab === 'structure') {
-            this.showView('structure');
-            return;
+            return this.navigateView('structure');
         }
         const tab = action && action.tab ? action.tab : 'overview';
         this.openPatientTab(patientId, tab);
     },
 
     openPatientTab(id, tab) {
-        this.currentPatientId = id;
-        this.currentTab = tab || 'overview';
-        this.showView('patient');
-        this.renderPatientView();
+        return this.openPatient(id, tab || 'overview');
     },
 
     /* ============================================================= ИИ-ПОМОЩНИК */
@@ -5704,15 +5679,13 @@ const app = {
         return this.notificationWrite('internal',()=>this.internalSummaryReady&&!!this.internalNotifications.summary?.unread_count&&this.internalReadReady(),()=>apiPost('/api/internal-notifications/read-all',{}),()=>this.refreshInternalNotificationLists());
     },
 
-    async openNotificationPatient(id,tab) {
-        const ticket=this.notificationTicket('notification-navigation');
-        if(!await this.confirmClinicalNavigation()||!this.notificationCurrent(ticket))return false;
-        try {
-            const patient=await apiGetJson('/api/patients/'+encodeURIComponent(id));if(!this.notificationCurrent(ticket))return false;
-            if(this.clinicalWriteInFlight||this.dirtyClinicalControls().length){ui.toast('Во время загрузки появился новый несохраненный ввод. Переход отменен.','warning');return false;}
-            this.patientDetails=new Map([[id,patient]]);this.currentPatientId=id;this.currentTab=tab||'overview';this.showView('patient');this.renderPatientView();return true;
-        } catch(e) {if(this.notificationCurrent(ticket)){this.notificationFailure(ticket);ui.toast('Карточка недоступна. '+e.message,'warning');}}
+    openNotificationPatient(id, tab) {
+        const ticket = this.notificationTicket('notification-navigation');
+        return this.openPatient(id, tab || 'overview', {
+            allowed: () => this.notificationCurrent(ticket),
+        });
     },
+
     async openInternalNotificationPatient(item) {
         if(!this.internalItemCurrent(item)||this.notificationMutation)return;const epoch=this.sessionEpoch||0;
         if (item.source_type === 'consilium_revision') {
@@ -5732,7 +5705,7 @@ const app = {
             this.renderConsiliumGroupPicker('doctor');
             await this.refreshInternalNotificationSummary();
             if(epoch!==(this.sessionEpoch||0)||this.sessionExpired||this.clinicalWriteInFlight||this.dirtyClinicalControls().length)return;
-            this.showView('consilium');
+            await this.navigateView('consilium');
             return;
         }
         const tab = item.source_type === 'checklist' ? 'checklist'
@@ -6990,27 +6963,31 @@ const app = {
         } finally {if(current())host.removeAttribute('aria-busy');}
         const loadWorkspace=()=>this.renderWorkspacePage(kind,hostId,view);
     },
-    async openWorkspacePatient(kind,row,version) {
-        const state=this.workspaceListState(kind),view=kind==='events'?'calendar':'checklists';
-        const live=()=>state.ready&&state.rows.includes(row)&&state.epoch===this.sessionEpoch&&this.currentView===view&&this.isCurrentRead('workspace-'+kind,version);
-        if(!live())return false;
-        const ticket=this.notificationTicket('workspace-open');
-        if(!await this.confirmClinicalNavigation()||!live()||!this.notificationCurrent(ticket))return false;
-        try {
-            const id=row.patientId||row.patient_id,patient=await apiGetJson('/api/patients/'+encodeURIComponent(id));
-            if(!live()||!this.notificationCurrent(ticket))return false;
-            if(this.clinicalWriteInFlight||this.dirtyClinicalControls().length){ui.toast('Появился новый несохраненный ввод. Переход отменен.','warning');return false;}
-            let index=-1;
-            if(kind==='events'){
-                index=(patient.history||[]).findIndex(occ=>occ.id===row.historyEntryId&&occ.events.some(ev=>ev.id===row.id));
-                if(index<0){ui.toast('Событие больше недоступно. Обновите расписание.','warning');return false;}
-            }
-            this.patientDetails=new Map([[id,patient]]);this.currentPatientId=id;this.currentTab=kind==='events'?'events':'checklist';
-            if(index>=0)this.selectedTimelineNodes[id]='occ:'+index;
-            this.showView('patient');this.renderPatientView();
-            const target=index>=0?$('patient-event-'+row.id):$('patientPanels');if(target){target.setAttribute('tabindex','-1');target.focus({preventScroll:true});target.scrollIntoView({block:'nearest'});}
-            return true;
-        } catch(error){if(this.notificationCurrent(ticket)){if([403,404].includes(error.status))this.discardSessionAndReload();else ui.toast('Не удалось открыть карточку. '+error.message,'warning');}return false;}
+    openWorkspacePatient(kind, row, version) {
+        const state = this.workspaceListState(kind);
+        const view = kind === 'events' ? 'calendar' : 'checklists';
+        const id = row.patientId || row.patient_id;
+        return this.openPatient(id, kind === 'events' ? 'events' : 'checklist', {
+            registryOnDenial: true,
+            allowed: () => state.ready && state.rows.includes(row) && state.epoch === this.sessionEpoch &&
+                this.currentView === view && this.isCurrentRead('workspace-' + kind, version),
+            prepare: patient => {
+                if (kind !== 'events') return true;
+                const index = (patient.history || []).findIndex(occ => occ.id === row.historyEntryId &&
+                    occ.events.some(event => event.id === row.id));
+                if (index < 0) {
+                    ui.toast('Событие больше недоступно. Обновите расписание.', 'warning');
+                    return false;
+                }
+                this.selectedTimelineNodes[id] = 'occ:' + index;
+                return true;
+            },
+            focus: () => {
+                const target = kind === 'events' ? $('patient-event-' + row.id) : $('patientPanels');
+                target?.scrollIntoView({block: 'nearest'});
+                return target;
+            },
+        });
     },
 
     boundedPager(data,state,load) {
@@ -7106,9 +7083,9 @@ const app = {
         node.addEventListener('focus',()=>{control.navigationBlur=false;});
         // Clinical controls stay dirty until acknowledgment. Primary fields retain
         // the existing explicit field-completion change contract (including Tab).
-        node.addEventListener('keydown',event=>{if(event.key==='Tab' && control.navigationOnly)control.navigationBlur=true;});
+        node.addEventListener('keydown', event => { if (event.key === 'Tab') control.navigationBlur = Boolean(control.navigationOnly); });
         node.addEventListener('change',event=>{
-            if (control.navigationBlur) {control.navigationBlur=false;event.stopImmediatePropagation();return;}
+            if (control.navigationBlur || !document.hasFocus()) {control.navigationBlur=false;event.stopImmediatePropagation();return;}
         },true);
     },
 
@@ -7122,9 +7099,9 @@ const app = {
         }
     },
 
-    dirtyClinicalControls() {
+    dirtyClinicalControls(includePrimary = false) {
         return [...$('patientPanels').querySelectorAll('input,select,textarea')].filter(node=>{
-            const c=this.patientDraftControls?.get(node);return c?.navigationOnly && !node.disabled && (c.pending || c.error || (c.touched && JSON.stringify(c.readValue())!==c.initial));
+            const c=this.patientDraftControls?.get(node);return c && (includePrimary || c.navigationOnly) && !node.disabled && (c.pending || c.error || (c.touched && JSON.stringify(c.readValue())!==c.initial));
         });
     },
 
@@ -7183,6 +7160,7 @@ const app = {
     },
 
     forgetDeniedPatient(patientId) {
+        browserNavigation.forget(patientId);
         // Object access can change without a role/access-context change.
         this.patientDetails.delete(patientId);
         for (const [key, draft] of this.sessionFieldDrafts) {
@@ -7195,31 +7173,54 @@ const app = {
             this.renderPatients();
             return;
         }
+        this.clearPatientNavigationView();
+        this.showView('patients');
+        browserNavigation.replaceScreen('patients');
+    },
+
+    clearPatientNavigationView() {
         for (const id of ['patientPanels', 'patientSide', 'patientRoute', 'patientFacts', 'crumbPatientName']) {
             $(id).replaceChildren();
         }
         this.currentPatientId = null;
-        this.showView('patients');
+        this.patientDetails.clear();
     },
 
-    async confirmClinicalNavigation() {
+    async confirmClinicalNavigation(intentCurrent = () => true) {
         if(this.sessionExpired||this.sessionReconciling||!this.user)return false;
         if(this.clinicalWriteInFlight){ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.','warning');return false;}
-        const dirty=this.dirtyClinicalControls();if(!dirty.length)return true;
+        const dirty = this.dirtyClinicalControls().map(node => [node, JSON.stringify(this.patientDraftControls.get(node).readValue())]);
+        if (!dirty.length) return true;
         const epoch=this.sessionEpoch,user=this.user.id,patientId=this.currentPatientId;
-        const current=()=>!this.sessionExpired&&!this.sessionReconciling&&this.user?.id===user&&this.sessionEpoch===epoch&&this.currentPatientId===patientId&&!this.clinicalWriteInFlight;
+        const current=()=>intentCurrent()&&!this.sessionExpired&&!this.sessionReconciling&&this.user?.id===user&&this.sessionEpoch===epoch&&this.currentPatientId===patientId&&!this.clinicalWriteInFlight;
         const ok=await ui.confirm({title:'Отменить несохраненный ввод?',text:'Поля события или заметки еще не сохранены. Остаться в форме или явно отменить ввод перед переходом?',okLabel:'Отменить ввод и перейти',danger:false});
         if(!ok||!current())return false;
-        if(dirty.some(node=>this.patientDraftControls.get(node).error)){
-            try{await this.refreshPatientRecord(patientId);}catch(error){if([403,404].includes(error.status))this.discardSessionAndReload();else ui.toast('Не удалось обновить карточку. Ввод сохранен.','warning');return false;}
+        if (dirty.some(([node]) => this.patientDraftControls.get(node).error)) {
+            try { await this.refreshPatientRecord(patientId, current); }
+            catch (error) {
+                if (current()) {
+                    if ([403, 404].includes(error.status)) this.forgetDeniedPatient(patientId);
+                    else ui.toast('Не удалось обновить карточку. Ввод сохранен.', 'warning');
+                }
+                return false;
+            }
             if(!current())return false;
         }
-        for(const node of dirty){const c=this.patientDraftControls.get(node);node.value=JSON.parse(c.initial);c.touched=false;c.error=null;c.blocked=false;}
+        if (dirty.some(([node, value]) => !node.isConnected ||
+            JSON.stringify(this.patientDraftControls.get(node).readValue()) !== value)) return false;
+        for (const [node] of dirty) {
+            const control = this.patientDraftControls.get(node);
+            node.value = JSON.parse(control.initial);
+            control.touched = false;
+            control.error = null;
+            control.blocked = false;
+        }
         return true;
     },
 
     bindPatientNavigation() {
-        const selector='#patientTabs button,#backToList,.nav__item,#patientSide button,#patientFacts button,.tl-step,#themeToggle,[data-card-save]';
+        const routed = '#patientTabs button,#backToList,.nav__item,#openAddBtn,#unresolvedBannerBtn,[data-route-click]';
+        const selector=routed+',#patientSide button,#patientFacts button,.tl-step,#themeToggle,[data-card-save]';
         const qualityNavigation = '[data-quality-action="patient"],[data-quality-action="finding"]';
         document.addEventListener('pointerdown',event=>{
             if (!event.target.closest(selector+',#internalNotificationsBell,#aiAssistantBtn,.ai-result-card button,.internal-notification__actions button,#notificationsBody button,'+qualityNavigation) || this.sessionExpired) return;
@@ -7227,7 +7228,7 @@ const app = {
         },{capture:true,signal:this.globalControls.signal});
         document.addEventListener('click',event=>{
             const target=event.target.closest(selector);
-            if(!target || this.sessionExpired || !this.user || target.matches('[data-card-save],[data-ai-open],'+qualityNavigation))return;
+            if(!target || this.sessionExpired || !this.user || target.matches(routed+', [data-card-save],[data-ai-open],'+qualityNavigation))return;
             const dirty=this.dirtyClinicalControls();if(!dirty.length)return;
             event.preventDefault();event.stopImmediatePropagation();
             if (this.clinicalWriteInFlight) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }
@@ -7460,9 +7461,9 @@ const app = {
         if (!confirmed) return;
         try {
             await apiDelete(`/api/patients/${patientId}`);
-            this.patientDetails.delete(patientId); await this.loadPatients();
+            this.forgetDeniedPatient(patientId);
+            await this.loadPatients();
             ui.toast('Пациент удалён.', 'good');
-            this.showView('patients');
         } catch (e) {
             ui.toast('Не удалось удалить: ' + e.message, 'danger');
         }
@@ -7571,11 +7572,14 @@ const app = {
     },
 
     selectTimelineNode(patientId, nodeKey) {
-        if (this.selectedTimelineNodes[patientId] === nodeKey) delete this.selectedTimelineNodes[patientId];
-        else this.selectedTimelineNodes[patientId] = nodeKey;
-        this.currentTab = 'events';
-        this.renderTabs();
-        this.renderTabPanel(this.getPatient(patientId));
+        const select = () => {
+            if (this.selectedTimelineNodes[patientId] === nodeKey) delete this.selectedTimelineNodes[patientId];
+            else this.selectedTimelineNodes[patientId] = nodeKey;
+            return true;
+        };
+        if (this.currentTab !== 'events') return this.openPatient(patientId, 'events', {prepare: select});
+        select();
+        this.refreshCurrent();
     },
 
     async advanceToStage(patientId, stage, stageLabel, options = {}) {
@@ -7669,8 +7673,13 @@ const app = {
             .map(node => [node.id, node.value, node.checked]));
     },
 
-    async requestCloseAddModal(nextView = 'patients') {
-        if (this.addPatientPending || this.addClosePending) return;
+    requestCloseAddModal(nextView = 'patients') {
+        const focus = nextView === 'patients' ? () => $('openAddBtn') : undefined;
+        return browserNavigation.navigate({screen: nextView}, {focus});
+    },
+
+    async confirmCloseAddModal(current) {
+        if (this.addPatientPending || this.addClosePending) return false;
         const owner=this.user?.id, epoch=this.sessionEpoch;
         if (this.addFormState() !== this.addFormBaseline) {
             this.addClosePending = true;
@@ -7679,10 +7688,9 @@ const app = {
                     ? 'Запрос мог уже создать карточку. Удаление локального черновика не отменяет запись на сервере. Для проверки результата останьтесь в форме. Удалить черновик?'
                     : 'Несохраненные данные будут удалены. Продолжить?', okLabel: 'Удалить черновик'});
             this.addClosePending = false;
-            if (!discard || this.sessionExpired || this.user?.id!==owner || this.sessionEpoch!==epoch) return;
+            if (!discard || this.sessionExpired || this.user?.id!==owner || this.sessionEpoch!==epoch || !current()) return false;
         }
-        ui.closeModal('addModal');
-        if (nextView!=='patients') this.showView(nextView);
+        return current();
     },
 
     openAddModal() {
@@ -11377,6 +11385,11 @@ const app = {
             if (node) node.addEventListener(event, handler);
         };
 
+        document.querySelector('.skip-link')?.addEventListener('click', event => {
+            event.preventDefault();
+            $('workspaceMain').focus();
+        });
+
         // Вход и выход
         $('loginForm').addEventListener('submit', async (event) => {
             event.preventDefault();
@@ -11456,7 +11469,7 @@ const app = {
 
         // Структура
         on('openDeptCreateBtn', 'click', () => this.createDepartment());
-        on('unresolvedBannerBtn', 'click', () => this.showView('structure'));
+        on('unresolvedBannerBtn', 'click', () => this.navigateView('structure'));
 
         // Смена лечащего врача
         $('doctorForm').addEventListener('submit', (event) => this.submitDoctorChange(event));
@@ -11620,9 +11633,9 @@ const app = {
 
         // Навигация
         for (const item of document.querySelectorAll('.nav__item')) {
-            item.addEventListener('click', () => this.showView(item.dataset.view));
+            item.addEventListener('click', () => this.navigateView(item.dataset.view));
         }
-        on('backToList', 'click', () => this.showView('patients'));
+        on('backToList', 'click', () => this.navigateView('patients'));
         on('sidebarToggle', 'click', () => {
             const shell = $('appScreen');
             if (window.matchMedia('(min-width: 861px)').matches && this.can('consiliumChair')) {
@@ -11685,7 +11698,7 @@ const app = {
         on('notificationsNextBtn','click',()=>{this.notifications.offset+=this.notifications.limit;this.renderNotifications();});
         on('internalNotificationsFullBtn', 'click', () => {
             this.closeInternalNotificationsDrawer();
-            this.showView('notifications');
+            this.navigateView('notifications');
         });
         on('internalNotificationsRefreshBtn', 'click', () => this.renderInternalNotificationCenter());
         on('internalNotificationsSearchInput', 'input', (event) => {
@@ -11765,7 +11778,7 @@ const app = {
         });
 
         // Новый пациент
-        on('openAddBtn', 'click', () => this.openAddModal());
+        on('openAddBtn', 'click', () => this.navigateView('create'));
         on('createBackBtn', 'click', () => this.requestCloseAddModal());
         on('closeAddBtn', 'click', () => this.requestCloseAddModal());
         on('closeAddIconBtn', 'click', () => this.requestCloseAddModal());
@@ -12058,6 +12071,417 @@ const app = {
     },
 };
 
+// History holds only document-local route keys. Authorization remains with app and the API.
+const browserNavigation = {
+    entries: new Map(),
+    writes: new Set(),
+    generation: 0,
+
+    invalidate() {
+        if (this.recovery) {
+            const {route} = this.recovery;
+            this.recovery = null;
+            this.discardUnknownForm(route, true);
+        }
+        this.generation++;
+        this.entries.clear();
+        this.nonce = null;
+        this.committed = null;
+        this.intentPatient = null;
+        this.correction = null;
+        this.closeNavigationDialog();
+    },
+
+    closeNavigationDialog() {
+        if (this.dialog && ui.pendingConfirmCancel === this.dialog && ui.topModal() === 'confirmModal') {
+            this.dialog();
+        }
+        this.dialog = null;
+    },
+
+    entry(state) {
+        if (!state || state.v !== 1 || !this.nonce || state.nonce !== this.nonce) return null;
+        const saved = this.entries.get(state.route);
+        return saved?.state.index === state.index ? saved : null;
+    },
+
+    sameRoute(a, b) {
+        return a?.screen === b.screen && a?.tab === b.tab && a?.patientId === b.patientId;
+    },
+
+    save(route, replace) {
+        const previous = replace ? this.entry(history.state) : this.committed;
+        // Replacing an unknown position starts a new index segment. Other segments
+        // stay navigable, but their relative offsets are not trusted.
+        const segment = previous?.segment || {};
+        const index = (previous?.state.index ?? 0) + (replace ? 0 : 1);
+        if (replace) this.entries.delete(history.state?.route);
+        else {
+            for (const [key, entry] of this.entries) {
+                if (entry.segment === segment && entry.state.index >= index) this.entries.delete(key);
+            }
+        }
+        const state = {v: 1, index, nonce: this.nonce, route: newIdempotencyKey()};
+        const query = new URLSearchParams({screen: route.screen});
+        if (route.tab) query.set('tab', route.tab);
+        const url = location.pathname + '?' + query;
+        if (replace) history.replaceState(state, '', url);
+        else history.pushState(state, '', url);
+        this.committed = {state, route, segment};
+        this.entries.set(state.route, this.committed);
+    },
+
+    reset(route = {screen: 'patients'}) {
+        this.invalidate();
+        this.nonce = newIdempotencyKey();
+        this.save(route, true);
+    },
+
+    snapshot() {
+        if (!this.committed || this.entry(history.state) !== this.committed) return null;
+        return {nonce: this.nonce, committed: this.committed, entries: new Map(this.entries),
+            owner: app.user.id, access: app.accessSignature(app.user)};
+    },
+
+    matchesSnapshot(previous, user) {
+        if (!previous?.committed || previous.owner !== user.id || previous.access !== app.accessSignature(user)) return false;
+        const {state} = previous.committed;
+        return state.v === history.state?.v && state.index === history.state?.index &&
+            state.route === history.state?.route && state.nonce === history.state?.nonce;
+    },
+
+    resume(previous) {
+        if (!this.matchesSnapshot(previous, app.user)) return false;
+        const {route} = previous.committed;
+        if (!this.canNavigate(route)) return false;
+        if (route.screen === 'patient' && (app.currentPatientId !== route.patientId || app.currentTab !== route.tab)) return false;
+        if (route.screen === 'create' && !app.addFormActive) return false;
+        if (app.currentView !== route.screen) app.showView(route.screen);
+        this.nonce = previous.nonce;
+        this.committed = previous.committed;
+        this.entries = previous.entries;
+        return true;
+    },
+
+    replaceScreen(screen) {
+        if (!this.nonce || !this.committed || app.sessionExpired) return;
+        if (this.entry(history.state) === this.committed) this.save({screen}, true);
+        else this.reset({screen});
+    },
+
+    forget(patientId) {
+        if (patientId === this.intentPatient) {
+            this.generation++;
+            this.intentPatient = null;
+            this.closeNavigationDialog();
+        }
+        for (const [key, entry] of this.entries) {
+            if (entry.route.patientId === patientId) this.entries.delete(key);
+        }
+    },
+
+    suppressFieldBlur() {
+        const control = app.patientDraftControls?.get(document.activeElement);
+        if (control) control.navigationBlur = true;
+    },
+
+    canNavigate(route) {
+        if (route.screen === 'patient') {
+            return typeof route.patientId === 'string' && app.TABS.some(tab => tab.key === route.tab);
+        }
+        if (route.screen === 'create') return app.can('createPatients');
+        return app.navigationVisibility()[route.screen] === true;
+    },
+
+    restorePosition() {
+        const position = this.entry(history.state);
+        if (!position || !this.committed || position.segment !== this.committed.segment) return false;
+        const delta = this.committed.state.index - position.state.index;
+        if (delta) {
+            this.correction = this.committed;
+            history.go(delta);
+        }
+        return position === this.committed || Boolean(delta);
+    },
+
+    async pop(state) {
+        this.suppressFieldBlur();
+        this.recovery = null;
+        const entry = this.entry(state);
+        if (entry && entry === this.committed) {
+            this.generation++;
+            this.closeNavigationDialog();
+            this.correction = null;
+            return;
+        }
+        this.correction = null;
+        if (!app.user || app.sessionExpired || app.sessionReconciling || !app.appReady) return;
+        if (entry) {
+            await this.navigate(entry.route, {entry});
+            return;
+        }
+        await this.recoverUnknown();
+    },
+
+    currentRoute() {
+        return app.currentView === 'patient'
+            ? {screen: 'patient', tab: app.currentTab, patientId: app.currentPatientId}
+            : {screen: app.currentView};
+    },
+
+    discardUnknownForm(route, locked = false) {
+        if (route.screen === 'create') {
+            ui.closeModal('addModal', {keepView: true});
+            $('addForm').reset();
+            app.addPatientKey = null;
+            app.addPatientSentBody = null;
+            app.addPatientDuplicateConfirmation = null;
+            app.addPatientUncertain = false;
+        }
+        if (route.patientId) {
+            for (const [key, draft] of app.sessionFieldDrafts) {
+                if (draft.patientId === route.patientId) app.sessionFieldDrafts.delete(key);
+            }
+        }
+        app.clearPatientNavigationView();
+        $('view-patient').classList.add('is-hidden');
+        $('view-create').classList.add('is-hidden');
+        if (locked) app.currentView = 'patients';
+        app.currentTab = 'overview';
+    },
+
+    async recoverUnknown({keep = false} = {}) {
+        this.closeNavigationDialog();
+        const route = this.currentRoute();
+        const epoch = app.sessionEpoch || 0;
+        const generation = ++this.generation;
+        const owner = app.user.id;
+        const access = app.accessSignature(app.user);
+        const originalFocus = document.activeElement;
+        const activeControl = app.patientDraftControls?.get(originalFocus);
+        const marker = {v: 1, index: 0, nonce: this.nonce, route: newIdempotencyKey()};
+        // The popped location may contain arbitrary parameters. Scrub it before requests.
+        if (this.entry(history.state)) this.entries.delete(history.state.route);
+        history.replaceState(marker, '', location.pathname + '?screen=patients');
+        const recovery = {route};
+        this.recovery = recovery;
+        const samePage = () => this.recovery === recovery && this.generation === generation &&
+            epoch === (app.sessionEpoch || 0) && owner === app.user?.id &&
+            app.accessSignature(app.user) === access && !app.sessionExpired && !app.sessionReconciling &&
+            history.state?.route === marker.route && history.state?.nonce === marker.nonce &&
+            history.state?.index === marker.index && history.state?.v === marker.v;
+        const current = () => samePage() && this.sameRoute(this.currentRoute(), route);
+        const busy = () => this.writes.size || app.clinicalWriteInFlight || app.addPatientPending;
+        const draft = () => route.screen === 'create'
+            ? app.addFormState()
+            : route.screen === 'patient'
+                ? app.dirtyClinicalControls(true).map(node => [node, JSON.stringify(app.patientDraftControls.get(node).readValue())])
+                : [];
+        const differs = (a, b) => typeof a === 'string' ? a !== b :
+            a.length !== b.length || a.some(([node, value], i) => node !== b[i][0] || value !== b[i][1]);
+        const initial = draft();
+        const hasDraft = typeof initial === 'string' ? initial !== app.addFormBaseline : initial.length > 0;
+        const registry = {screen: 'patients'};
+        const returnToRegistry = () => {
+            this.discardUnknownForm(route);
+            this.render(registry, null, null, true);
+            this.save(registry, true);
+            app.renderSessionFieldDrafts();
+        };
+        try {
+            let stay = keep || Boolean(busy() || ui.topModal());
+            if (!stay && hasDraft) {
+                this.suppressFieldBlur();
+                const choice = ui.confirm({
+                    title: 'Уйти с формы?',
+                    text: 'В форме есть несохраненный ввод. Можно остаться или явно удалить черновик и перейти в реестр.',
+                    okLabel: 'Удалить черновик и перейти', danger: false,
+                });
+                this.dialog = ui.pendingConfirmCancel;
+                stay = !(await choice);
+            }
+            if (!current()) return;
+            // Changes made after approval are not part of its explicit discard.
+            if (!stay && (busy() || differs(initial, draft()))) stay = true;
+            if (stay && this.canNavigate(route) && route.patientId) {
+                const patient = await apiGetJson('/api/patients/' + encodeURIComponent(route.patientId));
+                if (!current()) return;
+                if (patient?.id !== route.patientId) throw new Error('Карточка недоступна.');
+            } else {
+                if (!await app.checkSessionIdentity(epoch) || !current()) return;
+            }
+            if (!stay && (busy() || differs(initial, draft()))) {
+                // A new decision is required for input entered during an access check.
+                this.recovery = null;
+                return this.recoverUnknown();
+            }
+            if (stay && this.canNavigate(route)) {
+                // The GET is proof of access. Keep the in-place form and original edit versions.
+                this.save(route, true);
+                if (originalFocus?.isConnected) originalFocus.focus({preventScroll: true});
+            } else if (app.navigationVisibility().patients) {
+                returnToRegistry();
+            }
+        } catch (error) {
+            if (!samePage() || error.obsolete) return;
+            if (route.patientId && [403, 404].includes(error.status)) {
+                this.forget(route.patientId);
+                returnToRegistry();
+            } else {
+                // An unavailable access check cannot rebind a patient to history.
+                app.expireSession();
+            }
+        } finally {
+            if (this.recovery === recovery) {
+                this.recovery = null;
+                if (this.generation === generation) this.dialog = null;
+            }
+            if (activeControl && document.activeElement === originalFocus) activeControl.navigationBlur = false;
+        }
+    },
+
+    async confirmExit(current, route) {
+        if (this.writes.size || app.clinicalWriteInFlight || app.addPatientPending) {
+            ui.toast('Дождитесь результата сохранения. Переход отложен.', 'warning');
+            return false;
+        }
+        if (ui.topModal()) return false;
+        this.suppressFieldBlur();
+        if (app.currentView === 'create') {
+            const result = app.confirmCloseAddModal(current);
+            this.dialog = ui.topModal() === 'confirmModal' ? ui.pendingConfirmCancel : null;
+            return await result && current() ? {create: app.addFormState()} : false;
+        }
+        const clinical = app.confirmClinicalNavigation(current);
+        this.dialog = ui.topModal() === 'confirmModal' ? ui.pendingConfirmCancel : null;
+        if (!await clinical || !current()) return false;
+        const primary = this.primaryDraftValues();
+        if (!primary.length) return {primary};
+        const discard = route.patientId && route.patientId !== app.currentPatientId;
+        const answer = ui.confirm({
+            title: 'Перейти с несохраненным вводом?',
+            text: discard
+                ? 'При открытии другой карточки этот несохраненный ввод будет удален.'
+                : 'Локальный черновик останется доступен. Для записи потребуется отдельное сохранение.',
+            okLabel: discard ? 'Удалить черновик и перейти' : 'Оставить черновик и перейти',
+            danger: false,
+        });
+        this.dialog = ui.pendingConfirmCancel;
+        return await answer && current() ? {primary} : false;
+    },
+
+    primaryDraftValues() {
+        return app.dirtyClinicalControls(true).filter(node => !app.patientDraftControls.get(node).navigationOnly)
+            .map(node => [node, JSON.stringify(app.patientDraftControls.get(node).readValue())]);
+    },
+
+    async navigate(route, {entry, replace = false, allowed, prepare, focus, objectId, denied, registryOnDenial} = {}) {
+        if (!app.user || app.sessionExpired || app.sessionReconciling || !this.nonce) return false;
+        if (this.correction && !replace) return false;
+        this.closeNavigationDialog();
+        const generation = ++this.generation;
+        const epoch = app.sessionEpoch || 0;
+        const user = app.user.id;
+        const access = app.accessSignature(app.user);
+        const positionKey = history.state?.route;
+        const sourceView = app.currentView, sourcePatient = app.currentPatientId, sourceTab = app.currentTab;
+        const sameIntent = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
+            && user === app.user?.id && app.accessSignature(app.user) === access
+            && !app.sessionExpired && !app.sessionReconciling && positionKey === history.state?.route;
+        const current = () => sameIntent() && sourceView === app.currentView &&
+            sourcePatient === app.currentPatientId && sourceTab === app.currentTab;
+        let finished = false;
+        const id = objectId || route.patientId;
+        this.intentPatient = id;
+        try {
+            if (!this.canNavigate(route) || (allowed && !allowed())) {
+                if (entry) {
+                    finished = await this.navigate({screen: 'patients'}, {replace: true});
+                }
+                return false;
+            }
+            if (!entry && !replace && this.sameRoute(this.committed?.route, route) &&
+                app.currentView === route.screen && (route.screen !== 'patient' || app.currentTab === route.tab)) return true;
+            const consent = await this.confirmExit(current, route);
+            if (!consent || !current() || (allowed && !allowed())) return false;
+            const patient = id ? await apiGetJson('/api/patients/' + encodeURIComponent(id)) : null;
+            if (!id && !await app.checkSessionIdentity(epoch)) return false;
+            if (!current() || !this.canNavigate(route) || (allowed && !allowed())) return false;
+            if (id && patient?.id !== id) throw new Error('Карточка недоступна.');
+            const values = new Map(consent.primary || []);
+            if (this.writes.size || app.clinicalWriteInFlight || app.addPatientPending ||
+                (consent.create !== undefined && app.addFormState() !== consent.create) ||
+                app.dirtyClinicalControls().length || this.primaryDraftValues().some(([node, value]) => values.get(node) !== value)) {
+                ui.toast('Появился несохраненный ввод. Переход отложен.', 'warning');
+                return false;
+            }
+            if (prepare && !prepare(patient)) return false;
+            // A click arriving while the browser is at an uncommitted entry cannot truncate it.
+            if (!entry && !replace && this.entry(history.state) !== this.committed) {
+                if (!this.restorePosition()) await this.recoverUnknown({keep: true});
+                return false;
+            }
+            this.render(route, patient, focus, replace);
+            if (entry) this.committed = entry;
+            else if (replace) this.reset(route);
+            else this.save(route, false);
+            finished = true;
+            return true;
+        } catch (error) {
+            if (!sameIntent() || error.obsolete) return false;
+            if (id && [403, 404].includes(error.status)) {
+                app.forgetDeniedPatient(id);
+                if (entry || registryOnDenial) {
+                    this.render({screen: 'patients'}, null, null, true);
+                    this.reset();
+                    finished = true;
+                }
+                if (denied) denied(error);
+            }
+            ui.toast(id ? 'Карточка недоступна.' : error.message, 'warning');
+            return false;
+        } finally {
+            if (!finished && entry && current() && !this.restorePosition()) {
+                await this.recoverUnknown({keep: true});
+            }
+            if (generation === this.generation) {
+                this.dialog = null;
+                this.intentPatient = null;
+            }
+        }
+    },
+
+    render(route, patient, focus, clearPatient) {
+        app.capturePatientEdits();
+        if (app.currentView === 'create' && route.screen !== 'create') ui.closeModal('addModal', {keepView: true});
+        if (route.screen === 'patient') {
+            if (patient) app.patientDetails = new Map([[patient.id, patient]]);
+            app.currentPatientId = route.patientId;
+            app.currentTab = route.tab;
+            app.showView('patient');
+            app.renderPatientView();
+        } else if (route.screen === 'create') {
+            app.openAddModal();
+        } else {
+            if (clearPatient) app.clearPatientNavigationView();
+            if (route.screen === 'patients') {
+                // Never render rows from a previous release while fetching the authorized page.
+                app.patientRows = [];
+                app.patientPage = null;
+                app.patientListDirty = true;
+                $('patientRegistryCount').textContent = '—';
+                app.setPatientListState('loading');
+            }
+            app.showView(route.screen);
+        }
+        const target = focus?.() || (route.tab ? $('tab-' + route.tab) : $('view-' + route.screen)?.querySelector('h1'));
+        if (target) {
+            if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
+            target.focus({preventScroll: true});
+        }
+    },
+};
+
 // Только исходная пустая разметка и начальные настройки; медицинских данных здесь нет.
 const pristineWorkspace = [...document.body.children].filter(node => node.tagName !== 'SCRIPT').map(node => node.cloneNode(true));
 const pristineAppState = structuredClone(Object.fromEntries(Object.entries(app).filter(([, value]) => typeof value !== 'function')));
@@ -12066,8 +12490,37 @@ if (authChannel) authChannel.onmessage = event => {
     if (event.data === 'changing') app.expireSession();
     if (event.data === 'changed') app.reconcilePeerSession();
 };
-window.addEventListener('focus', () => { if (app.appReady && !app.sessionExpired) app.reconcilePeerSession(); });
+const revalidateVisibleWorkspace = () => {
+    if (app.appReady && !app.sessionExpired && !browserNavigation.cachedPage && !browserNavigation.recovery) {
+        void app.reconcilePeerSession({preserveHistory: true});
+    }
+};
+window.addEventListener('focus', revalidateVisibleWorkspace);
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && app.appReady && !app.sessionExpired) app.reconcilePeerSession();
+    if (document.visibilityState === 'visible') revalidateVisibleWorkspace();
 });
+window.addEventListener('keydown', event => {
+    if (event.key === 'BrowserBack' || event.key === 'BrowserForward') {
+        browserNavigation.suppressFieldBlur();
+    }
+}, {capture: true});
+window.addEventListener('popstate', event => { void browserNavigation.pop(event.state); });
+window.addEventListener('pagehide', event => {
+    if (!event.persisted) return;
+    browserNavigation.cachedPage = true;
+    browserNavigation.invalidate();
+    document.body.classList.add('session-locked');
+});
+window.addEventListener('pageshow', event => {
+    if (!event.persisted) return;
+    browserNavigation.cachedPage = false;
+    if (!app.user || app.sessionExpired) return;
+    // Cached DOM stays hidden until the existing identity/reconciliation barrier.
+    app.capturePatientEdits();
+    app.clearPatientNavigationView();
+    if (app.currentView === 'create') ui.closeModal('addModal', {keepView: true});
+    app.currentView = 'patients';
+    void app.reconcilePeerSession();
+});
+if (location.search || location.hash || history.state) history.replaceState(null, '', location.pathname);
 app.init();

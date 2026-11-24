@@ -38,8 +38,10 @@ const fs=require('node:fs'),assert=require('node:assert/strict'),path=require('n
 
   await page.locator('#searchInput').fill('');await page.waitForFunction(()=>app.patientPage.page.total===100);
   const selected=await page.evaluate(()=>app.patientRows[0].id);await page.evaluate(id=>app.openPatient(id),selected);
-  await page.getByRole('tab',{name:'Данные',exact:true}).click();assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-data');
-  await page.keyboard.press('ArrowRight');assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-complaints');
+  await page.getByRole('tab',{name:'Данные',exact:true}).click();
+  await page.waitForFunction(()=>app.currentTab==='data'&&document.activeElement.id==='tab-data');assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-data');
+  await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(()=>app.currentTab==='complaints'&&document.activeElement.id==='tab-complaints');assert.equal(await page.evaluate(()=>document.activeElement.id),'tab-complaints');
   await page.getByRole('tab',{name:'Данные',exact:true}).click();
   const head=await page.locator('#patientPanels .field').filter({has:page.locator('.field__label',{hasText:/^Заведующий$/})}).locator('select').inputValue();assert.equal(head,'Синтетический Заведующий');
   const axePath=process.env.AXE_SOURCE||path.join(__dirname,'node_modules/axe-core/axe.min.js');

@@ -21,7 +21,13 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),asse
    const data=await page.evaluate(()=>({width:innerWidth,outer:outerWidth,dpr:devicePixelRatio,overflow:document.documentElement.scrollWidth>innerWidth,rows:document.querySelectorAll('#patientsBody tr').length,scale:visualViewport.scale}));
    assert.equal(Math.round(data.dpr*100),factor*100);assert.equal(await page.getByRole('tab').count(),8);assert.equal(data.overflow,false);assert.equal(data.scale,1);
    if(factor===4)assert.equal(data.width,320);
-   for(const label of ['Обзор','Уведомления','Данные','Комментарии','События и даты','Чек-лист','Заметки','История']){await page.getByRole('tab',{name:label,exact:true}).click();assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);}
+   for (const label of ['Обзор','Уведомления','Данные','Комментарии','События и даты','Чек-лист','Заметки','История']) {
+    const tab = page.getByRole('tab', { name: label, exact: true });
+    const id = await tab.getAttribute('id');
+    await tab.click();
+    await page.waitForFunction(tabId => document.getElementById('patientPanels').getAttribute('aria-labelledby') === tabId, id);
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+   }
    samples.push({nativeZoom:zoom,...data});
    await page.screenshot({path:path.join(process.env.OUT,`card-zoom-${factor*100}.png`)});
   }
