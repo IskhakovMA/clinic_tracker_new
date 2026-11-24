@@ -142,6 +142,13 @@ async function navigation(browser, fixture) {
         await page.goto(origin);
         await login(page, 'wph.dev');
         const start = await screen(page, 'patients');
+        const skip = page.getByRole('link', {name: 'Перейти к содержимому'});
+        await skip.focus();
+        await page.keyboard.press('Enter');
+        await page.waitForFunction(() => document.activeElement?.id === 'workspaceMain');
+        const afterSkip = await screen(page, 'patients');
+        assert.deepEqual(afterSkip.state, start.state);
+        assert.equal(afterSkip.length, start.length, 'skip link is a focus action, not a history entry');
         const beforeAudit = await auditCardCount(fixture);
         const opened = await openFromRegistry(page, fixture.card.name);
         const secretValues = [fixture.card.id, fixture.card.name, fixture.card.diagnosis, fixture.card.phone, password];
@@ -364,6 +371,180 @@ async function transportAndIdentity(browser, fixture) {
     }
 }
 
+async function prepareUnknownForward(page, tab) {
+    // Simulate an entry created by an older client in the same document.
+    await page.evaluate(() => { history.pushState({legacyFixture: true}, '', '?screen=calendar'); });
+    const current = await historyStep(page, 'back', 'patient', tab, false);
+    await page.goForward();
+    await page.locator('#confirmModal').waitFor({state: 'visible'});
+    const scrubbed = await page.evaluate(() => ({
+        query: location.search, keys: Object.keys(history.state || {}).sort(),
+        route: history.state?.route, length: history.length,
+    }));
+    assert.equal(scrubbed.query, '?screen=patients', 'unknown entry URL is scrubbed before consent');
+    assert.deepEqual(scrubbed.keys, ['index', 'nonce', 'route', 'v'], 'unknown state is scrubbed before consent');
+    assert.notEqual(scrubbed.route, current.state.route, 'browser reached the formerly unknown entry');
+    assert.equal(scrubbed.length, current.length);
+    return current;
+}
+
+async function unknownDraft(browser, fixture) {
+    const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
+    try {
+        const page = await context.newPage();
+        const events = monitor(page);
+        await page.goto(origin);
+        await login(page, 'wph.dev');
+        await openFromRegistry(page, fixture.card.name);
+        await page.locator('#tab-events').click();
+        await screen(page, 'patient', 'events');
+        const input = page.getByRole('textbox', {name: 'Примечание к этапу', exact: true}).first();
+        const initial = await input.inputValue();
+        const draft = 'Синтетический черновик неизвестного маршрута';
+        await input.fill(draft);
+        await input.evaluate(node => { window.i9OriginalDraftField = node; });
+        const beforeStay = await prepareUnknownForward(page, 'events');
+        const countAudit = await auditCardCount(fixture);
+        const response = page.waitForResponse(res => res.request().method() === 'GET'
+            && new URL(res.url()).pathname === '/api/patients/' + fixture.card.id && res.status() === 200);
+        await page.locator('#confirmCancelBtn').click();
+        await (await response).finished();
+        const stayed = await screen(page, 'patient', 'events');
+        assert.equal(stayed.length, beforeStay.length, 'stay replaces the unknown entry; it never pushes');
+        assert.notEqual(stayed.state.route, beforeStay.state.route, 'the replacement has its own opaque route');
+        assert(!JSON.stringify(stayed.state).includes(draft));
+        assert(await input.evaluate(node => node === window.i9OriginalDraftField), 'stay preserves the existing DOM');
+        assert(await input.inputValue() === draft, 'stay preserves exact draft content');
+        await input.evaluate(node => {
+            if (document.activeElement !== node) throw new Error('stay must return focus to the draft control');
+        });
+        assert(await auditCardCount(fixture) > countAudit, 'stay released a new audited patient response');
+        assert.equal(events.medicalWrites, 0);
+        record('Unknown entry, stay: audited real GET, original DOM/draft/focus, only replaceState, zero medical writes');
+
+        const beforeLeave = await prepareUnknownForward(page, 'events');
+        await page.locator('#confirmOkBtn').click();
+        const registry = await screen(page, 'patients', null, true);
+        assert.equal(registry.length, beforeLeave.length, 'leave replaces the unknown entry; it never pushes');
+        assert(await page.locator('#view-patient').isHidden());
+        assert(!JSON.stringify(registry.state).includes(draft));
+        await openFromRegistry(page, fixture.card.name);
+        await page.locator('#tab-events').click();
+        await screen(page, 'patient', 'events');
+        assert(await input.inputValue() === initial, 'confirmed departure discarded unsaved input');
+        assert.equal(events.medicalWrites, 0);
+        assert.equal(events.pageErrors, 0);
+        record('Unknown entry, leave: authorized registry, explicit draft discard, only replaceState, zero medical writes');
+    } finally {
+        await context.close();
+    }
+}
+
+async function unknownDenial(browser, fixture) {
+    const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
+    try {
+        const page = await context.newPage();
+        const events = monitor(page);
+        await page.goto(origin);
+        await login(page, fixture.roles.doctor.username);
+        await openFromRegistry(page, fixture.large.name);
+        await page.locator('#tab-events').click();
+        await screen(page, 'patient', 'events');
+        await page.getByRole('textbox', {name: 'Примечание к этапу', exact: true}).first().fill('Синтетический черновик отзыва');
+        const previous = await prepareUnknownForward(page, 'events');
+        const old = await fixture.call('GET', '/api/patients/' + fixture.large.id);
+        await fixture.call('PUT', '/api/patients/' + fixture.large.id + '/treating-doctor',
+            {userId: null, expectedVersion: old.version});
+        const denied = page.waitForResponse(response => response.request().method() === 'GET'
+            && new URL(response.url()).pathname === '/api/patients/' + fixture.large.id && response.status() === 404);
+        await page.locator('#confirmCancelBtn').click();
+        await (await denied).finished();
+        const registry = await screen(page, 'patients', null, true);
+        assert.equal(registry.length, previous.length);
+        assert(await page.locator('#view-patient').isHidden());
+        assert(await page.evaluate(() => app.currentPatientId == null && app.patientDetails.size === 0));
+        assert.equal(events.medicalWrites, 0);
+        assert.equal(events.pageErrors, 0);
+        record('Unknown entry, stay denied by real 404: only replaceState and purged patient data, zero medical writes');
+    } finally {
+        await context.close();
+    }
+}
+
+async function holdUnknownStay(page, detail, release) {
+    const obtained = deferred();
+    await page.route(detail, async route => {
+        const response = await route.fetch();
+        obtained.resolve(response.status());
+        await release.promise;
+        await route.fulfill({response});
+    }, {times: 1});
+    const request = page.waitForRequest(req => req.method() === 'GET' && req.url() === detail);
+    await page.locator('#confirmCancelBtn').click();
+    await request;
+    assert.equal(await obtained.promise, 200, 'stay response came from the authorized backend');
+}
+
+async function unknownRace(browser, fixture) {
+    for (const trigger of ['history', 'epoch']) {
+        const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
+        const release = deferred();
+        try {
+            const page = await context.newPage();
+            const events = monitor(page);
+            await page.goto(origin);
+            await login(page, 'wph.dev');
+            await openFromRegistry(page, fixture.card.name);
+            await page.locator('#tab-events').click();
+            await screen(page, 'patient', 'events');
+            const input = page.getByRole('textbox', {name: 'Примечание к этапу', exact: true}).first();
+            await input.fill('Синтетический черновик гонки истории');
+            const previous = await prepareUnknownForward(page, 'events');
+            const detail = origin + '/api/patients/' + fixture.card.id;
+            await holdUnknownStay(page, detail, release);
+            let secured;
+            if (trigger === 'history') {
+                const restored = await historyStep(page, 'back', 'patient', 'events', false);
+                assert.deepEqual(restored.state, previous.state, 'Back reaches the prior known position');
+                await page.goForward();
+                await page.locator('#confirmOkBtn').click();
+                secured = await screen(page, 'patients');
+                assert.equal(secured.length, previous.length);
+            } else {
+                const epoch = await page.evaluate(() => app.sessionEpoch);
+                await api(context, origin, 'POST', '/api/auth/logout', {});
+                const status = await page.evaluate(async () => {
+                    try { await apiGetJson('/api/patients/head-options'); return 200; }
+                    catch (error) { return error.status; }
+                });
+                assert.equal(status, 401, 'backend revoked session during old response delivery');
+                await page.locator('#loginForm').waitFor({state: 'visible'});
+                assert(await page.evaluate(epoch => app.sessionEpoch > epoch, epoch), 'epoch actually advanced');
+                assert(await page.locator('#view-patient').isHidden());
+                secured = await page.evaluate(() => ({state: history.state, length: history.length}));
+            }
+            const delivered = page.waitForResponse(response => response.request().method() === 'GET'
+                && response.url() === detail && response.status() === 200);
+            release.resolve();
+            await (await delivered).finished();
+            await page.waitForLoadState('networkidle');
+            const active = await page.evaluate(() => ({state: history.state, length: history.length}));
+            assert.deepEqual(active, {state: secured.state, length: secured.length}, 'old HTTP 200 cannot modify the secure history state');
+            assert(await page.locator('#view-patient').isHidden());
+            if (trigger === 'history') await screen(page, 'patients');
+            else assert(await page.locator('#loginForm').isVisible());
+            assert.equal(events.medicalWrites, 0);
+            assert.equal(events.pageErrors, 0);
+            record(trigger === 'history'
+                ? 'Unknown stay race: held audited HTTP 200 cannot override the newer Back/Forward and confirmed exit'
+                : 'Unknown stay race: held audited HTTP 200 cannot restore card after real 401 and changed session epoch');
+        } finally {
+            release.resolve();
+            await context.close();
+        }
+    }
+}
+
 async function objectRevocation(browser, fixture) {
     const context = await browser.newContext({viewport: {width: 1440, height: 1000}});
     try {
@@ -401,7 +582,7 @@ async function main() {
     let fixture;
     try {
         fixture = await setup(browser, origin);
-        const cases = {navigation, saving, transportAndIdentity, objectRevocation};
+        const cases = {navigation, saving, transportAndIdentity, objectRevocation, unknownDraft, unknownDenial, unknownRace};
         const requested = process.env.HISTORY_SCENARIO;
         assert(!requested || Object.hasOwn(cases, requested), 'unknown history test scenario');
         for (const [name, run] of Object.entries(cases)) {

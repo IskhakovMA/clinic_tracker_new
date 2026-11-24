@@ -7083,7 +7083,7 @@ const app = {
         node.addEventListener('focus',()=>{control.navigationBlur=false;});
         // Clinical controls stay dirty until acknowledgment. Primary fields retain
         // the existing explicit field-completion change contract (including Tab).
-        node.addEventListener('keydown',event=>{if(event.key==='Tab' && control.navigationOnly)control.navigationBlur=true;});
+        node.addEventListener('keydown', event => { if (event.key === 'Tab') control.navigationBlur = Boolean(control.navigationOnly); });
         node.addEventListener('change',event=>{
             if (control.navigationBlur || !document.hasFocus()) {control.navigationBlur=false;event.stopImmediatePropagation();return;}
         },true);
@@ -11385,6 +11385,11 @@ const app = {
             if (node) node.addEventListener(event, handler);
         };
 
+        document.querySelector('.skip-link')?.addEventListener('click', event => {
+            event.preventDefault();
+            $('workspaceMain').focus();
+        });
+
         // Вход и выход
         $('loginForm').addEventListener('submit', async (event) => {
             event.preventDefault();
@@ -12073,6 +12078,11 @@ const browserNavigation = {
     generation: 0,
 
     invalidate() {
+        if (this.recovery) {
+            const {route} = this.recovery;
+            this.recovery = null;
+            this.discardUnknownForm(route, true);
+        }
         this.generation++;
         this.entries.clear();
         this.nonce = null;
@@ -12100,11 +12110,15 @@ const browserNavigation = {
     },
 
     save(route, replace) {
-        const index = replace ? (this.entry(history.state)?.state.index ?? 0) : this.committed.state.index + 1;
+        const previous = replace ? this.entry(history.state) : this.committed;
+        // Replacing an unknown position starts a new index segment. Other segments
+        // stay navigable, but their relative offsets are not trusted.
+        const segment = previous?.segment || {};
+        const index = (previous?.state.index ?? 0) + (replace ? 0 : 1);
         if (replace) this.entries.delete(history.state?.route);
         else {
             for (const [key, entry] of this.entries) {
-                if (entry.state.index >= index) this.entries.delete(key);
+                if (entry.segment === segment && entry.state.index >= index) this.entries.delete(key);
             }
         }
         const state = {v: 1, index, nonce: this.nonce, route: newIdempotencyKey()};
@@ -12113,7 +12127,7 @@ const browserNavigation = {
         const url = location.pathname + '?' + query;
         if (replace) history.replaceState(state, '', url);
         else history.pushState(state, '', url);
-        this.committed = {state, route};
+        this.committed = {state, route, segment};
         this.entries.set(state.route, this.committed);
     },
 
@@ -12181,13 +12195,18 @@ const browserNavigation = {
 
     restorePosition() {
         const position = this.entry(history.state);
-        if (!position || !this.committed || position === this.committed) return;
-        this.correction = this.committed;
-        history.go(this.correction.state.index - position.state.index);
+        if (!position || !this.committed || position.segment !== this.committed.segment) return false;
+        const delta = this.committed.state.index - position.state.index;
+        if (delta) {
+            this.correction = this.committed;
+            history.go(delta);
+        }
+        return position === this.committed || Boolean(delta);
     },
 
     async pop(state) {
         this.suppressFieldBlur();
+        this.recovery = null;
         const entry = this.entry(state);
         if (entry && entry === this.committed) {
             this.generation++;
@@ -12201,8 +12220,123 @@ const browserNavigation = {
             await this.navigate(entry.route, {entry});
             return;
         }
-        // An unknown entry cannot safely be traversed back by index.
-        await this.navigate({screen: 'patients'}, {replace: true});
+        await this.recoverUnknown();
+    },
+
+    currentRoute() {
+        return app.currentView === 'patient'
+            ? {screen: 'patient', tab: app.currentTab, patientId: app.currentPatientId}
+            : {screen: app.currentView};
+    },
+
+    discardUnknownForm(route, locked = false) {
+        if (route.screen === 'create') {
+            ui.closeModal('addModal', {keepView: true});
+            $('addForm').reset();
+            app.addPatientKey = null;
+            app.addPatientSentBody = null;
+            app.addPatientDuplicateConfirmation = null;
+            app.addPatientUncertain = false;
+        }
+        if (route.patientId) {
+            for (const [key, draft] of app.sessionFieldDrafts) {
+                if (draft.patientId === route.patientId) app.sessionFieldDrafts.delete(key);
+            }
+        }
+        app.clearPatientNavigationView();
+        $('view-patient').classList.add('is-hidden');
+        $('view-create').classList.add('is-hidden');
+        if (locked) app.currentView = 'patients';
+        app.currentTab = 'overview';
+    },
+
+    async recoverUnknown({keep = false} = {}) {
+        this.closeNavigationDialog();
+        const route = this.currentRoute();
+        const epoch = app.sessionEpoch || 0;
+        const generation = ++this.generation;
+        const owner = app.user.id;
+        const access = app.accessSignature(app.user);
+        const originalFocus = document.activeElement;
+        const activeControl = app.patientDraftControls?.get(originalFocus);
+        const marker = {v: 1, index: 0, nonce: this.nonce, route: newIdempotencyKey()};
+        // The popped location may contain arbitrary parameters. Scrub it before requests.
+        history.replaceState(marker, '', location.pathname + '?screen=patients');
+        const recovery = {route};
+        this.recovery = recovery;
+        const samePage = () => this.recovery === recovery && this.generation === generation &&
+            epoch === (app.sessionEpoch || 0) && owner === app.user?.id &&
+            app.accessSignature(app.user) === access && !app.sessionExpired && !app.sessionReconciling &&
+            history.state?.route === marker.route && history.state?.nonce === marker.nonce &&
+            history.state?.index === marker.index && history.state?.v === marker.v;
+        const current = () => samePage() && this.sameRoute(this.currentRoute(), route);
+        const busy = () => this.writes.size || app.clinicalWriteInFlight || app.addPatientPending;
+        const draft = () => route.screen === 'create'
+            ? app.addFormState()
+            : route.screen === 'patient'
+                ? app.dirtyClinicalControls(true).map(node => [node, JSON.stringify(app.patientDraftControls.get(node).readValue())])
+                : [];
+        const differs = (a, b) => typeof a === 'string' ? a !== b :
+            a.length !== b.length || a.some(([node, value], i) => node !== b[i][0] || value !== b[i][1]);
+        const initial = draft();
+        const hasDraft = typeof initial === 'string' ? initial !== app.addFormBaseline : initial.length > 0;
+        const registry = {screen: 'patients'};
+        const returnToRegistry = () => {
+            this.discardUnknownForm(route);
+            this.render(registry, null, null, true);
+            this.save(registry, true);
+            app.renderSessionFieldDrafts();
+        };
+        try {
+            let stay = keep || Boolean(busy() || ui.topModal());
+            if (!stay && hasDraft) {
+                this.suppressFieldBlur();
+                const choice = ui.confirm({
+                    title: 'Уйти с формы?',
+                    text: 'В форме есть несохраненный ввод. Можно остаться или явно удалить черновик и перейти в реестр.',
+                    okLabel: 'Удалить черновик и перейти', danger: false,
+                });
+                this.dialog = ui.pendingConfirmCancel;
+                stay = !(await choice);
+            }
+            if (!current()) return;
+            // Changes made after approval are not part of its explicit discard.
+            if (!stay && (busy() || differs(initial, draft()))) stay = true;
+            if (stay && this.canNavigate(route) && route.patientId) {
+                const patient = await apiGetJson('/api/patients/' + encodeURIComponent(route.patientId));
+                if (!current()) return;
+                if (patient?.id !== route.patientId) throw new Error('Карточка недоступна.');
+            } else {
+                if (!await app.checkSessionIdentity(epoch) || !current()) return;
+            }
+            if (!stay && (busy() || differs(initial, draft()))) {
+                // A new decision is required for input entered during an access check.
+                this.recovery = null;
+                return this.recoverUnknown();
+            }
+            if (stay && this.canNavigate(route)) {
+                // The GET is proof of access. Keep the in-place form and original edit versions.
+                this.save(route, true);
+                if (originalFocus?.isConnected) originalFocus.focus({preventScroll: true});
+            } else if (app.navigationVisibility().patients) {
+                returnToRegistry();
+            }
+        } catch (error) {
+            if (!samePage() || error.obsolete) return;
+            if (route.patientId && [403, 404].includes(error.status)) {
+                this.forget(route.patientId);
+                returnToRegistry();
+            } else {
+                // An unavailable access check cannot rebind a patient to history.
+                app.expireSession();
+            }
+        } finally {
+            if (this.recovery === recovery) {
+                this.recovery = null;
+                this.dialog = null;
+            }
+            if (activeControl && document.activeElement === originalFocus) activeControl.navigationBlur = false;
+        }
     },
 
     async confirmExit(current, route) {
@@ -12283,7 +12417,7 @@ const browserNavigation = {
             if (prepare && !prepare(patient)) return false;
             // A click arriving while the browser is at an uncommitted entry cannot truncate it.
             if (!entry && !replace && this.entry(history.state) !== this.committed) {
-                this.restorePosition();
+                if (!this.restorePosition()) await this.recoverUnknown({keep: true});
                 return false;
             }
             this.render(route, patient, focus, replace);
@@ -12306,7 +12440,9 @@ const browserNavigation = {
             ui.toast(id ? 'Карточка недоступна.' : error.message, 'warning');
             return false;
         } finally {
-            if (!finished && entry && current()) this.restorePosition();
+            if (!finished && entry && current() && !this.restorePosition()) {
+                await this.recoverUnknown({keep: true});
+            }
             if (generation === this.generation) {
                 this.dialog = null;
                 this.intentPatient = null;
@@ -12350,7 +12486,7 @@ if (authChannel) authChannel.onmessage = event => {
     if (event.data === 'changed') app.reconcilePeerSession();
 };
 const revalidateVisibleWorkspace = () => {
-    if (app.appReady && !app.sessionExpired && !browserNavigation.cachedPage) {
+    if (app.appReady && !app.sessionExpired && !browserNavigation.cachedPage && !browserNavigation.recovery) {
         void app.reconcilePeerSession({preserveHistory: true});
     }
 };
@@ -12358,6 +12494,11 @@ window.addEventListener('focus', revalidateVisibleWorkspace);
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') revalidateVisibleWorkspace();
 });
+window.addEventListener('keydown', event => {
+    if (event.key === 'BrowserBack' || event.key === 'BrowserForward') {
+        browserNavigation.suppressFieldBlur();
+    }
+}, {capture: true});
 window.addEventListener('popstate', event => { void browserNavigation.pop(event.state); });
 window.addEventListener('pagehide', event => {
     if (!event.persisted) return;
