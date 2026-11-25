@@ -3324,3 +3324,75 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
     outline: 2px solid currentColor;
     outline-offset: 0.2rem;
 }
+
+/* Fast Track F1 workspaces */
+.f1-workspace .f1-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+    gap: 12px;
+    margin-block: 12px 20px;
+}
+.f1-workspace .f1-list {
+    display: grid;
+    gap: 10px;
+    margin-block: 12px;
+    padding-inline: 0;
+    list-style: none;
+}
+.f1-workspace .f1-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    margin-block: 12px;
+}
+.f1-workspace .f1-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    min-width: 0;
+    padding: 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow-wrap: anywhere;
+}
+.f1-workspace .f1-item__title {
+    margin: 0;
+    font-size: var(--text-lg);
+    font-weight: 650;
+}
+.f1-workspace .f1-kicker,
+.f1-workspace .f1-description {
+    margin: 0;
+    color: var(--text-2);
+}
+.f1-workspace .f1-value {
+    font-size: var(--text-2xl);
+    line-height: 1.15;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+.f1-workspace .f1-empty {
+    padding: 16px;
+    color: var(--text-2);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+}
+.f1-workspace [aria-pressed="true"] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent-text);
+}
+@media (max-width: 560px) {
+    .f1-workspace .f1-actions > .input {
+        max-width: 100%;
+    }
+}
+#backToF1[hidden] {
+    display: none;
+}
+#view-patient .crumbs:has(#backToF1:not([hidden])) {
+    flex-wrap: wrap;
+}

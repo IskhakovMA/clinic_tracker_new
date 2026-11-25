@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1">
 </head>
 <body>
 
@@ -74,6 +74,7 @@
         <nav class="nav" aria-label="Основная навигация">
             <div class="nav__group" data-nav-group="work" role="group" aria-labelledby="navGroup-work">
                 <h2 class="nav__group-title" id="navGroup-work">Работа</h2>
+                <button type="button" class="nav__item is-hidden" data-view="myDay"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3 2"/></svg><span>Мой день</span></button>
                 <button type="button" class="nav__item is-active" data-view="patients" aria-current="page"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.4 3.4-5 6.5-5s5.7 1.6 6.5 5M16 5a3.5 3.5 0 0 1 0 7M18 15c2 .6 3.2 2.2 3.5 5"/></svg><span>Пациенты</span></button>
                 <button type="button" class="nav__item" data-view="consilium"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3v4M5 9h14l-1.5 11h-11zM9 14h6"/></svg><span>Онкологический консилиум</span></button>
                 <button type="button" class="nav__item" data-view="calendar"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3.5" y="5" width="17" height="15" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg><span>Календарь</span></button>
@@ -81,6 +82,7 @@
             </div>
             <div class="nav__group" data-nav-group="control" role="group" aria-labelledby="navGroup-control">
                 <h2 class="nav__group-title" id="navGroup-control">Контроль</h2>
+                <button type="button" class="nav__item is-hidden" data-view="pulse"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12h4l2-5 4 10 2-5h6"/></svg><span>Пульс клиники</span></button>
                 <button type="button" class="nav__item" data-view="analytics"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg><span>Аналитика</span></button>
                 <button type="button" class="nav__item" data-view="checklists"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 6h11M9 12h11M9 18h11m-17-12 1.5 1.5L7 5m-4 7 1.5 1.5L7 11m-4 7 1.5 1.5L7 17"/></svg><span>Чек-листы</span></button>
                 <button type="button" class="nav__item" data-view="quality"><svg class="icon nav__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3-8 3v6c0 4.5 3.4 8.2 8 9 4.6-.8 8-4.5 8-9V6zM9 12l2 2 4-4"/></svg><span>Качество данных</span></button>
@@ -651,6 +653,7 @@
                     </button>
                     <span class="crumbs__sep" aria-hidden="true">/</span>
                     <span class="crumbs__current" id="crumbPatientName"></span>
+                    <button type="button" class="crumbs__back" id="backToF1" data-route-click hidden></button>
                 </nav>
 
                 <div class="patient-layout">
@@ -852,6 +855,26 @@
 
                 <div class="panel panel--pad quality-duplicates" id="qualityDuplicatesPanel"></div>
                 <div id="qualityV1Workspace" hidden></div>
+            </section>
+
+            <section class="view is-hidden f1-workspace" id="view-myDay" aria-labelledby="f1MyDayTitle">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title" id="f1MyDayTitle">Мой день</h1>
+                        <p class="pagehead__subtitle">Пациенты, плановые события и обязательные действия</p>
+                    </div>
+                </div>
+                <div id="f1MyDay"></div>
+            </section>
+
+            <section class="view is-hidden f1-workspace" id="view-pulse" aria-labelledby="f1PulseTitle">
+                <div class="pagehead">
+                    <div class="pagehead__text">
+                        <h1 class="pagehead__title" id="f1PulseTitle">Пульс клиники</h1>
+                        <p class="pagehead__subtitle">Организационные показатели по доступным пациентам</p>
+                    </div>
+                </div>
+                <div id="f1Pulse"></div>
             </section>
 
             <section class="view is-hidden" id="view-analytics">
@@ -1882,6 +1905,8 @@
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
-<script src="/static/app.js?v=wp-i-consilium-v5a-wp-i-quality-v1"></script>
+<script src="/static/f1-management.js?v=fast-track-f1"></script>
+<script src="/static/f1-doctor.js?v=fast-track-f1"></script>
+<script src="/static/app.js?v=fast-track-f1"></script>
 </body>
 </html>

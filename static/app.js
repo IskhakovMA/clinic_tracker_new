@@ -2197,9 +2197,12 @@ const app = {
     /* ------------------------------------------------------------ Навигация */
 
     navigationVisibility() {
-        const chair = this.user?.roleId === 'consilium_chair';
+        const role = this.user?.roleId;
+        const chair = role === 'consilium_chair';
         return {
             patients: true,
+            myDay: role === 'doctor',
+            pulse: ['developer', 'department_head', 'deputy_chief_oncology', 'caop_head'].includes(role),
             // Видимость — подсказка; сервер проверяет каждый эндпоинт консилиума.
             consilium: this.can('accessConsilium'),
             calendar: !chair,
@@ -2224,9 +2227,19 @@ const app = {
         }
         this.capturePatientEdits();
         if (view === 'consilium' && !this.can('accessConsilium')) view = 'patients';
+        if ((view === 'pulse' || view === 'myDay') && !this.navigationVisibility()[view]) view = 'patients';
         if(this.ai?.request){const active=view==='patient'?this.currentPatientId:null;if(active!==this.ai.request.active){this.cancelAIRequest();this.ai.messages=[];this.ai.references=[];this.ai.lastError='Контекст экрана изменился. Предыдущий ответ не используется; запрос не повторяется автоматически.';this.renderAIDrawer();}}
         const previousView = this.currentView;
         this.currentView = view;
+        if (view !== 'patient') this.f1CardOrigin = null;
+        else if (previousView !== 'patient') {
+            this.f1CardOrigin = previousView === 'pulse' || previousView === 'myDay' ? previousView : null;
+        }
+        const f1Back = $('backToF1');
+        f1Back.hidden = view !== 'patient' || !this.f1CardOrigin || !this.navigationVisibility()[this.f1CardOrigin];
+        f1Back.textContent = f1Back.hidden ? '' : this.f1CardOrigin === 'pulse' ? 'К пульсу клиники' : 'К моему дню';
+        if (previousView === 'pulse' && view !== 'pulse') f1Management.clear(this);
+        if (previousView === 'myDay' && view !== 'myDay') f1Doctor.clear(this);
         if (this.qualityV1 && previousView !== view) {
             if (previousView === 'quality') this.qualityV1.workspace.clear(false);
             if (previousView === 'patient') {
@@ -2260,6 +2273,8 @@ const app = {
             this.renderNotificationsPage();
         }
         if (view === 'analytics') this.renderAnalytics();
+        if (view === 'pulse') f1Management.render(this);
+        if (view === 'myDay') f1Doctor.render(this);
         if (view === 'quality') this.renderDataQuality();
         if (view === 'duplicates') this.renderDuplicates();
         if (view === 'audit') this.renderAudit();
@@ -2303,6 +2318,8 @@ const app = {
     /* ------------------------------------------------------------ Авторизация */
 
     expireSession(accessChanged = false) {
+        f1Management.clear(this, true);
+        f1Doctor.clear(this, true);
         this.clearQualityV1(accessChanged);
         if (this.sessionExpired || !this.user) return;
         browserNavigation.invalidate();
@@ -2339,6 +2356,8 @@ const app = {
     },
 
     discardSessionAndReload() {
+        f1Management.clear(this, true);
+        f1Doctor.clear(this, true);
         this.clearQualityV1(true);
         document.body.classList.add('session-locked');
         browserNavigation.invalidate();
@@ -11669,6 +11688,9 @@ const app = {
             item.addEventListener('click', () => this.navigateView(item.dataset.view));
         }
         on('backToList', 'click', () => this.navigateView('patients'));
+        on('backToF1', 'click', () => {
+            if (this.f1CardOrigin) this.navigateView(this.f1CardOrigin);
+        });
         on('sidebarToggle', 'click', () => {
             const shell = $('appScreen');
             if (window.matchMedia('(min-width: 861px)').matches && this.can('consiliumChair')) {

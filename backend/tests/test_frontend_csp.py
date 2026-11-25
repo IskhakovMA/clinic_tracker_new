@@ -14,7 +14,8 @@ HTML = PROJECT_ROOT / "index.html"
 JS = PROJECT_ROOT / "static" / "app.js"
 CSS = PROJECT_ROOT / "static" / "styles.css"
 
-FRONTEND_SOURCES = (HTML, JS, CSS)
+F1_SCRIPTS = (PROJECT_ROOT / "static" / "f1-management.js", PROJECT_ROOT / "static" / "f1-doctor.js")
+FRONTEND_SOURCES = (HTML, JS, CSS, *F1_SCRIPTS)
 
 # on<name>= как *атрибут*: перед ним пробел, после — кавычка.
 INLINE_HANDLER_RE = re.compile(r"""\son[a-z]+\s*=\s*["']""")
@@ -34,14 +35,14 @@ def _matches(regex, text):
 
 
 def test_no_inline_event_handlers():
-    for path in (HTML, JS):
+    for path in (HTML, JS, *F1_SCRIPTS):
         hits = _matches(INLINE_HANDLER_RE, path.read_text(encoding="utf-8"))
         assert hits == [], f"inline-обработчики в {path.name}: {hits[:3]}"
 
 
 def test_no_inline_styles():
     """Ни в разметке, ни в шаблонах JS не должно быть style=."""
-    for path in (HTML, JS):
+    for path in (HTML, JS, *F1_SCRIPTS):
         hits = _matches(INLINE_STYLE_RE, path.read_text(encoding="utf-8"))
         assert hits == [], f"inline-стили в {path.name}: {hits[:3]}"
 
@@ -65,7 +66,7 @@ def test_no_innerhtml_sinks():
 
 
 def test_no_dynamic_code_evaluation():
-    js = JS.read_text(encoding="utf-8")
+    js = "\n".join(path.read_text(encoding="utf-8") for path in (JS, *F1_SCRIPTS))
     assert not re.search(r"\beval\s*\(", js)
     assert "new Function" not in js
     assert not re.search(r"set(Timeout|Interval)\s*\(\s*['\"]", js)
@@ -73,7 +74,7 @@ def test_no_dynamic_code_evaluation():
 
 def test_escape_helpers_are_gone():
     """Экранирование не нужно там, где значение не интерпретируется как HTML."""
-    for path in (HTML, JS):
+    for path in (HTML, JS, *F1_SCRIPTS):
         text = path.read_text(encoding="utf-8")
         assert "escapeJsAttr" not in text
         assert "escapeHtml" not in text
@@ -91,6 +92,8 @@ def test_localstorage_limited_to_theme_and_migration():
     calls = re.findall(r"localStorage\.(getItem|setItem|removeItem)\(\s*'([^']+)'", js)
     keys = {key for _op, key in calls}
     assert keys <= {"theme", "patients", "user"}, keys
+    assert all(not re.search(r"\b(localStorage|sessionStorage|indexedDB)\b", path.read_text(encoding="utf-8"))
+               for path in F1_SCRIPTS)
     for op, key in calls:
         if key in ("patients", "user"):
             assert op in ("getItem", "removeItem"), f"{op} по ключу '{key}' запрещён"
@@ -135,9 +138,13 @@ def test_canonical_page_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1">' in body
+    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1">' in body
     assert '<script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>' in body
-    assert '<script src="/static/app.js?v=wp-i-consilium-v5a-wp-i-quality-v1"></script>' in body
+    assert '<script src="/static/app.js?v=fast-track-f1"></script>' in body
+    for path in F1_SCRIPTS:
+        source = f'<script src="/static/{path.name}?v=fast-track-f1"></script>'
+        assert source in body
+        assert body.index(source) < body.index('<script src="/static/app.js')
     # ни одного <style> и ни одного inline-скрипта в документе
     assert "<style" not in body
     assert not re.search(r"<script(?![^>]*\ssrc=)", body)
@@ -146,6 +153,8 @@ def test_canonical_page_is_served(client):
 def test_static_assets_are_served(client):
     for path, marker in (
         ("/static/app.js", "const app = {"),
+        ("/static/f1-management.js", "const f1Management"),
+        ("/static/f1-doctor.js", "const f1Doctor"),
         ("/static/styles.css", "--accent"),
         ("/static/fonts.css", "@font-face"),
     ):

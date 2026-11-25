@@ -396,6 +396,8 @@ STATIC_FILES = {
     "fonts.css": "text/css",
     "app.js": "application/javascript",
     "quality-v1.js": "application/javascript",
+    "f1-management.js": "application/javascript",
+    "f1-doctor.js": "application/javascript",
     "logo.png": "image/png",
 }
 
