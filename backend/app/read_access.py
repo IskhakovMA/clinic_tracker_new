@@ -8,7 +8,7 @@ import json
 import sqlite3
 import re
 import threading
-from contextlib import closing
+from contextlib import closing, contextmanager
 from starlette.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from . import audit, config, db, operations_state, policy, security, session_context, request_security, patient_pages, quality_pages
@@ -73,10 +73,17 @@ def attempted_manifest(params):
 def persist(state, route, raw, params, denied):
     token = request_security.current.set(None)
     try:
-        with _release_order:
-            return _persist(state, route, raw, params, denied)
+        return _persist(state, route, raw, params, denied)
     finally:
         request_security.current.reset(token)
+
+
+@contextmanager
+def _ordered_release_connection():
+    with _release_order:
+        conn, admission = db.connect_release(config.DB_PATH)
+        with closing(conn):
+            yield conn, admission
 
 
 def _fresh_reader(conn, state):
@@ -114,8 +121,7 @@ def _persist(state, route, raw, params, denied):
             not state.export_recorded and response_sha256 == quality_check.response_sha256
             and {(obj['type'], obj['id']) for obj in objects} == quality_check.audited_objects
         )
-    opened, admission = db.connect_release(config.DB_PATH)
-    with closing(opened) as conn:
+    with _ordered_release_connection() as (conn, admission):
         version = None
         if not denied and quality_check is None and state.scoped_release is not None:
             # PRAGMA data_version is meaningful only on this same connection.
