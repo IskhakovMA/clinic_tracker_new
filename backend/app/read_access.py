@@ -10,7 +10,7 @@ import re
 from contextlib import closing
 from starlette.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
-from . import audit, config, db, policy, security, session_context, request_security, patient_pages, quality_pages
+from . import audit, config, db, operations_state, policy, security, session_context, request_security, patient_pages, quality_pages
 
 RELEASE = 'medical_read_release'
 DENIED = 'medical_read_denied'
@@ -108,7 +108,8 @@ def _persist(state, route, raw, params, denied):
             not state.export_recorded and response_sha256 == quality_check.response_sha256
             and {(obj['type'], obj['id']) for obj in objects} == quality_check.audited_objects
         )
-    with closing(db.connect_live(config.DB_PATH)) as conn:
+    opened, admission = db.connect_release(config.DB_PATH)
+    with closing(opened) as conn:
         version = None
         if not denied and quality_check is None and state.scoped_release is not None:
             # PRAGMA data_version is meaningful only on this same connection.
@@ -122,6 +123,7 @@ def _persist(state, route, raw, params, denied):
                 validation_changed = True
         conn.execute('BEGIN IMMEDIATE')
         try:
+            db.require_release_admission(conn, admission)
             if not denied:
                 fresh = _fresh_reader(conn, state)
                 if quality_check is not None:
@@ -162,20 +164,21 @@ def _persist(state, route, raw, params, denied):
                 **(audit.actor_ctx(actor) if actor is not None else {})}
             audit.record_required_or_fail(conn, result=audit.RESULT_DENIED if denied else audit.RESULT_OK, **metadata)
             event_id, event_rows = conn.execute('SELECT last_insert_rowid(), changes()').fetchone()
-            if quality_check is not None and event_rows != 1:
+            if event_rows != 1:
                 raise audit.AuditWriteFailed()
             manifest_insert = conn.execute(
                 'INSERT INTO read_access_manifests '
                 '(audit_event_id, objects_json, object_count, snapshot_sha256, access_context) VALUES (?, ?, ?, ?, ?)',
                 (event_id, encoded, len(objects), response_sha256, state.access or ''),
             )
+            if manifest_insert.rowcount != 1:
+                raise audit.AuditWriteFailed()
             if quality_check is not None:
-                if manifest_insert.rowcount != 1:
-                    raise audit.AuditWriteFailed()
                 # Audit/manifest triggers may write to a monitored source in
                 # this transaction. Recheck before either record can commit.
                 fresh = _fresh_reader(conn, state)
                 quality_pages.validate_admission(conn, fresh, state, quality_check)
+            db.require_release_identity(admission)
             conn.commit()
         except BaseException:
             conn.rollback()
@@ -218,6 +221,8 @@ def install(app):
                     body = {'detail': exc.detail, 'code': exc.code}
                 if code == 503 and state.export_recorded:
                     body['code'] = 'AUDIT_UNAVAILABLE'
+                elif isinstance(exc, (db.ReleaseAdmissionError, operations_state.AdmissionRequired)):
+                    body['code'] = 'READ_ADMISSION_UNAVAILABLE'
                 if query_changed and code == 409:
                     body = {'detail': 'Patient list changed', 'code': 'PATIENT_QUERY_CHANGED'}
                 if changed and code == 409:

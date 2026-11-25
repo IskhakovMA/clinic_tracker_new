@@ -1,5 +1,6 @@
 """SQLite storage layer: connection handling, schema init, migrations."""
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -7,6 +8,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -836,16 +838,24 @@ class _ClinicConnection(sqlite3.Connection):
         return super().__exit__(typ, value, tb)
 
 
-def _connect(db_path: Path, *, enable_wal: bool = True, factory=_ClinicConnection) -> sqlite3.Connection:
-    _harden_permissions(db_path)
-    conn = sqlite3.connect(str(db_path), check_same_thread=False, factory=factory)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    # Wait instead of failing immediately when another writer (a CLI backup,
-    # a second uvicorn worker) briefly holds the write lock.
-    conn.execute(f"PRAGMA busy_timeout = {config.BUSY_TIMEOUT_MS}")
-    if enable_wal:
-        _enable_wal(conn)
+def _connect(db_path: Path, *, enable_wal: bool = True, factory=_ClinicConnection,
+             existing_only: bool = False) -> sqlite3.Connection:
+    if existing_only:
+        target = db_path.absolute().as_uri() + "?mode=rw"
+    else:
+        _harden_permissions(db_path)
+        target = str(db_path)
+    conn = sqlite3.connect(target, uri=existing_only, check_same_thread=False, factory=factory)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        # Wait if another writer briefly holds the write lock.
+        conn.execute(f"PRAGMA busy_timeout = {config.BUSY_TIMEOUT_MS}")
+        if enable_wal:
+            _enable_wal(conn)
+    except BaseException:
+        conn.close()
+        raise
     return conn
 
 
@@ -890,6 +900,146 @@ def connect_live(db_path: Path) -> sqlite3.Connection:
     finally:
         db_guard.release(lock)
     return conn
+
+
+@dataclass(frozen=True)
+class ReleaseAdmission:
+    path: Path
+    permit: dict
+    sidecars: tuple
+    catalog: str
+    prepared: bool = False
+
+
+def _release_sidecars(path: Path) -> tuple:
+    from .operations_state import _private
+    identities = []
+    for suffix in ("-wal", "-shm", "-journal"):
+        try:
+            stat = _private(path.with_name(path.name + suffix))
+        except FileNotFoundError:
+            identities.append(None)
+        else:
+            identities.append((stat.st_dev, stat.st_ino))
+    return tuple(identities)
+
+
+def _release_catalog(conn: sqlite3.Connection) -> str:
+    # Deterministic, literal-preserving, and a single result row even for a
+    # large catalogue. rootpage is not part of the logical schema.
+    return conn.execute("""
+        SELECT json_group_array(json_array(type, name, tbl_name, sql))
+        FROM (SELECT type, name, tbl_name, sql FROM main.sqlite_schema ORDER BY type, name)
+    """).fetchone()[0]
+
+
+def _release_schema(conn: sqlite3.Connection) -> str:
+    if (conn.execute("SELECT 1 FROM temp.sqlite_schema LIMIT 1").fetchone()
+            or any(row[1] not in ("main", "temp") for row in conn.execute("PRAGMA database_list"))):
+        raise ReleaseAdmissionError("Unexpected connection-local schema")
+    versions = conn.execute("SELECT version FROM main.schema_version LIMIT 2").fetchall()
+    if len(versions) != 1 or versions[0][0] != config.SCHEMA_VERSION:
+        raise ReleaseAdmissionError("Release requires the current schema")
+    roles = {row[0] for row in conn.execute("SELECT id FROM main.roles")}
+    templates = {tuple(row) for row in conn.execute("SELECT id, code FROM main.notification_templates")}
+    if (any(role[0] not in roles for role in ROLE_SEED)
+            or any(("tpl_" + row[0], row[0]) not in templates for row in NOTIFICATION_TEMPLATE_SEED)):
+        raise ReleaseAdmissionError("Required release seed identities are missing")
+    return _release_catalog(conn)
+
+
+def _require_release_objects(catalog: str) -> None:
+    def identities(snapshot):
+        return {(kind, name, owner) for kind, name, owner, _ in json.loads(snapshot)
+                if not name.startswith("sqlite_")}
+    missing = identities(_reference_release_catalog) - identities(catalog)
+    if missing:
+        raise ReleaseAdmissionError("Required release objects missing: " + ", ".join(sorted(row[1] for row in missing)))
+
+
+def _require_anchored_catalog(catalog: str, anchor: ReleaseAdmission | None) -> None:
+    if anchor is None or anchor.catalog == catalog:
+        return
+    expected = {tuple(row) for row in json.loads(anchor.catalog)}
+    actual = {tuple(row) for row in json.loads(catalog)}
+    # Compatibility with v33 extensions and fault tests. A new trigger never
+    # qualifies for the canonical path.
+    if expected - actual or any(row[0] != "trigger" for row in actual - expected):
+        raise ReleaseAdmissionError("Live catalogue differs from the prepared layout")
+
+
+def connect_release(db_path: Path) -> tuple[sqlite3.Connection, ReleaseAdmission]:
+    """Open an admitted v33 release connection without preparing a canonical WAL."""
+    from . import db_guard, operations_state, quality_revision
+    reference_triggers()
+    lock = db_guard.acquire_shared()
+    conn = None
+    keep = False
+    try:
+        permit = operations_state.require_permit(db_path)
+        sidecars = _release_sidecars(db_path)
+        anchor = getattr(_singleton_conn, "_release_wal_anchor", None)
+        if anchor is not None and anchor.path == db_path:
+            require_release_identity(anchor)
+        conn = _connect(db_path, enable_wal=False, factory=_LeasedConnection, existing_only=True)
+        conn.execute("BEGIN")
+        _check_schema_version(conn)
+        _require_no_upgrade(conn)
+        catalog = _release_schema(conn)
+        _require_anchored_catalog(catalog, anchor)
+        eligible = (conn.execute("PRAGMA main.journal_mode").fetchone()[0] == "wal"
+                    and all(identity is not None for identity in sidecars[:2])
+                    and sidecars[2] is None
+                    and catalog == _reference_release_catalog)
+        quality_revision.require_valid(conn, structure=True)
+        if not eligible:
+            _require_release_objects(catalog)
+            _require_no_trigger_drift(conn)
+        conn.rollback()
+        admission = ReleaseAdmission(db_path, permit, sidecars, catalog)
+        if eligible:
+            require_release_identity(admission)
+            conn._admission_lock_fd, lock = lock, None
+            keep = True
+            return conn, admission
+
+        conn.close()
+        conn = connect_live(db_path)
+        if anchor is not None:
+            require_release_identity(anchor)
+        # Validate and capture in the same snapshot. The old connector may
+        # have prepared a supported historical schema or enabled WAL.
+        conn.execute("BEGIN")
+        prepared = _release_schema(conn)
+        _require_anchored_catalog(prepared, anchor)
+        _require_release_objects(prepared)
+        _require_no_trigger_drift(conn)
+        quality_revision.require_valid(conn, structure=True)
+        conn.rollback()
+        admission = ReleaseAdmission(db_path, permit, _release_sidecars(db_path), prepared, prepared=True)
+        require_release_identity(admission)
+        keep = True
+        return conn, admission
+    finally:
+        if conn is not None and not keep:
+            conn.close()
+        db_guard.release(lock)
+
+
+def require_release_identity(admission: ReleaseAdmission) -> None:
+    from . import operations_state
+    if (operations_state.require_permit(admission.path) != admission.permit
+            or _release_sidecars(admission.path) != admission.sidecars):
+        raise operations_state.AdmissionRequired("database_identity_changed")
+
+
+def require_release_admission(conn: sqlite3.Connection, admission: ReleaseAdmission) -> None:
+    from . import quality_revision
+    require_release_identity(admission)
+    if (not conn.in_transaction or _release_schema(conn) != admission.catalog
+            or conn.execute("PRAGMA main.journal_mode").fetchone()[0] != "wal"):
+        raise ReleaseAdmissionError("Release schema or runtime admission changed")
+    quality_revision.require_valid(conn, structure=True)
 
 
 def _enable_wal(conn: sqlite3.Connection) -> None:
@@ -2613,6 +2763,7 @@ def migrate_v28_to_v29(conn: sqlite3.Connection) -> None:
 # памяти. Наличие имени не доказывает защиту: подмененное определение с тем же
 # именем ранее оставалось навсегда (CREATE TRIGGER IF NOT EXISTS).
 _reference_triggers_cache: dict[str, str] | None = None
+_reference_release_catalog: str | None = None
 _reference_lock = threading.Lock()
 # Признак «этот поток сейчас строит эталон» — у каждого потока свой: init_db эталонной
 # базы не должен сам запрашивать эталон и восстанавливать по нему триггеры.
@@ -2665,7 +2816,7 @@ def _building_reference() -> bool:
 
 
 def reference_triggers() -> dict[str, str]:
-    global _reference_triggers_cache
+    global _reference_triggers_cache, _reference_release_catalog
     if _reference_triggers_cache is None:
         with _reference_lock:
             if _reference_triggers_cache is None:
@@ -2674,6 +2825,7 @@ def reference_triggers() -> dict[str, str]:
                 _reference_state.building = True
                 try:
                     init_db(ref)
+                    _reference_release_catalog = _release_catalog(ref)
                     _reference_triggers_cache = {
                         r["name"]: r["sql"] for r in ref.execute(
                             "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")}
@@ -2733,6 +2885,10 @@ class SchemaDriftError(SchemaVersionError):
     Запуск останавливается до любых изменений: подмена защиты не исправляется
     молча при старте. Восстановление — migrate-db --confirm-offline (с проверенной
     копией), обнаружение — check-db."""
+
+
+class ReleaseAdmissionError(SchemaDriftError):
+    """A buffered release cannot be authorized on the current database."""
 
 
 def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
@@ -2906,15 +3062,25 @@ def get_connection() -> sqlite3.Connection:
     """Process-wide connection to the configured DB path (used by the app).
     Tests should build their own via `_connect` + `init_db` against a temp path."""
     global _singleton_conn
-    from . import operations_state
+    from . import operations_state, quality_revision
     operations_state.require_permit()
     if _singleton_conn is None:
         # Рабочая база никогда не обновляется неявно (AUD-02): старая схема —
         # отказ без изменений, обновление только командой migrate-db. При отказе
         # соединение закрывается и не остаётся для следующих вызовов.
-        _singleton_conn = connect_live(config.DB_PATH)
-    from . import quality_revision
-    quality_revision.require_valid(_singleton_conn)
+        conn = connect_live(config.DB_PATH)
+        try:
+            quality_revision.require_valid(conn)
+            sidecars = _release_sidecars(config.DB_PATH)
+            if all(identity is not None for identity in sidecars[:2]) and sidecars[2] is None:
+                conn._release_wal_anchor = ReleaseAdmission(
+                    config.DB_PATH, operations_state.require_permit(), sidecars, _release_catalog(conn))
+        except BaseException:
+            conn.close()
+            raise
+        _singleton_conn = conn
+    else:
+        quality_revision.require_valid(_singleton_conn)
     return _singleton_conn
 
 
