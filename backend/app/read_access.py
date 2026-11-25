@@ -8,7 +8,7 @@ import json
 import sqlite3
 import re
 import threading
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 from starlette.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from . import audit, config, db, operations_state, policy, security, session_context, request_security, patient_pages, quality_pages
@@ -16,9 +16,8 @@ from . import audit, config, db, operations_state, policy, security, session_con
 RELEASE = 'medical_read_release'
 DENIED = 'medical_read_denied'
 EXPORTS = {'export', 'analytics_report_exported', 'consilium_registry_exported'}
-# In one service process, our own audit commits need not invalidate an
-# overlapping optimistic read. This only orders releases. SQLite, the live
-# permit, and data_version still decide admission, including external writers.
+# Order scoped patient releases within one service process. SQLite, the live
+# permit, and data_version still decide admission, including other writers.
 _release_order = threading.Lock()
 
 
@@ -79,11 +78,14 @@ def persist(state, route, raw, params, denied):
 
 
 @contextmanager
-def _ordered_release_connection():
-    with _release_order:
-        conn, admission = db.connect_release(config.DB_PATH)
-        with closing(conn):
-            yield conn, admission
+def _ordered_release_connection(scoped):
+    with (_release_order if scoped else nullcontext()):
+        if scoped:
+            conn, admission = db.connect_release(config.DB_PATH)
+        else:
+            conn, admission = db.connect_live(config.DB_PATH), None
+        with closing(conn) as managed:
+            yield managed, admission
 
 
 def _fresh_reader(conn, state):
@@ -121,7 +123,8 @@ def _persist(state, route, raw, params, denied):
             not state.export_recorded and response_sha256 == quality_check.response_sha256
             and {(obj['type'], obj['id']) for obj in objects} == quality_check.audited_objects
         )
-    with _ordered_release_connection() as (conn, admission):
+    scoped = not denied and isinstance(state.scoped_release, patient_pages.ScopedRelease)
+    with _ordered_release_connection(scoped) as (conn, admission):
         version = None
         if not denied and quality_check is None and state.scoped_release is not None:
             # PRAGMA data_version is meaningful only on this same connection.
@@ -135,7 +138,8 @@ def _persist(state, route, raw, params, denied):
                 validation_changed = True
         conn.execute('BEGIN IMMEDIATE')
         try:
-            db.require_release_admission(conn, admission)
+            if admission is not None:
+                db.require_release_admission(conn, admission)
             if not denied:
                 fresh = _fresh_reader(conn, state)
                 if quality_check is not None:
@@ -190,7 +194,8 @@ def _persist(state, route, raw, params, denied):
                 # this transaction. Recheck before either record can commit.
                 fresh = _fresh_reader(conn, state)
                 quality_pages.validate_admission(conn, fresh, state, quality_check)
-            db.require_release_identity(admission)
+            if admission is not None:
+                db.require_release_identity(admission)
             conn.commit()
         except BaseException:
             conn.rollback()

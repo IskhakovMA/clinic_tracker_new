@@ -348,7 +348,7 @@ def test_medical_read_persists_one_audit_transaction_without_schema_preparation(
     # Warm the ordinary dependency path, which retains its existing initialization.
     assert auth_client.get("/api/auth/me").status_code == 200
     trace_sql.clear()
-    response = auth_client.get("/api/patients")
+    response = auth_client.get("/api/patients?view=page&limit=50")
     assert response.status_code == 200
     response_trace = _normalized(sql for trace in trace_sql for sql in trace)
     assert len(_schema_preparation(response_trace)) == 0
@@ -383,7 +383,7 @@ def test_post_admission_drift_withholds_response_and_leaves_no_audit_pair(auth_c
 
     before = release_counts()
     monkeypatch.setattr(db, "connect_release", connect_with_catalog_change)
-    response = auth_client.get("/api/patients")
+    response = auth_client.get("/api/patients?view=page&limit=50")
     assert len(admissions) == 1 and admissions[0] is not None
     assert response.status_code == 503
     assert response.json() == {
