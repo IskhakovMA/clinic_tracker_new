@@ -226,6 +226,29 @@ def test_live_wal_with_unknown_trigger_uses_guarded_compatibility_path(live_wal,
             conn.rollback()
 
 
+def test_legacy_preparation_does_not_reseed_a_row_lost_after_preflight(live_wal, trace_sql, monkeypatch):
+    from backend.app import db
+
+    with closing(sqlite3.connect(live_wal)) as writer:
+        writer.execute("CREATE TRIGGER trg_test_observer AFTER INSERT ON audit_events BEGIN SELECT 1; END")
+        writer.commit()
+    connect_live = db.connect_live
+
+    def connect_after_seed_loss(path, **kwargs):
+        with closing(sqlite3.connect(path)) as writer:
+            writer.execute("DELETE FROM roles WHERE id = 'doctor'")
+            writer.commit()
+        return connect_live(path, **kwargs)
+
+    monkeypatch.setattr(db, "connect_live", connect_after_seed_loss)
+    trace_sql.clear()
+    with pytest.raises(db.ReleaseAdmissionError, match="seed identities are missing"):
+        db.connect_release(live_wal)
+    with closing(sqlite3.connect(live_wal)) as observer:
+        assert observer.execute("SELECT id FROM roles WHERE id = 'doctor'").fetchone() is None
+    assert not any(_schema_preparation(statements) for statements in trace_sql)
+
+
 @pytest.mark.parametrize("change", ["main_trigger", "temporary_trigger", "seed", "permit"])
 def test_release_recheck_rejects_changes_after_fast_admission(live_wal, trace_sql, change):
     from backend.app import db, operations_state
@@ -368,3 +391,29 @@ def test_post_admission_drift_withholds_response_and_leaves_no_audit_pair(auth_c
         "code": "READ_ADMISSION_UNAVAILABLE",
     }
     assert release_counts() == before
+
+
+def test_parallel_scoped_reads_serialize_their_own_audits(auth_client):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+    from .conftest import get_conn
+
+    assert auth_client.get("/api/auth/me").status_code == 200
+    start = Barrier(5)
+
+    def read():
+        start.wait()
+        return auth_client.get("/api/patients?view=page&limit=50")
+
+    with ThreadPoolExecutor(max_workers=4) as workers:
+        futures = [workers.submit(read) for _ in range(4)]
+        start.wait()
+        replies = [future.result(timeout=10) for future in futures]
+    assert [reply.status_code for reply in replies] == [200] * 4
+    audits = get_conn().execute(
+        """SELECT m.audit_event_id, m.snapshot_sha256
+           FROM audit_events e JOIN read_access_manifests m ON m.audit_event_id = e.id
+           WHERE e.event_type='medical_read_release' AND e.detail='operation=GET /api/patients'"""
+    ).fetchall()
+    assert len({row[0] for row in audits}) == 4
+    assert sorted(row[1] for row in audits) == sorted(hashlib.sha256(reply.content).hexdigest() for reply in replies)

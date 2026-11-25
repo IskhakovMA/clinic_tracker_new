@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from . import config
 
@@ -878,7 +879,8 @@ class _LeasedConnection(_ClinicConnection):
             pass
 
 
-def connect_live(db_path: Path) -> sqlite3.Connection:
+def connect_live(db_path: Path, *,
+                 before_prepare: Callable[[sqlite3.Connection], None] | None = None) -> sqlite3.Connection:
     """Connection to the live DB that never upgrades it implicitly (AUD-02).
 
     The schema is checked first (init_db with allow_upgrade=False) and only
@@ -891,7 +893,10 @@ def connect_live(db_path: Path) -> sqlite3.Connection:
         operations_state.require_permit(db_path)
         conn = _connect(db_path, enable_wal=False, factory=_LeasedConnection)
         conn._admission_lock_fd, lock = lock, None
-        init_db(conn, allow_upgrade=False)
+        if before_prepare is None:
+            init_db(conn, allow_upgrade=False)
+        else:
+            init_db(conn, allow_upgrade=False, before_prepare=before_prepare)
         _enable_wal(conn)
     except BaseException:
         if conn is not None:
@@ -1004,7 +1009,16 @@ def connect_release(db_path: Path) -> tuple[sqlite3.Connection, ReleaseAdmission
             return conn, admission
 
         conn.close()
-        conn = connect_live(db_path)
+
+        def validate_legacy_preparation(opened: sqlite3.Connection) -> None:
+            if operations_state.require_permit(db_path) != permit:
+                raise operations_state.AdmissionRequired("database_identity_changed")
+            if anchor is not None:
+                require_release_identity(anchor)
+            if _release_schema(opened) != catalog:
+                raise ReleaseAdmissionError("Catalogue changed before legacy preparation")
+
+        conn = connect_live(db_path, before_prepare=validate_legacy_preparation)
         if anchor is not None:
             require_release_identity(anchor)
         # Validate and capture in the same snapshot. The old connector may
@@ -2891,7 +2905,8 @@ class ReleaseAdmissionError(SchemaDriftError):
     """A buffered release cannot be authorized on the current database."""
 
 
-def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
+def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True,
+            before_prepare: Callable[[sqlite3.Connection], None] | None = None) -> None:
     """Idempotent schema creation + migration. Safe on an empty DB
     and safe to call repeatedly (CREATE TABLE IF NOT EXISTS + guarded ALTERs).
 
@@ -2923,6 +2938,8 @@ def init_db(conn: sqlite3.Connection, *, allow_upgrade: bool = True) -> None:
                 _require_no_trigger_drift(conn)   # AUD-14: подмененная защита — отказ без изменений
                 from . import quality_revision
                 quality_revision.require_valid(conn, structure=True)
+        if before_prepare is not None:
+            before_prepare(conn)
         _execute_script(conn, SCHEMA_SQL)  # создаёт недостающие таблицы (IF NOT EXISTS)
         migrate_v1_to_v2(conn)           # добавляет новые колонки в v1-таблицы
         migrate_v3_to_v4(conn)           # добавляет nullable policy_number в существующие БД

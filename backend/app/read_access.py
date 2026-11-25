@@ -7,6 +7,7 @@ import hashlib
 import json
 import sqlite3
 import re
+import threading
 from contextlib import closing
 from starlette.responses import JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
@@ -15,6 +16,10 @@ from . import audit, config, db, operations_state, policy, security, session_con
 RELEASE = 'medical_read_release'
 DENIED = 'medical_read_denied'
 EXPORTS = {'export', 'analytics_report_exported', 'consilium_registry_exported'}
+# In one service process, our own audit commits need not invalidate an
+# overlapping optimistic read. This only orders releases. SQLite, the live
+# permit, and data_version still decide admission, including external writers.
+_release_order = threading.Lock()
 
 
 def _id_type(key):
@@ -68,7 +73,8 @@ def attempted_manifest(params):
 def persist(state, route, raw, params, denied):
     token = request_security.current.set(None)
     try:
-        return _persist(state, route, raw, params, denied)
+        with _release_order:
+            return _persist(state, route, raw, params, denied)
     finally:
         request_security.current.reset(token)
 
