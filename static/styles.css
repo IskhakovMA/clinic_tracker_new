@@ -3067,7 +3067,7 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .patient-workspace .alert--info { color:var(--accent-text); }
 .patient-workspace .chip--danger { color:#fca5a5; }
 
-html[data-theme="light"] .patient-workspace .chip--danger { color:#b91c1c; }
+html[data-theme="light"] :is(.patient-workspace, .f1-workspace) .chip--danger { color:#b91c1c; }
 
 /* WP-I I-4: Staff-UX full creation page; original medical controls and IDs. */
 .create-patient { min-width:0; }
@@ -3325,69 +3325,108 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
     outline-offset: 0.2rem;
 }
 
-/* Fast Track F1 workspaces */
+/* Staff-UX analytics strip and agenda rows in the scoped workspaces. */
 .f1-workspace .f1-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
-    gap: 12px;
-    margin-block: 12px 20px;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+    gap: 1px;
+    margin-block: var(--sp-3) var(--sp-4);
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
+    overflow: hidden;
 }
-.f1-workspace .f1-list {
+.f1-workspace .f1-grid > .f1-item {
     display: grid;
-    gap: 10px;
-    margin-block: 12px;
+    align-content: start;
+    justify-items: start;
+    border: 0;
+    border-radius: 0;
+}
+.f1-workspace .f1-grid button:focus-visible { outline-offset: -3px; }
+.f1-workspace .f1-grid button:hover { background: var(--surface-2); }
+.f1-workspace .f1-grid > .f1-empty { grid-column: 1 / -1; }
+.f1-workspace .f1-list {
+    margin-block: var(--sp-3);
     padding-inline: 0;
     list-style: none;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--r-lg);
 }
+.f1-workspace .f1-list > li + li { border-top: 1px solid var(--border); }
 .f1-workspace .f1-actions {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px 12px;
-    margin-block: 12px;
+    gap: var(--sp-2) var(--sp-3);
+    margin-block: var(--sp-3);
 }
 .f1-workspace .f1-item {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 8px;
+    display: grid;
+    gap: var(--sp-1);
     min-width: 0;
-    padding: 16px;
+    padding: var(--sp-2) var(--sp-4);
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
     overflow-wrap: anywhere;
 }
+.f1-workspace :is(.f1-item--doctor, .f1-detail-row) {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--sp-3);
+}
+.f1-workspace :is(.f1-detail-cell, .f1-item__identity, .f1-item__context) { min-width: 0; }
+.f1-workspace :is(.f1-item__action, .f1-detail-action) { justify-self: start; }
 .f1-workspace .f1-item__title {
     margin: 0;
-    font-size: var(--text-lg);
-    font-weight: 650;
+    font-size: var(--text-base);
+    font-weight: 600;
 }
-.f1-workspace .f1-kicker,
-.f1-workspace .f1-description {
+.f1-workspace :is(.f1-kicker, .f1-description, .f1-metric-unit) {
     margin: 0;
+    font-size: var(--text-md);
     color: var(--text-2);
 }
+.f1-workspace .f1-metric-reading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--sp-1) var(--sp-2);
+}
+.f1-workspace :is(.f1-item__detail, .f1-detail-reason) { margin: 0; }
 .f1-workspace .f1-value {
     font-size: var(--text-2xl);
     line-height: 1.15;
-    font-weight: 650;
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
 }
 .f1-workspace .f1-empty {
-    padding: 16px;
+    margin: 0;
+    padding: var(--sp-3) var(--sp-4);
     color: var(--text-2);
+    background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: var(--r-lg);
 }
 .f1-workspace [aria-pressed="true"] {
     background: var(--accent-soft);
     border-color: var(--accent);
     color: var(--accent-text);
 }
-@media (max-width: 560px) {
-    .f1-workspace .f1-actions > .input {
-        max-width: 100%;
+.f1-workspace :is(.f1-pulse-result, h2[tabindex="-1"]) {
+    scroll-margin-top: calc(var(--topbar-h) + var(--sp-3));
+}
+.f1-workspace .f1-actions > .select,
+#f1MyDay > .input {
+    width: auto;
+    max-width: 100%;
+    min-width: 0;
+}
+@media (max-width: 767px) {
+    .f1-workspace .f1-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .f1-workspace :is(.f1-item--doctor, .f1-detail-row) {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--sp-2);
     }
 }
 #backToF1[hidden] {

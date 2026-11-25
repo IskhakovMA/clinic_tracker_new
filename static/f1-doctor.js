@@ -10,12 +10,12 @@ const f1Doctor = (() => {
         },
         events: {
             label: 'Плановые события',
-            detail: 'Плановые даты без отмеченного факта, начиная с самых ранних.',
+            detail: 'Подтвержденные плановые даты без отмеченного факта. Сначала самые ранние.',
             empty: 'Плановых событий без отмеченного факта нет.',
         },
         checklists: {
             label: 'Обязательные пункты',
-            detail: 'Состояние обязательных пунктов текущего этапа.',
+            detail: 'Обязательные пункты текущего этапа и их выполнение.',
             empty: 'Пациентов с обязательными пунктами нет.',
         },
     };
@@ -26,6 +26,7 @@ const f1Doctor = (() => {
         ['no-date', 'Плановый срок не указан'],
     ];
     const freshPage = () => ({ index: 0, cursors: [null] });
+    const clinicDay = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Europe/Moscow', dateStyle: 'short' });
 
     function permitted(app) {
         return app.user?.roleId === 'doctor' && !app.sessionExpired &&
@@ -104,12 +105,20 @@ const f1Doctor = (() => {
         return app.stageNames[stage] || 'Этап не указан';
     }
 
-    function deadlineText(row) {
-        if (!Number.isInteger(row.deadlineDays)) return 'Плановый срок не указан';
-        if (row.currentFact) return 'Факт последнего события отмечен';
-        if (row.deadlineDays < 0) return `Просрочка — ${Math.abs(row.deadlineDays)} дн.`;
-        if (!row.deadlineDays) return 'Плановый срок сегодня';
-        return `До планового срока — ${row.deadlineDays} дн.`;
+    function deadlineStatus(row) {
+        if (row.currentFact) return ['neutral', 'Факт последнего события отмечен'];
+        const days = row.deadlineDays;
+        if (!Number.isInteger(days)) return ['neutral', 'Плановый срок не указан'];
+        if (days < 0) return ['danger', `Просрочка — ${Math.abs(days)} дн.`];
+        if (!days) return ['accent', 'Плановый срок сегодня'];
+        return ['neutral', `До планового срока — ${days} дн.`];
+    }
+
+    function eventStatus(row, today) {
+        if (!row.date) return ['neutral', 'Плановый срок не указан'];
+        if (row.date < today) return ['danger', 'Просрочено'];
+        if (row.date === today) return ['accent', 'Сегодня'];
+        return ['neutral', 'Запланировано'];
     }
 
     function dateText(row) {
@@ -117,66 +126,101 @@ const f1Doctor = (() => {
         return row.time ? `${date} · ${row.time}` : date;
     }
 
-    function patientAction(app, row, mode, live, refresh) {
+    function replayAction(app, patient, action) {
+        const index = (patient.history || []).findIndex(occurrence =>
+            occurrence.id === action.occurrenceId && occurrence.stage === action.stage);
+        const event = patient.history?.[index]?.events?.find(item => item.id === action.eventId);
+        if (event?.actualDate) return 'Факт события уже отмечен.';
+        if (!event?.date) return 'Плановое событие больше недоступно.';
+        if (event.date !== action.date || (event.time || '') !== action.time) return 'Плановый срок изменился.';
+        app.selectedTimelineNodes[patient.id] = 'occ:' + index;
+        return null;
+    }
+
+    function focusSection(selector) {
+        const target = document.querySelector(selector);
+        target?.scrollIntoView({ block: 'nearest' });
+        return target;
+    }
+
+    function focusAction(action) {
+        const target = document.getElementById('patient-event-' + action.eventId);
+        if (!target) return focusSection('#patientPanels .section-title');
+        target.scrollIntoView({ block: 'nearest' });
+        return target;
+    }
+
+    function checklistChanged(app, patient, row) {
+        const current = patient.history?.at(-1);
+        const nosology = app.nosologyData[patient.nosology];
+        if (!current || current.stage !== row.stage || !nosology) return true;
+        const required = (current.stage === 'exam' ? nosology.checklistRequired : nosology.checklistRequiredStage2) || [];
+        const incomplete = required.filter(item => current.checklist?.[item] !== true).length;
+        return required.length !== row.total_required || incomplete !== row.incomplete_required;
+    }
+
+    function patientAction(app, row, mode, live, refresh, readFailed) {
         const id = mode === 'patients' ? row.id : row.patientId || row.patient_id;
         const name = row.name || row.patientName || row.patient_name;
-        const label = mode === 'events' ? 'К событию' : mode === 'checklists' ? 'К чек-листу' : 'Открыть карточку';
+        let label = 'Открыть карточку';
+        if (mode === 'events') label = row.stage === 'primary-appointment' ? 'К разделу приёма' : 'К событию';
+        if (mode === 'checklists') {
+            label = row.incomplete_required && app.can('editPatients') ? 'К чек-листу' : 'Посмотреть чек-лист';
+        }
         const tab = mode === 'events' ? 'events' : mode === 'checklists' ? 'checklist' : 'overview';
+        const action = mode === 'events' ? {
+            kind: 'day-event', eventId: row.id, occurrenceId: row.historyEntryId, stage: row.stage,
+            date: row.date, time: row.time || '',
+        } : null;
         return button(label, () => {
             if (!live()) return;
             void app.openPatient(id, tab, {
                 allowed: live,
-                denied: () => { if (live()) clearUnavailable(); },
+                denied: () => refresh('Запись больше недоступна.'),
+                readFailed,
                 prepare: patient => {
-                    if (mode !== 'events') return true;
-                    const index = (patient.history || []).findIndex(occurrence =>
-                        occurrence.id === row.historyEntryId &&
-                        occurrence.events.some(event => event.id === row.id && !event.actualDate));
-                    if (index < 0) {
-                        clearUnavailable();
-                        return false;
-                    }
-                    app.selectedTimelineNodes[id] = 'occ:' + index;
-                    return true;
+                    let reason = action ? replayAction(app, patient, action) : null;
+                    if (mode === 'checklists' && checklistChanged(app, patient, row)) reason = 'Текущий чек-лист изменился.';
+                    if (reason) refresh(reason);
+                    return !reason;
                 },
-                focus: mode === 'events' ? () => {
-                    const target = document.getElementById('patient-event-' + row.id);
-                    target?.scrollIntoView({ block: 'nearest' });
-                    return target;
-                } : undefined,
+                focus: action ? () => focusAction(action) : mode === 'checklists'
+                    ? () => focusSection('#patientPanels .checkline .section-title') : undefined,
+                historyAction: action,
             });
-        }, { 'aria-label': `${label} — ${name}` });
-
-        function clearUnavailable() {
-            refresh('Запись больше недоступна. Список обновлён.');
-        }
+        }, { class: 'btn btn--ghost btn--sm f1-item__action', 'data-f1-doctor-action': '', 'aria-label': `${label} — ${name}` });
     }
 
-    function item(app, mode, row, live, refresh) {
+    function item(app, mode, row, today, live, refresh, readFailed) {
         const name = row.name || row.patientName || row.patient_name;
-        let notes;
+        let detail, secondary, status, owner;
         if (mode === 'patients') {
-            notes = [
-                deadlineText(row),
-                row.treatingDoctorName ? `Лечащий врач — ${row.treatingDoctorName}` : 'Лечащий врач не указан',
-                row.attention?.active && row.attention.primaryReasonLabel ? `Требует внимания — ${row.attention.primaryReasonLabel}` : null,
-            ];
+            detail = row.attention?.active && row.attention.primaryReasonLabel
+                ? `Требует внимания — ${row.attention.primaryReasonLabel}` : null;
+            status = deadlineStatus(row);
+            owner = row.treatingDoctorName || 'Не указан';
         } else if (mode === 'events') {
-            notes = [dateText(row), row.head ? `Заведующий — ${row.head}` : null];
+            detail = dateText(row);
+            secondary = row.head ? `Заведующий — ${row.head}` : null;
+            status = eventStatus(row, today);
+            owner = app.user.fullName;
         } else {
-            notes = [
-                `Выполнено ${row.completed_required} из ${row.total_required}`,
-                row.incomplete_required ? `Осталось обязательных пунктов — ${row.incomplete_required}` : 'Обязательные пункты выполнены',
-                row.treating_doctor_name ? `Лечащий врач — ${row.treating_doctor_name}` : null,
-            ];
+            detail = `Обязательные пункты: ${row.completed_required} из ${row.total_required}`;
+            status = row.incomplete_required ? ['warning', `Осталось — ${row.incomplete_required}`] : ['good', 'Обязательные пункты выполнены'];
+            owner = row.treating_doctor_name || 'Не указан';
         }
-        return el('li', { class: 'f1-item', 'data-f1-doctor-row': mode }, [
-            el('div', {}, [
+        return el('li', { class: 'f1-item f1-item--doctor', 'data-f1-doctor-row': mode }, [
+            el('div', { class: 'f1-item__identity' }, [
                 el('h3', { class: 'f1-item__title', text: name }),
                 el('p', { class: 'f1-kicker', text: mode === 'events' ? 'Этап события — ' + stageText(app, row.stage) : row.stage_label || stageText(app, row.stage) }),
-                ...notes.filter(Boolean).map(text => el('p', { class: 'f1-description', text })),
+                owner ? el('p', { class: 'f1-description', text: `Лечащий врач — ${owner}` }) : null,
             ]),
-            patientAction(app, row, mode, live, refresh),
+            el('div', { class: 'f1-item__context' }, [
+                detail ? el('p', { class: 'f1-item__detail', text: detail }) : null,
+                secondary ? el('p', { class: 'f1-description', text: secondary }) : null,
+                el('span', { class: `chip chip--${status[0]}`, text: status[1] }),
+            ]),
+            patientAction(app, row, mode, live, refresh, readFailed),
         ]);
     }
 
@@ -202,12 +246,13 @@ const f1Doctor = (() => {
                 if (!live() || !retryable(error)) throw error;
                 cursors = [null];
                 index = 0;
-                notice = 'Список изменился. Показана первая страница.';
+                notice = [notice, 'Список изменился. Показана первая страница.'].filter(Boolean).join(' ');
                 data = await apiGetJson(pathFor(mode, state.deadline, null));
             }
             if (!live()) return;
 
             const rows = data[mode];
+            const today = clinicDay.format(new Date());
             const displayPage = state.pages[mode] = { index, cursors };
             const status = el('p', {
                 class: 'f1-description', role: 'status', tabindex: '-1',
@@ -217,11 +262,16 @@ const f1Doctor = (() => {
                 if (live()) void load(app, state, anchor, body, nextIndex, nextCursors);
             };
             const refresh = message => {
-                if (live()) void load(app, state, anchor, body, 0, [null], message);
+                if (live()) void load(app, state, anchor, body, index, cursors, message);
+            };
+            const readFailed = () => {
+                if (!live()) return;
+                delete state.ticket;
+                showError('Не удалось проверить карточку. Обновите список перед переходом.');
             };
             body.replaceChildren(status, ...[
                 rows.length
-                    ? el('ul', { class: 'f1-list' }, rows.map(row => item(app, mode, row, live, refresh)))
+                    ? el('ul', { class: 'f1-list f1-list--doctor' }, rows.map(row => item(app, mode, row, today, live, refresh, readFailed)))
                     : el('p', { class: 'f1-empty', text: modes[mode].empty }),
                 pager(data.page, displayPage, nextPage),
             ].filter(Boolean));
@@ -231,18 +281,25 @@ const f1Doctor = (() => {
             const message = retryable(error)
                 ? 'Список снова изменился. Обновите его вручную.'
                 : apiErrorMessage(error.status);
-            const status = el('p', { class: 'alert alert--warning', role: 'alert', tabindex: '-1', text: message });
-            body.replaceChildren(status, button('Обновить список', () => {
-                if (live()) void load(app, state, anchor, body, 0, [null]);
-            }));
-            focus.moveTo(status);
+            showError(message, focus);
         } finally {
             if (live()) body.removeAttribute('aria-busy');
             focus.stop();
         }
+
+        function showError(message, loadingFocus) {
+            const returnFocus = !loadingFocus && body.contains(document.activeElement) && !ui.topModal();
+            const status = el('p', { class: 'alert alert--warning', role: 'alert', tabindex: '-1', text: message });
+            const retry = button('Обновить список', () => {
+                if (retry.isConnected && permitted(app)) void load(app, state, anchor, body, 0, [null]);
+            });
+            body.replaceChildren(status, retry);
+            if (returnFocus) status.focus({ preventScroll: true });
+            loadingFocus?.moveTo(status);
+        }
     }
 
-    function render(app) {
+    function render(app, notice = '') {
         const host = document.getElementById('f1MyDay');
         if (!host || !permitted(app)) return;
         const state = stateFor(app);
@@ -268,7 +325,7 @@ const f1Doctor = (() => {
             heading, detail, select, body,
         );
 
-        function show() {
+        function show(message = '') {
             for (const control of controls) {
                 const selected = control.dataset.f1DoctorMode === state.mode;
                 control.setAttribute('aria-pressed', String(selected));
@@ -279,10 +336,10 @@ const f1Doctor = (() => {
             detail.textContent = modes[state.mode].detail;
             select.hidden = state.mode !== 'patients';
             const page = state.pages[state.mode];
-            void load(app, state, heading, body, page.index, page.cursors);
+            void load(app, state, heading, body, page.index, page.cursors, message);
         }
-        show();
+        show(notice);
     }
 
-    return { render, clear };
+    return { render, clear, replayAction, focusAction };
 })();

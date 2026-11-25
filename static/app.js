@@ -2219,7 +2219,7 @@ const app = {
         };
     },
 
-    showView(view) {
+    showView(view, {cardOrigin} = {}) {
         if (view==='create' && !this.can('createPatients')) view='patients';
         if (this.currentView === 'create' && view !== 'create' && this.addFormActive && !this.sessionExpired) {
             void this.requestCloseAddModal(view);
@@ -2232,6 +2232,7 @@ const app = {
         const previousView = this.currentView;
         this.currentView = view;
         if (view !== 'patient') this.f1CardOrigin = null;
+        else if (cardOrigin !== undefined) this.f1CardOrigin = cardOrigin;
         else if (previousView !== 'patient') {
             this.f1CardOrigin = previousView === 'pulse' || previousView === 'myDay' ? previousView : null;
         }
@@ -7221,6 +7222,11 @@ const app = {
         this.patientRows = this.patientRows.filter(patient => patient.id !== patientId);
         this.patientListDirty = true;
         this.renderSessionFieldDrafts();
+        // A row can be denied after returning from its previous card. Clear the
+        // hidden card, then let the active workspace refresh its own selection.
+        if (this.currentPatientId === patientId && ['myDay', 'pulse'].includes(this.currentView)) {
+            this.clearPatientNavigationView();
+        }
         if (this.currentPatientId !== patientId) {
             this.renderPatients();
             return;
@@ -12430,7 +12436,7 @@ const browserNavigation = {
             .map(node => [node, JSON.stringify(app.patientDraftControls.get(node).readValue())]);
     },
 
-    async navigate(route, {entry, replace = false, allowed, prepare, focus, objectId, denied, registryOnDenial} = {}) {
+    async navigate(route, {entry, replace = false, allowed, prepare, focus, objectId, denied, registryOnDenial, historyAction, readFailed} = {}) {
         if (!app.user || app.sessionExpired || app.sessionReconciling || !this.nonce) return false;
         if (this.correction && !replace) return false;
         this.closeNavigationDialog();
@@ -12440,12 +12446,18 @@ const browserNavigation = {
         const access = app.accessSignature(app.user);
         const positionKey = history.state?.route;
         const sourceView = app.currentView, sourcePatient = app.currentPatientId, sourceTab = app.currentTab;
+        if (!entry && route.screen === 'patient') {
+            const origin = sourceView === 'patient' && sourcePatient === route.patientId ? app.f1CardOrigin : sourceView;
+            if (origin === 'pulse' || origin === 'myDay') route = {...route, f1Source: origin};
+            if (origin === 'myDay' && historyAction?.kind === 'day-event') route = {...route, historyAction};
+        }
         const sameIntent = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
             && user === app.user?.id && app.accessSignature(app.user) === access
             && !app.sessionExpired && !app.sessionReconciling && positionKey === history.state?.route;
         const current = () => sameIntent() && sourceView === app.currentView &&
             sourcePatient === app.currentPatientId && sourceTab === app.currentTab;
         let finished = false;
+        let reading = false;
         const id = objectId || route.patientId;
         this.intentPatient = id;
         try {
@@ -12459,7 +12471,9 @@ const browserNavigation = {
                 app.currentView === route.screen && (route.screen !== 'patient' || app.currentTab === route.tab)) return true;
             const consent = await this.confirmExit(current, route);
             if (!consent || !current() || (allowed && !allowed())) return false;
+            reading = Boolean(id);
             const patient = id ? await apiGetJson('/api/patients/' + encodeURIComponent(id)) : null;
+            reading = false;
             if (!id && !await app.checkSessionIdentity(epoch)) return false;
             if (!current() || !this.canNavigate(route) || (allowed && !allowed())) return false;
             if (id && patient?.id !== id) throw new Error('Карточка недоступна.');
@@ -12475,6 +12489,15 @@ const browserNavigation = {
             if (!entry && !replace && this.entry(history.state) !== this.committed) {
                 if (!this.restorePosition()) await this.recoverUnknown({keep: true});
                 return false;
+            }
+            if (entry && route.historyAction?.kind === 'day-event') {
+                const unavailable = f1Doctor.replayAction(app, patient, route.historyAction);
+                if (unavailable) {
+                    ui.toast(unavailable, 'warning');
+                    f1Doctor.render(app, unavailable);
+                    return false;
+                }
+                focus = () => f1Doctor.focusAction(route.historyAction);
             }
             this.render(route, patient, focus, replace);
             if (entry) this.committed = entry;
@@ -12492,7 +12515,7 @@ const browserNavigation = {
                     finished = true;
                 }
                 if (denied) denied(error);
-            }
+            } else if (reading && readFailed && current()) readFailed(error);
             ui.toast(id ? 'Карточка недоступна.' : error.message, 'warning');
             return false;
         } finally {
@@ -12513,7 +12536,7 @@ const browserNavigation = {
             if (patient) app.patientDetails = new Map([[patient.id, patient]]);
             app.currentPatientId = route.patientId;
             app.currentTab = route.tab;
-            app.showView('patient');
+            app.showView('patient', {cardOrigin: route.f1Source ?? null});
             app.renderPatientView();
         } else if (route.screen === 'create') {
             app.openAddModal();
