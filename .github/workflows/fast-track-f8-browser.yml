@@ -37,7 +37,7 @@ jobs:
           git diff --exit-code "$BASE_SHA" HEAD -- backend/app backend/migrations backend/requirements-dev.txt tools/tests/wp_h/package-lock.json .github/workflows/ci.yml .github/workflows/fast-track-f2-browser.yml .github/workflows/fast-track-f3-browser.yml .github/workflows/fast-track-f4-browser.yml .github/workflows/fast-track-f5-browser.yml .github/workflows/fast-track-f6-browser.yml .github/workflows/fast-track-f7-browser.yml static/quality-v1.js
           while IFS= read -r path; do
             case "$path" in
-              .github/workflows/fast-track-f8-browser.yml|backend/tests/test_frontend_csp.py|index.html|static/app.js|static/styles.css|tools/tests/fast_track_f8/journey.cjs|tools/tests/fast_track_f8/run.py) ;;
+              .github/workflows/fast-track-f8-browser.yml|backend/tests/test_frontend_csp.py|index.html|static/app.js|static/styles.css|tools/tests/fast_track_f8/journey.cjs|tools/tests/fast_track_f8/run.py|tools/tests/wp_i_quality/run_browser.py) ;;
               *) printf 'Unexpected changed path: %s\n' "$path"; exit 1 ;;
             esac
           done < <(git diff --name-only "$BASE_SHA" HEAD)
@@ -56,6 +56,7 @@ jobs:
           npm ci --ignore-scripts --prefix tools/tests/wp_h
           tools/tests/wp_h/node_modules/.bin/playwright install --with-deps chromium
       - name: Run F8 and affected browser regressions
+        id: browser-suites
         shell: bash
         run: |
           set -euo pipefail
@@ -70,6 +71,102 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -z "$(git status --porcelain)"
           mkdir -m 700 "$RUNNER_TEMP/f8-public"
+          python - "$RUNNER_TEMP" <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import re
+          import subprocess
+          import sys
+          import tempfile
+
+          runner = Path(sys.argv[1])
+          old_output = runner / "f8-quality-browser"
+          probe = """
+          const {chromium} = require(process.env.PLAYWRIGHT_MODULE);
+          (async () => {
+            const browser = await chromium.launch({
+              executablePath: process.env.BROWSER_EXECUTABLE, headless: true, timeout: 15000,
+            });
+            await browser.close();
+          })().catch(error => { console.error(error.message); process.exitCode = 1; });
+          """
+          def launch(temp):
+              process = subprocess.run(["node", "-e", probe],
+                  env={**os.environ, "TMPDIR": temp, "DEBUG": "pw:browser"},
+                  capture_output=True, timeout=30)
+              log = process.stderr
+              profile = re.search(rb"--user-data-dir=([^\r\n]+?)(?= --|\r?\n|$)", log)
+              socket = re.search(rb"Socket path too long:\s*([^\r\n]+)", log, re.I)
+              return {
+                  "exitCode": process.returncode, "tmpdirBytes": len(os.fsencode(temp)),
+                  "profilePathBytes": len(profile[1]) if profile else None,
+                  "socketPathBytes": len(socket[1].strip()) if socket else None,
+                  "reason": "socket_path_too_long" if socket else
+                      ("unclassified_launch_failure" if process.returncode else None),
+              }
+
+          old_output.mkdir(mode=0o700)
+          try:
+              with tempfile.TemporaryDirectory(prefix="private-fixture-", dir=old_output) as old:
+                  with tempfile.TemporaryDirectory(prefix="wq.", dir="/tmp") as new:
+                      long_run, short_run = launch(old), launch(new)
+              assert not Path(old).exists() and not Path(new).exists()
+          finally:
+              old_output.rmdir()
+          data = {
+              "candidateSha": os.environ["GITHUB_SHA"], "platform": sys.platform,
+              "architecture": platform.machine(), "sameBinary": True, "syntheticOnly": True,
+              "longTmpdir": long_run, "shortTmpdir": short_run,
+          }
+          (runner / "f8-public/wp-i-quality-launch-probe.json").write_text(json.dumps(data, indent=2) + "\n")
+          print(json.dumps(data))
+          assert short_run["exitCode"] == 0, "Chromium did not launch with the short TMPDIR"
+          PYTHON
+          for suite in browser browser_zoom; do
+            out="$RUNNER_TEMP/f8-quality-$suite"
+            printf 'F8_WP_I_QUALITY_SUITE=%s\n' "$suite"
+            status=0
+            python -B tools/tests/wp_i_quality/run_browser.py --suite "$suite" --out "$out" || status=$?
+            if test -f "$out/browser-execution.json"; then
+              cp "$out/browser-execution.json" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite-execution.json"
+              cat "$out/browser-execution.json"
+            fi
+            if test "$status" -ne 0; then
+              if test -f "$out/browser.local.log"; then
+                grep -Eo 'wp_i_quality/[a-z_-]+\.cjs:[0-9]+:[0-9]+' "$out/browser.local.log" | head -12 || true
+              fi
+              exit "$status"
+            fi
+            python - "$suite" "$out" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite.json" <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          suite, output, target = sys.argv[1:]
+          source = Path(output)
+          run = json.loads((source / "browser-execution.json").read_text())
+          assert run["candidateSha"] == os.environ["GITHUB_SHA"]
+          assert run["phase"] == "complete" and run["exitCode"] == 0
+          assert run["browserTmpRemoved"] and run["fixtureTmpRemoved"] and run["browserBinaryExists"]
+          assert run["platform"] == "linux" and run["tmpdirBytes"] <= 32
+          if suite == "browser":
+              actual = json.loads((source / "browser-results.json").read_text())
+              assert actual["syntheticOnly"] and actual["realFastApi"]
+              counts = {key: len(actual[key]) for key in ("checks", "roles", "faultChecks", "accessibility")}
+              assert all(counts.values())
+          else:
+              actual = json.loads((source / "browser-native-zoom.json").read_text())
+              assert actual["syntheticOnly"] and actual["nativeChromeZoom"]
+              assert len(actual["samples"]) == 6 and not any(row["violations"] for row in actual["samples"])
+              counts = {"nativeZoomSamples": len(actual["samples"])}
+          Path(target).write_text(json.dumps({
+              "suite": suite, "result": "PASS", "candidateSha": run["candidateSha"], **counts,
+          }) + "\n")
+          PYTHON
+          done
           receipt="$RUNNER_TEMP/f8-journey"
           if ! python -B tools/tests/fast_track_f8/run.py --out "$receipt"; then
             if test -f "$receipt/browser.local.log"; then
@@ -209,29 +306,10 @@ jobs:
           assert result["realBackend"] and len(result["checks"]) == 12
           Path(sys.argv[2]).write_text(json.dumps({"groups": 12, "result": "PASS"}) + "\n")
           PYTHON
-          for suite in browser browser_zoom; do
-            out="$RUNNER_TEMP/f8-quality-$suite"
-            printf 'F8_WP_I_QUALITY_SUITE=%s\n' "$suite"
-            if ! python -B tools/tests/wp_i_quality/run_browser.py --suite "$suite" --out "$out"; then
-              if test -f "$out/browser.local.log"; then
-                grep -Eo 'wp_i_quality/[a-z_-]+\.cjs:[0-9]+:[0-9]+' "$out/browser.local.log" | head -12 || true
-              fi
-              exit 1
-            fi
-            python - "$suite" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite.json" <<'PYTHON'
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          Path(sys.argv[2]).write_text(json.dumps({
-              "suite": sys.argv[1], "result": "PASS", "candidateSha": os.environ["GITHUB_SHA"],
-          }) + "\n")
-          PYTHON
-          done
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git diff --exit-code
       - name: Retain sanitized machine receipts
+        if: ${{ !cancelled() && (steps.browser-suites.outcome == 'success' || steps.browser-suites.outcome == 'failure') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fast-track-f8-browser-${{ github.sha }}
