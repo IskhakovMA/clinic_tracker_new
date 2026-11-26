@@ -7921,7 +7921,7 @@ const app = {
             if (count) description = `Завершено сессий: ${Number(count[1])}`;
         }
         const opaqueId = value => typeof value === 'string' &&
-            /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value) ? value : '—';
+            /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/i.test(value) ? value : '—';
         const id = Number.isSafeInteger(event.id) && event.id > 0 ? event.id : null;
         const outcome = {ok: 'Успешно', denied: 'Отказ', error: 'Ошибка'};
         const result = Object.hasOwn(outcome, event.result) ? outcome[event.result] : 'Другой результат';

@@ -27,6 +27,16 @@ def seed_history(database, fixture):
         for _ in range(225):
             audit.record_required(conn, audit.LOGIN_SUCCESS,
                                   actor_user_id=fixture["accountIds"]["admin"], actor_role="developer")
+        audit.record_required(
+            conn, audit.LOGIN_SUCCESS, actor_role="developer",
+            actor_user_id="12345678-1234-4234-8234-123456789abc",
+            detail="F10_SYNTHETIC_AUDIT_DASHED_ID",
+        )
+        audit.record_required(
+            conn, audit.LOGIN_FAILURE, actor_role="developer",
+            actor_user_id="F10_SYNTHETIC_NOT_AN_ID", actor_department_id="",
+            detail="F10_SYNTHETIC_AUDIT_FREE_TEXT",
+        )
 
 
 def verify_medical_write(database, before, first_audit, fixture):

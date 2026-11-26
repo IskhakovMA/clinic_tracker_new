@@ -45,6 +45,14 @@ async function openAudit(context) {
         await page.locator('#loginSubmit').click();
     }
     await page.waitForFunction(()=>app.appReady && !app.sessionExpired);
+    const assets = await page.evaluate(() => performance.getEntriesByType('resource').map(entry => new URL(entry.name))
+        .filter(url => url.origin === location.origin && ['/static/app.js','/static/styles.css'].includes(url.pathname))
+        .map(url => url.pathname + url.search));
+    const scripts = assets.filter(url => url.startsWith('/static/app.js'));
+    const styles = assets.filter(url => url.startsWith('/static/styles.css'));
+    assert.deepEqual(scripts,['/static/app.js?v=fast-track-f10']);
+    assert.equal(styles.length,1);
+    assert(styles[0].endsWith('-fast-track-f9-fast-track-f10'));
     await page.locator('[data-view="audit"]').first().click();
     await ready(page);
     return page;
@@ -111,6 +119,28 @@ async function showManifest(page,event, status) {
     return {response, toggle, details:row(page,event.id).locator('.audit-manifest-result')};
 }
 
+async function checkSeededAuditIds(page, events) {
+    const dashed = events.find(event => event.detail === 'F10_SYNTHETIC_AUDIT_DASHED_ID');
+    const malformed = events.find(event => event.detail === 'F10_SYNTHETIC_AUDIT_FREE_TEXT');
+    assert(dashed && malformed);
+    assert.equal(dashed.actor_user_id, '12345678-1234-4234-8234-123456789abc');
+    assert.equal(malformed.actor_user_id, 'F10_SYNTHETIC_NOT_AN_ID');
+    assert.equal(malformed.actor_department_id, '');
+    assert.equal(malformed.target_user_id, null);
+    const dashedRow = row(page,dashed.id);
+    await dashedRow.locator('.audit-expand').press('Enter');
+    await dashedRow.locator('dd').getByText(dashed.actor_user_id,{exact:true}).waitFor();
+    const malformedRow = row(page,malformed.id);
+    await malformedRow.locator('.audit-expand').press('Enter');
+    const labels = await malformedRow.locator('dt').allTextContents();
+    for (const label of ['ID инициатора','ID отделения инициатора','ID сотрудника в событии']) {
+        assert(!labels.includes(label));
+    }
+    const text = await malformedRow.textContent();
+    assert(!text.includes(malformed.actor_user_id) && !text.includes(malformed.detail));
+    checks.push('historical dashed UUID renders unchanged; malformed, empty and null IDs and free text stay out of audit details');
+}
+
 async function pagination(page,admin,doctor,anonymous) {
     phase='pagination and actual audit operations';
     let first=await loadOffset(page,'auditRefreshBtn',0);
@@ -118,6 +148,7 @@ async function pagination(page,admin,doctor,anonymous) {
     assert.equal(first.events.length,50);
     await compare(page,first);
     assert(await page.locator('#auditPrev').isDisabled());
+    await checkSeededAuditIds(page,first.events);
     const real=await executeWrites(admin,doctor);
     const current=await loadOffset(page,'auditRefreshBtn',0);
     assert(current.total>first.total);
@@ -153,6 +184,12 @@ async function pagination(page,admin,doctor,anonymous) {
         assert(event,type);
         await row(page,event.id).waitFor();
         await row(page,event.id).locator('.audit-expand').press('Enter');
+        if (type === 'user_created' || type === 'department_created') {
+            assert.match(event.actor_user_id, /^[0-9a-f]{32}$/i);
+            assert.match(event[key], /^[0-9a-f]{32}$/i);
+            const values = await row(page,event.id).locator('dd').allTextContents();
+            assert(values.includes(event.actor_user_id) && values.includes(event[key]));
+        }
     }
     const allText=await page.locator('#auditPanel').textContent();
     for (const value of [complaint,staffName,departmentName,newPassword,'C34.1',patients.overdue.name]) {

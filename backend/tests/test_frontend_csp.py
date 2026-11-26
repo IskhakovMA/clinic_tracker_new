@@ -138,9 +138,15 @@ def test_canonical_page_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8-fast-track-f9">' in body
+    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8-fast-track-f9-fast-track-f10">' in body
     assert '<script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>' in body
-    assert '<script src="/static/app.js?v=fast-track-f9"></script>' in body
+    assert '<script src="/static/app.js?v=fast-track-f10"></script>' in body
+    # Check every reference, including accidental duplicates and unversioned assets.
+    assert re.findall(r"""["'](/static/app\.js[^"']*)["']""", body) == [
+        "/static/app.js?v=fast-track-f10",
+    ]
+    css_urls = re.findall(r"""["'](/static/styles\.css[^"']*)["']""", body)
+    assert len(css_urls) == 1 and css_urls[0].endswith("-fast-track-f9-fast-track-f10")
     for path in F1_SCRIPTS:
         source = f'<script src="/static/{path.name}?v=fast-track-f5"></script>'
         assert source in body
