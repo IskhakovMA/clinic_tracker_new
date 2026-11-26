@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8-fast-track-f9">
 </head>
 <body>
 
@@ -1073,10 +1073,10 @@
             </section>
 
             <!-- СОТРУДНИКИ (только Разработчик) -->
-            <section class="view is-hidden" id="view-staff">
+            <section class="view is-hidden" id="view-staff" aria-labelledby="staffPageTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Сотрудники</h1>
+                        <h1 class="pagehead__title" id="staffPageTitle" tabindex="-1">Сотрудники</h1>
                         <p class="pagehead__subtitle">Учётные записи, роли и доступ</p>
                     </div>
                     <div class="pagehead__actions">
@@ -1100,36 +1100,37 @@
                 </div>
                 <div class="panel">
                     <div class="table-wrap">
-                        <table class="table" id="staffTable">
-                            <thead>
-                                <tr>
-                                    <th scope="col">ФИО</th>
-                                    <th scope="col">Логин</th>
-                                    <th scope="col">Роль</th>
-                                    <th scope="col">Отделение</th>
-                                    <th scope="col">Статус</th>
-                                    <th scope="col">Последний вход</th>
-                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                        <table class="table" id="staffTable" role="table" aria-labelledby="staffPageTitle">
+                            <thead role="rowgroup">
+                                <tr role="row">
+                                    <th scope="col" role="columnheader">ФИО</th>
+                                    <th scope="col" role="columnheader">Логин</th>
+                                    <th scope="col" role="columnheader">Роль</th>
+                                    <th scope="col" role="columnheader">Отделение</th>
+                                    <th scope="col" role="columnheader">Статус</th>
+                                    <th scope="col" role="columnheader">Последний вход</th>
+                                    <th scope="col" role="columnheader"><span class="visually-hidden">Действия</span></th>
                                 </tr>
                             </thead>
-                            <tbody id="staffBody"></tbody>
+                            <tbody id="staffBody" role="rowgroup"></tbody>
                         </table>
                     </div>
-                    <div class="empty is-hidden" id="staffEmpty"></div>
+                    <div class="empty is-hidden" id="staffEmpty" role="status"></div>
                 </div>
             </section>
 
             <!-- СТРУКТУРА (только Разработчик) -->
-            <section class="view is-hidden" id="view-structure">
+            <section class="view is-hidden" id="view-structure" aria-labelledby="structurePageTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Структура</h1>
+                        <h1 class="pagehead__title" id="structurePageTitle" tabindex="-1">Структура</h1>
                         <p class="pagehead__subtitle">Отделения, заведующие и состав врачей</p>
                     </div>
                     <div class="pagehead__actions">
                         <button type="button" class="btn btn--primary" id="openDeptCreateBtn">Новое отделение</button>
                     </div>
                 </div>
+                <p id="structureStatus" role="status"></p>
                 <div class="panel panel--pad" id="structurePanel"></div>
                 <div class="panel panel--pad" id="unresolvedPanel"></div>
             </section>
@@ -1824,9 +1825,9 @@
             </div>
             <div class="field">
                 <label class="field__label" for="staffUsername">Логин <span class="req">*</span></label>
-                <input class="input" type="text" id="staffUsername" required autocomplete="off"
-                       pattern="[A-Za-z0-9._\-]{3,64}">
-                <p class="field__hint">3–64 символа: латиница, цифры, точка, дефис, подчёркивание.</p>
+                <input class="input" type="text" id="staffUsername" required autocomplete="off" maxlength="64"
+                       aria-describedby="staffUsernameHint" pattern="[A-Za-z0-9._\-]{3,64}">
+                <p class="field__hint" id="staffUsernameHint">3–64 символа: латиница, цифры, точка, дефис, подчёркивание.</p>
             </div>
             <div class="field">
                 <label class="field__label" for="staffRole">Роль <span class="req">*</span></label>
@@ -1834,13 +1835,14 @@
             </div>
             <div class="field" id="staffDeptField">
                 <label class="field__label" for="staffDepartments">Отделения</label>
-                <select class="select" id="staffDepartments" multiple size="5"></select>
-                <p class="field__hint">Для заведующего можно выбрать несколько отделений (Cmd/Ctrl + клик).</p>
+                <select class="select" id="staffDepartments" multiple size="5" aria-describedby="staffDepartmentsHint"></select>
+                <p class="field__hint" id="staffDepartmentsHint">Можно выбрать несколько отделений. Состав отделений влияет на доступ заведующих к пациентам.</p>
             </div>
             <div class="field" id="staffPasswordField">
                 <label class="field__label" for="staffPassword">Временный пароль <span class="req">*</span></label>
-                <input class="input" type="password" id="staffPassword" autocomplete="new-password" minlength="15">
-                <p class="field__hint">Показывается только сейчас; сотрудник сменит его при первом входе.</p>
+                <input class="input" type="password" id="staffPassword" autocomplete="new-password" minlength="15"
+                       aria-describedby="staffPasswordHint">
+                <p class="field__hint" id="staffPasswordHint">15–200 символов. Сохраните временный пароль перед созданием учетной записи.</p>
             </div>
             <div class="field" id="staffMustChangeField">
                 <label class="checkbox">
@@ -1870,8 +1872,8 @@
                 <p class="field__hint" id="doctorModalDept"></p>
             </div>
             <p class="alert alert--warning">
-                Область доступа изменится немедленно: прежний врач и его заведующий
-                потеряют доступ к пациенту, новый врач и его заведующий — получат.
+                После смены врача область доступа пересчитается. Заведующий может
+                сохранить доступ к пациенту, если новый врач входит в одно из его отделений.
             </p>
         </form>
         <div class="modal__foot">
@@ -1964,6 +1966,6 @@
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
 <script src="/static/f1-management.js?v=fast-track-f5"></script>
 <script src="/static/f1-doctor.js?v=fast-track-f5"></script>
-<script src="/static/app.js?v=fast-track-f8"></script>
+<script src="/static/app.js?v=fast-track-f9"></script>
 </body>
 </html>
