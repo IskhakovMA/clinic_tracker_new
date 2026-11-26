@@ -3869,6 +3869,7 @@ const app = {
             el('div', {}, [
                 this.patientAttentionCard(p),
                 this.patientPortalAccessCard(p),
+                this.can('accessConsilium') ? this.patientConsiliumCard(p.id) : null,
                 el('div', { class: 'panel panel--pad', id: 'patientQualityBlock' }, [
                     el('h2', { class: 'section-title', text: 'Качество данных' }),
                     el('div', { class: 'empty', text: 'Загрузка…' }),
@@ -3880,6 +3881,46 @@ const app = {
                 ]),
             ]),
         ]);
+    },
+
+    patientConsiliumCard(patientId) {
+        const results = el('div', {id: 'patientConsiliumRecords', role: 'status'});
+        const load = el('button', {
+            id: 'loadPatientConsiliumBtn', class: 'btn btn--ghost btn--sm', type: 'button',
+            text: 'Показать записи',
+            on: {click: () => this.loadPatientConsiliumRecords(patientId, results, load)},
+        });
+        return el('section', {class: 'panel panel--pad', 'aria-labelledby': 'patientConsiliumTitle'}, [
+            el('h2', {id: 'patientConsiliumTitle', class: 'section-title', text: 'Онкологический консилиум'}),
+            load, results,
+        ]);
+    },
+
+    async loadPatientConsiliumRecords(patientId, results, load) {
+        if (load.disabled || !this.can('accessConsilium') || this.sessionExpired) return;
+        const epoch = this.sessionEpoch;
+        const current = () => results.isConnected && this.currentView === 'patient' && this.currentTab === 'overview' &&
+            this.currentPatientId === patientId && this.sessionEpoch === epoch && !this.sessionExpired;
+        load.disabled = true;
+        results.textContent = 'Проверяем доступ…';
+        try {
+            const {appointments} = await apiGetJson('/api/consilium/appointments');
+            if (!current()) return;
+            const records = appointments.filter(item => item.patientId === patientId);
+            results.replaceChildren(records.length ? el('ul', {class: 'f1-list'}, records.map(item =>
+                el('li', {}, el('button', {
+                    type: 'button', class: 'btn btn--ghost btn--sm',
+                    text: [this.formatConsiliumDate(item.scheduledDate, item.scheduledTime), item.statusLabel].join(' · '),
+                    on: {click: () => { if (current()) void this.openConsiliumDetails(item); }},
+                })))) : el('p', {text: 'Доступных записей нет.'}));
+        } catch {
+            if (current()) results.textContent = 'Не удалось загрузить записи. Попробуйте обновить.';
+        } finally {
+            if (current()) {
+                load.textContent = 'Обновить записи';
+                load.disabled = false;
+            }
+        }
     },
 
     patientAttentionCard(p) {
@@ -9267,6 +9308,8 @@ const app = {
         if(!current())return;
         loadState.classList.add('is-hidden');this.setConsiliumReadPresentation('ready');
         const allRows = this.consilium.appointments || [];
+        const showRecords = !chair && this.can('bookConsilium');
+        $('consiliumAppointmentsPanel').classList.toggle('is-hidden', !showRecords);
         let rows = allRows;
         if (chair) {
             const selectedChairGroups = new Set(this.consiliumSelectedGroups('chair'));
@@ -9307,11 +9350,11 @@ const app = {
                 id: `consilium-row-${item.id}`,
                 class: this.consilium.focusId === item.id ? 'consilium-row--focused' : '',
             }, [
-                el('td', { class: 'cell-when' }, [
+                el('td', {class: 'cell-when', 'data-label': 'Дата и время'}, [
                     el('div', { class: 'cell-when__time', text: this.formatConsiliumDate(item.scheduledDate, item.scheduledTime) }),
                     el('div', { class: 'person__meta', text: item.hasBenefit ? 'Есть льгота' : 'Без льготы' }),
                 ]),
-                el('td', {}, [
+                el('td', {'data-label': 'Пациент'}, [
                     el('button', {
                         type: 'button', class: 'consilium-patient-button', text: item.patientName,
                         on: { click: () => this.openConsiliumDetails(item) },
@@ -9322,13 +9365,13 @@ const app = {
                     item.outsideSchedule ? el('span', { class: 'chip chip--warning', text: 'Вне расписания' }) : null,
                     item.backdated ? el('span', { class: 'chip chip--neutral', text: 'Оформлено задним числом' }) : null,
                 ]),
-                el('td', { text: item.consiliumGroupLabel }),
-                el('td', { class: 'consilium-diagnosis', text: diagnoses }),
-                el('td', {}, specialists.length
+                el('td', {'data-label': 'Группа', text: item.consiliumGroupLabel}),
+                el('td', {class: 'consilium-diagnosis', 'data-label': 'Диагноз', text: diagnoses}),
+                el('td', {'data-label': 'Участники'}, specialists.length
                     ? frag(specialists.map(label => el('span', { class: 'chip chip--neutral consilium-chip', text: label })))
                     : el('span', { class: 'muted', text: 'Не указаны' })),
-                el('td', {}, this.renderConsiliumStatus(item)),
-                el('td', { class: 'cell-actions' }, chair
+                el('td', {'data-label': 'Статус'}, this.renderConsiliumStatus(item)),
+                el('td', {class: 'cell-actions', 'data-label': 'Действия'}, chair
                     ? this.renderConsiliumChairActions(item)
                     : (this.can('editPatients') && this.consiliumEditable(item)
                         ? el('button', {
@@ -9655,24 +9698,38 @@ const app = {
     },
 
     async deleteConsiliumAppointment(item) {
-        if(this.consilium.formPending || this.consilium.refreshPending)return;
+        const owner = this.consilium, epoch = this.sessionEpoch;
+        const available = () => this.consilium === owner && epoch === this.sessionEpoch && !this.sessionExpired &&
+            !$('consiliumModal').hidden && owner.editingId === item.id && !owner.formPending &&
+            !owner.refreshPending && $('consiliumConflict').classList.contains('is-hidden');
+        if (!available() || ui.topModal() !== 'consiliumModal') return;
         const confirmed = await ui.confirm({
             title: 'Удалить запись на консилиум?',
             text: `${item.patientName}. Слот ${this.formatConsiliumDate(item.scheduledDate, item.scheduledTime)} освободится для новой записи.`,
             okLabel: 'Удалить запись',
             danger: true,
         });
-        if (!confirmed || this.consilium.formPending || this.consilium.refreshPending) return;
+        if (!confirmed || !available()) return;
+        const form = $('consiliumForm');
+        const current = () => this.consilium === owner && epoch === this.sessionEpoch && !this.sessionExpired;
+        owner.formPending = true;
+        form.inert = true;
         try {
-            await apiDelete(`/api/consilium/appointments/${encodeURIComponent(item.id)}?version=${encodeURIComponent(item.version)}`);
-            ui.closeModal('consiliumModal');
-            this.consilium.editingId = null;
-            this.consilium.loaded = false;
+            await apiDelete(`/api/consilium/appointments/${encodeURIComponent(item.id)}?version=${encodeURIComponent(owner.editingVersion)}`);
+            if (!current()) return;
+            ui.closeModal('consiliumModal', {force: true});
+            owner.editingId = null;
+            owner.loaded = false;
             await this.renderConsilium();
-            ui.toast('Запись удалена, слот снова свободен.', 'good');
+            if (current()) ui.toast('Запись удалена, слот снова свободен.', 'good');
         } catch (error) {
-            if (this.isConsiliumVersionConflict(error)) return this.showConsiliumConflict(error);
-            ui.toast('Не удалось удалить запись: ' + error.message, 'danger');
+            if (!current()) return;
+            if (this.isConsiliumVersionConflict(error) || !error.status || error.status >= 500) {
+                this.showConsiliumConflict({message: 'Удаление не подтверждено. Обновите данные перед новым действием. ' + error.message});
+            } else ui.toast('Не удалось удалить запись: ' + error.message, 'danger');
+        } finally {
+            owner.formPending = false;
+            form.inert = false;
         }
     },
 
@@ -9744,7 +9801,52 @@ const app = {
         } finally {if(epoch===this.sessionEpoch)this.consilium.favoritePending=false;}
     },
 
-    openConsiliumDetails(item) {
+    async readConsiliumRecord(id, {archived = false} = {}) {
+        const {appointments} = await apiGetJson('/api/consilium/appointments' + (archived ? '?archived=true' : ''));
+        if (!Array.isArray(appointments)) throw new Error('Не удалось проверить список записей.');
+        return appointments.find(item => item.id === id) || null;
+    },
+
+    async openConsiliumDetails(item) {
+        if (!item?.id || !this.can('accessConsilium') || this.sessionExpired || this.consilium.archivePending) return;
+        const owner = this.consilium, epoch = this.sessionEpoch, view = this.currentView;
+        const read = this.beginRead('consilium-detail');
+        const modal = $('consiliumDetailsModal');
+        const current = () => this.consilium === owner && epoch === this.sessionEpoch && view === this.currentView &&
+            !this.sessionExpired && this.isCurrentRead('consilium-detail', read) && !modal.hidden;
+        owner.detailsItem = null;
+        $('consiliumDetailsTitle').textContent = 'Запись на онкологический консилиум';
+        $('consiliumDetailsBody').replaceChildren(el('p', {role: 'status', text: 'Проверяем доступ к записи…'}));
+        $('consiliumDetailsRevisions').replaceChildren();
+        $('consiliumDetailsRevisions').classList.add('is-hidden');
+        $('consiliumDetailsConflict').classList.add('is-hidden');
+        $('consiliumDetailsPrimaryAction').replaceChildren();
+        for (const id of ['consiliumArchiveToggleBtn', 'consiliumBackdatingReasonsBtn']) $(id).classList.add('is-hidden');
+        this.beginRead('consilium-history-consiliumDetailsRevisions');
+        if (modal.hidden) ui.openModal('consiliumDetailsModal');
+        modal.setAttribute('aria-busy', 'true');
+        try {
+            const fresh = await this.readConsiliumRecord(item.id, {
+                archived: Boolean(item.archived && !this.can('consiliumChair')),
+            });
+            if (!current()) return;
+            if (!fresh) {
+                $('consiliumDetailsBody').replaceChildren(el('p', {role: 'status', text: 'Запись больше недоступна.'}));
+                return;
+            }
+            this.renderConsiliumDetails(fresh);
+        } catch (error) {
+            if (current()) $('consiliumDetailsBody').replaceChildren(
+                el('p', {role: 'alert', text: 'Не удалось проверить доступ к записи.'}),
+                el('button', {type: 'button', class: 'btn btn--ghost', text: 'Обновить запись',
+                    on: {click: () => this.openConsiliumDetails(item)}}),
+            );
+        } finally {
+            if (current()) modal.setAttribute('aria-busy', 'false');
+        }
+    },
+
+    renderConsiliumDetails(item) {
         const readonlyField = (label, value, wide = false) => el('div', { class: `field${wide ? ' field--wide' : ''}` }, [
             el('span', { class: 'field__label', text: label }),
             el('div', { class: 'consilium-detail-value', text: value || 'Не указано' }),
@@ -9795,7 +9897,8 @@ const app = {
         // Архив — личное действие автора над подписанной записью; сервер
         // проверяет то же (автор, область видимости, подпись) и отвечает 409.
         const toggle = $('consiliumArchiveToggleBtn');
-        const canArchive = item.status === 'signed' && this.can('bookConsilium') && !this.can('consiliumChair');
+        const canArchive = this.currentView === 'consilium' && item.status === 'signed' &&
+            this.can('bookConsilium') && !this.can('consiliumChair');
         toggle.classList.toggle('is-hidden', !canArchive);
         toggle.textContent = item.archived ? 'Восстановить из архива' : 'Перенести в архив';
         toggle.disabled = false;
@@ -9804,7 +9907,18 @@ const app = {
             && ['consilium_chair', 'department_head'].includes(this.user.roleId);
         $('consiliumBackdatingReasonsBtn').classList.toggle('is-hidden', !canReadReasons);
         this.consilium.detailsItem = item;
-        ui.openModal('consiliumDetailsModal');
+        const chairAction = this.can('decideConsilium') && ['recorded', 'revised', 'in_review'].includes(item.status);
+        const editAction = this.can('bookConsilium') && this.consiliumEditable(item);
+        if (this.currentView === 'consilium' && (chairAction || editAction)) $('consiliumDetailsPrimaryAction').append(el('button', {
+            id: 'consiliumDetailsAction', type: 'button', class: 'btn btn--primary',
+            text: chairAction ? 'Открыть рассмотрение' : 'Изменить или перенести',
+            on: {click: () => {
+                if (this.consilium.detailsItem !== item || !this.consiliumGridReady()) return;
+                ui.closeModal('consiliumDetailsModal');
+                if (chairAction) void this.openConsiliumDecision(item.id);
+                else void this.openConsiliumModal(item.id);
+            }},
+        }));
     },
 
     async toggleConsiliumArchive() {
@@ -9926,15 +10040,45 @@ const app = {
     },
 
     async prefillConsiliumDiagnosisFromPatient() {
-        if (this.consilium.editingId) return;
-        const selected=$('consiliumPatient').value;
-        if(!selected)return;
-        let patient=this.getPatient(selected);
-        if(!patient){try{patient=await this.refreshPatientRecord(selected);}catch(error){ui.toast(error.message,'danger');return;}}
-        if($('consiliumPatient').value!==selected||this.sessionExpired)return;
-        const diagnosis = this.validConsiliumDiagnosis(patient && patient.diagnosis, false);
+        const owner = this.consilium;
+        if (owner.editingId) return;
+        const selected = $('consiliumPatient').value;
+        const fields = ['consiliumPrimaryDiagnosis', 'consiliumPolicyNumber', 'consiliumLocalization'];
+        if (owner.prefillPatientId !== selected) {
+            for (const id of [...fields, 'consiliumComment', 'consiliumAdditionalParticipant']) $(id).value = '';
+            this.toggleConsiliumAdditionalDiagnosis(false);
+            $('consiliumUvRuv').checked = false;
+            for (const id of ['consiliumBenefit', 'consiliumNeedsSurgeon', 'consiliumNeedsRadiotherapist']) $(id).value = 'no';
+        }
+        owner.prefillPatientId = selected;
+        owner.verifiedPatient = null;
+        $('submitConsiliumBtn').disabled = true;
+        if (!selected) return;
+        const epoch = this.sessionEpoch, read = this.beginRead('consilium-patient-prefill');
+        const initial = fields.map(id => $(id).value);
+        const current = () => this.consilium === owner && epoch === this.sessionEpoch && !this.sessionExpired &&
+            !$('consiliumModal').hidden && !owner.editingId && $('consiliumPatient').value === selected &&
+            this.isCurrentRead('consilium-patient-prefill', read);
+        let patient;
+        try {
+            patient = await apiGetJson('/api/patients/' + encodeURIComponent(selected));
+        } catch (error) {
+            if (current()) {
+                if ([403, 404].includes(error.status)) {
+                    for (const id of [...fields, 'consiliumComment', 'consiliumAdditionalParticipant']) $(id).value = '';
+                    this.toggleConsiliumAdditionalDiagnosis(false);
+                }
+                this.showConsiliumFormError('Не удалось подтвердить доступ к пациенту. Выберите пациента заново.');
+            }
+            return;
+        }
+        if (!current() || patient?.id !== selected) return;
+        owner.verifiedPatient = {id: selected, epoch};
+        $('submitConsiliumBtn').disabled = !$('consiliumConflict').classList.contains('is-hidden') || owner.formPending;
+        if (fields.some((id, index) => $(id).value !== initial[index])) return;
+        const diagnosis = this.validConsiliumDiagnosis(patient.diagnosis, false);
         $('consiliumPrimaryDiagnosis').value = diagnosis || '';
-        $('consiliumPolicyNumber').value = (patient && patient.policyNumber) || '';
+        $('consiliumPolicyNumber').value = patient.policyNumber || '';
         const diagnosisItem = this.allDiagnosisOptions().find(item => item.code === diagnosis);
         $('consiliumLocalization').value = diagnosisItem ? diagnosisItem.localizationLabel : '';
         this.fillConsiliumDiagnosisList();
@@ -10051,7 +10195,8 @@ const app = {
             this.consilium.candidatePaging ||= {trail:[null],index:0};
             if(!cursor)this.consilium.candidatePaging={trail:[null],index:0};
             pager.replaceChildren(this.boundedPager(data,this.consilium.candidatePaging,next=>this.fillConsiliumPatientsForGroup(record,next)));
-            $('submitConsiliumBtn').disabled=!rows.length;
+            if (!record && !$('consiliumModal').hidden) await this.prefillConsiliumDiagnosisFromPatient();
+            else $('submitConsiliumBtn').disabled = !record || !rows.length;
             return rows;
         } catch(error) {
             if(!this.isCurrentRead('consilium-candidates',version))return [];
@@ -10133,19 +10278,19 @@ const app = {
             ? 'Изменение и перенос записи на консилиум'
             : 'Запись на онкологический консилиум';
         $('submitConsiliumBtn').textContent = record ? 'Сохранить изменения' : 'Создать запись';
-        $('submitConsiliumBtn').disabled = patients.length === 0;
+        $('submitConsiliumBtn').disabled = !record || patients.length === 0;
         $('deleteConsiliumBtn').classList.toggle('is-hidden', !record || !this.consiliumEditable(record));
         $('deleteConsiliumBtn').disabled = false;
         // Повторная подача — отдельное действие после возврата (WP2.3-B1):
         // сохранение формы статус «На доработке» не меняет.
         $('resubmitConsiliumBtn').classList.toggle('is-hidden', !record || record.status !== 'needs_revision');
         $('resubmitConsiliumBtn').disabled = false;
+        this.setConsiliumBackdatedMode(!record && !!options.backdated);
+        if ($('consiliumModal').hidden) ui.openModal('consiliumModal');
         if (!record && patients.length) {
             $('consiliumPatient').value = patients[0].id;
-            this.prefillConsiliumDiagnosisFromPatient();
+            void this.prefillConsiliumDiagnosisFromPatient();
         }
-        this.setConsiliumBackdatedMode(!record && !!options.backdated);
-        ui.openModal('consiliumModal');
     },
 
     // Свободные исторические слоты председателя (WP2.3-B3), новые сверху.
@@ -10180,7 +10325,6 @@ const app = {
         if (!slot) return;
         $('consiliumGroup').value = slot.consiliumGroupLabel;
         await this.fillConsiliumPatientsForGroup();
-        this.prefillConsiliumDiagnosisFromPatient();
         this.updateConsiliumAvailableSlots();
         $('submitConsiliumBtn').disabled = false;
     },
@@ -10326,6 +10470,7 @@ const app = {
     },
 
     resetConsiliumConflict() {
+        this.consilium.unconfirmedBooking = null;
         $('consiliumConflict').classList.add('is-hidden');
         $('consiliumConflictDraft').classList.add('is-hidden');
         $('consiliumConflictDraftText').value = '';
@@ -10361,6 +10506,35 @@ const app = {
             return;
         }
         if(epoch!==this.sessionEpoch || owner!==this.consilium || this.sessionExpired)return;
+        if (!appointmentId && owner.unconfirmedBooking) {
+            const pending = owner.unconfirmedBooking;
+            const sameSlot = item => item.scheduledDate === pending.scheduledDate &&
+                item.scheduledTime === pending.scheduledTime && item.consiliumGroup === pending.consiliumGroup;
+            const existing = owner.appointments.find(item => item.patientId === pending.patientId && sameSlot(item));
+            const free = owner.schedule.some(slot => sameSlot(slot) && !slot.occupied &&
+                (pending.backdated ? slot.backdated : slot.bookable));
+            if (existing || owner.blockedPatientIds.includes(pending.patientId) || !free) {
+                $('consiliumConflictText').textContent = existing
+                    ? 'Сервер вернул запись для пациента на выбранное время. Новая отправка заблокирована.'
+                    : 'Сервер не подтвердил возможность записи. Новая отправка заблокирована.';
+                return;
+            }
+            try {
+                const patient = await apiGetJson('/api/patients/' + encodeURIComponent(pending.patientId));
+                if (epoch !== this.sessionEpoch || owner !== this.consilium || this.sessionExpired ||
+                    patient?.id !== pending.patientId || $('consiliumPatient').value !== pending.patientId) return;
+            } catch {
+                if (epoch === this.sessionEpoch && owner === this.consilium && !this.sessionExpired) {
+                    $('consiliumConflictText').textContent = 'Доступ к пациенту не подтвержден. Новая отправка заблокирована.';
+                }
+                return;
+            }
+            owner.verifiedPatient = {id: pending.patientId, epoch};
+            this.resetConsiliumConflict();
+            $('submitConsiliumBtn').disabled = false;
+            ui.toast('Сервер подтвердил свободное время. Проверьте поля перед новой отправкой.', 'warning');
+            return;
+        }
         const fresh = this.consilium.appointments.find(item => item.id === appointmentId);
         if (!fresh) {
             ui.closeModal('consiliumModal',{force:true});
@@ -10498,12 +10672,20 @@ const app = {
 
     async submitConsiliumAppointment(event) {
         event.preventDefault();
-        if(this.consilium.formPending || !$('consiliumConflict').classList.contains('is-hidden'))return;
+        if (this.sessionExpired || $('consiliumModal').hidden || this.consilium.formPending ||
+            this.consilium.refreshPending || !$('consiliumConflict').classList.contains('is-hidden')) return;
+        const verified = this.consilium.verifiedPatient;
+        if (!this.consilium.editingId && (!verified || verified.id !== $('consiliumPatient').value ||
+            verified.epoch !== this.sessionEpoch)) {
+            this.showConsiliumFormError('Подтвердите доступ к выбранному пациенту перед сохранением.');
+            return;
+        }
         const formOwner=this.consilium,form=$('consiliumForm'),deleteButton=$('deleteConsiliumBtn'),deleteDisabled=deleteButton.disabled;
         formOwner.formPending=true;form.inert=true;deleteButton.disabled=true;const epoch=this.sessionEpoch;
         $('resubmitConsiliumBtn').disabled=true;
         const button = $('submitConsiliumBtn');
         button.disabled = true;
+        let booking;
         try {
             const backdated = !this.consilium.editingId && this.consilium.backdatedMode;
             if (this.consilium.editingId) {
@@ -10516,12 +10698,15 @@ const app = {
                     this.showConsiliumFormError('Выберите исторический слот и укажите причину позднего оформления.');
                     return;
                 }
+                booking = {...payload, backdated: true};
                 await apiPost('/api/consilium/appointments/backdated', { ...payload, reason });
             } else {
                 const payload = this.consiliumFormPayload();
                 if (!payload) return;
+                booking = payload;
                 await apiPost('/api/consilium/appointments', payload);
             }
+            if (epoch !== this.sessionEpoch || this.sessionExpired) return;
             ui.closeModal('consiliumModal',{force:true});
             ui.toast(this.consilium.editingId ? 'Запись обновлена.'
                 : (backdated ? 'Консилиум оформлен задним числом.' : 'Пациент записан на консилиум.'), 'good');
@@ -10531,7 +10716,13 @@ const app = {
         } catch (error) {
             if (this.isConsiliumVersionConflict(error)) return this.showConsiliumConflict(error);
             if(epoch!==this.sessionEpoch || this.sessionExpired)return;
-            if(!error.status || error.status>=500)this.showConsiliumConflict({message:'Результат сохранения не подтвержден. Ввод сохранен; проверьте состояние перед повтором. '+error.message});
+            if (!error.status || error.status >= 500) {
+                if (booking) {
+                    const {patientId, scheduledDate, scheduledTime, consiliumGroup, backdated} = booking;
+                    formOwner.unconfirmedBooking = {patientId, scheduledDate, scheduledTime, consiliumGroup, backdated};
+                }
+                this.showConsiliumConflict({message: 'Результат сохранения не подтвержден. Ввод сохранен. Обновите данные перед новым действием.'});
+            }
             else this.showConsiliumFormError('Не удалось сохранить запись: ' + error.message);
         } finally {
             formOwner.formPending=false;form.inert=false;
@@ -10592,6 +10783,18 @@ const app = {
 
     allowConsiliumDecisionClose(id) {
         if(id==='consiliumDetailsModal'&&this.consilium.archivePending&&!this.sessionExpired)return false;
+        if (id === 'consiliumModal' && !this.consilium.formPending && !this.consilium.refreshPending) {
+            this.beginRead('consilium-patient-prefill');
+        }
+        if (id === 'consiliumDetailsModal') {
+            this.beginRead('consilium-detail');
+            this.beginRead('consilium-history-consiliumDetailsRevisions');
+            this.consilium.detailsItem = null;
+            $('consiliumDetailsBody').replaceChildren();
+            $('consiliumDetailsRevisions').replaceChildren();
+            $('consiliumDetailsTitle').textContent = 'Запись на онкологический консилиум';
+            $('consiliumDetailsPrimaryAction').replaceChildren();
+        }
         if(id==='consiliumArchiveModal'){this.consilium.archiveReady=false;this.beginRead('consilium-archive');}
         if(id==='consiliumModal' && !this.sessionExpired && (this.consilium.formPending || this.consilium.refreshPending)) {ui.toast('Дождитесь завершения запроса. Автоматического повтора нет.','warning');return false;}
         if (!['consiliumDecisionModal','consiliumRevisionModal'].includes(id) || $(id).hidden || this.sessionExpired) return true;
@@ -10612,7 +10815,8 @@ const app = {
 
     consiliumDecisionReady() {
         const ctx=this.consilium.decisionContext;
-        return ctx && ctx.epoch===this.sessionEpoch && !ctx.busy && !ctx.blocked && this.can('decideConsilium') && this.consiliumGridReady(ctx.generation);
+        return ctx && ctx.epoch===this.sessionEpoch && !ctx.busy && !ctx.confirmingSign && !ctx.blocked &&
+            this.can('decideConsilium') && this.consiliumGridReady(ctx.generation);
     },
 
     renderConsiliumDecisionContext(record) {
@@ -10626,11 +10830,24 @@ const app = {
     },
 
     // Opening is read-only. All clinical transitions are explicit, separate requests.
-    openConsiliumDecision(appointmentId) {
-        if (!this.can('decideConsilium') || !this.consiliumGridReady()) return;
-        if (!$('consiliumDecisionModal').hidden || !$('consiliumRevisionModal').hidden) return;
-        const record=this.consilium.appointments.find(item=>item.id===appointmentId);
-        if (!record || !['recorded','revised','in_review'].includes(record.status)) return;
+    async openConsiliumDecision(appointmentId) {
+        if (!this.can('decideConsilium') || !this.consiliumGridReady() || ui.topModal()) return;
+        const epoch = this.sessionEpoch, generation = this.consilium.gridGeneration;
+        const read = this.beginRead('consilium-decision-open');
+        const current = () => epoch === this.sessionEpoch && this.currentView === 'consilium' &&
+            this.consiliumGridReady(generation) && this.isCurrentRead('consilium-decision-open', read) && !ui.topModal();
+        let record;
+        try {
+            record = await this.readConsiliumRecord(appointmentId);
+        } catch {
+            if (current()) ui.toast('Не удалось проверить актуальность записи.', 'warning');
+            return;
+        }
+        if (!current()) return;
+        if (!record || !['recorded', 'revised', 'in_review'].includes(record.status)) {
+            ui.toast('Запись больше недоступна для рассмотрения.', 'warning');
+            return;
+        }
         this.consilium.decisionId=appointmentId;
         this.consilium.decisionContext={id:appointmentId,epoch:this.sessionEpoch,generation:this.consilium.gridGeneration,busy:false,blocked:false};
         $('consiliumDecisionPatient').textContent=`${record.patientName} · ${this.formatConsiliumDate(record.scheduledDate,record.scheduledTime)} · ${record.consiliumGroupLabel}`;
@@ -10655,10 +10872,23 @@ const app = {
             await this.renderConsilium();
             if(ctx!==this.consilium.decisionContext || ctx.epoch!==this.sessionEpoch || !this.consiliumGridReady())return;
             const record=this.consilium.appointments.find(item=>item.id===ctx.id);
-            ctx.generation=this.consilium.gridGeneration;ctx.blocked=!record || !['recorded','revised','in_review'].includes(record.status);
+            ctx.generation=this.consilium.gridGeneration;
+            const unchangedIntake = ctx.action === 'review' && record && ctx.record &&
+                ['recorded', 'revised'].includes(ctx.record.status) && record.status === 'in_review' &&
+                Object.keys(ctx.record).every(key => ['status', 'statusLabel', 'version', 'reviewStartedAt', 'updatedAt'].includes(key) ||
+                    JSON.stringify(record[key]) === JSON.stringify(ctx.record[key]));
+            if (unchangedIntake) ctx.stale = false;
+            else ctx.stale ||= Boolean(record && ctx.record && (record.version !== ctx.record.version || record.status !== ctx.record.status));
+            ctx.blocked=!record || ctx.stale || !['recorded','revised','in_review'].includes(record.status);
             ctx.record=record;
+            if (!record) {
+                $('consiliumDecisionContext').replaceChildren();
+                $('consiliumDecisionPatient').textContent = 'Запись больше недоступна.';
+            }
             if(record){this.renderConsiliumDecisionContext(record);this.renderConsiliumRevisionHistory('consiliumDecisionRevisions',record);}
-            $('consiliumDecisionError').textContent=ctx.blocked?'Серверное состояние изменилось. Повторное действие недоступно; введенный текст сохранен в форме.':'';
+            $('consiliumDecisionError').textContent = ctx.blocked
+                ? 'Серверное состояние изменилось. Ввод сохранен. Чтобы начать новое действие, откройте актуальную запись заново.'
+                : '';
             $('consiliumDecisionError').classList.toggle('is-hidden',!ctx.blocked);
             $('consiliumDecisionUncertain').classList.add('is-hidden');
             $('consiliumRevisionError').classList.add('is-hidden');
@@ -10667,9 +10897,21 @@ const app = {
 
     async runConsiliumDecisionAction(action,payload,path=null) {
         if(!this.consiliumDecisionReady())return;
-        const ctx=this.consilium.decisionContext;ctx.busy=true;this.syncConsiliumReviewState(ctx.record);
+        const ctx=this.consilium.decisionContext;ctx.busy=true;ctx.action=action;this.syncConsiliumReviewState(ctx.record);
         const errorId=action==='return'?'consiliumRevisionError':'consiliumDecisionError';
         try {
+            // The existing chair API atomically checks the source state, but accepts no version field.
+            const fresh = await this.readConsiliumRecord(ctx.id);
+            if (ctx !== this.consilium.decisionContext || ctx.epoch !== this.sessionEpoch ||
+                !this.can('decideConsilium') || !this.consiliumGridReady(ctx.generation)) return;
+            if (!fresh || fresh.version !== ctx.record.version || fresh.status !== ctx.record.status) {
+                ctx.stale = true;
+                if (!fresh) {
+                    $('consiliumDecisionContext').replaceChildren();
+                    $('consiliumDecisionPatient').textContent = 'Запись больше недоступна.';
+                }
+                throw new Error('Запись изменилась. Обновите данные.');
+            }
             const record=await apiPost(path || `/api/consilium/appointments/${encodeURIComponent(ctx.id)}/${action}`,payload);
             if(ctx!==this.consilium.decisionContext || ctx.epoch!==this.sessionEpoch)return;
             ctx.record=record;ctx.blocked=action!=='review';
@@ -10760,14 +11002,30 @@ const app = {
 
     async submitConsiliumDecision(event) {
         event.preventDefault();
-        if(!this.consiliumDecisionReady())return;
+        if (!this.consiliumDecisionReady() || this.consilium.decisionContext.record?.status !== 'in_review' ||
+            ui.topModal() !== 'consiliumDecisionModal') return;
+        const ctx = this.consilium.decisionContext;
         const treatmentType=$('consiliumTreatmentType').value,treatmentScheme=$('consiliumTreatmentScheme').value.trim();
         this.syncConsiliumTreatmentScheme();
         if(!treatmentType || (treatmentType==='chemotherapy'&&!treatmentScheme)) {
             $('consiliumDecisionError').textContent='Выберите лечение и, для химиотерапии, укажите схему.';
             $('consiliumDecisionError').classList.remove('is-hidden');return;
         }
-        await this.runConsiliumDecisionAction('sign',{treatmentType,treatmentScheme,treatmentSchemeCode:$('consiliumTreatmentSchemeCode').value.trim(),goc:$('consiliumGoc').checked,goc65Plus:$('consiliumGoc65Plus').checked});
+        const values = this.consiliumDecisionValues();
+        ctx.confirmingSign = true;
+        const confirmed = await ui.confirm({
+            title: 'Подписать решение консилиума?',
+            text: 'Подписанное решение и медицинский снимок сохранятся без возможности изменить их.',
+            okLabel: 'Подписать решение',
+        });
+        ctx.confirmingSign = false;
+        if (!confirmed || this.consilium.decisionContext !== ctx || !this.consiliumDecisionReady() ||
+            ui.topModal() !== 'consiliumDecisionModal' || values !== this.consiliumDecisionValues()) return;
+        await this.runConsiliumDecisionAction('sign', {
+            treatmentType, treatmentScheme: $('consiliumTreatmentScheme').value.trim(),
+            treatmentSchemeCode: $('consiliumTreatmentSchemeCode').value.trim(),
+            goc: $('consiliumGoc').checked, goc65Plus: $('consiliumGoc65Plus').checked,
+        });
     },
 
     openConsiliumRevision() {
@@ -12106,8 +12364,7 @@ const app = {
                 group.value.toLowerCase() === entered || group.label.toLowerCase() === entered
             );
             if (knownGroup) {
-                const patients = await this.fillConsiliumPatientsForGroup(record);
-                if (!record && patients.length) this.prefillConsiliumDiagnosisFromPatient();
+                await this.fillConsiliumPatientsForGroup(record);
             }
             this.updateConsiliumAvailableSlots(record);
         });

@@ -3197,6 +3197,103 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 
 #consiliumDecisionPatient { color:var(--text); }
 
+/* Staff-UX v2 record and decision panels reuse the existing dialog controls. */
+.consilium-work-panel {
+    align-items: stretch;
+    justify-content: flex-end;
+    padding: 0;
+    backdrop-filter: none;
+}
+
+.consilium-work-panel > .modal__box {
+    max-width: min(700px, 55vw);
+    max-height: 100%;
+    min-width: 0;
+    min-height: 0;
+    border-radius: var(--r-lg) 0 0 var(--r-lg);
+    border-inline-end: 0;
+}
+
+.consilium-work-panel .modal__head,
+.consilium-work-panel .modal__foot {
+    flex: 0 0 auto;
+}
+
+.consilium-work-panel .modal__head > .btn {
+    flex: none;
+}
+
+.consilium-work-panel .modal__title,
+.consilium-work-panel .modal__body {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.consilium-work-panel .modal__body {
+    min-height: 0;
+}
+
+.consilium-work-panel .modal__body:focus-visible {
+    outline-offset: -2px;
+}
+
+.consilium-work-panel .modal__foot {
+    flex-wrap: wrap;
+    flex-direction: row;
+}
+
+.consilium-work-panel .modal__foot .btn,
+.consilium-work-panel .consilium-decision-actions .btn {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+}
+
+#consiliumDetailsPrimaryAction:empty {
+    display: none;
+}
+
+#consiliumDetailsBody .grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#consiliumDetailsBody .field {
+    gap: var(--sp-1);
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+#consiliumDetailsBody .consilium-detail-value {
+    min-height: auto;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+@media (max-width: 1023px) {
+    .consilium-work-panel > .modal__box {
+        max-width: 100%;
+        border: 0;
+        border-radius: 0;
+    }
+}
+
+@media (max-width: 700px) {
+    .consilium-work-panel .modal__head,
+    .consilium-work-panel .modal__body,
+    .consilium-work-panel .modal__foot {
+        padding: var(--sp-3) var(--sp-4);
+    }
+
+    #consiliumDetailsBody .grid-2 {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .consilium-work-panel .modal__foot > :not(.is-hidden) {
+        flex: 1 1 auto;
+    }
+}
+
 /* I-5C: server registries, historical records and exact server analytics. */
 .consilium-insight-filters { display:flex;flex-wrap:wrap;gap:1rem;align-items:end; }
 .consilium-insight-filters .field { flex:1 1 12rem; }

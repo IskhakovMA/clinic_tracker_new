@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6">
 </head>
 <body>
 
@@ -391,9 +391,11 @@
                 </section>
                 <div class="stats" id="consiliumStatsRow"></div>
 
-                <div class="panel is-hidden" id="consiliumAppointmentsPanel">
+                <section class="panel panel--pad is-hidden" id="consiliumAppointmentsPanel" aria-labelledby="consiliumAppointmentsTitle">
+                    <h2 class="panel__title" id="consiliumAppointmentsTitle">Доступные записи</h2>
+                    <p class="field__hint">Записи в вашей области доступа.</p>
                     <div class="table-wrap">
-                        <table class="table" id="consiliumTable">
+                        <table class="table consilium-registry-table" id="consiliumTable">
                             <thead>
                                 <tr>
                                     <th scope="col">Дата и время</th>
@@ -402,14 +404,14 @@
                                     <th scope="col">Диагноз</th>
                                     <th scope="col">Участники</th>
                                     <th scope="col">Статус</th>
-                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                    <th scope="col">Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="consiliumBody"></tbody>
                         </table>
                     </div>
                     <div class="empty is-hidden" id="consiliumEmpty"></div>
-                </div>
+                </section>
 
                 <section class="panel panel--pad is-hidden" id="consiliumInsights" aria-labelledby="consiliumInsightsTitle">
                     <h2 id="consiliumInsightsTitle">Показатели консилиума</h2>
@@ -1398,7 +1400,7 @@
 </div>
 
 <!-- МОДАЛКА: РЕШЕНИЕ ПРЕДСЕДАТЕЛЯ КОНСИЛИУМА -->
-<div class="modal" id="consiliumDecisionModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDecisionTitle" hidden>
+<div class="modal consilium-work-panel" id="consiliumDecisionModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDecisionTitle" hidden>
     <div class="modal__box consilium-decision-workspace">
         <div class="modal__head">
             <h2 class="modal__title" id="consiliumDecisionTitle">Решение консилиума</h2>
@@ -1479,7 +1481,7 @@
 </div>
 
 <!-- МОДАЛКА: ПРОСМОТР ЗАПИСИ НА КОНСИЛИУМ -->
-<div class="modal" id="consiliumDetailsModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDetailsTitle" hidden>
+<div class="modal consilium-work-panel" id="consiliumDetailsModal" role="dialog" aria-modal="true" aria-labelledby="consiliumDetailsTitle" hidden>
     <div class="modal__box">
         <div class="modal__head">
             <h2 class="modal__title" id="consiliumDetailsTitle">Запись на онкологический консилиум</h2>
@@ -1487,16 +1489,19 @@
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
             </button>
         </div>
-        <div class="alert alert--warning is-hidden" id="consiliumDetailsConflict" role="alert">
-            <p id="consiliumDetailsConflictText"></p>
-            <button type="button" class="btn btn--primary btn--sm" id="consiliumDetailsConflictRefreshBtn">Обновить данные</button>
+        <div class="modal__body" role="region" aria-label="Сведения о записи" tabindex="0">
+            <div class="alert alert--warning is-hidden" id="consiliumDetailsConflict" role="alert">
+                <p id="consiliumDetailsConflictText"></p>
+                <button type="button" class="btn btn--primary btn--sm" id="consiliumDetailsConflictRefreshBtn">Обновить данные</button>
+            </div>
+            <div class="form" id="consiliumDetailsBody"></div>
+            <section class="consilium-revision-history is-hidden" id="consiliumDetailsRevisions" aria-label="История доработок"></section>
         </div>
-        <div class="modal__body form" id="consiliumDetailsBody"></div>
-        <section class="consilium-revision-history is-hidden" id="consiliumDetailsRevisions" aria-label="История доработок"></section>
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost is-hidden" id="consiliumBackdatingReasonsBtn">Показать причины</button>
             <button type="button" class="btn btn--ghost is-hidden" id="consiliumArchiveToggleBtn"></button>
-            <button type="button" class="btn btn--primary" id="closeConsiliumDetailsBtn">Закрыть</button>
+            <button type="button" class="btn btn--ghost" id="closeConsiliumDetailsBtn">Закрыть</button>
+            <div id="consiliumDetailsPrimaryAction"></div>
         </div>
     </div>
 </div>
@@ -1943,6 +1948,6 @@
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
 <script src="/static/f1-management.js?v=fast-track-f5"></script>
 <script src="/static/f1-doctor.js?v=fast-track-f5"></script>
-<script src="/static/app.js?v=fast-track-f5"></script>
+<script src="/static/app.js?v=fast-track-f6"></script>
 </body>
 </html>

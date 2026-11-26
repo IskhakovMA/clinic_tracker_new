@@ -767,7 +767,7 @@ def test_static_app_sends_versions_and_handles_conflicts():
     js = (PROJECT_ROOT / "static" / "app.js").read_text(encoding="utf-8")
     html = (PROJECT_ROOT / "index.html").read_text(encoding="utf-8")
     assert "version: this.consilium.editingVersion" in js                       # PUT
-    assert "?version=${encodeURIComponent(item.version)}" in js                # DELETE
+    assert "?version=${encodeURIComponent(owner.editingVersion)}" in js                # DELETE
     assert "{ version: item.version }" in js                                    # archive / restore
     assert "/resubmit`, { version: saved.version }" in js                       # повторная подача
     assert "error.data.code === 'consilium_version_conflict'" in js

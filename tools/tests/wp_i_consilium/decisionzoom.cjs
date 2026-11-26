@@ -17,7 +17,7 @@ const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),asse
   await api('POST','/api/consilium/schedule/generate',{scheduledDate:'2090-11-12',consiliumGroup:'thoracic',startTime:'10:00',endTime:'12:00',intervalMinutes:30});
   const record=await api('POST','/api/consilium/appointments',{patientId:patient.id,scheduledDate:'2090-11-12',scheduledTime:'10:00',consiliumGroup:'thoracic',hasBenefit:false,diagnosisLocalization:'Органы дыхания и грудной клетки',primaryDiagnosis:'C34.1',additionalDiagnosis:'',comment:'Синтетический zoom',additionalParticipant:'',needsSurgeon:false,needsRadiotherapist:false,uvRuv:false});
   await api('POST','/api/auth/logout',{});await api('POST','/api/auth/login',{username:'i5b.zoomchair',password:'Synthetic-WPH-Research-991!'});await page.reload();await page.waitForFunction(()=>app.appReady&&!app.sessionExpired);
-  await page.evaluate(async id=>{app.consilium.dateFilter='2090-11-12';app.showView('consilium');await app.renderConsilium();app.openConsiliumDecision(id)},record.id);
+  await page.evaluate(async id=>{app.consilium.dateFilter='2090-11-12';app.showView('consilium');await app.renderConsilium();await app.openConsiliumDecision(id)},record.id);
   const worker=context.serviceWorkers()[0]||await context.waitForEvent('serviceworker');const samples=[];
   for(const factor of [1,2,4]){
    const zoom=await worker.evaluate(async({origin,factor})=>{const tabs=await chrome.tabs.query({});const tab=tabs.find(t=>t.url.startsWith(origin+'/'));if(!tab)throw new Error('synthetic tab missing');await chrome.tabs.setZoom(tab.id,factor);return chrome.tabs.getZoom(tab.id);},{origin,factor});assert.equal(Math.round(zoom*100),factor*100);
