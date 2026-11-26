@@ -342,9 +342,19 @@ const f1Doctor = (() => {
             const current = () => schedule.isConnected && permitted(app) && app.f1Doctor === state && state.mode === mode;
             if (current()) void app.openWorkingSchedule('', current);
         }, {id: 'f4MyDaySchedule'});
+        const analytics = button('Открыть персональную аналитику', () => {
+            const mode = state.mode;
+            const current = () => analytics.isConnected && permitted(app) && app.f1Doctor === state && state.mode === mode;
+            const [type, title] = {
+                patients: ['patients', 'Мои пациенты'],
+                events: ['overdue_events', 'Просроченные события'],
+                checklists: ['incomplete_checklists', 'Пациенты с невыполненными обязательными пунктами'],
+            }[mode];
+            if (current()) void app.openWorkingAnalytics('myDay', {type, title}, current);
+        }, {id: 'f5MyDayAnalytics'});
         host.replaceChildren(
             el('div', { class: 'f1-actions', role: 'group', 'aria-label': 'Разделы моего дня' }, controls),
-            heading, detail, el('div', {class: 'f1-actions'}, [select, registry, schedule]), body,
+            heading, detail, el('div', {class: 'f1-actions'}, [select, registry, schedule, analytics]), body,
         );
 
         function show(message = '') {

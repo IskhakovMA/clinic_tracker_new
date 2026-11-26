@@ -602,6 +602,8 @@ const app = {
         notifications: null,
         details: null,
         detailsToken: 0,
+        source: null,
+        pendingDetails: null,
         filters: {
             dateFrom: '',
             dateTo: '',
@@ -2231,6 +2233,15 @@ const app = {
         };
     },
 
+    updateCardSourceAction() {
+        const back = $('backToF1');
+        const labels = {analytics: 'К аналитике', pulse: 'К пульсу клиники', myDay: 'К моему дню',
+            calendar: 'К расписанию', notifications: 'К уведомлениям'};
+        const label = labels[this.f1CardOrigin];
+        back.hidden = this.currentView !== 'patient' || !label || !this.navigationVisibility()[this.f1CardOrigin];
+        back.textContent = back.hidden ? '' : label;
+    },
+
     showView(view, {cardOrigin} = {}) {
         if (view==='create' && !this.can('createPatients')) view='patients';
         if (this.currentView === 'create' && view !== 'create' && this.addFormActive && !this.sessionExpired) {
@@ -2248,11 +2259,8 @@ const app = {
         else if (previousView !== 'patient') {
             this.f1CardOrigin = previousView === 'pulse' || previousView === 'myDay' ? previousView : null;
         }
-        const f1Back = $('backToF1');
-        f1Back.hidden = view !== 'patient' || !this.f1CardOrigin || !this.navigationVisibility()[this.f1CardOrigin];
-        f1Back.textContent = f1Back.hidden ? '' : {
-            pulse: 'К пульсу клиники', myDay: 'К моему дню', calendar: 'К расписанию', notifications: 'К уведомлениям',
-        }[this.f1CardOrigin];
+        this.updateCardSourceAction();
+        if (previousView === 'analytics' && view !== 'analytics') this.clearAnalyticsRelease();
         if (previousView === 'pulse' && view !== 'pulse') f1Management.clear(this);
         if (previousView === 'myDay' && view !== 'myDay') f1Doctor.clear(this);
         if (this.qualityV1 && previousView !== view) {
@@ -2386,6 +2394,8 @@ const app = {
         f1Management.clear(this, true);
         f1Doctor.clear(this, true);
         this.clearQualityV1(accessChanged);
+        this.clearAnalyticsRelease();
+        this.analytics.pendingDetails = null;
         if (this.sessionExpired || !this.user) return;
         browserNavigation.invalidate();
         this.sessionExpired = true;
@@ -2425,6 +2435,7 @@ const app = {
         f1Management.clear(this, true);
         f1Doctor.clear(this, true);
         this.clearQualityV1(true);
+        this.clearAnalyticsRelease();
         document.body.classList.add('session-locked');
         browserNavigation.invalidate();
         this.sessionExpired = true;
@@ -6223,6 +6234,72 @@ const app = {
         return params.toString();
     },
 
+    openWorkingAnalytics(source, {type, title, stage = ''}, allowed) {
+        return browserNavigation.navigate({screen: 'analytics', analytics: {
+            source,
+            filters: {dateFrom: '', dateTo: '', stage, nosology: '', doctor: '', department: '', attentionReason: ''},
+            detail: {type, title, extra: {}, offset: 0},
+        }}, {allowed});
+    },
+
+    analyticsReturnContext(patientId) {
+        const state = this.analytics.details;
+        return {
+            source: this.analytics.source,
+            filters: {...this.analytics.filters},
+            detail: state && {type: state.type, title: state.title, extra: {...state.extra}, offset: state.offset,
+                focusPatient: patientId, focusIndex: state.items.indexOf(state.openedItem)},
+        };
+    },
+
+    restoreAnalyticsContext(context) {
+        this.analytics.source = context?.source || null;
+        this.analytics.pendingDetails = context?.detail || null;
+        if (!context) return;
+        this.analytics.filters = {...context.filters};
+        $('analyticsDateFrom').value = context.filters.dateFrom;
+        $('analyticsDateTo').value = context.filters.dateTo;
+        $('analyticsStageFilter').value = context.filters.stage;
+    },
+
+    clearAnalyticsRelease() {
+        const state = this.analytics;
+        for (const key of ['dashboard', 'summary', 'stages', 'workload', 'dataQuality', 'details']) state[key] = null;
+        state.detailsToken += 1;
+        this.analyticsReadState = 'idle';
+        this.beginRead('analytics-dashboard');
+        for (const id of ['analyticsStatsRow', 'analyticsStageChart', 'analyticsQualityList', 'analyticsWorkloadList',
+            'analyticsProfileChart', 'analyticsRouteStateChart', 'analyticsTrendChart', 'analyticsAttentionList',
+            'analyticsOperationsList', 'analyticsDetailsPanel', 'analyticsContext', 'analyticsScope']) $(id).replaceChildren();
+        for (const id of ['analyticsDoctorFilter', 'analyticsDepartmentFilter']) $(id).replaceChildren();
+        this.updateAnalyticsExportControls();
+    },
+
+    renderAnalyticsContext(meta) {
+        const context = $('analyticsContext');
+        const back = $('backToAnalyticsSource');
+        const source = this.analytics.source;
+        const label = {pulse: 'Пульс клиники', myDay: 'Мой день'}[source];
+        back.hidden = !label || !this.navigationVisibility()[source];
+        back.textContent = source === 'pulse' ? 'К пульсу клиники' : 'К моему дню';
+        context.hidden = back.hidden;
+        context.textContent = back.hidden ? '' : 'Из раздела «' + label + '».';
+        const scope = $('analyticsScope');
+        scope.hidden = !meta;
+        if (!meta) { scope.textContent = ''; return; }
+        const scopeLabel = {by_treating_doctor: 'пациенты лечащего врача', by_department: 'разрешенные отделения',
+            global: 'все разрешенные пациенты', global_readonly: 'все разрешенные пациенты, чтение'}[meta.scope] ||
+            'разрешенная область доступа';
+        const {date_from: from, date_to: to} = meta.filters || {};
+        const selected = [from && 'с ' + from, to && 'по ' + to].filter(Boolean).join(' ');
+        const trend = this.analytics.dashboard.trend;
+        const actual = trend?.rows?.length ? trend.rows[0].date + ' — ' + trend.rows.at(-1).date : '';
+        const computed = new Date(meta.computed_at).toLocaleString('ru-RU', {timeZone: meta.timezone});
+        scope.textContent = 'Серверная аналитика. Область: ' + scopeLabel + '. Рассчитано: ' + computed +
+            ' (' + meta.timezone + '). Период: ' + (selected || 'по умолчанию') +
+            (actual ? '. График: ' + actual : '') + '.';
+    },
+
     analyticsDateString(date) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -6257,7 +6334,7 @@ const app = {
 
     async loadAnalytics(params, ticket) {
         const dashboard=await apiGetJson(`/api/analytics/dashboard?${params}`);
-        if(!this.managementReadCurrent(ticket,this.analyticsParams().toString()))return false;
+        if(this.currentView !== 'analytics' || !this.managementReadCurrent(ticket,this.analyticsParams().toString()))return false;
         Object.assign(this.analytics,{dashboard,summary:dashboard.summary,stages:dashboard.stages,workload:dashboard.workload,dataQuality:dashboard.data_quality});
         return true;
     },
@@ -6269,15 +6346,17 @@ const app = {
         }
         const params=this.analyticsParams().toString(),ticket=this.managementReadTicket('analytics-dashboard',params);
         this.analyticsDashboardTicket=ticket;this.analyticsReadState='loading';
-        const current=()=>this.managementReadCurrent(ticket,this.analyticsParams().toString());
-        $('analyticsExportBtn').disabled=true;
+        const current=()=>this.currentView === 'analytics' && this.managementReadCurrent(ticket,this.analyticsParams().toString());
+        const pending = this.analytics.pendingDetails;
+        this.analytics.pendingDetails = null;
+        this.renderAnalyticsContext(null);
+        this.updateAnalyticsExportControls();
         document.querySelector('.analytics-dashboard').setAttribute('aria-busy','true');
         $('analyticsSubtitle').textContent = 'Организационные показатели маршрутов, просрочек и заполненности данных';
         $('chairAnalyticsDashboard').classList.add('is-hidden');
         document.querySelector('.analytics-dashboard').classList.remove('is-hidden');
         document.querySelector('.analytics-note').classList.remove('is-hidden');
         document.querySelector('.analytics-controls__filters').classList.remove('is-hidden');
-        $('analyticsExportBtn').classList.remove('is-hidden');
         $('analyticsStatsRow').replaceChildren();
         $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Загрузка…' }));
         $('analyticsQualityList').replaceChildren();
@@ -6293,6 +6372,7 @@ const app = {
         $('analyticsDetailsPanel').replaceChildren();
         try {
             if(!await this.loadAnalytics(params,ticket)||!current())return;
+            this.renderAnalyticsContext(this.analytics.dashboard.meta);
             this.renderAnalyticsFilterOptions();
             this.updateAnalyticsPeriodPresetState();
             this.renderAnalyticsSummary();
@@ -6313,11 +6393,15 @@ const app = {
                 onClick: row => row.detail_type ? this.renderAnalyticsDetails(row.detail_type, row.label, row.filter || {}) : null,
             });
             this.renderAnalyticsOperations();
-            this.analyticsReadState='ready';$('analyticsExportBtn').disabled=false;
+            this.analyticsReadState='ready';
+            this.updateAnalyticsExportControls();
         } catch (e) {
             if(!current())return;this.analyticsReadState='error';
             $('analyticsStageChart').replaceChildren(el('div', { class: 'empty', text: 'Не удалось загрузить аналитику. Попробуйте обновить данные.' }));
         } finally {if(current())document.querySelector('.analytics-dashboard').setAttribute('aria-busy','false');}
+        if (pending && current() && this.analyticsReadState === 'ready') {
+            await this.renderAnalyticsDetails(pending.type, pending.title, pending.extra, pending);
+        }
     },
 
     chairAnalyticsRequestParams() {
@@ -6337,12 +6421,15 @@ const app = {
         if(!this.user||this.sessionExpired||this.sessionReconciling||!this.can('consiliumChair')){this.setChairAnalyticsReadState('error');return;}
         const params=this.chairAnalyticsRequestParams(),ticket=this.managementReadTicket('chair-analytics',params);this.chairAnalyticsReadTicket=ticket;
         const current=()=>this.can('consiliumChair')&&this.managementReadCurrent(ticket,this.chairAnalyticsRequestParams());
+        this.analytics.source = null;
+        this.analytics.pendingDetails = null;
+        this.renderAnalyticsContext(null);
         this.setChairAnalyticsReadState('loading');
         $('analyticsSubtitle').textContent = 'Назначения консилиума и фактическая загрузка расписания';
         document.querySelector('.analytics-dashboard').classList.add('is-hidden');
         document.querySelector('.analytics-note').classList.add('is-hidden');
         document.querySelector('.analytics-controls__filters').classList.add('is-hidden');
-        $('analyticsExportBtn').classList.add('is-hidden');
+        this.updateAnalyticsExportControls();
         $('chairAnalyticsDashboard').classList.remove('is-hidden');
         try {
             const data=await apiGetJson(`/api/consilium/analytics${params?'?'+params:''}`);if(!current())return;
@@ -6470,11 +6557,20 @@ const app = {
         const nodes = cards.filter(card => visibleCodes.has(card.code)).map(card => el('button', {
             type: 'button',
             class: `stat stat--button ${this.analyticsCardToneClass(card.code)}`,
-            on: { click: () => card.detail_type ? this.renderAnalyticsDetails(card.detail_type, card.label) : null },
+            'aria-describedby': 'analytics-definition-' + card.code,
+            on: {click: () => {
+                if (card.detail_type) this.renderAnalyticsDetails(card.detail_type, ({
+                    active_patients: 'Пациенты в выбранной области',
+                    patients_with_overdue: 'Просроченные события',
+                })[card.code] || card.label);
+            }},
         }, [
             el('div', { class: 'stat__label', text: card.label }),
             el('div', { class: 'stat__value', text: String(card.value ?? 0) }),
-            el('div', { class: 'stat__meta', text: card.kind === 'period' ? 'за период' : 'текущее состояние' }),
+            el('div', { class: 'stat__meta', text: card.code === 'active_patients' ? 'детализация: весь доступный набор' :
+                card.code === 'patients_with_overdue' ? 'детализация: события' :
+                card.kind === 'period' ? 'за период' : 'текущее состояние' }),
+            el('span', {id: 'analytics-definition-' + card.code, class: 'visually-hidden', text: card.definition}),
         ]));
         const qualitySummary = this.analytics.dataQuality && this.analytics.dataQuality.summary;
         if (qualitySummary) {
@@ -6816,30 +6912,77 @@ const app = {
         );
     },
 
-    async renderAnalyticsDetails(type, title, extra = {}) {
-        // Новая детализация начинается с первой страницы; ответы прежней игнорируются.
-        this.analytics.detailsToken += 1;
-        this.analytics.details = { token: this.analytics.detailsToken, type, title, extra, items: [], total: 0, loading: false, error: '' };
-        await this.loadAnalyticsDetailsPage(this.analytics.details);
+    analyticsDetailCurrent(state) {
+        return this.currentView === 'analytics' && this.analyticsReadState === 'ready' &&
+            this.analytics.details === state && state.token === this.analytics.detailsToken &&
+            this.managementReadCurrent(this.analyticsDashboardTicket, this.analyticsParams().toString());
     },
 
-    async loadAnalyticsDetailsPage(state) {
-        if (this.analytics.details !== state || state.loading) return;
+    async renderAnalyticsDetails(type, title, extra = {}, context = {}) {
+        if (this.currentView !== 'analytics' || this.analyticsReadState !== 'ready') return;
+        const state = {token: ++this.analytics.detailsToken, type, title, extra,
+            offset: context.offset || 0, items: [], total: 0, loading: false, error: '',
+            focusPatient: context.focusPatient, focusIndex: context.focusIndex};
+        this.analytics.details = state;
+        await this.loadAnalyticsDetailsPage(state);
+    },
+
+    async loadAnalyticsDetailsPage(state, offset = state.offset) {
+        if (!this.analyticsDetailCurrent(state) || state.loading) return;
+        const initialFocus = document.activeElement;
         state.loading = true;
         state.error = '';
+        state.items = [];
+        state.offset = offset;
         this.drawAnalyticsDetails(state);
+        const heading = $('analyticsDetailTitle');
+        if ($('view-analytics').contains(initialFocus) || !initialFocus?.isConnected) heading.focus();
         try {
-            const params = this.analyticsParams(Object.assign({}, state.extra, { offset: state.items.length }));
-            const data = await apiGetJson(`/api/analytics/details?type=${encodeURIComponent(state.type)}&${params}`);
-            if (this.analytics.details !== state || state.token !== this.analytics.detailsToken) return;
-            state.items = state.items.concat(data.items || []);
-            state.total = data.total || 0;
-        } catch (e) {
-            if (this.analytics.details !== state) return;
+            // These drilldowns describe current state. Date filters apply to the period chart,
+            // never to the patient/event list opened from a current dashboard metric.
+            const get = page => apiGetJson('/api/analytics/details?' +
+                this.analyticsParams({...state.extra, dateFrom: '', dateTo: '', offset: page}) + '&type=' + encodeURIComponent(state.type));
+            let data = await get(offset);
+            if (!this.analyticsDetailCurrent(state)) return;
+            if (offset && Number.isInteger(data.total) && data.total <= offset) {
+                offset = 0;
+                data = await get(offset);
+                if (!this.analyticsDetailCurrent(state)) return;
+            }
+            if (data.detail_type !== state.type || data.offset !== offset || data.limit !== 50 ||
+                !Number.isInteger(data.total) || data.total < 0 || !Array.isArray(data.items) ||
+                data.items.length !== Math.min(50, Math.max(0, data.total - offset))) throw new Error('Некорректная детализация');
+            Object.assign(state, {offset, items: data.items, total: data.total});
+        } catch {
+            if (!this.analyticsDetailCurrent(state)) return;
             state.error = 'Не удалось загрузить детализацию. Попробуйте ещё раз.';
         }
+        const restoreFocus = document.activeElement === heading;
         state.loading = false;
         this.drawAnalyticsDetails(state);
+        if (restoreFocus) {
+            const buttons = [...$('analyticsDetailsPanel').querySelectorAll('[data-analytics-patient]')];
+            const target = buttons.find(button => Number(button.dataset.analyticsPosition) === state.focusIndex &&
+                button.dataset.analyticsPatient === state.focusPatient) ||
+                buttons.find(button => button.dataset.analyticsPatient === state.focusPatient);
+            (target || $('analyticsDetailTitle')).focus();
+        }
+        state.focusPatient = null;
+        state.focusIndex = null;
+    },
+
+    openAnalyticsPatient(state, item) {
+        const current = () => this.analyticsDetailCurrent(state) && !state.loading && state.items.includes(item);
+        if (!current()) return;
+        state.openedItem = item;
+        // Preserve overview for ordinary Analytics, including existing History routes.
+        const tab = this.analytics.source ?
+            ({overdue_events: 'events', incomplete_checklists: 'checklist',
+                notifications_pending: 'notifications', notifications_failed: 'notifications'}[state.type] || 'overview') : 'overview';
+        void browserNavigation.navigate({screen: 'patient', patientId: item.patient_id, tab}, {
+            allowed: current,
+            denied: () => { if (current()) void this.loadAnalyticsDetailsPage(state); },
+        });
     },
 
     // Уточнение для нескольких проблем одного кода у пациента: где в маршруте она найдена.
@@ -6855,63 +6998,154 @@ const app = {
     drawAnalyticsDetails(state) {
         const panel = $('analyticsDetailsPanel');
         const rows = state.items;
-        const firstLoad = state.loading && !rows.length;
-        const more = !state.error && rows.length < state.total;
+        const unit = ({overdue_events: 'события', incomplete_checklists: 'пациенты с незаполненными пунктами',
+            notifications_pending: 'уведомления', notifications_failed: 'уведомления', quality_all: 'проблемы качества',
+            quality_actionable: 'проблемы качества', quality_critical: 'проблемы качества',
+            quality_warning: 'проблемы качества', quality_info: 'проблемы качества'})[state.type] || 'пациенты';
+        const pageAction = (text, offset) => el('button', {type: 'button', class: 'btn btn--ghost btn--sm', text,
+            on: {click: () => this.loadAnalyticsDetailsPage(state, offset)}});
+        panel.setAttribute('aria-busy', String(state.loading));
         panel.replaceChildren(frag([
-            el('h2', { class: 'panel__title', text: state.title || 'Детальный список' }),
-            firstLoad ? null : el('p', { class: 'panel__text', role: 'status', text: `Показано ${rows.length} из ${state.total}. Данные ограничены текущей областью доступа.` }),
-            rows.length ? el('div', { class: 'analytics-list' }, rows.map(item => el('div', { class: 'analytics-detail' }, [
+            el('h2', { id: 'analyticsDetailTitle', tabindex: '-1', class: 'panel__title', text: state.title || 'Детальный список' }),
+            !state.loading && !state.error ? el('p', {class: 'panel__text', role: 'status',
+                text: 'Текущее состояние · ' + unit + ' · ' +
+                    (rows.length ? (state.offset + 1) + '–' + (state.offset + rows.length) + ' из ' + state.total : '0') +
+                    '. Данные ограничены текущей областью доступа.'}) : null,
+            rows.length ? el('div', { class: 'analytics-list' }, rows.map((item, index) => el('div', { class: 'analytics-detail' }, [
                 el('div', { class: 'person__name', text: item.patient_name || item.doctor_name || item.title || 'Запись' }),
                 item.severity ? el('div', { class: 'person__meta', text: `${this.QUALITY_SEVERITY_LABELS[item.severity] || item.severity}: ${item.title || item.code_label || item.code}` }) : null,
                 this.qualityIssueContextText(item.context) ? el('div', { class: 'person__meta', text: this.qualityIssueContextText(item.context) }) : null,
                 item.issue_count ? el('div', { class: 'person__meta', text: `Проблем качества данных: ${item.issue_count}` }) : null,
                 item.stage_label ? el('div', { class: 'person__meta', text: item.stage_label }) : null,
                 item.treating_doctor_name ? el('div', { class: 'person__meta', text: item.treating_doctor_name }) : null,
+                state.type === 'overdue_events' && item.planned_date ? el('div', {class: 'person__meta',
+                    text: 'Плановая дата: ' + this.formatDeadlineDate(new Date(item.planned_date + 'T12:00:00'))}) : null,
                 item.days_overdue ? el('div', { class: 'person__meta', text: `Просрочено: ${item.days_overdue} дн.` }) : null,
                 item.error_code ? el('div', { class: 'person__meta', text: this.NOTIFICATION_REASON_LABELS[item.error_code] || item.error_code }) : null,
                 item.patient_id ? el('button', {
                     type: 'button',
                     class: 'btn btn--ghost btn--sm',
                     text: 'Открыть пациента',
-                    on: { click: () => this.openPatient(item.patient_id) },
+                    'data-analytics-patient': item.patient_id,
+                    'data-analytics-position': String(index),
+                    on: { click: () => this.openAnalyticsPatient(state, item) },
                 }) : null,
             ]))) : null,
-            firstLoad ? el('div', { class: 'empty', text: 'Загрузка…' }) : null,
+            state.loading ? el('div', {class: 'empty', role: 'status', text: 'Загрузка…'}) : null,
             !state.loading && !state.error && !rows.length ? el('div', { class: 'empty', text: 'По выбранным условиям записей нет.' }) : null,
             state.error ? el('div', { class: 'empty', role: 'alert', text: state.error }) : null,
             state.error ? el('button', {
                 type: 'button', class: 'btn btn--ghost btn--sm', text: 'Повторить',
                 on: { click: () => this.loadAnalyticsDetailsPage(state) },
             }) : null,
-            more && rows.length ? el('button', {
-                type: 'button',
-                class: 'btn btn--ghost btn--sm',
-                text: state.loading ? 'Загрузка…' : `Показать ещё (осталось ${state.total - rows.length})`,
-                disabled: state.loading,
-                on: { click: () => this.loadAnalyticsDetailsPage(state) },
-            }) : null,
+            !state.loading && !state.error ? el('div', {class: 'f1-actions'}, [
+                state.offset > 0 ? pageAction('Предыдущая страница', Math.max(0, state.offset - 50)) : null,
+                state.offset + rows.length < state.total ? pageAction('Следующая страница', state.offset + 50) : null,
+            ]) : null,
         ]));
     },
 
+    analyticsExportChoice() {
+        const reportType = $('analyticsReportType').value;
+        if (!['summary', 'stages', 'workload', 'data_quality', 'checklists', 'notifications'].includes(reportType)) return null;
+        const supportsDetails = reportType === 'data_quality' || reportType === 'checklists';
+        const detailLevel = supportsDetails && $('analyticsReportDetail').value === 'details' ? 'details' : 'aggregate';
+        return { reportType, detailLevel, supportsDetails };
+    },
+
+    analyticsExportCurrent(ticket = this.analyticsDashboardTicket) {
+        return this.currentView === 'analytics' && !this.can('consiliumChair') &&
+            this.analyticsReadState === 'ready' && this.managementReadCurrent(ticket, this.analyticsParams());
+    },
+
+    updateAnalyticsExportControls() {
+        const controls = $('analyticsExportControls');
+        const type = $('analyticsReportType');
+        const detail = $('analyticsReportDetail');
+        const choice = this.analyticsExportChoice();
+        const ready = this.analyticsExportCurrent();
+        const pending = this.analyticsExportRequest && this.analyticsExportCurrent(this.analyticsExportRequest.ticket);
+        controls.hidden = !this.user || this.can('consiliumChair');
+        type.disabled = !ready || !!pending;
+        detail.disabled = !ready || !!pending || !choice?.supportsDetails;
+        const detailOption = detail.querySelector('[value="details"]');
+        detailOption.disabled = !choice?.supportsDetails;
+        detailOption.textContent = choice?.reportType === 'checklists' ? 'По этапам' : 'По кодам проблем';
+        if (!choice?.supportsDetails) detail.value = 'aggregate';
+        $('analyticsExportBtn').disabled = !ready || !!pending || !choice;
+
+        const description = $('analyticsExportDescription');
+        if (!ready || !choice) {
+            description.textContent = 'CSV доступен после загрузки актуальной аналитики.';
+            return;
+        }
+        const { dashboard, filters } = this.analytics;
+        const scope = {
+            global: 'Все пациенты в вашей области доступа',
+            global_readonly: 'Все пациенты в вашей области чтения',
+            by_department: 'Пациенты доступных вам отделений',
+            by_treating_doctor: 'Ваши пациенты',
+        }[dashboard.meta.scope] || 'Ваша область доступа';
+        const active = [
+            ['Этап', 'analyticsStageFilter', filters.stage],
+            ['Локализация', 'analyticsNosologyFilter', filters.nosology],
+            ['Лечащий врач', 'analyticsDoctorFilter', filters.doctor],
+            ['Отделение', 'analyticsDepartmentFilter', filters.department],
+            ['Причина внимания', 'analyticsAttentionReasonFilter', filters.attentionReason],
+        ].flatMap(([label, id, value]) => {
+            if (!value) return [];
+            const selected = $(id).selectedOptions[0];
+            return [selected?.value === value ? label + ' — ' + selected.textContent : label];
+        });
+        const filterText = active.length ? 'Фильтры: ' + active.join(', ') + '.' : 'Без дополнительных фильтров.';
+        const file = 'Файл: analytics_' + choice.reportType + '_дата_время.csv.';
+        const limit = choice.reportType === 'workload' ? ' До 50 строк нагрузки.' : '';
+        description.textContent = scope + '. ' + filterText + ' Текущее состояние на момент выгрузки. Выбранный период не применяется к CSV. ' + file + limit;
+    },
+
     async exportAnalyticsCsv() {
+        const ticket = this.analyticsDashboardTicket;
+        if (!this.analyticsExportCurrent(ticket)) return;
+        if (this.analyticsExportRequest && this.analyticsExportCurrent(this.analyticsExportRequest.ticket)) return;
+        const choice = this.analyticsExportChoice();
+        if (!choice) return;
+        const { reportType, detailLevel } = choice;
+        const request = { ticket };
+        this.analyticsExportRequest = request;
+        this.updateAnalyticsExportControls();
+        const current = () => this.analyticsExportRequest === request && this.analyticsExportCurrent(ticket);
         try {
-            const params = this.analyticsParams();
-            const response = await apiFetch(`/api/analytics/export?${params}`, {
+            const response = await apiFetch('/api/analytics/export?' + ticket.params, {
                 method: 'POST',
-                body: JSON.stringify({ reportType: 'summary', detailLevel: 'aggregate' }),
+                body: JSON.stringify({ reportType, detailLevel }),
+                rawResponse: true,
             });
+            if (!current()) return;
+            const disposition = response?.headers.get('content-disposition') || '';
+            const match = /^attachment; filename="(analytics_([a-z_]+)_\d{8}_\d{6}\.csv)"$/.exec(disposition);
+            const contentType = response?.headers.get('content-type') || '';
+            if (!match || match[2] !== reportType || !/^text\/csv(?:\s*;|$)/i.test(contentType)) {
+                throw new Error('сервер не вернул ожидаемый CSV-файл');
+            }
             const blob = await response.blob();
-            const disposition = response.headers.get('content-disposition') || '';
-            const match = disposition.match(/filename=\"([^\"]+)\"/);
-            const filename = match ? match[1] : 'analytics_summary.csv';
-            const link = el('a', { href: URL.createObjectURL(blob), download: filename });
+            if (!current()) return;
+            const url = URL.createObjectURL(blob);
+            const link = el('a', { href: url, download: match[1] });
             document.body.append(link);
-            link.click();
-            URL.revokeObjectURL(link.href);
-            link.remove();
-            ui.toast('CSV отчёт сформирован.', 'good');
+            try {
+                link.click();
+            } finally {
+                link.remove();
+                URL.revokeObjectURL(url);
+            }
+            ui.toast('CSV-отчёт сформирован.', 'good');
         } catch (e) {
-            ui.toast(`Не удалось сформировать CSV: ${e.message}`, 'warning');
+            if (current()) ui.toast('Не удалось сформировать CSV: ' + e.message, 'warning');
+        } finally {
+            if (this.analyticsExportRequest === request) {
+                this.analyticsExportRequest = null;
+                this.updateAnalyticsExportControls();
+            }
         }
     },
 
@@ -7437,7 +7671,7 @@ const app = {
         }
         // A row can be denied after returning from its previous card. Clear the
         // hidden card, then let the active workspace refresh its own selection.
-        if (this.currentPatientId === patientId && ['myDay', 'pulse', 'calendar', 'notifications'].includes(this.currentView)) {
+        if (this.currentPatientId === patientId && ['myDay', 'pulse', 'calendar', 'notifications', 'analytics'].includes(this.currentView)) {
             this.clearPatientNavigationView();
         }
         if (this.currentPatientId !== patientId) {
@@ -11917,7 +12151,13 @@ const app = {
                 void browserNavigation.navigate({screen: origin, schedule: browserNavigation.committed?.route.scheduleReturn});
             } else if (origin === 'notifications') {
                 void browserNavigation.navigate({screen: origin, internalInbox: true});
+            } else if (origin === 'analytics') {
+                void browserNavigation.navigate({screen: origin, analytics: browserNavigation.committed?.route.analyticsReturn});
             } else if (origin) this.navigateView(origin);
+        });
+        on('backToAnalyticsSource', 'click', () => {
+            const source = this.analytics.source;
+            if (source && this.navigationVisibility()[source]) this.navigateView(source);
         });
         on('backToScheduleSource', 'click', () => {
             if (this.workspaceListState('events').source === 'myDay') this.navigateView('myDay');
@@ -12205,6 +12445,7 @@ const app = {
 
         // Аналитика
         on('analyticsRefreshBtn', 'click', () => this.renderAnalytics());
+        on('analyticsReportType', 'change', () => this.updateAnalyticsExportControls());
         on('analyticsExportBtn', 'click', () => this.exportAnalyticsCsv());
         on('analyticsDateFrom', 'change', (event) => {
             this.analytics.filters.dateFrom = event.target.value;
@@ -12432,6 +12673,9 @@ const browserNavigation = {
 
     snapshot() {
         if (!this.committed || this.entry(history.state) !== this.committed) return null;
+        if (this.committed.route.screen === 'analytics' && app.currentView === 'analytics') {
+            this.committed.route.analytics = app.analyticsReturnContext(document.activeElement?.dataset.analyticsPatient);
+        }
         return {nonce: this.nonce, committed: this.committed, entries: new Map(this.entries),
             owner: app.user.id, access: app.accessSignature(app.user)};
     },
@@ -12449,7 +12693,12 @@ const browserNavigation = {
         if (!this.canNavigate(route)) return false;
         if (route.screen === 'patient' && (app.currentPatientId !== route.patientId || app.currentTab !== route.tab)) return false;
         if (route.screen === 'create' && !app.addFormActive) return false;
+        if (route.screen === 'analytics') app.restoreAnalyticsContext(route.analytics);
         if (app.currentView !== route.screen) app.showView(route.screen);
+        if (route.screen === 'patient' && route.f1Source === 'analytics') {
+            app.f1CardOrigin = route.f1Source;
+            app.updateCardSourceAction();
+        }
         this.nonce = previous.nonce;
         this.committed = previous.committed;
         this.entries = previous.entries;
@@ -12681,7 +12930,7 @@ const browserNavigation = {
         if (!entry && route.screen === 'patient') {
             const origin = cardOrigin || (sourceView === 'patient' && sourcePatient === route.patientId
                 ? app.f1CardOrigin : sourceView === 'notifications' ? null : sourceView);
-            if (['pulse', 'myDay', 'calendar', 'notifications'].includes(origin)) route = {...route, f1Source: origin};
+            if (['pulse', 'myDay', 'calendar', 'notifications', 'analytics'].includes(origin)) route = {...route, f1Source: origin};
             if (['myDay', 'calendar', 'notifications'].includes(origin) && historyAction?.kind === 'day-event') route = {...route, historyAction};
             if (sourceView === 'patient' && sourcePatient === route.patientId && this.committed?.route.scheduleReturn) {
                 route = {...route, scheduleReturn: this.committed.route.scheduleReturn};
@@ -12689,6 +12938,9 @@ const browserNavigation = {
             const registryReturn = sourceView === 'patients' ? app.registryContext(route.patientId)
                 : sourceView === 'patient' && sourcePatient === route.patientId ? this.committed?.route.registryReturn : null;
             if (registryReturn) route = {...route, registryReturn};
+            if (origin === 'analytics' && sourceView === 'patient' && this.committed?.route.analyticsReturn) {
+                route = {...route, analyticsReturn: this.committed.route.analyticsReturn};
+            }
         }
         const sameIntent = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
             && user === app.user?.id && app.accessSignature(app.user) === access
@@ -12761,6 +13013,11 @@ const browserNavigation = {
                 state.rows = [];
                 $('calendarPanel').replaceChildren();
             }
+            if (sourceView === 'analytics' && this.committed?.route.screen === 'analytics') {
+                const analytics = app.analyticsReturnContext(route.patientId);
+                this.committed.route.analytics = analytics;
+                if (!entry && route.screen === 'patient') route = {...route, analyticsReturn: analytics};
+            }
             this.render(route, patient, focus, replace);
             if (entry) this.committed = entry;
             else if (same) this.committed.route = route;
@@ -12828,6 +13085,7 @@ const browserNavigation = {
                 state.trail = schedule?.trail.slice() || [null];
                 state.focusEventId = schedule?.eventId || null;
             }
+            if (route.screen === 'analytics') app.restoreAnalyticsContext(route.analytics);
             if (route.screen === 'notifications' && route.internalInbox) app.notifications.activeTab = 'inbox';
             app.showView(route.screen);
         }

@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5">
 </head>
 <body>
 
@@ -887,22 +887,26 @@
                 <div id="f1Pulse"></div>
             </section>
 
-            <section class="view is-hidden" id="view-analytics">
+            <section class="view is-hidden" id="view-analytics" aria-labelledby="analyticsTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Аналитика</h1>
+                        <h1 class="pagehead__title" id="analyticsTitle" tabindex="-1">Аналитика</h1>
                         <p class="pagehead__subtitle" id="analyticsSubtitle">Организационные показатели маршрутов, просрочек и заполненности данных</p>
+                        <p class="pagehead__subtitle" id="analyticsContext" role="status" hidden></p>
+                    </div>
+                    <div class="pagehead__actions" id="analyticsSourceActions">
+                        <button type="button" class="btn btn--ghost" id="backToAnalyticsSource" data-route-click hidden>Назад</button>
                     </div>
                 </div>
 
-                <div class="analytics-controls">
+                <div class="analytics-controls" role="group" aria-label="Параметры аналитики">
                     <div class="analytics-controls__period">
                         <span class="analytics-controls__label">Период</span>
                         <label class="visually-hidden" for="analyticsDateFrom">Дата от</label>
                         <input class="input analytics-date" type="date" id="analyticsDateFrom">
                         <label class="visually-hidden" for="analyticsDateTo">Дата до</label>
                         <input class="input analytics-date" type="date" id="analyticsDateTo">
-                        <div class="analytics-presets" aria-label="Быстрый выбор периода">
+                        <div class="analytics-presets" role="group" aria-label="Быстрый выбор периода">
                             <button type="button" class="btn btn--ghost btn--sm analytics-preset" data-analytics-period="7">7 дней</button>
                             <button type="button" class="btn btn--ghost btn--sm analytics-preset" data-analytics-period="30">30 дней</button>
                             <button type="button" class="btn btn--ghost btn--sm analytics-preset" data-analytics-period="90">90 дней</button>
@@ -910,7 +914,6 @@
                     </div>
                     <div class="analytics-controls__actions">
                         <button type="button" class="btn btn--ghost btn--sm" id="analyticsRefreshBtn">Обновить</button>
-                        <button type="button" class="btn btn--ghost btn--sm" id="analyticsExportBtn">CSV</button>
                     </div>
                     <div class="analytics-controls__filters">
                         <label class="visually-hidden" for="analyticsStageFilter">Этап</label>
@@ -925,11 +928,34 @@
                         <select class="select" id="analyticsAttentionReasonFilter"></select>
                         <button type="button" class="btn btn--ghost btn--sm" id="analyticsResetFiltersBtn">Сбросить фильтры</button>
                     </div>
+                    <div class="analytics-export" id="analyticsExportControls" role="group" aria-label="Отчет CSV" aria-describedby="analyticsExportDescription" hidden>
+                        <div class="analytics-export__field">
+                            <label class="analytics-controls__label" for="analyticsReportType">Вид отчета</label>
+                            <select class="select" id="analyticsReportType">
+                                <option value="summary">Сводка</option>
+                                <option value="stages">Этапы</option>
+                                <option value="workload">Нагрузка</option>
+                                <option value="data_quality">Качество данных</option>
+                                <option value="checklists">Чек-листы</option>
+                                <option value="notifications">Уведомления</option>
+                            </select>
+                        </div>
+                        <div class="analytics-export__field">
+                            <label class="analytics-controls__label" for="analyticsReportDetail">Детализация отчета</label>
+                            <select class="select" id="analyticsReportDetail">
+                                <option value="aggregate">Сводно</option>
+                                <option value="details" disabled>По категориям</option>
+                            </select>
+                        </div>
+                        <button type="button" class="btn btn--ghost btn--sm" id="analyticsExportBtn" aria-describedby="analyticsExportDescription" disabled>Выгрузить CSV</button>
+                        <p class="analytics-export__hint" id="analyticsExportDescription">Текущее состояние на момент выгрузки. Выбранный период не применяется к CSV.</p>
+                    </div>
                 </div>
 
                 <div class="analytics-note">
                     <span>Текущее состояние</span>
-                    <span class="muted">Карточки, качество данных и нагрузка считаются на момент запроса; динамика и просрочки учитывают выбранный период.</span>
+                    <span class="muted">Карточки, качество данных, нагрузка и текущие просрочки считаются на момент запроса. Выбранный период применяется к графику динамики.</span>
+                    <p class="analytics-note__scope" id="analyticsScope" hidden></p>
                 </div>
 
                 <div class="analytics-dashboard">
@@ -1915,8 +1941,8 @@
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
-<script src="/static/f1-management.js?v=fast-track-f4"></script>
-<script src="/static/f1-doctor.js?v=fast-track-f4"></script>
-<script src="/static/app.js?v=fast-track-f4"></script>
+<script src="/static/f1-management.js?v=fast-track-f5"></script>
+<script src="/static/f1-doctor.js?v=fast-track-f5"></script>
+<script src="/static/app.js?v=fast-track-f5"></script>
 </body>
 </html>

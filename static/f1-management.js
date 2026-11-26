@@ -364,10 +364,19 @@ const f1Management = (() => {
                 }, detailCurrent);
             }},
         });
+        const analytics = el('button', {
+            id: 'f5PulseAnalytics', type: 'button', class: 'btn btn--ghost btn--sm',
+            text: 'Открыть в аналитике',
+            on: {click: () => {
+                if (detailCurrent()) void app.openWorkingAnalytics('pulse', {
+                    stage, type: metric.type, title: metric.heading || metric.label || state.cards.get(state.selected)?.label,
+                }, detailCurrent);
+            }},
+        });
         state.nodes.details.replaceChildren(
             content.length ? el('p', {class: 'muted f1-pulse-result', role: 'status', text: summary + ' · ' + (metric.detailUnit || metric.unit)}) :
                 message(data.total ? 'На этой странице записей нет.' : 'По выбранным условиям нет доступных записей.'),
-            el('div', {class: 'f1-actions'}, [registry, !exactFilter ? el('span', {
+            el('div', {class: 'f1-actions'}, [registry, analytics, !exactFilter ? el('span', {
                 class: 'f1-description', text: stage ? 'Все доступные пациенты этого этапа.' : 'Все доступные пациенты.',
             }) : null]),
             content.length ? el('ul', {class: 'f1-list f1-pulse-list'}, content) : null,
