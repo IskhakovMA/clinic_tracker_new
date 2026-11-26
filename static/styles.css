@@ -1847,6 +1847,41 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     margin-bottom: var(--sp-1);
 }
 .quality-finding .btn { margin-top: var(--sp-3); }
+
+.quality-workspace .quality-table :is(td, .person__name),
+.quality-workspace .quality-duplicates,
+.quality-workspace #qualityContext,
+#view-checklists .workspace-table td,
+.quality-finding {
+    overflow-wrap: anywhere;
+}
+
+.quality-workspace .quality-table .person > div { min-width: 0; }
+
+.quality-workspace .quality-table .severity-dot { min-width: 0; }
+
+.quality-workspace .quality-table .btn,
+.quality-finding .btn {
+    max-width: 100%;
+    white-space: normal;
+}
+
+.quality-finding:focus-within {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+#qualityRefreshBtn {
+    min-width: 0;
+    white-space: normal;
+}
+
+#qualityContext:empty { margin: 0; }
+
+@media (max-width: 560px) {
+    .quality-workspace .pagehead__actions { grid-template-columns: minmax(0, 1fr); }
+}
+
 .duplicate-group {
     padding: var(--sp-3) 0;
     border-top: 1px solid var(--border);
@@ -3122,7 +3157,7 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .patient-workspace .alert--info { color:var(--accent-text); }
 .patient-workspace .chip--danger { color:#fca5a5; }
 
-html[data-theme="light"] :is(.patient-workspace, .f1-workspace, .registry) .chip--danger { color:#b91c1c; }
+html[data-theme="light"] :is(.patient-workspace, .f1-workspace, .registry, .quality-workspace) .chip--danger { color:#b91c1c; }
 
 /* WP-I I-4: Staff-UX full creation page; original medical controls and IDs. */
 .create-patient { min-width:0; }

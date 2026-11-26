@@ -56,6 +56,7 @@ function option(value, label, selected) {
     return el('option', { value, text: label, selected: !!selected });
 }
 
+const QUALITY_PAGE_SIZE = 50;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const ICON_PATHS = {
     trash: ['M5 7h14', 'M9 7V5h6v2', 'M7 7l1 12h8l1-12'],
@@ -498,12 +499,17 @@ const app = {
     registrySource: null,
     attentionModalPatientId: null,
     attentionCloseTarget: null,
+    qualityRestore: null,
+    checklistNeedsRead: new Set(),
+    checklistPending: null,
     quality: {
         summary: null,
         issues: [],
         patients: [],
         duplicateGroups: [],
         rules: {},
+        offset: 0,
+        total: 0,
         loading: false,
         error: '',
         filters: {
@@ -2236,7 +2242,7 @@ const app = {
     updateCardSourceAction() {
         const back = $('backToF1');
         const labels = {analytics: 'К аналитике', pulse: 'К пульсу клиники', myDay: 'К моему дню',
-            calendar: 'К расписанию', notifications: 'К уведомлениям'};
+            calendar: 'К расписанию', notifications: 'К уведомлениям', quality: 'К качеству данных'};
         const label = labels[this.f1CardOrigin];
         back.hidden = this.currentView !== 'patient' || !label || !this.navigationVisibility()[this.f1CardOrigin];
         back.textContent = back.hidden ? '' : label;
@@ -4351,13 +4357,13 @@ const app = {
         const occIndex = (p.history || []).length - 1;
         const occ = occIndex >= 0 ? p.history[occIndex] : null;
         const nosology = this.nosologyData[p.nosology];
-        if (!occ || !nosology) return null;
+        if (!occ || !nosology || !['exam', 'consult'].includes(occ.stage)) return null;
 
         const required = (occ.stage === 'exam' ? nosology.checklistRequired : nosology.checklistRequiredStage2) || [];
         if (!required.length) return null;
 
         const checklist = occ.checklist || {};
-        const doneCount = required.filter(item => checklist[item]).length;
+        const doneCount = required.filter(item => checklist[item] === true).length;
 
         return el('div', { class: 'panel panel--pad' }, [
             el('div', { class: 'checkline' }, [
@@ -4370,8 +4376,8 @@ const app = {
             ]),
             el('div', {}, required.slice(0, 5).map(item => el('label', { class: 'checkbox' }, [
                 el('input', {
-                    type: 'checkbox', checked: !!checklist[item],
-                    on: { change: (event) => this.updateChecklistItem(p.id, occIndex, item, event.target.checked) },
+                    type: 'checkbox', checked: checklist[item] === true, disabled: !this.can('editPatients') || this.checklistNeedsRead.has(p.id),
+                    on: {change: ({target}) => this.updateChecklistItem(p.id, occ, occIndex, item, target)},
                 }),
                 el('span', { class: 'checkbox__text', text: item }),
             ]))),
@@ -4812,8 +4818,9 @@ const app = {
         }
 
         const isExam = occ.stage === 'exam';
-        const required = (isExam ? nosology.checklistRequired : nosology.checklistRequiredStage2) || [];
-        const optional = (isExam ? nosology.checklistOptional : nosology.checklistOptionalStage2) || [];
+        const hasChecklist = isExam || occ.stage === 'consult';
+        const required = hasChecklist ? (isExam ? nosology.checklistRequired : nosology.checklistRequiredStage2) || [] : [];
+        const optional = hasChecklist ? (isExam ? nosology.checklistOptional : nosology.checklistOptionalStage2) || [] : [];
 
         if (!required.length && !optional.length) {
             return el('div', { class: 'panel panel--pad' }, [el('div', { class: 'empty', text: 'Для текущего этапа чек-лист не предусмотрен.' }),this.workspaceChecklistHistory(p,nosology)]);
@@ -4822,8 +4829,8 @@ const app = {
         const checklist = occ.checklist || {};
         const item = (name, isRequired) => el('label', { class: 'checkbox' }, [
             el('input', {
-                type: 'checkbox', checked: !!checklist[name],
-                on: { change: (event) => this.updateChecklistItem(p.id, occIndex, name, event.target.checked) },
+                type: 'checkbox', checked: checklist[name] === true, disabled: !this.can('editPatients') || this.checklistNeedsRead.has(p.id),
+                on: {change: ({target}) => this.updateChecklistItem(p.id, occ, occIndex, name, target)},
             }),
             el('span', { class: 'checkbox__text' }, [name, isRequired ? el('span', { class: 'req', text: ' *' }) : null]),
         ]);
@@ -4831,7 +4838,7 @@ const app = {
         return el('div', { class: 'panel panel--pad' }, [
             el('div', { class: 'checkline' }, [
                 el('h2', { class: 'section-title', text: `Чек-лист: ${nosology.label}` }),
-                el('span', { class: 'checkline__count', text: `${required.filter(i => checklist[i]).length} из ${required.length}` }),
+                el('span', { class: 'checkline__count', text: `${required.filter(i => checklist[i] === true).length} из ${required.length}` }),
             ]),
             ...required.map(name => item(name, true)),
             optional.length ? el('h3', { class: 'section-title', text: 'Опционально / по показаниям' }) : null,
@@ -4935,6 +4942,7 @@ const app = {
             department: '',
             sort: 'severity',
         };
+        this.quality.offset = 0;
         $('qualitySearchInput').value = '';
         $('qualitySeverityFilter').value = '';
         $('qualityCategoryFilter').value = '';
@@ -4964,7 +4972,8 @@ const app = {
         if (f.doctor) params.set('treating_doctor', f.doctor);
         if (f.department) params.set('department', f.department);
         if (f.sort) params.set('sort', f.sort);
-        params.set('limit', '200');
+        params.set('limit', String(QUALITY_PAGE_SIZE));
+        params.set('offset', String(this.quality.offset));
         return params.toString();
     },
 
@@ -4990,6 +4999,12 @@ const app = {
     scheduleQualitySearch() {
         this.qualityRequest = (this.qualityRequest || 0) + 1;
         clearTimeout(this.qualitySearchTimer);
+        $('qualityBody').replaceChildren();
+        $('qualityStatsRow').replaceChildren();
+        $('qualityDuplicatesPanel').replaceChildren();
+        $('qualityEmpty').classList.remove('is-hidden');
+        $('qualityEmpty').textContent = 'Загрузка…';
+        this.updateQualityPage();
         this.qualitySearchTimer = setTimeout(() => this.renderDataQuality(), this.quality.filters.query ? 300 : 0);
     },
 
@@ -5061,46 +5076,94 @@ const app = {
         return this.openPatient(id, tab || 'overview', {...options, focus: () => $('crumbPatientName')});
     },
 
-    async loadDataQuality(requestId = this.qualityRequest) {
-        const search = this.quality.filters.query;
-        const query = this.qualityParams();
-        const summary = await apiGetJson('/api/data-quality/summary');
-        if (requestId !== this.qualityRequest || this.qualityV1) return false;
-        const issues = await apiFetch(`/api/data-quality/issues?${query}`, { headers: searchHeaders(search) });
-        if (requestId !== this.qualityRequest) return false;
-        this.quality.summary = summary;
-        this.quality.issues = issues.issues || [];
-        this.quality.patients = issues.patients || [];
-        this.quality.duplicateGroups = issues.duplicate_groups || [];
-        this.quality.rules = issues.rules || {};
-        return true;
+    qualityContext(button) {
+        const key = button?.dataset.qualityTarget || null;
+        const matching = [...document.querySelectorAll('#view-quality [data-quality-target]')]
+            .filter(node => node.dataset.qualityTarget === key);
+        return {
+            filters: {...this.quality.filters}, offset: this.quality.offset,
+            target: matching.length === 1 ? key : null,
+        };
+    },
+
+    restoreQualityContext(context) {
+        if (!context || this.qualityV1) return;
+        this.quality.filters = {...context.filters};
+        this.quality.offset = context.offset;
+        this.qualityRestore = context;
+        $('qualitySearchInput').value = this.quality.filters.query;
+        this.syncQualityFilterControls();
+    },
+
+    updateQualityPage(ready = false) {
+        const {offset, total, issues} = this.quality;
+        $('qualityPrevBtn').disabled = !ready || offset === 0;
+        $('qualityNextBtn').disabled = !ready || offset + issues.length >= total;
+        $('qualityPageInfo').textContent = ready && issues.length
+            ? `Замечания ${offset + 1}–${offset + issues.length} из ${total}` : '';
     },
 
     async renderDataQuality() {
         if (this.qualityV1) return this.qualityV1.workspace.start();
+        if (this.currentView !== 'quality' || !this.user || this.sessionExpired) return;
         clearTimeout(this.qualitySearchTimer);
         const requestId = this.qualityRequest = (this.qualityRequest || 0) + 1;
+        const epoch = this.sessionEpoch;
+        const user = this.user.id;
+        const access = this.accessSignature(this.user);
+        const current = () => requestId === this.qualityRequest && this.currentView === 'quality'
+            && epoch === this.sessionEpoch && user === this.user?.id && !this.sessionExpired
+            && this.accessSignature(this.user) === access && !this.qualityV1;
         this.updateQualityFiltersButton();
         const body = $('qualityBody');
         const empty = $('qualityEmpty');
         const dupPanel = $('qualityDuplicatesPanel');
+        const context = $('qualityContext');
+        const focused = document.activeElement;
+        const pagerFocus = $('qualityPagination').contains(focused) && focused.matches('button') ? focused : null;
+        if (pagerFocus || body.contains(document.activeElement) || dupPanel.contains(document.activeElement) ||
+            $('qualityStatsRow').contains(document.activeElement)) $('qualityWorkspaceTitle').focus();
         body.replaceChildren();
+        $('qualityStatsRow').replaceChildren();
         empty.classList.remove('is-hidden');
         empty.textContent = 'Загрузка…';
+        if (context) context.textContent = '';
         dupPanel.replaceChildren();
+        this.updateQualityPage();
 
         try {
-            if (!await this.loadDataQuality(requestId)) return;
+            const search = this.quality.filters.query;
+            const summary = await apiGetJson('/api/data-quality/summary');
+            if (!current()) return;
+            const result = await apiFetch(`/api/data-quality/issues?${this.qualityParams()}`,
+                {headers: searchHeaders(search)});
+            if (!current()) return;
+            if (this.quality.offset && !result.issues.length && this.quality.offset >= result.total) {
+                this.quality.offset = 0;
+                return this.renderDataQuality();
+            }
+            Object.assign(this.quality, {
+                summary, issues: result.issues, patients: result.patients,
+                duplicateGroups: result.duplicate_groups, rules: result.rules, total: result.total,
+            });
             this.renderQualityFiltersOptions();
             this.renderQualityStats();
-            this.renderQualityRows();
-            this.renderQualityDuplicates();
+            this.renderQualityRows(current);
+            this.renderQualityDuplicates(current);
+            this.updateQualityPage(true);
+            if (pagerFocus && !pagerFocus.disabled && document.activeElement === $('qualityWorkspaceTitle')) pagerFocus.focus();
+            if (this.qualityRestore) {
+                const targets = [...body.querySelectorAll('[data-quality-target]'), ...dupPanel.querySelectorAll('[data-quality-target]')]
+                    .filter(button => button.dataset.qualityTarget === this.qualityRestore.target);
+                const heading = $('qualityWorkspaceTitle');
+                if (targets.length === 1 && document.activeElement === heading) targets[0].focus();
+                if (context) context.textContent = 'Замечания обновлены по текущим данным.';
+                this.qualityRestore = null;
+            }
         } catch (e) {
-            if (requestId !== this.qualityRequest) return;
-            empty.classList.remove('is-hidden');
-            empty.textContent = `Не удалось загрузить качество данных: ${e.message}`;
-            $('qualityStatsRow').replaceChildren();
-            dupPanel.replaceChildren();
+            if (!current()) return;
+            empty.textContent = 'Не удалось обновить качество данных. Повторите чтение.';
+            this.qualityRestore = null;
         }
     },
 
@@ -5109,6 +5172,8 @@ const app = {
         const selectedDept = this.quality.filters.department;
         const doctors = [...new Set(this.quality.patients.map(p => p.treating_doctor_name).filter(Boolean))].sort();
         const departments = [...new Set(this.quality.patients.flatMap(p => p.department_names || []))].sort();
+        if (selectedDoctor && !doctors.includes(selectedDoctor)) doctors.push(selectedDoctor);
+        if (selectedDept && !departments.includes(selectedDept)) departments.push(selectedDept);
         $('qualityDoctorFilter').replaceChildren(frag([
             option('', 'Любой лечащий врач', !selectedDoctor),
             ...doctors.map(name => option(name, name, name === selectedDoctor)),
@@ -5142,6 +5207,7 @@ const app = {
                         department: '',
                         query: '',
                     }, filter);
+                    this.quality.offset = 0;
                     $('qualitySearchInput').value = '';
                     this.syncQualityFilterControls();
                     this.renderDataQuality();
@@ -5167,8 +5233,13 @@ const app = {
         $('qualitySortSelect').value = f.sort;
     },
 
-    renderQualityRows() {
-        const rows = this.quality.patients;
+    renderQualityRows(current) {
+        const byPatient = new Map();
+        for (const issue of this.quality.issues) {
+            if (!byPatient.has(issue.patient_id)) byPatient.set(issue.patient_id, []);
+            byPatient.get(issue.patient_id).push(issue);
+        }
+        const rows = this.quality.patients.filter(row => byPatient.has(row.patient_id));
         const body = $('qualityBody');
         const empty = $('qualityEmpty');
         if (!rows.length) {
@@ -5198,11 +5269,9 @@ const app = {
                     : el('div', { class: 'muted', text: 'Обязательные поля заполнены' }),
             ]),
             el('td', { class: 'cell-quality-issues' }, [
-                row.issue_count ? this.qualityProblemChip(`${row.issue_count} ${this.pluralize(row.issue_count, 'проблема', 'проблемы', 'проблем')}`) : this.qualitySeverityChip(null),
-                ...(row.top_issues || []).map(issue => el('div', { class: 'quality-issue-line' }, [
-                    el('span', { class: 'severity-dot severity-dot--danger', text: 'Проблема' }),
-                    el('span', { text: issue.title }),
-                ])),
+                row.issue_count ? this.qualityProblemChip(`Замечаний по карточке: ${row.issue_count}`) : null,
+                ...byPatient.get(row.patient_id).map(issue =>
+                    this.renderQualityFinding(row.patient_id, issue, current)),
             ]),
             el('td', { class: 'cell-quality-owner' }, [
                 el('div', { text: row.treating_doctor_name || 'Не назначен' }),
@@ -5214,13 +5283,15 @@ const app = {
                 el('button', {
                     type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть пациента',
                     'aria-label': `Открыть карточку: ${row.patient_name}`,
-                    on: { click: () => this.openPatient(row.patient_id) },
+                    'data-quality-action': 'patient',
+                    'data-quality-target': row.patient_id,
+                    on: {click: () => this.openQualityPatient(row.patient_id, 'overview', current)},
                 }),
             ]),
         ]))));
     },
 
-    renderQualityDuplicates() {
+    renderQualityDuplicates(current) {
         const panel = $('qualityDuplicatesPanel');
         const groups = this.quality.duplicateGroups || [];
         if (!groups.length) {
@@ -5233,12 +5304,18 @@ const app = {
         panel.replaceChildren(frag([
             el('h2', { class: 'panel__title', text: 'Возможные дубли' }),
             el('p', { class: 'panel__text', text: 'Совпадение не означает, что записи являются дублями. Требуется ручная проверка.' }),
+            this.can('viewDuplicateRegistry') ? el('button', {
+                type: 'button', class: 'btn btn--ghost btn--sm', text: 'Открыть реестр возможных дублей',
+                on: {click: () => { if (current()) this.navigateView('duplicates'); }},
+            }) : null,
             ...groups.map(group => el('div', { class: 'duplicate-group' }, [
                 el('div', { class: 'duplicate-group__reason', text: group.reason }),
                 el('div', { class: 'duplicate-group__patients' }, group.patients.map(p => el('button', {
                     type: 'button',
                     class: 'sheet-item',
-                    on: { click: () => this.openPatient(p.patient_id) },
+                    'data-quality-action': 'patient',
+                    'data-quality-target': `duplicate:${p.patient_id}`,
+                    on: {click: () => this.openQualityPatient(p.patient_id, 'data', current)},
                 }, [
                     el('span', { class: 'sheet-item__title', text: p.patient_name }),
                     el('span', { class: 'sheet-item__hint', text: `Заполненность полей: ${p.completeness}%` }),
@@ -5256,12 +5333,18 @@ const app = {
             this.qualityV1.card = card;
             return card.start();
         }
+        const read = this.beginRead('patient-quality');
+        const epoch = this.sessionEpoch;
+        const current = () => box.isConnected && this.currentView === 'patient'
+            && this.currentPatientId === patientId && this.sessionEpoch === epoch
+            && this.isCurrentRead('patient-quality', read);
         box.replaceChildren(frag([
             el('h2', { class: 'section-title', text: 'Качество данных' }),
             el('div', { class: 'empty', text: 'Загрузка…' }),
         ]));
         try {
-            const data = await apiGetJson(`/api/data-quality/patients/${patientId}`);
+            const data = await apiGetJson(`/api/data-quality/patients/${encodeURIComponent(patientId)}`);
+            if (!current()) return;
             const comp = data.patient.completeness;
             const issues = data.issues || [];
             const groups = data.duplicate_groups || [];
@@ -5275,7 +5358,7 @@ const app = {
                     ? el('p', { class: 'muted', text: `Не заполнено: ${comp.missing.map(m => m.label).join(', ')}.` })
                     : el('p', { class: 'muted', text: 'Обязательные поля заполнены.' }),
                 issues.length
-                    ? el('div', { class: 'quality-findings' }, issues.map(issue => this.renderQualityFinding(patientId, issue)))
+                    ? el('div', { class: 'quality-findings' }, issues.map(issue => this.renderQualityFinding(patientId, issue, current)))
                     : el('div', { class: 'empty', text: 'По действующим правилам качества проблем не обнаружено.' }),
                 groups.length ? el('div', { class: 'quality-findings' }, [
                     el('h3', { class: 'section-title', text: 'Возможные дубли' }),
@@ -5287,6 +5370,11 @@ const app = {
                 ]) : null,
             ]));
         } catch (e) {
+            if (!current()) return;
+            if ([403, 404].includes(e.status)) {
+                this.forgetDeniedPatient(patientId);
+                return;
+            }
             box.replaceChildren(frag([
                 el('h2', { class: 'section-title', text: 'Качество данных' }),
                 el('div', { class: 'empty', text: 'Не удалось загрузить качество данных.' }),
@@ -5294,41 +5382,60 @@ const app = {
         }
     },
 
-    renderQualityFinding(patientId, issue) {
+    renderQualityFinding(patientId, issue, current) {
         const action = issue.suggested_action || {};
-        const canWriteAction = action.can_write !== false;
-        const readonlyMessage = 'Режим просмотра — изменение данных недоступно';
-        return el('div', { class: 'quality-finding quality-finding--danger' }, [
+        const structure = action.workflow === 'unresolved_treating_doctor'
+            && action.tab === 'structure' && this.can('manageDepartments');
+        const tab = ['data', 'events', 'checklist'].includes(action.tab) ? action.tab : 'overview';
+        const writable = action.can_write === true && (structure || this.can('editPatients'));
+        const label = structure ? 'Открыть сопоставление врача'
+            : ({data: 'Открыть данные', events: 'Открыть события', checklist: 'Открыть чек-лист'})[tab] || 'Открыть карточку';
+        const severityClasses = {
+            critical: 'quality-finding quality-finding--danger',
+            warning: 'quality-finding quality-finding--warning',
+            info: 'quality-finding quality-finding--info',
+        };
+        const tone = Object.hasOwn(severityClasses, issue.severity) ? severityClasses[issue.severity] : 'quality-finding';
+        const isOverdue = issue.code === 'overdue_event';
+        const details = issue.details || {};
+        const target = [patientId, issue.code, issue.field].join(':');
+        return el('div', { class: tone }, [
             el('div', { class: 'quality-finding__head' }, [
-                this.qualityProblemChip('Проблема'),
+                this.qualitySeverityChip(issue.severity),
                 el('span', { class: 'quality-finding__category', text: this.QUALITY_CATEGORY_LABELS[issue.category] || issue.category }),
             ]),
             el('div', { class: 'quality-finding__title', text: issue.title }),
             el('div', { class: 'quality-finding__text', text: issue.description }),
-            issue.details && issue.details.sample_missing
-                ? el('div', { class: 'quality-finding__text', text: `Не отмечено: ${issue.details.sample_missing.join(', ')}${issue.details.missing_count > issue.details.sample_missing.length ? '…' : ''}` })
-                : null,
+            isOverdue ? el('div', {class: 'quality-finding__text', text: details.planned_date
+                ? `Плановая дата: ${details.planned_date}. Выберите нужную запись во вкладке событий.`
+                : 'Выберите нужную запись во вкладке событий.'}) : null,
+            details.sample_missing ? el('div', { class: 'quality-finding__text',
+                text: `Не отмечено: ${details.sample_missing.join(', ')}${details.missing_count > details.sample_missing.length ? '…' : ''}` }) : null,
             el('button', {
-                type: 'button',
-                class: 'btn btn--ghost btn--sm',
-                text: action.label || 'Открыть',
-                disabled: !canWriteAction,
-                'aria-label': canWriteAction ? (action.label || 'Открыть') : `${action.label || 'Открыть'}: ${readonlyMessage}`,
-                title: canWriteAction ? (action.label || 'Открыть') : readonlyMessage,
-                on: { click: () => {
-                    if (canWriteAction) this.followQualityAction(patientId, action);
-                } },
+                type: 'button', class: 'btn btn--ghost btn--sm', text: label,
+                'data-quality-action': 'finding', 'data-quality-code': issue.code,
+                'data-quality-target': target,
+                on: {click: () => {
+                    if (!current()) return;
+                    if (structure) {
+                        void browserNavigation.navigate({screen: 'structure'}, {
+                            objectId: patientId, allowed: () => current() && this.can('manageDepartments'),
+                            denied: () => { if (this.currentView === 'quality') void this.renderDataQuality(); },
+                        });
+                    } else void this.openQualityPatient(patientId, tab, current);
+                }},
             }),
-            canWriteAction ? null : el('div', { class: 'quality-finding__text', text: readonlyMessage }),
+            writable ? null : el('div', {class: 'quality-finding__text', text: 'Режим просмотра — изменение данных недоступно.'}),
         ]);
     },
 
-    followQualityAction(patientId, action) {
-        if (action && action.workflow === 'unresolved_treating_doctor' && action.tab === 'structure') {
-            return this.navigateView('structure');
-        }
-        const tab = action && action.tab ? action.tab : 'overview';
-        this.openPatientTab(patientId, tab);
+    openQualityPatient(id, tab, current) {
+        return this.openPatient(id, tab, {
+            allowed: current,
+            denied: () => {
+                if (this.currentView === 'quality') void this.renderDataQuality();
+            },
+        });
     },
 
     openPatientTab(id, tab) {
@@ -6304,7 +6411,7 @@ const app = {
         if (f.department) params.set('department_id', f.department);
         if (f.attentionReason) params.set('attention_reason', f.attentionReason);
         if (f.code) params.set('code', f.code);
-        params.set('limit', '50');
+        params.set('limit', String(QUALITY_PAGE_SIZE));
         params.set('offset', String(f.offset || 0));
         return params.toString();
     },
@@ -7730,6 +7837,7 @@ const app = {
 
     forgetDeniedPatient(patientId, {refreshRegistry = true} = {}) {
         browserNavigation.forget(patientId);
+        this.checklistNeedsRead.delete(patientId);
         // Object access can change without a role/access-context change.
         this.patientDetails.delete(patientId);
         for (const [key, draft] of this.sessionFieldDrafts) {
@@ -7748,7 +7856,7 @@ const app = {
         }
         // A row can be denied after returning from its previous card. Clear the
         // hidden card, then let the active workspace refresh its own selection.
-        if (this.currentPatientId === patientId && ['myDay', 'pulse', 'calendar', 'notifications', 'analytics'].includes(this.currentView)) {
+        if (this.currentPatientId === patientId && ['myDay', 'pulse', 'calendar', 'notifications', 'analytics', 'quality'].includes(this.currentView)) {
             this.clearPatientNavigationView();
         }
         if (this.currentPatientId !== patientId) {
@@ -7770,7 +7878,7 @@ const app = {
 
     async confirmClinicalNavigation(intentCurrent = () => true) {
         if(this.sessionExpired||this.sessionReconciling||!this.user)return false;
-        if(this.clinicalWriteInFlight){ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.','warning');return false;}
+        if(this.clinicalWriteInFlight || this.checklistPending){ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.','warning');return false;}
         const dirty = this.dirtyClinicalControls().map(node => [node, JSON.stringify(this.patientDraftControls.get(node).readValue())]);
         if (!dirty.length) return true;
         const epoch=this.sessionEpoch,user=this.user.id,patientId=this.currentPatientId;
@@ -7813,7 +7921,7 @@ const app = {
             if(!target || this.sessionExpired || !this.user || target.matches(routed+', [data-card-save],[data-ai-open],'+qualityNavigation))return;
             const dirty=this.dirtyClinicalControls();if(!dirty.length)return;
             event.preventDefault();event.stopImmediatePropagation();
-            if (this.clinicalWriteInFlight) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }
+            if (this.clinicalWriteInFlight || this.checklistPending) { ui.toast('Дождитесь результата сохранения. Новый ввод остается в форме.', 'warning'); return; }
             void this.confirmClinicalNavigation().then(ok=>{if(ok)target.click();});
         },{capture:true,signal:this.globalControls.signal});
     },
@@ -8135,21 +8243,49 @@ const app = {
             apiPatch(`/api/patients/${patientId}/history/${occIndex}/note`, {note:submitted}));
     },
 
-    async updateChecklistItem(patientId, occIndex, itemName, checked) {
-        // WP-C: состояние пункта, которое видел пользователь (нет пункта — не отмечен).
-        const cached = this.getPatient(patientId);
-        const entry = cached && cached.history ? cached.history[occIndex] : null;
-        const expected = Boolean(entry && entry.checklist && entry.checklist[itemName]);
+    async updateChecklistItem(patientId, occurrence, occIndex, itemName, control) {
+        const checked = control.checked;
+        const expected = occurrence.checklist?.[itemName] === true;
+        control.checked = expected;
+        const epoch = this.sessionEpoch;
+        const live = () => this.currentView === 'patient' && this.currentPatientId === patientId
+            && !this.sessionExpired && epoch === this.sessionEpoch && control.isConnected;
+        const latest = this.getPatient(patientId)?.history?.at(-1);
+        if (!live() || !this.can('editPatients') || this.checklistPending || this.checklistNeedsRead.has(patientId) ||
+            latest?.id !== occurrence.id || (latest.checklist?.[itemName] === true) !== expected) return;
+        const pending = {};
+        this.checklistPending = pending;
+        this.checklistNeedsRead.add(patientId);
+        const focusWasHere = document.activeElement === control;
+        control.disabled = true;
         try {
-            const updated = await apiPatch(`/api/patients/${patientId}/history/${occIndex}/checklist`,
-                { item: itemName, checked, expected });
-            this.replacePatientInCache(updated);
-        } catch (e) {
-            if (this.isStaleRecord(e)) {
-                await this.reloadAfterStaleRecord(patientId, e);
-                return;
+            try {
+                await apiPatch(`/api/patients/${encodeURIComponent(patientId)}/history/${occIndex}/checklist`,
+                    { item: itemName, checked, expected });
+            } catch (error) {
+                if (!live() || error.obsolete) return;
+                if ([403, 404].includes(error.status)) {
+                    this.forgetDeniedPatient(patientId);
+                    return;
+                }
+                ui.toast('Запись чек-листа не подтверждена. Проверяем серверное состояние.', 'warning');
             }
-            ui.toast('Не удалось сохранить чек-лист: ' + e.message, 'danger');
+            if (!live()) return;
+            await this.refreshPatientRecord(patientId, live);
+            if (!live()) return;
+            this.checklistNeedsRead.delete(patientId);
+            const restoreFocus = focusWasHere && document.activeElement === document.body;
+            this.refreshCurrent();
+            if (restoreFocus) $('tab-' + this.currentTab)?.focus();
+        } catch (error) {
+            if (!live() || error.obsolete) return;
+            if ([403, 404].includes(error.status)) this.forgetDeniedPatient(patientId);
+            else {
+                this.refreshCurrent();
+                ui.toast('Чек-лист не обновлен. Откройте карточку заново для проверки.', 'warning');
+            }
+        } finally {
+            if (this.checklistPending === pending) this.checklistPending = null;
         }
     },
 
@@ -12527,6 +12663,8 @@ const app = {
                 void browserNavigation.navigate({screen: origin, internalInbox: true});
             } else if (origin === 'analytics') {
                 void browserNavigation.navigate({screen: origin, analytics: browserNavigation.committed?.route.analyticsReturn});
+            } else if (origin === 'quality') {
+                void browserNavigation.navigate({screen: origin, quality: browserNavigation.committed?.route.qualityReturn});
             } else if (origin) this.navigateView(origin);
         });
         on('backToAnalyticsSource', 'click', () => {
@@ -12749,32 +12887,48 @@ const app = {
         on('sheetResetFiltersBtn', 'click', () => this.resetFilters());
 
         // Качество данных
+        on('qualityRefreshBtn', 'click', () => this.renderDataQuality());
+        on('qualityPrevBtn', 'click', () => {
+            this.quality.offset = Math.max(0, this.quality.offset - QUALITY_PAGE_SIZE);
+            void this.renderDataQuality();
+        });
+        on('qualityNextBtn', 'click', () => {
+            this.quality.offset += QUALITY_PAGE_SIZE;
+            void this.renderDataQuality();
+        });
         on('qualitySearchInput', 'input', (event) => {
+            this.quality.offset = 0;
             this.quality.filters.query = event.target.value;
             this.scheduleQualitySearch();
         });
         on('qualitySeverityFilter', 'change', (event) => {
             this.quality.filters.severity = event.target.value;
+            this.quality.offset = 0;
             this.renderDataQuality();
         });
         on('qualityCategoryFilter', 'change', (event) => {
             this.quality.filters.category = event.target.value;
+            this.quality.offset = 0;
             this.renderDataQuality();
         });
         on('qualityCodeFilter', 'change', (event) => {
             this.quality.filters.code = event.target.value;
+            this.quality.offset = 0;
             this.renderDataQuality();
         });
         on('qualityDoctorFilter', 'change', (event) => {
             this.quality.filters.doctor = event.target.value;
+            this.quality.offset = 0;
             this.renderDataQuality();
         });
         on('qualityDepartmentFilter', 'change', (event) => {
             this.quality.filters.department = event.target.value;
+            this.quality.offset = 0;
             this.renderDataQuality();
         });
         on('qualitySortSelect', 'change', (event) => {
             this.quality.filters.sort = event.target.value;
+            this.quality.offset = 0;
             this.renderDataQuality();
         });
         on('openQualityFiltersSheetBtn', 'click', () => this.openQualityFiltersSheet());
@@ -13063,6 +13217,9 @@ const browserNavigation = {
             this.committed.route.analytics = app.analyticsReturnContext(
                 focused?.analyticsPatient, focused?.analyticsPosition && Number(focused.analyticsPosition));
         }
+        if (this.committed.route.screen === 'quality' && app.currentView === 'quality' && !app.qualityV1) {
+            this.committed.route.quality = app.qualityContext(document.activeElement);
+        }
         return {nonce: this.nonce, committed: this.committed, entries: new Map(this.entries),
             owner: app.user.id, access: app.accessSignature(app.user)};
     },
@@ -13081,8 +13238,11 @@ const browserNavigation = {
         if (route.screen === 'patient' && (app.currentPatientId !== route.patientId || app.currentTab !== route.tab)) return false;
         if (route.screen === 'create' && !app.addFormActive) return false;
         if (route.screen === 'analytics') app.restoreAnalyticsContext(route.analytics);
-        if (app.currentView !== route.screen) app.showView(route.screen);
-        if (route.screen === 'patient' && route.f1Source === 'analytics') {
+        if (route.screen === 'quality' && !app.qualityV1) {
+            app.restoreQualityContext(route.quality);
+            app.showView('quality');
+        } else if (app.currentView !== route.screen) app.showView(route.screen);
+        if (route.screen === 'patient' && ['analytics', 'quality'].includes(route.f1Source)) {
             app.f1CardOrigin = route.f1Source;
             app.updateCardSourceAction();
         }
@@ -13106,6 +13266,10 @@ const browserNavigation = {
         }
         for (const [key, entry] of this.entries) {
             if (entry.route.patientId === patientId) this.entries.delete(key);
+            for (const context of [entry.route.quality, entry.route.qualityReturn]) {
+                if (context?.target === patientId || context?.target?.startsWith(patientId + ':') ||
+                    context?.target === `duplicate:${patientId}`) context.target = null;
+            }
         }
     },
 
@@ -13200,7 +13364,7 @@ const browserNavigation = {
             history.state?.route === marker.route && history.state?.nonce === marker.nonce &&
             history.state?.index === marker.index && history.state?.v === marker.v;
         const current = () => samePage() && this.sameRoute(this.currentRoute(), route);
-        const busy = () => this.writes.size || app.clinicalWriteInFlight || app.addPatientPending;
+        const busy = () => this.writes.size || app.clinicalWriteInFlight || app.checklistPending || app.addPatientPending;
         const draft = () => route.screen === 'create'
             ? app.addFormState()
             : route.screen === 'patient'
@@ -13270,7 +13434,7 @@ const browserNavigation = {
     },
 
     async confirmExit(current, route) {
-        if (this.writes.size || app.clinicalWriteInFlight || app.addPatientPending) {
+        if (this.writes.size || app.clinicalWriteInFlight || app.checklistPending || app.addPatientPending) {
             ui.toast('Дождитесь результата сохранения. Переход отложен.', 'warning');
             return false;
         }
@@ -13314,10 +13478,11 @@ const browserNavigation = {
         const access = app.accessSignature(app.user);
         const positionKey = history.state?.route;
         const sourceView = app.currentView, sourcePatient = app.currentPatientId, sourceTab = app.currentTab;
+        const sourceButton = document.activeElement;
         if (!entry && route.screen === 'patient') {
             const origin = cardOrigin || (sourceView === 'patient' && sourcePatient === route.patientId
                 ? app.f1CardOrigin : sourceView === 'notifications' ? null : sourceView);
-            if (['pulse', 'myDay', 'calendar', 'notifications', 'analytics'].includes(origin)) route = {...route, f1Source: origin};
+            if (['pulse', 'myDay', 'calendar', 'notifications', 'analytics', 'quality'].includes(origin)) route = {...route, f1Source: origin};
             if (['myDay', 'calendar', 'notifications'].includes(origin) && historyAction?.kind === 'day-event') route = {...route, historyAction};
             if (sourceView === 'patient' && sourcePatient === route.patientId && this.committed?.route.scheduleReturn) {
                 route = {...route, scheduleReturn: this.committed.route.scheduleReturn};
@@ -13327,6 +13492,9 @@ const browserNavigation = {
             if (registryReturn) route = {...route, registryReturn};
             if (origin === 'analytics' && sourceView === 'patient' && this.committed?.route.analyticsReturn) {
                 route = {...route, analyticsReturn: this.committed.route.analyticsReturn};
+            }
+            if (origin === 'quality' && sourceView === 'patient' && this.committed?.route.qualityReturn) {
+                route = {...route, qualityReturn: this.committed.route.qualityReturn};
             }
         }
         const sameIntent = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
@@ -13357,7 +13525,7 @@ const browserNavigation = {
             if (!current() || !this.canNavigate(route) || (allowed && !allowed())) return false;
             if (id && patient?.id !== id) throw new Error('Карточка недоступна.');
             const values = new Map(consent.primary || []);
-            if (this.writes.size || app.clinicalWriteInFlight || app.addPatientPending ||
+            if (this.writes.size || app.clinicalWriteInFlight || app.checklistPending || app.addPatientPending ||
                 (consent.create !== undefined && app.addFormState() !== consent.create) ||
                 app.dirtyClinicalControls().length || this.primaryDraftValues().some(([node, value]) => values.get(node) !== value)) {
                 ui.toast('Появился несохраненный ввод. Переход отложен.', 'warning');
@@ -13405,6 +13573,11 @@ const browserNavigation = {
                 this.committed.route.analytics = analytics;
                 if (!entry && route.screen === 'patient') route = {...route, analyticsReturn: analytics};
             }
+            if (sourceView === 'quality' && this.committed?.route.screen === 'quality' && !app.qualityV1) {
+                const quality = app.qualityContext(sourceButton);
+                this.committed.route.quality = quality;
+                if (!entry && route.screen === 'patient') route = {...route, qualityReturn: quality};
+            }
             this.render(route, patient, focus, replace);
             if (entry) this.committed = entry;
             else if (same) this.committed.route = route;
@@ -13440,7 +13613,10 @@ const browserNavigation = {
         app.capturePatientEdits();
         if (app.currentView === 'create' && route.screen !== 'create') ui.closeModal('addModal', {keepView: true});
         if (route.screen === 'patient') {
-            if (patient) app.patientDetails = new Map([[patient.id, patient]]);
+            if (patient) {
+                app.patientDetails = new Map([[patient.id, patient]]);
+                app.checklistNeedsRead.delete(patient.id);
+            }
             app.currentPatientId = route.patientId;
             app.currentTab = route.tab;
             app.showView('patient', {cardOrigin: route.f1Source ?? null});
@@ -13473,6 +13649,7 @@ const browserNavigation = {
                 state.focusEventId = schedule?.eventId || null;
             }
             if (route.screen === 'analytics') app.restoreAnalyticsContext(route.analytics);
+            if (route.screen === 'quality') app.restoreQualityContext(route.quality);
             if (route.screen === 'notifications' && route.internalInbox) app.notifications.activeTab = 'inbox';
             app.showView(route.screen);
         }

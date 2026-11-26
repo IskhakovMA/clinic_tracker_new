@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8">
 </head>
 <body>
 
@@ -701,10 +701,10 @@
                 <div class="panel" id="calendarPanel" aria-label="Плановые события"></div>
             </section>
 
-            <section class="view is-hidden patient-workspace-list" id="view-checklists">
+            <section class="view is-hidden patient-workspace-list" id="view-checklists" aria-labelledby="checklistsWorkspaceTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Чек-листы</h1>
+                        <h1 class="pagehead__title" id="checklistsWorkspaceTitle" tabindex="-1">Чек-листы</h1>
                         <p class="pagehead__subtitle">Обязательные пункты последнего вхождения этапа. Дополнительные пункты и история — в карточке пациента.</p>
                     </div>
                 </div>
@@ -818,23 +818,27 @@
                 </div>
             </section>
 
-            <section class="view is-hidden" id="view-quality">
+            <section class="view is-hidden quality-workspace" id="view-quality" aria-labelledby="qualityWorkspaceTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Качество данных</h1>
+                        <h1 class="pagehead__title" id="qualityWorkspaceTitle" tabindex="-1">Качество данных</h1>
                         <p class="pagehead__subtitle">Проблемы, которые требуют проверки или уточнения</p>
+                        <p class="pagehead__subtitle" id="qualityContext" role="status" aria-atomic="true"></p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="qualityRefreshBtn">Обновить качество данных</button>
                     </div>
                 </div>
 
                 <div class="stats" id="qualityStatsRow"></div>
 
                 <div class="toolbar">
-                    <div class="search">
+                    <div class="search" role="search" aria-label="Поиск пациентов по качеству данных">
                         <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
                         <label class="visually-hidden" for="qualitySearchInput">Поиск по ФИО</label>
-                        <input class="input search__input" type="search" id="qualitySearchInput" placeholder="Поиск по ФИО…">
+                        <input class="input search__input" type="search" id="qualitySearchInput" placeholder="Поиск по ФИО…" autocomplete="off">
                     </div>
-                    <button type="button" class="btn btn--ghost only-narrow" id="openQualityFiltersSheetBtn" aria-expanded="false">
+                    <button type="button" class="btn btn--ghost only-narrow" id="openQualityFiltersSheetBtn" aria-expanded="false" aria-controls="qualityFiltersSheet">
                         <span id="qualityFiltersBtnLabel">Фильтры</span>
                     </button>
                     <div class="toolbar__filters" id="qualityToolbarFilters">
@@ -855,21 +859,27 @@
 
                 <div class="panel">
                     <div class="table-wrap">
-                        <table class="table quality-table" id="qualityTable">
+                        <table class="table quality-table" id="qualityTable" aria-label="Пациенты с показателями качества данных">
                             <thead>
                                 <tr>
                                     <th scope="col">Пациент</th>
                                     <th scope="col">Заполненность полей</th>
                                     <th scope="col">Проблемы</th>
                                     <th scope="col">Ответственные</th>
-                                    <th scope="col"><span class="visually-hidden">Действия</span></th>
+                                    <th scope="col">Действия</th>
                                 </tr>
                             </thead>
                             <tbody id="qualityBody"></tbody>
                         </table>
                     </div>
-                    <div class="empty is-hidden" id="qualityEmpty"></div>
+                    <div class="empty is-hidden" id="qualityEmpty" role="status"></div>
                 </div>
+
+                <nav class="pagination" id="qualityPagination" aria-label="Страницы замечаний качества данных">
+                    <button type="button" class="btn btn--ghost" id="qualityPrevBtn" aria-controls="qualityTable" disabled>Назад</button>
+                    <span id="qualityPageInfo" role="status"></span>
+                    <button type="button" class="btn btn--ghost" id="qualityNextBtn" aria-controls="qualityTable" disabled>Далее</button>
+                </nav>
 
                 <div class="panel panel--pad quality-duplicates" id="qualityDuplicatesPanel"></div>
                 <div id="qualityV1Workspace" hidden></div>
@@ -1954,6 +1964,6 @@
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
 <script src="/static/f1-management.js?v=fast-track-f5"></script>
 <script src="/static/f1-doctor.js?v=fast-track-f5"></script>
-<script src="/static/app.js?v=fast-track-f7"></script>
+<script src="/static/app.js?v=fast-track-f8"></script>
 </body>
 </html>

@@ -138,9 +138,9 @@ def test_canonical_page_is_served(client):
     response = client.get("/")
     assert response.status_code == 200
     body = response.text
-    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7">' in body
+    assert '<link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8">' in body
     assert '<script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>' in body
-    assert '<script src="/static/app.js?v=fast-track-f7"></script>' in body
+    assert '<script src="/static/app.js?v=fast-track-f8"></script>' in body
     for path in F1_SCRIPTS:
         source = f'<script src="/static/{path.name}?v=fast-track-f5"></script>'
         assert source in body
@@ -186,7 +186,7 @@ def test_data_quality_frontend_entrypoint_and_api_contract_are_present():
     assert "Локализация/клиентский путь" in js
     assert "'nosology'" in js
     assert "Режим просмотра — изменение данных недоступно" in js
-    assert "action.can_write !== false" in js
+    assert "action.can_write === true && (structure || this.can('editPatients'))" in js
 
 
 def test_ux_audit_cleanup_frontend_copy_is_user_friendly():
