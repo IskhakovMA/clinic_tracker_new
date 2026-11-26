@@ -1191,7 +1191,17 @@
                         <button type="button" class="btn btn--ghost" id="auditRefreshBtn">Обновить</button>
                     </div>
                 </div>
-                <div class="panel" id="auditPanel"></div>
+                <div class="panel">
+                    <p class="panel__text audit-note">Новые события могут сдвигать границы страниц.</p>
+                    <p class="panel__text audit-note" id="auditRetention"></p>
+                    <nav class="pagination audit-pagination" aria-label="Страницы журнала аудита">
+                        <button type="button" class="btn btn--ghost" id="auditFirst" aria-disabled="true">К началу</button>
+                        <button type="button" class="btn btn--ghost" id="auditPrev" aria-disabled="true">Назад</button>
+                        <span id="auditPageInfo" role="status" aria-live="polite"></span>
+                        <button type="button" class="btn btn--ghost" id="auditNext" aria-disabled="true">Далее</button>
+                    </nav>
+                    <div id="auditPanel"></div>
+                </div>
             </section>
 
             <section class="view is-hidden" id="view-settings">

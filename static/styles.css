@@ -3853,3 +3853,23 @@ html[data-theme="light"] #view-staff .chip--danger { color: #9f1239; }
     #view-structure .dept__name { flex: 1 1 100%; }
     #view-structure .dept__row > .select { flex-basis: 100%; }
 }
+
+/* Read-only audit workspace */
+.audit-note { margin: var(--sp-3) var(--sp-4); }
+.audit-note:empty { display: none; }
+.audit-pagination [aria-disabled="true"],
+.audit-manifest[aria-disabled="true"] { opacity: .65; cursor: default; }
+.audit-event { border-top: 1px solid var(--border); overflow-wrap: anywhere; }
+.audit-event .list-row { flex-wrap: wrap; }
+.audit-event .list-row__side { white-space: normal; }
+.audit-details { padding: 0 var(--sp-4) var(--sp-4); }
+.audit-details dl { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: var(--sp-2); }
+.audit-details dt { color: var(--text-2); }
+.audit-details dd { margin: 0; font-family: var(--font-mono); }
+.audit-manifest-result span { display: block; }
+
+@media (max-width: 560px) {
+    .audit-event .list-row__main { flex-basis: 100%; }
+    .audit-details dl { display: block; }
+    .audit-details dd { margin-bottom: var(--sp-2); }
+}

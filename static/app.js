@@ -278,6 +278,26 @@ async function apiPostIdempotent(path, body, key, {retryTransport = true} = {}) 
    Модальные окна, подтверждения, уведомления
    -------------------------------------------------------------------------- */
 
+// Registered technical audit codes without a localized label.
+const auditTechnicalCodes = new Set(`
+    patient_create_replayed patient_duplicate_confirmed duplicate_scan_started duplicate_scan_completed
+    duplicate_scan_failed duplicate_scan_interrupted duplicate_registry_viewed
+    duplicate_candidate_viewed duplicate_technical_review duplicate_clinical_decision
+    duplicate_confirmation_reason_viewed patient_marked_erroneous patient_unmarked_erroneous
+    patient_mark_refused consilium_decision_imported import_internal_ids_preserved import_replayed
+    migration_replayed import_repeat_confirmed schema_migrated notification_consent_granted
+    notification_consent_revoked notification_created notification_cancelled
+    notification_retry_requested notification_processing_started notification_sent notification_failed
+    notification_skipped notification_template_created notification_template_updated
+    portal_access_linked portal_access_email_changed portal_access_revoked portal_access_conflict
+    internal_notification_read internal_notification_read_all attention_issue_created
+    attention_issue_closed consilium_appointment_deleted consilium_resubmitted
+    consilium_backdated_slot_created consilium_backdated_appointment_created
+    consilium_backdating_reason_viewed consilium_favorite_added consilium_favorite_removed
+    consilium_referral_completed consilium_archived consilium_restored consilium_schedule_generated
+    consilium_schedule_slot_deleted consilium_demo_reset
+`.trim().split(/\s+/));
+
 const ui = {
     openModals: [],
     returnFocusTargets: new Map(),
@@ -2357,6 +2377,7 @@ const app = {
             this.f1CardOrigin = previousView === 'pulse' || previousView === 'myDay' ? previousView : null;
         }
         this.updateCardSourceAction();
+        if (previousView === 'audit' && view !== 'audit') this.clearAuditWorkspace();
         if (previousView === 'analytics' && view !== 'analytics') this.clearAnalyticsRelease();
         if (previousView === 'pulse' && view !== 'pulse') f1Management.clear(this);
         if (previousView === 'myDay' && view !== 'myDay') f1Doctor.clear(this);
@@ -2492,6 +2513,7 @@ const app = {
         f1Doctor.clear(this, true);
         this.clearQualityV1(accessChanged);
         this.clearAnalyticsRelease();
+        this.clearAuditWorkspace();
         this.analytics.pendingDetails = null;
         if (this.sessionExpired || !this.user) return;
         browserNavigation.invalidate();
@@ -2538,6 +2560,7 @@ const app = {
         f1Doctor.clear(this, true);
         this.clearQualityV1(true);
         this.clearAnalyticsRelease();
+        this.clearAuditWorkspace();
         ui.clearToasts();
         document.body.classList.add('session-locked');
         browserNavigation.invalidate();
@@ -7776,60 +7799,217 @@ const app = {
         return this.renderWorkspacePage('checklists','checklistsPanel','checklists',cursor);
     },
 
-    auditRequestParams() { return 'limit=100'; },
-    setAuditReadState(state) {
-        this.auditReadState=state;
-        const panel=$('auditPanel');panel.setAttribute('aria-busy',String(state==='loading'));
-        if(state==='ready')return;
-        panel.replaceChildren(el('div',{class:'empty',role:state==='error'?'alert':'status',text:state==='loading'?'Загрузка выборки журнала…':'Не удалось загрузить выборку журнала. Это не означает отсутствия записей в журнале. Повторите обновление.'}));
+    clearAuditWorkspace() {
+        this.beginRead('audit-log');
+        this.auditOffset = 0;
+        this.setAuditReadState('idle');
     },
-    async renderAudit() {
-        const panel=$('auditPanel');
-        if(!this.user||this.sessionExpired||this.sessionReconciling||!this.can('viewAudit')){this.setAuditReadState('error');return;}
-        const params=this.auditRequestParams(),ticket=this.managementReadTicket('audit-log',params);this.auditReadTicket=ticket;
-        const current=()=>this.can('viewAudit')&&this.managementReadCurrent(ticket,this.auditRequestParams());
-        if(panel.contains(document.activeElement))$('auditRefreshBtn').focus({preventScroll:true});
+
+    setAuditReadState(state) {
+        this.auditReadState = state;
+        const panel = $('auditPanel');
+        panel.setAttribute('aria-busy', String(state === 'loading'));
+        if (state === 'ready') return;
+        $('auditPageInfo').textContent = '';
+        $('auditRetention').textContent = '';
+        for (const id of ['auditFirst', 'auditPrev', 'auditNext']) $(id).setAttribute('aria-disabled', 'true');
+        const message = {
+            loading: 'Загрузка журнала…',
+            denied: 'Журнал аудита недоступен.',
+            error: 'Не удалось загрузить журнал. Повторите обновление.',
+        }[state];
+        panel.replaceChildren(...(message ? [el('p', {
+            class: 'empty', role: state === 'loading' ? 'status' : 'alert', text: message,
+        })] : []));
+    },
+
+    async renderAudit(offset = this.auditOffset || 0) {
+        if (this.currentView !== 'audit' || !this.user || this.sessionExpired || this.sessionReconciling || !this.can('viewAudit')) return;
+        const panel = $('auditPanel');
+        const params = new URLSearchParams({limit: 50, offset}).toString();
+        const ticket = this.managementReadTicket('audit-log', params);
+        const current = () => this.currentView === 'audit' && this.can('viewAudit') &&
+            this.managementReadCurrent(ticket, params);
+        this.auditOffset = offset;
+        if (panel.contains(document.activeElement)) $('auditRefreshBtn').focus({preventScroll: true});
         this.setAuditReadState('loading');
         try {
-            const data=await apiGetJson('/api/audit?'+params);if(!current())return;
-            if(!Array.isArray(data.events))throw new Error('Invalid audit response');
-            if (!data.events.length) {
-                this.setAuditReadState('ready');
-                panel.replaceChildren(el('div',{class:'empty',role:'status',text:'В полученной выборке нет событий. Это не подтверждает отсутствие записей в журнале.'}));
-                return;
+            const data = await apiGetJson('/api/audit?' + params);
+            if (!current()) return;
+            if (!Array.isArray(data.events) || data.events.length > 50 ||
+                data.limit !== 50 || data.offset !== offset || !Number.isSafeInteger(data.total) ||
+                data.total < 0 || !Number.isSafeInteger(data.retentionDays) || data.retentionDays < 0) {
+                throw new Error('Invalid audit response');
             }
-            const labels = {
-                login_success: 'Успешный вход', login_failure: 'Неудачный вход',
-                login_rate_limited: 'Вход заблокирован (частые попытки)', logout: 'Выход',
-                password_changed: 'Смена пароля', patient_created: 'Создан пациент',
-                patient_updated: 'Изменён пациент', patient_deleted: 'Удалён пациент',
-                patient_event_deleted: 'Удалено событие маршрута', patient_event_restored: 'Восстановлено событие маршрута',
-                import_preview: 'Проверка импорта', import_committed: 'Импорт выполнен',
-                import_future_facts: 'Импорт: факт с датой позже сегодняшней',
-                import_unverified_facts: 'Импорт: неподтверждённый факт из файла',
-                export: 'Экспорт', migration_committed: 'Перенос локальных данных',
-                backup_created: 'Создана резервная копия', restore_performed: 'Восстановление из копии',
-                db_integrity_failed: 'Ошибка целостности базы',
-                user_created: 'Создан сотрудник', user_updated: 'Изменён сотрудник',
-                role_changed: 'Изменена роль', user_blocked: 'Сотрудник заблокирован',
-                user_deactivated: 'Сотрудник деактивирован', user_restored: 'Сотрудник восстановлен',
-                password_reset: 'Сброс пароля', sessions_terminated: 'Завершены сессии',
-                department_created: 'Создано отделение', department_updated: 'Изменено отделение',
-                head_assigned: 'Назначен заведующий', membership_changed: 'Изменён состав отделения',
-                treating_doctor_changed: 'Смена лечащего врача', access_denied: 'Отказ в доступе',
-            };
-            panel.replaceChildren(el('p',{class:'panel__text',text:`Показано событий: ${data.events.length}. Лимит выборки — 100; это не полный журнал.`}),frag(data.events.map(event => el('div', { class: 'list-row' }, [
-                el('div', { class: 'list-row__main' }, [
-                    el('div', { class: 'list-row__title', text: labels[event.event_type] || event.event_type }),
-                    el('div', { class: 'list-row__sub', text: event.detail ? `${event.detail}` : (event.patient_id ? `запись ${event.patient_id.slice(0, 8)}…` : '—') }),
-                ]),
-                el('span', { class: `chip chip--${event.result === 'ok' ? 'good' : event.result === 'denied' ? 'danger' : 'warning'}`, text: event.result }),
-                el('span', { class: 'list-row__side', text: this.formatDateTime(event.created_at) }),
-            ]))));
+            if (offset > 0 && data.events.length === 0) {
+                return this.renderAudit(0);
+            }
+            // COUNT and SELECT may observe different commits under the existing API.
+            const end = offset + data.events.length;
+            $('auditPageInfo').textContent = data.events.length
+                ? `${offset + 1}–${end} · Всего по счетчику: ${data.total}`
+                : `Всего по счетчику: ${data.total}`;
+            $('auditRetention').textContent = `Срок хранения по настройке: ${data.retentionDays} дн.`;
+            $('auditFirst').setAttribute('aria-disabled', String(offset === 0));
+            $('auditPrev').setAttribute('aria-disabled', String(offset === 0));
+            $('auditNext').setAttribute('aria-disabled', String(!data.events.length || end >= data.total));
+            panel.replaceChildren(...(data.events.length
+                ? data.events.map(event => this.auditRow(event, current))
+                : [el('p', {class: 'empty', role: 'status', text: 'В полученной выборке нет событий. Это не подтверждает отсутствие записей в журнале.'})]));
             this.setAuditReadState('ready');
-        } catch (e) {
-            if(current())this.setAuditReadState('error');
+        } catch (error) {
+            if (current()) this.setAuditReadState(error.status === 403 ? 'denied' : 'error');
         }
+    },
+
+    auditRow(event, current) {
+        const labels = {
+            login_success: 'Успешный вход', login_failure: 'Неудачный вход',
+            login_rate_limited: 'Вход заблокирован (частые попытки)', logout: 'Выход',
+            password_changed: 'Смена пароля', patient_created: 'Создан пациент',
+            patient_updated: 'Изменён пациент', patient_deleted: 'Удалён пациент',
+            patient_diagnosis_changed: 'Изменен диагноз пациента',
+            consilium_code_changed: 'Изменен код консилиума',
+            pgi_code_changed: 'Изменен код ПГИ',
+            pgi_result_changed: 'Изменен результат ПГИ',
+            patient_event_deleted: 'Удалено событие маршрута', patient_event_restored: 'Восстановлено событие маршрута',
+            import_preview: 'Проверка импорта', import_committed: 'Импорт выполнен',
+            import_future_facts: 'Импорт: факт с датой позже сегодняшней',
+            import_unverified_facts: 'Импорт: неподтверждённый факт из файла',
+            export: 'Экспорт', migration_committed: 'Перенос локальных данных',
+            backup_created: 'Создана резервная копия', restore_performed: 'Восстановление из копии',
+            db_integrity_failed: 'Ошибка целостности базы',
+            user_created: 'Создан сотрудник', user_updated: 'Изменён сотрудник',
+            role_changed: 'Изменена роль', user_blocked: 'Сотрудник заблокирован',
+            user_deactivated: 'Сотрудник деактивирован', user_restored: 'Сотрудник восстановлен',
+            password_reset: 'Сброс пароля', sessions_terminated: 'Завершены сессии',
+            department_created: 'Создано отделение', department_updated: 'Изменено отделение',
+            head_assigned: 'Назначен заведующий', membership_changed: 'Изменён состав отделения',
+            consilium_appointment_created: 'Создана запись на консилиум',
+            consilium_appointment_updated: 'Изменена запись на консилиум',
+            consilium_review_started: 'Начато рассмотрение консилиума',
+            consilium_signed: 'Подписано решение консилиума',
+            consilium_returned_for_revision: 'Консилиум возвращен на доработку',
+            consilium_decision_recorded: 'Зафиксировано решение консилиума',
+            medical_read_release: 'Разрешенное медицинское чтение',
+            medical_read_denied: 'Медицинское чтение отклонено',
+            consilium_registry_exported: 'Выгружен реестр консилиума',
+            analytics_report_exported: 'Выгружен отчет аналитики',
+            treating_doctor_changed: 'Смена лечащего врача', access_denied: 'Отказ в доступе',
+        };
+        const type = typeof event.event_type === 'string' &&
+            (Object.hasOwn(labels, event.event_type) || auditTechnicalCodes.has(event.event_type))
+            ? event.event_type : '—';
+        const stageChanged = type === 'patient_updated' && typeof event.detail === 'string' &&
+            /^stage=[a-z0-9_-]+$/i.test(event.detail);
+        const title = stageChanged ? 'Изменен этап лечения' : labels[type] || (type === '—' ? 'Событие аудита' : type);
+        const roles = this.ROLE_LABELS;
+        const roleLabel = value => Object.hasOwn(roles, value) ? roles[value] : '—';
+        const role = roleLabel(event.actor_role);
+        // Project only known server metadata formats. Historic detail is free text.
+        let description;
+        if (type === 'membership_changed') {
+            description = event.detail === 'added' ? 'Добавлен в отделение' :
+                event.detail === 'removed' ? 'Исключен из отделения' : undefined;
+        } else if (type === 'role_changed') {
+            const change = /^from=([a-z_]+) to=([a-z_]+)$/.exec(event.detail);
+            if (change && Object.hasOwn(roles, change[1]) && Object.hasOwn(roles, change[2])) {
+                description = `${roleLabel(change[1])} → ${roleLabel(change[2])}`;
+            }
+        } else if (type === 'sessions_terminated') {
+            const count = /^count=(\d{1,9})$/.exec(event.detail);
+            if (count) description = `Завершено сессий: ${Number(count[1])}`;
+        }
+        const opaqueId = value => typeof value === 'string' &&
+            /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value) ? value : '—';
+        const id = Number.isSafeInteger(event.id) && event.id > 0 ? event.id : null;
+        const outcome = {ok: 'Успешно', denied: 'Отказ', error: 'Ошибка'};
+        const result = Object.hasOwn(outcome, event.result) ? outcome[event.result] : 'Другой результат';
+        const status = event.result === 'ok' ? 'good' : event.result === 'denied' ? 'danger' : 'warning';
+        const time = typeof event.created_at === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(event.created_at)
+            && Number.isFinite(Date.parse(event.created_at)) ? this.formatDateTime(event.created_at) : '—';
+        const metadata = [
+            ['Код действия', type],
+            ['Роль инициатора', role],
+            ['ID инициатора', opaqueId(event.actor_user_id)],
+            ['ID отделения инициатора', opaqueId(event.actor_department_id)],
+            ['ID сотрудника в событии', opaqueId(event.target_user_id)],
+            ['ID отделения в событии', opaqueId(event.target_department_id)],
+            ['ID запроса', typeof event.request_id === 'string' && /^[a-f0-9]{16}$/i.test(event.request_id)
+                ? event.request_id : '—'],
+        ];
+        if (description) metadata.push(['Описание', description]);
+        const resultBox = el('p', {class: 'audit-manifest-result', role: 'status'});
+        const manifest = el('button', {
+            type: 'button', class: 'btn btn--ghost btn--sm audit-manifest',
+            text: 'Сведения о манифесте', disabled: id === null,
+        });
+        const details = el('div', {class: 'audit-details', hidden: true, id: id === null ? undefined : `audit-details-${id}`}, [
+            el('dl', {}, frag(metadata.filter(([, value]) => value !== '—').flatMap(([label, value]) => [
+                el('dt', {text: label}), el('dd', {text: value}),
+            ]))), manifest, resultBox,
+        ]);
+        let manifestVersion = 0;
+        const toggle = el('button', {
+            type: 'button', class: 'btn btn--ghost btn--sm audit-expand', text: 'Подробности',
+            'aria-label': `Подробности события ${id ?? ''}`, 'aria-expanded': 'false',
+            'aria-controls': details.id || undefined,
+            on: {click: () => {
+                if (!current()) return;
+                details.hidden = !details.hidden;
+                toggle.setAttribute('aria-expanded', String(!details.hidden));
+                if (details.hidden) {
+                    manifestVersion++;
+                    resultBox.textContent = '';
+                    manifest.removeAttribute('aria-disabled');
+                }
+            }},
+        });
+        manifest.addEventListener('click', async () => {
+            if (!current() || details.hidden || !id || manifest.hasAttribute('aria-disabled')) return;
+            const version = ++manifestVersion;
+            const active = () => current() && !details.hidden && version === manifestVersion;
+            manifest.setAttribute('aria-disabled', 'true');
+            resultBox.textContent = 'Загрузка сведений…';
+            try {
+                const payload = await apiGetJson(`/api/audit/${id}/manifest`);
+                if (!active()) return;
+                if (payload.eventId !== id || !Number.isSafeInteger(payload.objectCount) ||
+                    payload.objectCount < 0 || typeof payload.snapshotSha256 !== 'string' ||
+                    !/^[a-f0-9]{64}$/i.test(payload.snapshotSha256)) {
+                    throw new Error('Invalid manifest response');
+                }
+                resultBox.replaceChildren(
+                    el('span', {text: `Манифест события №${id}. Объектов: ${payload.objectCount}.`}),
+                    el('span', {text: `Сохраненный SHA-256: ${payload.snapshotSha256}`}),
+                );
+            } catch (error) {
+                if (!active()) return;
+                if (error.status === 403) {
+                    this.clearAuditWorkspace();
+                    $('auditRefreshBtn').focus();
+                    this.setAuditReadState('denied');
+                    return;
+                }
+                resultBox.textContent = error.status === 404
+                    ? 'Нет связанного манифеста.'
+                    : 'Не удалось получить сведения. Повторите запрос.';
+            } finally {
+                if (active()) manifest.removeAttribute('aria-disabled');
+            }
+        });
+        return el('article', {class: 'audit-event', dataset: {auditEventId: id ?? ''}}, [
+            el('div', {class: 'list-row'}, [
+                el('div', {class: 'list-row__main'}, [
+                    el('div', {class: 'list-row__title', text: title}),
+                    el('div', {class: 'list-row__sub', text: `№${id ?? '—'} · ${role}`}),
+                ]),
+                el('span', {class: `chip chip--${status}`, text: result}),
+                el('span', {class: 'list-row__side', text: time}),
+                toggle,
+            ]),
+            details,
+        ]);
     },
 
     renderSettings() {
@@ -13310,6 +13490,15 @@ const app = {
 
         // Журнал аудита
         on('auditRefreshBtn', 'click', () => this.renderAudit());
+        for (const [id, destination] of [
+            ['auditFirst', () => 0],
+            ['auditPrev', () => Math.max(0, this.auditOffset - 50)],
+            ['auditNext', () => this.auditOffset + 50],
+        ]) {
+            on(id, 'click', () => {
+                if ($(id).getAttribute('aria-disabled') !== 'true') this.renderAudit(destination());
+            });
+        }
         on('duplicatesRefreshBtn', 'click', () => this.renderDuplicates());
         on('duplicatesScanBtn', 'click', () => this.runDuplicateScan());
         on('duplicatesStateFilter', 'change', () => this.renderDuplicates({ resetPage: true }));
