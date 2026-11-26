@@ -1,0 +1,151 @@
+{
+  "suite": "journey",
+  "browser": "151.0.7922.34",
+  "checks": [
+    "My Day uses the exact stable event in an earlier occurrence of the same stage and navigation performs no write",
+    "Quality private-header search and public filters and neutral event-tab fallback, one authorized versioned save, refreshed Quality 2→1 retains filter; Back/Forward revalidate without replay",
+    "department manager receives exact fresh Pulse and Analytics metric decrement from server",
+    "recorded event leaves real Calendar/My Day queues; explicit conditional final checkbox completes required checklist and refreshed Quality no longer returns it",
+    "ordinary Data control saves one phone PATCH with expected version; mandatory audit omits value; fresh finding is gone",
+    "duplicate matches remain advisory: same-policy third patient outside scope hidden, fresh allowed navigation, no decisions, real 403 and neutral 404",
+    "held real older Quality response delivers 200 after newer filter without restoring old actionable rows",
+    "actual reassignment returns neutral 404 for formerly actionable row, removes it through a fresh Quality read, and leaves no unauthorized write",
+    "full-document WCAG A/AA axe on five widths and both themes with visible title and no page overflow",
+    "actual session revocation returns 401 and destroys former Quality actions without a medical write",
+    "actual Chromium tab zoom at 100, 200 and 400 percent in both themes using a transient profile"
+  ],
+  "axe": [
+    {
+      "theme": "light",
+      "width": 320,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "light",
+      "width": 375,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "light",
+      "width": 768,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "light",
+      "width": 1024,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "dark",
+      "width": 320,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "dark",
+      "width": 375,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "dark",
+      "width": 768,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "dark",
+      "width": 1024,
+      "violations": 0,
+      "titleVisible": true
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "violations": 0,
+      "titleVisible": true
+    }
+  ],
+  "nativeZoom": [
+    {
+      "theme": "light",
+      "percent": 100,
+      "width": 1280,
+      "noPageOverflow": true
+    },
+    {
+      "theme": "light",
+      "percent": 200,
+      "width": 640,
+      "noPageOverflow": true
+    },
+    {
+      "theme": "light",
+      "percent": 400,
+      "width": 320,
+      "noPageOverflow": true
+    },
+    {
+      "theme": "dark",
+      "percent": 100,
+      "width": 1280,
+      "noPageOverflow": true
+    },
+    {
+      "theme": "dark",
+      "percent": 200,
+      "width": 640,
+      "noPageOverflow": true
+    },
+    {
+      "theme": "dark",
+      "percent": 400,
+      "width": 320,
+      "noPageOverflow": true
+    }
+  ],
+  "measurements": {
+    "explicitMedicalWrites": 3,
+    "legacyRequests": 0,
+    "pageErrors": 0
+  },
+  "transportFaults": [
+    "held genuine HTTP 200 between two filter reads; no mocked API result"
+  ],
+  "database": {
+    "schema": 33,
+    "recordedFacts": 1,
+    "matchedExactWriteAudits": 3,
+    "authorityControlAudits": 1,
+    "otherClinicalRowsUnchanged": true,
+    "threeSeededDuplicateCardsUnchanged": true
+  },
+  "audit": {
+    "matchedExactResponseDigests": 35,
+    "authorizedReads": 72,
+    "authorizedReadManifests": 72
+  },
+  "candidateSha": "cb8853079bba968a6430357198f156049a2bcba8",
+  "candidateTree": "3523e03d0d88e3600a5589c446c0efc2ebb8e6c6",
+  "dirtyCheckout": false,
+  "syntheticOnly": true,
+  "cleanup": {
+    "cleanExit": true,
+    "listenerClosed": true,
+    "databaseRemoved": true
+  },
+  "screenshots": {
+    "f8-quality-dark-375.png": "65b45393a2e2d2b97090b166db06a4d3eb3a62954dc5e8eb5049300416a1ff6b",
+    "f8-quality-light-1440.png": "8b9927bf113988ed158b0a9c04986e3982425d8278b8535412b4c9eb882b78cd"
+  }
+}

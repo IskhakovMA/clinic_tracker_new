@@ -1,0 +1,21 @@
+{
+  "candidateSha": "cb8853079bba968a6430357198f156049a2bcba8",
+  "platform": "linux",
+  "architecture": "x86_64",
+  "sameBinary": true,
+  "syntheticOnly": true,
+  "longTmpdir": {
+    "tmpdirBytes": 67,
+    "profilePathBytes": 105,
+    "socketPathBytes": 113,
+    "exitCode": 1,
+    "reason": "socket_path_too_long"
+  },
+  "shortTmpdir": {
+    "tmpdirBytes": 16,
+    "profilePathBytes": 54,
+    "socketPathBytes": null,
+    "exitCode": 0,
+    "reason": null
+  }
+}

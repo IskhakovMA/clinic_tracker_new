@@ -1,0 +1,130 @@
+{
+  "candidateSha": "cb8853079bba968a6430357198f156049a2bcba8",
+  "candidateTree": "3523e03d0d88e3600a5589c446c0efc2ebb8e6c6",
+  "baselineF8": "cc1404452fb65f23d08d3945ee1bd0e7b0412de7",
+  "ci": {
+    "runId": 45792304131,
+    "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45792304131",
+    "attempt": 1,
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "dependency-audit",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-smoke",
+        "conclusion": "success"
+      },
+      {
+        "name": "secret-scan",
+        "conclusion": "success"
+      },
+      {
+        "name": "workflow-policy",
+        "conclusion": "success"
+      },
+      {
+        "name": "frontend-security",
+        "conclusion": "success"
+      },
+      {
+        "name": "sast-bandit",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-test-plan",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests (3/6)",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests (2/6)",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests (6/6)",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests (4/6)",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests (1/6)",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests (5/6)",
+        "conclusion": "success"
+      },
+      {
+        "name": "backend-tests-verify",
+        "conclusion": "success"
+      },
+      {
+        "name": "release-gate",
+        "conclusion": "success"
+      }
+    ],
+    "backendFromVerifiedActionsLog": {
+      "collected": 2842,
+      "files": 122,
+      "passed": 2842,
+      "failed": 0,
+      "skipped": 0,
+      "exactOnce": true,
+      "planSha256": "9beb662926e4644205a2fc6cf6cb44a483cfec90add0e602c3f375538597e920",
+      "shards": [
+        474,
+        474,
+        474,
+        474,
+        473,
+        473
+      ]
+    },
+    "staffUX": 81,
+    "cspXss": 35,
+    "ciPolicy": 53
+  },
+  "hostedChromium": {
+    "runId": 45792304185,
+    "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45792304185",
+    "attempt": 1,
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "f8-chromium",
+        "conclusion": "success"
+      }
+    ],
+    "passedSuites": 25,
+    "diagnosticReceipts": 3,
+    "artifactId": 15103453828,
+    "artifactSha256": "36ca4563408e1769d77d8bc842452efdaa0c214cbca18e16718ed2e4eaf67158",
+    "linuxProbe": {
+      "candidateSha": "cb8853079bba968a6430357198f156049a2bcba8",
+      "platform": "linux",
+      "architecture": "x86_64",
+      "sameBinary": true,
+      "syntheticOnly": true,
+      "longTmpdir": {
+        "tmpdirBytes": 67,
+        "profilePathBytes": 105,
+        "socketPathBytes": 113,
+        "exitCode": 1,
+        "reason": "socket_path_too_long"
+      },
+      "shortTmpdir": {
+        "tmpdirBytes": 16,
+        "profilePathBytes": 54,
+        "socketPathBytes": null,
+        "exitCode": 0,
+        "reason": null
+      }
+    }
+  }
+}

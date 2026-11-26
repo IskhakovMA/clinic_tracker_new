@@ -1,0 +1,12 @@
+{
+  "suite": "schedule",
+  "checks": 1,
+  "axe": 42,
+  "xlsx": [],
+  "exit": 0,
+  "candidateSha": "cb8853079bba968a6430357198f156049a2bcba8",
+  "candidateTree": "3523e03d0d88e3600a5589c446c0efc2ebb8e6c6",
+  "dirtyCheckout": false,
+  "syntheticOnly": true,
+  "screenshots": {}
+}

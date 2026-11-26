@@ -1,0 +1,19 @@
+{
+  "suite": "browser",
+  "candidateSha": "cb8853079bba968a6430357198f156049a2bcba8",
+  "syntheticOnly": true,
+  "phase": "complete",
+  "exitCode": 0,
+  "errorType": null,
+  "reason": null,
+  "platform": "linux",
+  "architecture": "x86_64",
+  "nodeVersion": "22.23.5",
+  "playwrightVersion": "1.62.1",
+  "chromiumVersion": "151.0.7922.34",
+  "browserBinaryExists": true,
+  "tmpdirBytes": 16,
+  "profilePathBytes": 54,
+  "browserTmpRemoved": true,
+  "fixtureTmpRemoved": true
+}

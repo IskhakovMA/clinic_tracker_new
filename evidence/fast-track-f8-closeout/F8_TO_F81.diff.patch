@@ -1,0 +1,451 @@
+diff --git a/.github/workflows/fast-track-f8-browser.yml b/.github/workflows/fast-track-f8-browser.yml
+index 56c3a25dd3b44a40bf39d46e50f823780bf13cb4..fbfff4cf72e028538bbf6d3781aa95a524685375 100644
+--- a/.github/workflows/fast-track-f8-browser.yml
++++ b/.github/workflows/fast-track-f8-browser.yml
+@@ -37,7 +37,7 @@ jobs:
+           git diff --exit-code "$BASE_SHA" HEAD -- backend/app backend/migrations backend/requirements-dev.txt tools/tests/wp_h/package-lock.json .github/workflows/ci.yml .github/workflows/fast-track-f2-browser.yml .github/workflows/fast-track-f3-browser.yml .github/workflows/fast-track-f4-browser.yml .github/workflows/fast-track-f5-browser.yml .github/workflows/fast-track-f6-browser.yml .github/workflows/fast-track-f7-browser.yml static/quality-v1.js
+           while IFS= read -r path; do
+             case "$path" in
+-              .github/workflows/fast-track-f8-browser.yml|backend/tests/test_frontend_csp.py|index.html|static/app.js|static/styles.css|tools/tests/fast_track_f8/journey.cjs|tools/tests/fast_track_f8/run.py) ;;
++              .github/workflows/fast-track-f8-browser.yml|backend/tests/test_frontend_csp.py|index.html|static/app.js|static/styles.css|tools/tests/fast_track_f8/journey.cjs|tools/tests/fast_track_f8/run.py|tools/tests/wp_i_quality/run_browser.py) ;;
+               *) printf 'Unexpected changed path: %s\n' "$path"; exit 1 ;;
+             esac
+           done < <(git diff --name-only "$BASE_SHA" HEAD)
+@@ -56,6 +56,7 @@ jobs:
+           npm ci --ignore-scripts --prefix tools/tests/wp_h
+           tools/tests/wp_h/node_modules/.bin/playwright install --with-deps chromium
+       - name: Run F8 and affected browser regressions
++        id: browser-suites
+         shell: bash
+         run: |
+           set -euo pipefail
+@@ -70,6 +71,142 @@ jobs:
+           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+           test -z "$(git status --porcelain)"
+           mkdir -m 700 "$RUNNER_TEMP/f8-public"
++          python - "$RUNNER_TEMP" <<'PYTHON'
++          import json
++          import os
++          from pathlib import Path
++          import platform
++          import re
++          import subprocess
++          import sys
++          import tempfile
++
++          runner = Path(sys.argv[1])
++          old_output = runner / "f8-quality-browser"
++          probe = """
++          const {chromium} = require(process.env.PLAYWRIGHT_MODULE);
++          (async () => {
++            const browser = await chromium.launch({
++              executablePath: process.env.BROWSER_EXECUTABLE, headless: true, timeout: 15000,
++            });
++            await browser.close();
++          })().catch(error => { console.error(error.message); process.exitCode = 1; });
++          """
++          def launch(temp):
++              measures = {
++                  "tmpdirBytes": len(os.fsencode(temp)),
++                  "profilePathBytes": None, "socketPathBytes": None,
++              }
++              try:
++                  process = subprocess.run(["node", "-e", probe],
++                      env={**os.environ, "TMPDIR": temp, "DEBUG": "pw:browser"},
++                      capture_output=True, timeout=30)
++              except subprocess.TimeoutExpired:
++                  return {**measures, "exitCode": 124, "reason": "probe_timeout"}
++              except OSError:
++                  return {**measures, "exitCode": 127, "reason": "probe_start_failed"}
++              log = process.stderr
++              profile = re.search(rb"--user-data-dir=([^\r\n]+?)(?= --|\r?\n|$)", log)
++              socket = re.search(rb"Socket path too long:\s*([^\r\n]+)", log, re.I)
++              return {
++                  **measures, "exitCode": process.returncode,
++                  "profilePathBytes": len(profile[1]) if profile else None,
++                  "socketPathBytes": len(socket[1].strip()) if socket else None,
++                  "reason": "socket_path_too_long" if socket else
++                      ("unclassified_launch_failure" if process.returncode else None),
++              }
++
++          long_run = short_run = None
++          receipt = runner / "f8-public/wp-i-quality-launch-probe.json"
++          try:
++              old_output.mkdir(mode=0o700)
++              try:
++                  with tempfile.TemporaryDirectory(prefix="private-fixture-", dir=old_output) as old:
++                      with tempfile.TemporaryDirectory(prefix="wq.", dir="/tmp") as new:
++                          long_run, short_run = launch(old), launch(new)
++                  assert not Path(old).exists() and not Path(new).exists()
++              finally:
++                  old_output.rmdir()
++          except Exception:
++              # Only a bounded error category reaches the Actions log/artifact.
++              receipt.write_text(json.dumps({
++                  "candidateSha": os.environ["GITHUB_SHA"],
++                  "syntheticOnly": True, "reason": "probe_infrastructure_failed",
++                  "longTmpdir": long_run, "shortTmpdir": short_run,
++              }, indent=2) + "\n")
++              print("Chromium launch probe infrastructure failed; inspect private logs", file=sys.stderr)
++              raise SystemExit(1)
++          data = {
++              "candidateSha": os.environ["GITHUB_SHA"], "platform": sys.platform,
++              "architecture": platform.machine(), "sameBinary": True, "syntheticOnly": True,
++              "longTmpdir": long_run, "shortTmpdir": short_run,
++          }
++          receipt.write_text(json.dumps(data, indent=2) + "\n")
++          print(json.dumps(data))
++          assert short_run["exitCode"] == 0, "Chromium did not launch with the short TMPDIR"
++          PYTHON
++          for suite in browser browser_zoom; do
++            out="$RUNNER_TEMP/f8-quality-$suite"
++            printf 'F8_WP_I_QUALITY_SUITE=%s\n' "$suite"
++            status=0
++            python -B tools/tests/wp_i_quality/run_browser.py --suite "$suite" --out "$out" || status=$?
++            if test -f "$out/browser-execution.json"; then
++              cp "$out/browser-execution.json" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite-execution.json"
++              cat "$out/browser-execution.json"
++            elif test "$status" -ne 0; then
++              # Preserve a sanitized status even if the Python runner fails before writing its receipt.
++              python - "$suite" "$status" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite-execution.json" <<'PYTHON'
++          import json
++          import os
++          from pathlib import Path
++          import sys
++
++          suite, status, target = sys.argv[1:]
++          Path(target).write_text(json.dumps({
++              "suite": suite, "candidateSha": os.environ["GITHUB_SHA"],
++              "syntheticOnly": True, "phase": "runner_unhandled",
++              "exitCode": int(status), "errorType": "RunnerException",
++              "reason": "missing_execution_receipt",
++          }, indent=2) + "\n")
++          PYTHON
++            else
++              echo 'Quality runner returned success without an execution receipt' >&2
++              exit 1
++            fi
++            if test "$status" -ne 0; then
++              if test -f "$out/browser.local.log"; then
++                grep -Eo 'wp_i_quality/[a-z_-]+\.cjs:[0-9]+:[0-9]+' "$out/browser.local.log" | head -12 || true
++              fi
++              exit "$status"
++            fi
++            python - "$suite" "$out" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite.json" <<'PYTHON'
++          import json
++          import os
++          from pathlib import Path
++          import sys
++
++          suite, output, target = sys.argv[1:]
++          source = Path(output)
++          run = json.loads((source / "browser-execution.json").read_text())
++          assert run["candidateSha"] == os.environ["GITHUB_SHA"]
++          assert run["phase"] == "complete" and run["exitCode"] == 0
++          assert run["browserTmpRemoved"] and run["fixtureTmpRemoved"] and run["browserBinaryExists"]
++          assert run["platform"] == "linux" and run["tmpdirBytes"] <= 32
++          if suite == "browser":
++              actual = json.loads((source / "browser-results.json").read_text())
++              assert actual["syntheticOnly"] and actual["realFastApi"]
++              counts = {key: len(actual[key]) for key in ("checks", "roles", "faultChecks", "accessibility")}
++              assert all(counts.values())
++          else:
++              actual = json.loads((source / "browser-native-zoom.json").read_text())
++              assert actual["syntheticOnly"] and actual["nativeChromeZoom"]
++              assert len(actual["samples"]) == 6 and not any(row["violations"] for row in actual["samples"])
++              counts = {"nativeZoomSamples": len(actual["samples"])}
++          Path(target).write_text(json.dumps({
++              "suite": suite, "result": "PASS", "candidateSha": run["candidateSha"], **counts,
++          }) + "\n")
++          PYTHON
++          done
+           receipt="$RUNNER_TEMP/f8-journey"
+           if ! python -B tools/tests/fast_track_f8/run.py --out "$receipt"; then
+             if test -f "$receipt/browser.local.log"; then
+@@ -209,29 +346,10 @@ jobs:
+           assert result["realBackend"] and len(result["checks"]) == 12
+           Path(sys.argv[2]).write_text(json.dumps({"groups": 12, "result": "PASS"}) + "\n")
+           PYTHON
+-          for suite in browser browser_zoom; do
+-            out="$RUNNER_TEMP/f8-quality-$suite"
+-            printf 'F8_WP_I_QUALITY_SUITE=%s\n' "$suite"
+-            if ! python -B tools/tests/wp_i_quality/run_browser.py --suite "$suite" --out "$out"; then
+-              if test -f "$out/browser.local.log"; then
+-                grep -Eo 'wp_i_quality/[a-z_-]+\.cjs:[0-9]+:[0-9]+' "$out/browser.local.log" | head -12 || true
+-              fi
+-              exit 1
+-            fi
+-            python - "$suite" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite.json" <<'PYTHON'
+-          import json
+-          import os
+-          import sys
+-          from pathlib import Path
+-
+-          Path(sys.argv[2]).write_text(json.dumps({
+-              "suite": sys.argv[1], "result": "PASS", "candidateSha": os.environ["GITHUB_SHA"],
+-          }) + "\n")
+-          PYTHON
+-          done
+           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+           git diff --exit-code
+       - name: Retain sanitized machine receipts
++        if: ${{ !cancelled() && (steps.browser-suites.outcome == 'success' || steps.browser-suites.outcome == 'failure') }}
+         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+         with:
+           name: fast-track-f8-browser-${{ github.sha }}
+diff --git a/tools/tests/wp_i_quality/run_browser.py b/tools/tests/wp_i_quality/run_browser.py
+index fd53cf1a4504d6b9fc720aa6d38dfdc46865cc4e..535a6707d29f13fd68caf70b88f137cfc54ebcf8 100644
+--- a/tools/tests/wp_i_quality/run_browser.py
++++ b/tools/tests/wp_i_quality/run_browser.py
+@@ -2,7 +2,10 @@
+ import argparse
+ from contextlib import ExitStack
+ from pathlib import Path
++import json
+ import os
++import platform
++import re
+ import signal
+ import socket
+ import subprocess
+@@ -18,6 +21,108 @@ def loopback_port():
+         return sock.getsockname()[1]
+ 
+ 
++def command_output(*command, cwd=None):
++    try:
++        result = subprocess.run(command, cwd=cwd, capture_output=True, timeout=10)
++    except (OSError, subprocess.TimeoutExpired):
++        return None
++    return result.stdout if result.returncode == 0 else None
++
++
++def command_version(*command, cwd=None):
++    result = command_output(*command, cwd=cwd)
++    match = re.search(rb"(?<![0-9.])[0-9]+(?:\.[0-9]+){1,3}\b", (result or b"")[:1024])
++    return match[0].decode() if match else None
++
++
++def failure_kind(phase, error):
++    """Return a bounded diagnostic code, never exception text or local paths."""
++    if isinstance(error, subprocess.TimeoutExpired):
++        return 'subprocess_timeout'
++    if phase == 'server_start':
++        return 'server_start_failed'
++    if phase == 'server_ready':
++        return 'server_not_ready'
++    if phase == 'healthcheck':
++        return 'healthcheck_failed'
++    if phase == 'temp_setup':
++        return 'temporary_directory_failed'
++    if phase == 'browser_test':
++        return 'browser_process_failed'
++    return 'runner_failed'
++
++
++def browser_receipt(suite, output, process, browser_tmp, fixture_tmp, env, here,
++                    failure=None, failed_phase=None):
++    # Only allowlisted, non-identifying diagnostic codes and path lengths leave the runner.
++    # Raw errors, browser command lines and HTTP/server logs remain in private local files.
++    log_file = output / 'browser.local.log'
++    try:
++        log = log_file.read_bytes()
++    except OSError:
++        log = b''
++    launch_error = re.search(rb'browserType\.launch(?:PersistentContext)?:', log)
++    profile = re.search(rb'--user-data-dir=([^\r\n]+?)(?= --|\r?\n|$)', log)
++    patterns = (
++        ('socket_path_too_long', rb'socket.{0,45}(?:path.{0,20}too long|file name too long)'),
++        ('singleton_socket', rb'ProcessSingleton|SingletonSocket'),
++        ('missing_browser_binary', rb'executable (?:doesn.t exist|does not exist|not found)|ENOENT'),
++        ('missing_runtime_dependency', rb'error while loading shared libraries|host system is missing dependencies'),
++        ('browser_sandbox_initialization', rb'no usable sandbox|failed to move to new namespace'),
++        ('browser_closed', rb'target page, context or browser has been closed|browser has disconnected'),
++    )
++    code = process.returncode if process is not None else 1
++    if failure is not None:
++        # An exception after an apparently successful browser run still fails the runner.
++        code = code or 1
++        phase = failed_phase if failed_phase in {
++            'temp_setup', 'server_start', 'server_ready', 'healthcheck', 'browser_test',
++        } else 'runner_error'
++        error_type = 'RunnerException'
++        reason = failure_kind(phase, failure)
++    elif code:
++        phase = 'browser_launch' if launch_error else 'browser_test' if process is not None else 'runner_error'
++        error_type = 'PlaywrightLaunchError' if launch_error else 'BrowserSuiteError' if process is not None else 'RunnerException'
++        reason = ('unclassified_launch_failure' if launch_error else 'suite_failed')
++        if launch_error:
++            reason = next((label for label, pattern in patterns if re.search(pattern, log, re.I)), reason)
++    else:
++        phase, error_type, reason = 'complete', None, None
++
++    module = env.get('PLAYWRIGHT_MODULE', 'playwright')
++    executable = env.get('WP_H_FULL_CHROMIUM') if suite == 'browser_zoom' else env.get('BROWSER_EXECUTABLE')
++    if not executable:
++        discovery = command_output('node', '-p', 'require(process.argv[1]).chromium.executablePath()', module, cwd=here)
++        if discovery:
++            executable = os.fsdecode(discovery.rstrip())
++    candidate = env.get('GITHUB_SHA')
++    if not candidate:
++        raw = command_output('git', '-C', str(here), 'rev-parse', 'HEAD')
++        candidate = os.fsdecode(raw).strip() if raw else ''
++    result = {
++        'suite': suite,
++        'candidateSha': candidate if re.fullmatch(r'[0-9a-f]{40}', candidate) else None,
++        'syntheticOnly': True,
++        'phase': phase,
++        'exitCode': code,
++        'errorType': error_type,
++        'reason': reason,
++        'platform': sys.platform,
++        'architecture': platform.machine(),
++        'nodeVersion': command_version('node', '--version'),
++        'playwrightVersion': command_version(
++            'node', '-p', "require(process.argv[1] + '/package.json').version", module, cwd=here),
++        'chromiumVersion': command_version(executable, '--version') if executable else None,
++        'browserBinaryExists': Path(executable).is_file() if executable else None,
++        'tmpdirBytes': len(os.fsencode(browser_tmp)) if browser_tmp is not None else None,
++        'profilePathBytes': len(profile[1]) if profile else None,
++        'browserTmpRemoved': browser_tmp is not None and not browser_tmp.exists(),
++        'fixtureTmpRemoved': fixture_tmp is not None and not fixture_tmp.exists(),
++    }
++    (output / 'browser-execution.json').write_text(json.dumps(result, indent=2) + '\n')
++    return code
++
++
+ def main():
+     parser = argparse.ArgumentParser(description=__doc__)
+     parser.add_argument('--out', required=True, type=Path)
+@@ -27,60 +132,78 @@ def main():
+     output = args.out.resolve()
+     output.mkdir(mode=0o700, parents=True, exist_ok=False)
+     here = Path(__file__).resolve().parent
+-    with ExitStack() as temporary:
+-        scratch = Path(temporary.enter_context(tempfile.TemporaryDirectory(prefix='private-fixture-', dir=output)))
+-        browser_tmp = scratch
+-        if sys.platform == 'linux' and args.suite == 'browser_zoom':
+-            # Chromium's ProcessSingleton must fit its socket path into Linux sockaddr_un.
+-            browser_tmp = Path(temporary.enter_context(tempfile.TemporaryDirectory(prefix='qz.', dir='/tmp')))
+-        fixture = scratch / 'fixture.local.json'
+-        ready = threading.Event()
+-        port = loopback_port()
+-        with (output / 'server.local.log').open('wb') as server_log:
+-            server = subprocess.Popen(
+-                [sys.executable, str(here / 'lab.py'), '--port', str(port),
+-                 '--fixture-file', str(fixture), '--scratch-dir', str(scratch),
+-                 '--count', str(args.count)],
+-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env={
+-                    **os.environ, 'PYTHONDONTWRITEBYTECODE': '1',
+-                },
+-            )
+-
+-            def drain():
+-                for line in iter(server.stdout.readline, b''):
+-                    server_log.write(line)
+-                    server_log.flush()
+-                    if b'Uvicorn running on' in line:
+-                        ready.set()
+-
+-            reader = threading.Thread(target=drain)
+-            reader.start()
+-            try:
+-                if not ready.wait(180) or not fixture.is_file():
+-                    raise RuntimeError('The synthetic server did not start.')
+-                with urlopen(f'http://127.0.0.1:{port}/healthz', timeout=10) as health:
+-                    if health.status != 200:
+-                        raise RuntimeError('The synthetic server is not ready.')
+-                env = {
+-                    **os.environ, 'WP_I_QUALITY_FIXTURE': str(fixture), 'WP_I_QUALITY_OUT': str(output),
+-                    'TMPDIR': str(browser_tmp),
+-                }
+-                with (output / 'browser.local.log').open('wb') as browser_log:
+-                    result = subprocess.run(
+-                        ['node', str(here / f'{args.suite}.cjs')], env=env,
+-                        stdout=browser_log, stderr=subprocess.STDOUT, check=False,
+-                    )
+-                return result.returncode
+-            finally:
+-                if server.poll() is None:
+-                    server.send_signal(signal.SIGINT)
++    scratch = browser_tmp = process = None
++    env = dict(os.environ)
++    failure = None
++    phase = 'temp_setup'
++    try:
++        with ExitStack() as temporary:
++            scratch = Path(temporary.enter_context(tempfile.TemporaryDirectory(prefix='private-fixture-', dir=output)))
++            browser_tmp = scratch
++            if sys.platform == 'linux':
++                # Chromium ProcessSingleton requires a short Linux Unix-domain socket path.
++                browser_tmp = Path(temporary.enter_context(tempfile.TemporaryDirectory(prefix='wq.', dir='/tmp')))
++            fixture = scratch / 'fixture.local.json'
++            ready = threading.Event()
++            port = loopback_port()
++            with (output / 'server.local.log').open('wb') as server_log:
++                phase = 'server_start'
++                server = subprocess.Popen(
++                    [sys.executable, str(here / 'lab.py'), '--port', str(port),
++                     '--fixture-file', str(fixture), '--scratch-dir', str(scratch),
++                     '--count', str(args.count)],
++                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env={
++                        **os.environ, 'PYTHONDONTWRITEBYTECODE': '1',
++                    },
++                )
++
++                def drain():
++                    for line in iter(server.stdout.readline, b''):
++                        server_log.write(line)
++                        server_log.flush()
++                        if b'Uvicorn running on' in line:
++                            ready.set()
++
++                reader = None
+                 try:
+-                    server.wait(timeout=20)
+-                except subprocess.TimeoutExpired:
+-                    server.kill()
+-                    server.wait()
+-                reader.join(timeout=10)
+-                server.stdout.close()
++                    reader = threading.Thread(target=drain)
++                    reader.start()
++                    phase = 'server_ready'
++                    if not ready.wait(180) or not fixture.is_file():
++                        raise RuntimeError('The synthetic server did not start.')
++                    phase = 'healthcheck'
++                    with urlopen(f'http://127.0.0.1:{port}/healthz', timeout=10) as health:
++                        if health.status != 200:
++                            raise RuntimeError('The synthetic server is not ready.')
++                    env = {
++                        **os.environ, 'WP_I_QUALITY_FIXTURE': str(fixture), 'WP_I_QUALITY_OUT': str(output),
++                        'TMPDIR': str(browser_tmp),
++                        'DEBUG': ','.join(filter(None, (os.environ.get('DEBUG'), 'pw:browser'))),
++                    }
++                    phase = 'browser_test'
++                    with (output / 'browser.local.log').open('wb') as browser_log:
++                        process = subprocess.run(
++                            ['node', str(here / f'{args.suite}.cjs')], env=env,
++                            stdout=browser_log, stderr=subprocess.STDOUT, check=False,
++                        )
++                finally:
++                    if server.poll() is None:
++                        server.send_signal(signal.SIGINT)
++                    try:
++                        server.wait(timeout=20)
++                    except subprocess.TimeoutExpired:
++                        server.kill()
++                        server.wait()
++                    if reader is not None and reader.ident is not None:
++                        reader.join(timeout=10)
++                    server.stdout.close()
++    except Exception as error:
++        failure = error
++        # Do not echo exception strings: they may contain internal paths or fixture details.
++        print(f'Quality runner failed: {failure_kind(phase, error)}', file=sys.stderr)
++    # ExitStack has released fixture and browser temporary directories by this point.
++    return browser_receipt(args.suite, output, process, browser_tmp, scratch, env, here,
++                           failure=failure, failed_phase=phase)
+ 
+ 
+ if __name__ == '__main__':
