@@ -1,0 +1,156 @@
+{
+  "suite": "F6 records",
+  "candidateSha": "4efcb1a64ff347ed03576e2edf9f99050476f4ab",
+  "exitCode": 0,
+  "diagnosticStatus": "receipt-verified",
+  "diagnostic": {
+    "schema": 1,
+    "assertion": "referral-completion-settled",
+    "outcome": "pass",
+    "durationMs": 180,
+    "ui": {
+      "loading": false,
+      "referralPending": false,
+      "loaded": true,
+      "gridReady": true,
+      "readState": "ready",
+      "sessionExpired": false,
+      "sessionReconciling": false,
+      "loadTicketCurrent": true,
+      "renderTicketCurrent": true,
+      "domUpdates": 1
+    },
+    "requests": [
+      {
+        "endpoint": "referral",
+        "method": "POST",
+        "startedMs": 29,
+        "endedMs": 46,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "identity",
+        "method": "GET",
+        "startedMs": 47,
+        "endedMs": 54,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "appointments",
+        "method": "GET",
+        "startedMs": 55,
+        "endedMs": 84,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "identity",
+        "method": "GET",
+        "startedMs": 85,
+        "endedMs": 91,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "schedule",
+        "method": "GET",
+        "startedMs": 91,
+        "endedMs": 117,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "identity",
+        "method": "GET",
+        "startedMs": 117,
+        "endedMs": 124,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "registries",
+        "method": "GET",
+        "startedMs": 124,
+        "endedMs": 151,
+        "status": 200,
+        "state": "finished"
+      },
+      {
+        "endpoint": "identity",
+        "method": "GET",
+        "startedMs": 151,
+        "endedMs": 158,
+        "status": 200,
+        "state": "finished"
+      }
+    ],
+    "server": {
+      "appointmentsStatus": 200,
+      "patientStatus": 200,
+      "auditStatus": 200,
+      "referralCompleted": true,
+      "stageUnchanged": true,
+      "signedUnchanged": true,
+      "auditEvents": 1
+    },
+    "phases": {
+      "postStatus": 200,
+      "postCount": 1,
+      "waitMs": 128,
+      "error": null,
+      "executions": [
+        {
+          "method": "setSurgicalReferralCompleted",
+          "state": "started",
+          "atMs": 25,
+          "error": null
+        },
+        {
+          "method": "setSurgicalReferralCompleted",
+          "state": "started",
+          "atMs": 31,
+          "error": null
+        },
+        {
+          "method": "setSurgicalReferralCompleted",
+          "state": "resolved",
+          "atMs": 31,
+          "error": null
+        },
+        {
+          "method": "renderConsilium",
+          "state": "started",
+          "atMs": 53,
+          "error": null
+        },
+        {
+          "method": "loadConsilium",
+          "state": "started",
+          "atMs": 53,
+          "error": null
+        },
+        {
+          "method": "loadConsilium",
+          "state": "resolved",
+          "atMs": 157,
+          "error": null
+        },
+        {
+          "method": "renderConsilium",
+          "state": "resolved",
+          "atMs": 161,
+          "error": null
+        },
+        {
+          "method": "setSurgicalReferralCompleted",
+          "state": "resolved",
+          "atMs": 161,
+          "error": null
+        }
+      ]
+    }
+  },
+  "classification": "settled"
+}
