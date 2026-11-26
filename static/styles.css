@@ -2947,11 +2947,11 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 @media (max-width:375px) { .topbar__brand { max-width:5rem; } }
 @media print { .skip-link { display:none; } }
 
-/* WP-I I-2: registry presentation. Querying and authorization stay server-side. */
+/* Stage 3.5 summary strip and responsive patient rows. */
 .registry .pagehead { margin-bottom:var(--sp-5); }
 .registry__count { margin-left:var(--sp-3); color:var(--text-2); font-size:.7em; font-weight:400; }
 .registry-summary-note { color:var(--text-3); font-size:var(--text-sm); margin-bottom:var(--sp-2); }
-.registry-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; border-block:1px solid var(--border); margin-bottom:var(--sp-5); }
+.registry-stats { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:0; border:1px solid var(--border); border-radius:var(--r-lg); background:var(--surface); margin-bottom:var(--sp-5); }
 .registry-stats .stat { background:transparent; border:0; border-radius:0; padding:var(--sp-3) var(--sp-4); min-width:0; }
 .registry-stats .stat + .stat { border-left:1px solid var(--border); }
 .registry-stats .stat__value { font-size:var(--text-xl); margin-top:var(--sp-1); }
@@ -2962,6 +2962,8 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .registry-filter label { font-size:var(--text-xs); color:var(--text-2); }
 .registry-toolbar .registry-filter { flex:0 1 160px; }
 .registry-toolbar .select { min-width:0; width:100%; }
+.registry-inclusion { padding-block:var(--sp-1); color:var(--text); font-size:var(--text-md); }
+#backToRegistrySource[hidden] { display:none; }
 .registry-more { position:relative; flex:none; }
 .registry-more summary { min-height:40px; display:flex; align-items:center; gap:var(--sp-2); padding:0 var(--sp-3); border:1px solid var(--border-field); border-radius:var(--r-md); background:var(--surface); color:var(--text); cursor:pointer; list-style:none; }
 .registry-more summary::after { content:'⌄'; }
@@ -2974,23 +2976,33 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .registry-status { color:var(--text-2); padding:var(--sp-3) 0; }
 .registry-error { margin-bottom:var(--sp-4); }
 .registry-error p { margin-bottom:var(--sp-3); }
-.registry-panel { border-radius:var(--r-md); }
-.registry-table td { padding:var(--sp-3) var(--sp-4); vertical-align:top; }
-.registry-table .person__name { font-weight:500; }
+.registry-panel { border-radius:var(--r-lg); }
+.registry-table td { padding:10px var(--sp-4); vertical-align:middle; }
+.registry-table tr:focus-within td { background:var(--surface-2); }
+.registry-table .person__name { font-weight:600; overflow-wrap:anywhere; }
+.registry-table .patient-open:hover { text-decoration:underline; text-underline-offset:2px; }
+.registry-table .patient-open,
+.registry #patientPageStatus { scroll-margin-block-start:calc(var(--topbar-h) + var(--sp-3)); }
 .registry-table .cell-stage { min-width:150px; }
 .registry-table .progress { gap:var(--sp-2); max-width:150px; }
 .registry-table .progress__track { height:3px; }
-.registry-table .cell-head { max-width:250px; }
+.registry-table .cell-head { max-width:250px; overflow-wrap:anywhere; }
 .registry-table .cell-head__content { align-items:start; }
 .registry-doctor { font-size:var(--text-sm); }
-.registry-deadline { font-size:var(--text-sm); color:var(--text-2); }
+.registry-deadline { font-size:var(--text-sm); }
+.registry-deadline:not(.chip) { color:var(--text-2); }
+.registry-table .registry-deadline.chip { padding:2px 6px; }
 .registry-table .cell-when { white-space:normal; }
 .registry-table .patient-attention-badge { margin-top:var(--sp-1); padding:2px 6px; font-size:var(--text-xs); }
 .registry .pagination { border-top:1px solid var(--border); }
 @media (max-width:1100px) and (min-width:861px) { .registry-toolbar .search { flex-basis:100%; } }
 @media (max-width:860px) {
     .registry-table thead { display:none; }
-    .registry-table .patient-row { padding:var(--sp-4); }
+    .registry-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    .registry-stats .stat { padding:var(--sp-3); }
+    .registry-stats .stat:nth-child(3) { border-left:0; }
+    .registry-stats .stat:nth-child(n+3) { border-top:1px solid var(--border); }
+    .registry-table .patient-row { padding:var(--sp-3) var(--sp-4); }
     .registry-table .cell-head::before { content:none; }
     .registry-table .cell-stage::before { content:'Этап: '; color:var(--text-3); }
     .registry-table .cell-deadline::before { content:'Срок: '; color:var(--text-3); }
@@ -3002,10 +3014,6 @@ html[data-theme="light"] .chip--warning { color:#854300; }
     .topbar__brand { display:none; }
     .registry-toolbar { display:flex; align-items:center; }
     .registry-toolbar .search { flex:1 1 0; }
-    .registry-stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
-    .registry-stats .stat { padding:var(--sp-3); }
-    .registry-stats .stat:nth-child(3) { border-left:0; }
-    .registry-stats .stat:nth-child(n+3) { border-top:1px solid var(--border); }
     .registry-chip { min-height:40px; }
 }
 #filtersSheetBody .registry-filter { margin-bottom:var(--sp-3); }
@@ -3016,7 +3024,7 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .registry-priority { display:inline-block; margin-top:var(--sp-1); margin-right:var(--sp-2); color:var(--warning); font-size:var(--text-xs); font-weight:600; }
 @media (max-width:860px) {
     .registry-table td { padding:0; }
-    .registry-table td + td { margin-top:var(--sp-3); }
+    .registry-table td + td { margin-top:var(--sp-2); }
     .registry-table .registry-doctor::before { content:'Врач: '; color:var(--text-3); }
 }
 
@@ -3039,6 +3047,11 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .patient-route .tl-step { position:relative; flex:1 0 115px; border:0; background:transparent; border-radius:0; padding:var(--sp-2); }
 .patient-route .tl-step::after { content:''; position:absolute; height:2px; background:var(--border-strong); left:calc(50% + 18px); right:calc(-50% + 18px); top:23px; }
 .patient-route .tl-step:last-child::after { display:none; }
+.patient-route .tl-step--done::after { background:var(--accent); }
+.patient-route .tl-step--current .tl-step__mark { box-shadow:0 0 0 3px var(--accent-soft); }
+.patient-route button.tl-step:focus-visible { outline-offset:-2px; }
+.patient-route .tl-step--current .tl-step__label { font-weight:700; }
+.patient-workspace .crumbs { flex-wrap:wrap; }
 .patient-route .tl-step.is-selected .tl-step__label { color:var(--accent-text); text-decoration:underline; text-underline-offset:4px; }
 .patient-route .tl-step__state { font-weight:500; text-transform:none; }
 .patient-workspace .tabs { flex-wrap:wrap; border:0; border-bottom:1px solid var(--border); border-radius:0; padding:0; gap:var(--sp-2); background:transparent; }
@@ -3067,7 +3080,7 @@ html[data-theme="light"] .chip--warning { color:#854300; }
 .patient-workspace .alert--info { color:var(--accent-text); }
 .patient-workspace .chip--danger { color:#fca5a5; }
 
-html[data-theme="light"] :is(.patient-workspace, .f1-workspace) .chip--danger { color:#b91c1c; }
+html[data-theme="light"] :is(.patient-workspace, .f1-workspace, .registry) .chip--danger { color:#b91c1c; }
 
 /* WP-I I-4: Staff-UX full creation page; original medical controls and IDs. */
 .create-patient { min-width:0; }
@@ -3416,8 +3429,7 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 .f1-workspace :is(.f1-pulse-result, h2[tabindex="-1"]) {
     scroll-margin-top: calc(var(--topbar-h) + var(--sp-3));
 }
-.f1-workspace .f1-actions > .select,
-#f1MyDay > .input {
+.f1-workspace .f1-actions > :is(.select, .input) {
     width: auto;
     max-width: 100%;
     min-width: 0;

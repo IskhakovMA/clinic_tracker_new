@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3">
 </head>
 <body>
 
@@ -196,6 +196,7 @@
                         <p class="pagehead__subtitle">Пациенты в вашей области доступа</p>
                     </div>
                     <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="backToRegistrySource" data-route-click hidden></button>
                         <!-- На узком экране импорт и экспорт прячутся под одну кнопку «Данные» -->
                         <button type="button" class="btn btn--ghost only-wide" id="triggerImportBtn">
                             <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
@@ -210,11 +211,16 @@
                     </div>
                 </div>
 
+                <div id="patientRegistrySummary">
+                    <p class="registry-summary-note">Показатели по всей доступной выборке, без фильтров</p>
+                    <div class="stats registry-stats" id="statsRow"></div>
+                </div>
+
                 <div class="toolbar registry-toolbar">
                     <div class="search">
                         <svg class="icon search__icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
                         <label class="visually-hidden" for="searchInput">Поиск пациентов</label>
-                        <input class="input search__input" type="search" id="searchInput" placeholder="Поиск по ФИО, полису ОМС, диагнозу, врачу…">
+                        <input class="input search__input" type="search" id="searchInput" maxlength="200" placeholder="Поиск по ФИО, полису ОМС, диагнозу, врачу…">
                     </div>
                     <button type="button" class="btn btn--ghost only-narrow" id="openFiltersSheetBtn" aria-expanded="false">
                         <span id="filtersBtnLabel">Фильтры</span>
@@ -228,6 +234,10 @@
                                 <div class="registry-filter"><label for="filterDeadline">Срок</label><select class="select" id="filterDeadline"></select></div>
                                 <div class="registry-filter"><label for="filterAttention">Отметка внимания</label><select class="select" id="filterAttention"></select></div>
                                 <div class="registry-filter"><label for="filterAttentionReason">Причина внимания</label><select class="select" id="filterAttentionReason"></select></div>
+                                <label class="checkbox registry-inclusion" for="filterIncludeTerminal">
+                                    <input type="checkbox" id="filterIncludeTerminal">
+                                    <span>Показывать завершенные маршруты в общем списке</span>
+                                </label>
                             </div>
                         </details>
                         <div class="registry-filter"><label for="sortOrderSelect">Сортировка</label><select class="select" id="sortOrderSelect"></select></div>
@@ -250,9 +260,6 @@
                 </div>
 
                 <div id="patientRegistryResults">
-                <p class="registry-summary-note">Показатели по всей доступной выборке, без фильтров</p>
-                <div class="stats registry-stats" id="statsRow"></div>
-
                 <div class="panel registry-panel">
                     <div class="table-wrap">
                         <table class="table registry-table" id="patientsTable">
@@ -1905,8 +1912,8 @@
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
-<script src="/static/f1-management.js?v=fast-track-f2"></script>
-<script src="/static/f1-doctor.js?v=fast-track-f2"></script>
-<script src="/static/app.js?v=fast-track-f2"></script>
+<script src="/static/f1-management.js?v=fast-track-f3"></script>
+<script src="/static/f1-doctor.js?v=fast-track-f3"></script>
+<script src="/static/app.js?v=fast-track-f3"></script>
 </body>
 </html>

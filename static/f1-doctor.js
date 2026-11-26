@@ -320,9 +320,19 @@ const f1Doctor = (() => {
             state.mode = key;
             show();
         }, { 'data-f1-doctor-mode': key }));
+        const registry = button('Мои пациенты в реестре', () => {
+            const {mode, deadline} = state;
+            const current = () => registry.isConnected && permitted(app) && app.f1Doctor === state &&
+                state.mode === mode && state.deadline === deadline;
+            if (!current()) return;
+            void app.openWorkingRegistry('myDay', {
+                deadline: mode === 'patients' ? deadline : '',
+                sort: 'name', include_terminal: 'true',
+            }, current);
+        }, { id: 'f3MyDayRegistry' });
         host.replaceChildren(
             el('div', { class: 'f1-actions', role: 'group', 'aria-label': 'Разделы моего дня' }, controls),
-            heading, detail, select, body,
+            heading, detail, el('div', {class: 'f1-actions'}, [select, registry]), body,
         );
 
         function show(message = '') {

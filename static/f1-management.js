@@ -352,9 +352,24 @@ const f1Management = (() => {
                 void loadDetails(app, state, true);
             }},
         });
+        const attention = metric.type === 'attention_patients';
+        const exactFilter = attention || metric.type === 'patients';
+        const stage = state.stage;
+        const registry = el('button', {
+            id: 'f3PulseRegistry', type: 'button', class: 'btn btn--ghost btn--sm',
+            text: attention ? 'Пациенты с отметкой внимания в реестре' : stage ? 'Реестр по выбранному этапу' : 'Открыть общий реестр',
+            on: {click: () => {
+                if (detailCurrent()) void app.openWorkingRegistry('pulse', {
+                    stage, attention: attention ? 'active' : '', include_terminal: 'true',
+                }, detailCurrent);
+            }},
+        });
         state.nodes.details.replaceChildren(
             content.length ? el('p', {class: 'muted f1-pulse-result', role: 'status', text: summary + ' · ' + (metric.detailUnit || metric.unit)}) :
                 message(data.total ? 'На этой странице записей нет.' : 'По выбранным условиям нет доступных записей.'),
+            el('div', {class: 'f1-actions'}, [registry, !exactFilter ? el('span', {
+                class: 'f1-description', text: stage ? 'Все доступные пациенты этого этапа.' : 'Все доступные пациенты.',
+            }) : null]),
             content.length ? el('ul', {class: 'f1-list f1-pulse-list'}, content) : null,
             data.offset > 0 || end < data.total ? el('div', {class: 'f1-actions'}, [
                 data.offset > 0 ? action('Предыдущая страница', Math.max(0, data.offset - pageSize)) : null,

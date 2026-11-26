@@ -494,6 +494,8 @@ const app = {
     attentionFilter: null,
     attentionReasonFilter: null,
     sortOrder: 'updated-newest',
+    includeTerminal: false,
+    registrySource: null,
     attentionModalPatientId: null,
     attentionCloseTarget: null,
     quality: {
@@ -2030,6 +2032,7 @@ const app = {
     patientPageQuery(cursor = null, extra = {}) {
         const p = new URLSearchParams({view: 'page', limit: '50', sort: this.sortOrder || 'updated-newest', ...extra});
         for (const [key, value] of Object.entries({q: this.searchQuery, stage: this.stageFilter, head: this.headFilter, deadline: this.deadlineFilter, attention: this.attentionFilter, attention_reason: this.attentionReasonFilter})) if (value) p.set(key, value);
+        if (this.includeTerminal && !p.has('include_terminal')) p.set('include_terminal', 'true');
         if (cursor) p.set('cursor', cursor);
         return p;
     },
@@ -2041,18 +2044,22 @@ const app = {
         $('patientListLoading').hidden = !busy;
         $('patientListError').hidden = state !== 'error';
         $('patientListErrorText').textContent = message;
-        $('patientRegistryResults').hidden = state === 'error';
+        $('patientRegistrySummary').hidden = state !== 'ready';
+        $('patientRegistryResults').hidden = state !== 'ready';
         $('patientRegistryResults').inert = busy || state === 'error';
-        if (state === 'error') $('patientRegistryCount').textContent = '—';
-        else if (state === 'ready' && this.patientPage) $('patientRegistryCount').textContent = String(this.patientPage.summary.total);
+        if (state !== 'ready') $('patientRegistryCount').textContent = '—';
+        else if (this.patientPage) $('patientRegistryCount').textContent = String(this.patientPage.summary.total);
     },
 
     async loadPatients(cursor = null, restarted = false) {
         const version = this.beginRead('patients');
+        const query = String(this.patientPageQuery());
         this.setPatientListState('loading');
         this.renderPatientFilterChips();
         try {
-            const path = '/api/patients?' + this.patientPageQuery(cursor);
+            const params = new URLSearchParams(query);
+            if (cursor) params.set('cursor', cursor);
+            const path = '/api/patients?' + params;
             let data;
             try { data = await apiGetJson(path); }
             catch (error) {
@@ -2060,14 +2067,18 @@ const app = {
                 if (!restarted && [409, 410].includes(error.status) && ['PATIENT_QUERY_CHANGED', 'CURSOR_EXPIRED'].includes(error.data?.code)) {
                     ui.toast('Список изменился. Выдача обновлена; фильтры, выбранная карточка и черновики сохранены.', 'warning');
                     // Exactly one controlled restart, never a retry loop.
-                    data = await apiGetJson('/api/patients?' + this.patientPageQuery());
-                    await this.reconcileSelectedDetails(version);
+                    data = await apiGetJson('/api/patients?' + query);
+                    if (await this.reconcileSelectedDetails(version)) {
+                        throw Object.assign(new Error('Доступ к карточке изменился. Обновите список.'),
+                            {status: 409, data: {code: 'PATIENT_QUERY_CHANGED'}});
+                    }
                     if (this.isCurrentRead('patients', version)) { this.pageTrail = [null]; this.pageIndex = 0; }
                 } else throw error;
             }
-            if (!this.isCurrentRead('patients', version)) return;
+            if (!this.isCurrentRead('patients', version) || query !== String(this.patientPageQuery())) return;
             if (!cursor) { this.pageTrail = [null]; this.pageIndex = 0; }
             this.patientRows = data.patients; this.patientPage = data; this.patientListDirty=false;
+            this.releasedRegistryQuery = query;
             this.renderPatientPagination();
             this.setPatientListState('ready');
         } catch (error) {
@@ -2084,8 +2095,9 @@ const app = {
         const allowed=new Set(fresh.map(p=>p.id));
         this.sessionFieldDrafts=this.collectSessionFieldDrafts(this.user,fresh,allowed);
         this.patientDetails=new Map(fresh.map(p=>[p.id,p]));
-        if (this.currentPatientId && !allowed.has(this.currentPatientId)) this.forgetDeniedPatient(this.currentPatientId);
+        if (this.currentPatientId && !allowed.has(this.currentPatientId)) this.forgetDeniedPatient(this.currentPatientId, {refreshRegistry: false});
         this.renderSessionFieldDrafts();
+        return ids.some(id => !allowed.has(id));
     },
 
     async changePatientPage(direction) {
@@ -2261,7 +2273,13 @@ const app = {
         $('sidebarScrim').hidden = true;
         $('sidebarToggle').setAttribute('aria-expanded', 'false');
 
-        if (view === 'patients') {this.renderPatients();if(this.patientListDirty)this.reloadPatientsAndRender();}
+        if (view === 'patients') {
+            const source = $('backToRegistrySource');
+            source.hidden = !this.registrySource || !this.navigationVisibility()[this.registrySource];
+            source.textContent = source.hidden ? '' : this.registrySource === 'pulse' ? 'К пульсу клиники' : 'К моему дню';
+            this.renderPatients();
+            if (this.patientListDirty) void this.reloadPatientsAndRender(this.pageTrail[this.pageIndex]);
+        }
         if (view === 'consilium') {
             if (previousView !== 'consilium' && !this.can('consiliumChair')) {
                 this.consilium.loaded = false;
@@ -2288,6 +2306,28 @@ const app = {
 
     navigateView(screen) {
         return browserNavigation.navigate({screen});
+    },
+
+    registrySettings() {
+        const {searchQuery, stageFilter, headFilter, deadlineFilter, attentionFilter, attentionReasonFilter,
+            sortOrder, includeTerminal} = this;
+        return {searchQuery, stageFilter, headFilter, deadlineFilter, attentionFilter, attentionReasonFilter,
+            sortOrder, includeTerminal};
+    },
+
+    registryContext(patientId = null) {
+        const current = this.patientListState === 'ready' && this.releasedRegistryQuery === String(this.patientPageQuery());
+        return {settings: this.registrySettings(), source: this.registrySource, patientId,
+            index: current ? this.pageIndex : 0, trail: current ? this.pageTrail.slice(0, this.pageIndex + 1) : [null]};
+    },
+
+    openWorkingRegistry(source, filters, allowed) {
+        if (source !== this.currentView || !['pulse', 'myDay'].includes(source)) return false;
+        return browserNavigation.navigate({screen: 'patients', registry: {source, index: 0, trail: [null], settings: {
+            searchQuery: '', stageFilter: filters.stage || null, headFilter: null, deadlineFilter: filters.deadline || null,
+            attentionFilter: filters.attention || null, attentionReasonFilter: null,
+            sortOrder: filters.sort || 'updated-newest', includeTerminal: filters.include_terminal === 'true',
+        }}}, {allowed});
     },
 
     openPatient(id, tab = 'overview', options) {
@@ -2402,7 +2442,7 @@ const app = {
         }
         const heads = await apiFetch('/api/patients/head-options', {reconcileUser:user});
         if(!Array.isArray(page.patients)||!page.page||!page.summary||!Array.isArray(heads.heads))throw new Error('Не удалось проверить структуру рабочего пространства. Повторите вход.');
-        const listSettings = Object.fromEntries(['searchQuery','stageFilter','headFilter','deadlineFilter','attentionFilter','attentionReasonFilter','sortOrder'].map(k=>[k,this[k]]));
+        const listSettings = this.registrySettings();
         const doctors = user.permissions.createPatients && !['doctor', 'consilium_chair'].includes(user.roleId)
             ? (await apiFetch('/api/users/doctors', {reconcileUser: user})).doctors || [] : [];
         const final = await this.serverIdentity();
@@ -2481,7 +2521,7 @@ const app = {
         this.doctors = doctors;
         this.applyRoleUI();
         this.fillStaticSelects();
-        for(const [id,value] of Object.entries({searchInput:this.searchQuery,filterStage:this.stageFilter,filterHead:this.headFilter,filterDeadline:this.deadlineFilter,filterAttention:this.attentionFilter,filterAttentionReason:this.attentionReasonFilter,sortOrderSelect:this.sortOrder}))$(id).value=value||'';
+        this.syncRegistryControls();
         this.showView('patients');
         this.appReady = true;
         this.internalNotifications.pollTimer = window.setInterval(() => {
@@ -3220,7 +3260,7 @@ const app = {
 
     /** Счётчик у мобильной кнопки «Фильтры»: сколько условий сейчас активно. */
     activeFilterCount() {
-        return [this.stageFilter, this.headFilter, this.deadlineFilter, this.attentionFilter, this.attentionReasonFilter].filter(Boolean).length;
+        return [this.stageFilter, this.headFilter, this.deadlineFilter, this.attentionFilter, this.attentionReasonFilter, this.includeTerminal].filter(Boolean).length;
     },
 
     updateFiltersButton() {
@@ -3262,22 +3302,38 @@ const app = {
         $('filterDeadline').value = '';
         $('filterAttention').value = '';
         $('filterAttentionReason').value = '';
+        this.includeTerminal = $('filterIncludeTerminal').checked = false;
         this.reloadPatientsAndRender();
     },
 
-    async reloadPatientsAndRender() {
+    syncRegistryControls() {
+        for (const [id, value] of Object.entries({searchInput: this.searchQuery, filterStage: this.stageFilter,
+            filterHead: this.headFilter, filterDeadline: this.deadlineFilter, filterAttention: this.attentionFilter,
+            filterAttentionReason: this.attentionReasonFilter, sortOrderSelect: this.sortOrder})) $(id).value = value || '';
+        $('filterIncludeTerminal').checked = this.includeTerminal;
+    },
+
+    async reloadPatientsAndRender(cursor = null) {
+        const request = this.loadPatients(cursor);
+        const read = this.readVersions.patients;
         try {
-            await this.loadPatients();
+            await request;
+            if (!this.isCurrentRead('patients', read)) return;
             this.fillStaticSelects();
-            $('filterStage').value = this.stageFilter || '';
-            $('filterHead').value = this.headFilter || '';
-            $('filterDeadline').value = this.deadlineFilter || '';
-            $('filterAttention').value = this.attentionFilter || '';
-            $('filterAttentionReason').value = this.attentionReasonFilter || '';
-            $('sortOrderSelect').value = this.sortOrder;
+            this.syncRegistryControls();
             this.renderPatients();
+            const restore = this.registryFocus;
+            if (restore?.read === read) {
+                this.registryFocus = null;
+                if (this.currentView === 'patients' && document.activeElement === restore.anchor && !ui.topModal()) {
+                    const button = [...$('patientsBody').querySelectorAll('[data-registry-patient]')]
+                        .find(node => node.dataset.registryPatient === restore.patientId);
+                    button?.focus();
+                }
+            }
         } catch (e) {
-            ui.toast(`Не удалось обновить список пациентов: ${e.message}`, 'warning');
+            if (this.registryFocus?.read === read) this.registryFocus = null;
+            if (this.isCurrentRead('patients', read) && !e.obsolete) ui.toast(`Не удалось обновить список пациентов: ${e.message}`, 'warning');
         }
     },
 
@@ -3316,7 +3372,7 @@ const app = {
             on:{click:()=>{ const field=$(chip.id);field.value='';field.dispatchEvent(new Event(chip.event,{bubbles:true})); }},
         }))));
         $('resetPatientFiltersBtn').classList.toggle('is-hidden', !this.activeFilterCount());
-        const count=[this.deadlineFilter,this.attentionFilter,this.attentionReasonFilter].filter(Boolean).length;
+        const count=[this.deadlineFilter,this.attentionFilter,this.attentionReasonFilter,this.includeTerminal].filter(Boolean).length;
         $('registryMoreFilterCount').textContent = count ? `· ${count}` : '';
     },
 
@@ -3361,7 +3417,7 @@ const app = {
             }, [
                 el('td', {}, el('div', { class: 'person' }, [
                     el('div', {}, [
-                        el('button', {type:'button', class:'person__name patient-open', text:p.name, 'aria-label':`Открыть карточку: ${p.name}`, on:{click:event=>{event.stopPropagation();this.openPatient(p.id);}}}),
+                        el('button', {type:'button', class:'person__name patient-open', dataset:{registryPatient:p.id}, text:p.name, 'aria-label':`Открыть карточку: ${p.name}`, on:{click:event=>{event.stopPropagation();this.openPatient(p.id);}}}),
                         el('div', { class: 'person__meta', text: `${p.age} лет · ${p.diagnosis || 'диагноз не указан'}` }),
                         p.priority !== 'normal' ? el('span', {class:'registry-priority', text:p.priority === 'urgent' ? 'Срочно' : 'Высокий приоритет'}) : null,
                         attentionBadge,
@@ -3375,7 +3431,13 @@ const app = {
                         el('span', { class: 'progress__value', text: `${percent}%` }),
                     ]),
                 ]),
-                el('td', { class: 'cell-deadline' }, el('span', {class:'registry-deadline', text:p.currentFact ? 'Факт отмечен' : p.deadlineDays == null ? 'Дата не назначена' : p.deadlineDays < 0 ? `Плановая дата прошла · ${Math.abs(p.deadlineDays)} дн.` : p.deadlineDays === 0 ? 'Сегодня' : `Через ${p.deadlineDays} дн.`})),
+                el('td', { class: 'cell-deadline' }, el('span', {
+                    class: p.currentFact || p.deadlineDays == null ? 'registry-deadline'
+                        : `registry-deadline chip chip--${p.deadlineDays < 0 ? 'danger' : p.deadlineDays <= 3 ? 'warning' : 'good'}`,
+                    text: p.currentFact ? 'Факт отмечен' : p.deadlineDays == null ? 'Дата не назначена'
+                        : p.deadlineDays < 0 ? `Плановая дата прошла · ${Math.abs(p.deadlineDays)} дн.`
+                        : p.deadlineDays === 0 ? 'Сегодня' : `Через ${p.deadlineDays} дн.`,
+                })),
                 el('td', { class: 'cell-when' }, [
                     el('div', { class: 'cell-when__time', text: this.formatDateTime(p.updatedAt || p.arrival) }),
                     activity ? el('div', { class: 'cell-when__what', text: activity }) : null,
@@ -3447,6 +3509,10 @@ const app = {
     renderPatientSide(p) {
         const percent = this.stageProgressPercent(p.stage);
         const nextNode = this.buildTimelineNodes(p).find(n => n.status === 'future' && n.isNext);
+        const occurrence = p.history?.at(-1);
+        const planned = occurrence?.stage === p.stage ? (occurrence.events || [])
+            .filter(event => event.date && !event.actualDate)
+            .sort((left, right) => (left.date + (left.time || '')).localeCompare(right.date + (right.time || '')))[0] : null;
 
         $('patientSide').replaceChildren(frag([
             el('div', { class: 'pcard' }, [
@@ -3466,6 +3532,9 @@ const app = {
                 el('div', { class: 'pcard__block' }, [
                     el('div', { class: 'pcard__label', text: 'Этап лечения' }),
                     el('div', { class: 'pcard__value', text: this.getCurrentStageLabel(p) }),
+                    el('div', { class: 'pcard__sub', text: planned
+                        ? 'Плановая дата этапа: ' + planned.date.split('-').reverse().join('.') + (planned.time ? ' · ' + planned.time : '')
+                        : 'Плановая дата этапа не указана' }),
                     el('div', { class: 'progress' }, [
                         el('div', { class: 'progress__track' },
                             el('div', { class: `progress__bar ${this.stageProgressClass(p.stage)} ${this.stageToneClass(p.stage)}` })),
@@ -7212,7 +7281,7 @@ const app = {
         }
     },
 
-    forgetDeniedPatient(patientId) {
+    forgetDeniedPatient(patientId, {refreshRegistry = true} = {}) {
         browserNavigation.forget(patientId);
         // Object access can change without a role/access-context change.
         this.patientDetails.delete(patientId);
@@ -7222,6 +7291,14 @@ const app = {
         this.patientRows = this.patientRows.filter(patient => patient.id !== patientId);
         this.patientListDirty = true;
         this.renderSessionFieldDrafts();
+        if (this.currentView === 'patients') {
+            if (this.currentPatientId === patientId) this.clearPatientNavigationView();
+            this.patientRows = [];
+            $('patientsBody').replaceChildren();
+            this.patientPage = null;
+            if (refreshRegistry) void this.reloadPatientsAndRender(this.pageTrail[this.pageIndex]);
+            return;
+        }
         // A row can be denied after returning from its previous card. Clear the
         // hidden card, then let the active workspace refresh its own selection.
         if (this.currentPatientId === patientId && ['myDay', 'pulse'].includes(this.currentView)) {
@@ -11693,7 +11770,11 @@ const app = {
         for (const item of document.querySelectorAll('.nav__item')) {
             item.addEventListener('click', () => this.navigateView(item.dataset.view));
         }
-        on('backToList', 'click', () => this.navigateView('patients'));
+        on('backToList', 'click', () => browserNavigation.navigate({screen: 'patients',
+            registry: browserNavigation.committed?.route.registryReturn}));
+        on('backToRegistrySource', 'click', () => {
+            if (this.registrySource && this.navigationVisibility()[this.registrySource]) this.navigateView(this.registrySource);
+        });
         on('backToF1', 'click', () => {
             if (this.f1CardOrigin) this.navigateView(this.f1CardOrigin);
         });
@@ -11810,6 +11891,8 @@ const app = {
         on('searchInput', 'input', (event) => {
             this.searchQuery = event.target.value;
             clearTimeout(this.patientSearchTimer);
+            this.beginRead('patients');
+            this.setPatientListState('loading');
             this.patientSearchTimer = setTimeout(() => this.reloadPatientsAndRender(), this.searchQuery ? 300 : 0);
         });
         on('filterStage', 'change', (event) => {
@@ -11831,6 +11914,10 @@ const app = {
         on('filterAttentionReason', 'change', (event) => {
             this.attentionReasonFilter = event.target.value || null;
             if (this.attentionReasonFilter && !this.attentionFilter) this.attentionFilter = 'active';
+            this.reloadPatientsAndRender();
+        });
+        on('filterIncludeTerminal', 'change', event => {
+            this.includeTerminal = event.target.checked;
             this.reloadPatientsAndRender();
         });
         on('sortOrderSelect', 'change', (event) => {
@@ -12450,6 +12537,9 @@ const browserNavigation = {
             const origin = sourceView === 'patient' && sourcePatient === route.patientId ? app.f1CardOrigin : sourceView;
             if (origin === 'pulse' || origin === 'myDay') route = {...route, f1Source: origin};
             if (origin === 'myDay' && historyAction?.kind === 'day-event') route = {...route, historyAction};
+            const registryReturn = sourceView === 'patients' ? app.registryContext(route.patientId)
+                : sourceView === 'patient' && sourcePatient === route.patientId ? this.committed?.route.registryReturn : null;
+            if (registryReturn) route = {...route, registryReturn};
         }
         const sameIntent = () => generation === this.generation && epoch === (app.sessionEpoch || 0)
             && user === app.user?.id && app.accessSignature(app.user) === access
@@ -12499,6 +12589,14 @@ const browserNavigation = {
                 }
                 focus = () => f1Doctor.focusAction(route.historyAction);
             }
+            if (sourceView === 'patients' && this.committed?.route.screen === 'patients') {
+                const registry = app.registryContext(route.patientId);
+                this.committed.route.registry = registry;
+                if (!entry && route.screen === 'patient') route = {...route, registryReturn: registry};
+                clearTimeout(app.patientSearchTimer);
+                app.pageLoading = false;
+                app.beginRead('patients');
+            }
             this.render(route, patient, focus, replace);
             if (entry) this.committed = entry;
             else if (replace) this.reset(route);
@@ -12547,6 +12645,12 @@ const browserNavigation = {
                 app.patientRows = [];
                 app.patientPage = null;
                 app.patientListDirty = true;
+                const registry = clearPatient ? null : route.registry;
+                app.registrySource = registry?.source || null;
+                app.pageTrail = registry?.trail.slice() || [null];
+                app.pageIndex = registry?.index || 0;
+                if (registry) Object.assign(app, registry.settings);
+                app.syncRegistryControls();
                 $('patientRegistryCount').textContent = '—';
                 app.setPatientListState('loading');
             }
@@ -12556,6 +12660,9 @@ const browserNavigation = {
         if (target) {
             if (!target.matches('button, input, select, textarea, a[href], [tabindex]')) target.tabIndex = -1;
             target.focus({preventScroll: true});
+            if (route.screen === 'patients' && route.registry?.patientId && !clearPatient) {
+                app.registryFocus = {anchor: target, patientId: route.registry.patientId, read: app.readVersions.patients};
+            }
         }
     },
 };
