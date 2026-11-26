@@ -1,0 +1,387 @@
+{
+  "checks": [
+    "create department",
+    "create user and filter with server query",
+    "Escape and return focus in staff editor",
+    "assign active department head",
+    "add membership",
+    "remove membership",
+    "single and multiple memberships produce exact server scope",
+    "developer registry remains available after structure changes",
+    "My Day retains own scope before and after organizational membership change",
+    "versioned explicit treating-doctor reassignment",
+    "role and object scope deny former access",
+    "terminate two isolated browser sessions",
+    "temporary password gates protected reads after reset",
+    "block user and revoke two live sessions",
+    "deactivation reflected by status filter",
+    "held genuine Structure HTTP 200 cannot restore administrative controls after navigation",
+    "compact staff values expand and collapse on keyboard across widths and themes, including after filter",
+    "Stage 3.5 desktop/mobile themes and scoped axe checks",
+    "native Chromium zoom at 100, 200 and 400 percent on both views and themes",
+    "edit role in staff UI revokes the old head session",
+    "archived department persists with no active membership controls",
+    "toast single with real timer, six-success aggregation, priority delivery, viewport/axe and keyboard"
+  ],
+  "accessibility": [
+    {
+      "section": "staff",
+      "theme": "light",
+      "width": 320,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 380,
+      "compactHeight": 463
+    },
+    {
+      "section": "staff",
+      "theme": "light",
+      "width": 375,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 380,
+      "compactHeight": 463
+    },
+    {
+      "section": "staff",
+      "theme": "light",
+      "width": 768,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 282,
+      "compactHeight": 357
+    },
+    {
+      "section": "staff",
+      "theme": "light",
+      "width": 1024,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 205,
+      "compactHeight": 205
+    },
+    {
+      "section": "staff",
+      "theme": "light",
+      "width": 1440,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 169,
+      "compactHeight": 169
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "width": 320,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 380,
+      "compactHeight": 463
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "width": 375,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 380,
+      "compactHeight": 463
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "width": 768,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 282,
+      "compactHeight": 357
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "width": 1024,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 205,
+      "compactHeight": 205
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "width": 1440,
+      "overflow": false,
+      "violations": [],
+      "shortHeight": 169,
+      "compactHeight": 169
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "width": 320,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "width": 375,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "width": 768,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "width": 1024,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "width": 1440,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "width": 320,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "width": 375,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "width": 768,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "width": 1024,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "width": 1440,
+      "overflow": false,
+      "violations": []
+    }
+  ],
+  "nativeZoom": [
+    {
+      "section": "staff",
+      "theme": "light",
+      "percent": 100,
+      "width": 1280,
+      "noPageOverflow": true
+    },
+    {
+      "section": "staff",
+      "theme": "light",
+      "percent": 200,
+      "width": 640,
+      "noPageOverflow": true
+    },
+    {
+      "section": "staff",
+      "theme": "light",
+      "percent": 400,
+      "width": 320,
+      "noPageOverflow": true
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "percent": 100,
+      "width": 1280,
+      "noPageOverflow": true
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "percent": 200,
+      "width": 640,
+      "noPageOverflow": true
+    },
+    {
+      "section": "staff",
+      "theme": "dark",
+      "percent": 400,
+      "width": 320,
+      "noPageOverflow": true
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "percent": 100,
+      "width": 1280,
+      "noPageOverflow": true
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "percent": 200,
+      "width": 640,
+      "noPageOverflow": true
+    },
+    {
+      "section": "structure",
+      "theme": "light",
+      "percent": 400,
+      "width": 320,
+      "noPageOverflow": true
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "percent": 100,
+      "width": 1280,
+      "noPageOverflow": true
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "percent": 200,
+      "width": 640,
+      "noPageOverflow": true
+    },
+    {
+      "section": "structure",
+      "theme": "dark",
+      "percent": 400,
+      "width": 320,
+      "noPageOverflow": true
+    }
+  ],
+  "toastProofs": [
+    {
+      "theme": "light",
+      "width": 320,
+      "cap": 2,
+      "importantDelivered": 5,
+      "geometry": {
+        "bounded": true,
+        "inViewport": true,
+        "scrollable": true,
+        "live": "polite"
+      },
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 375,
+      "cap": 2,
+      "importantDelivered": 5,
+      "geometry": {
+        "bounded": true,
+        "inViewport": true,
+        "scrollable": true,
+        "live": "polite"
+      },
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "cap": 3,
+      "importantDelivered": 5,
+      "geometry": {
+        "bounded": true,
+        "inViewport": true,
+        "scrollable": true,
+        "live": "polite"
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 320,
+      "cap": 2,
+      "importantDelivered": 5,
+      "geometry": {
+        "bounded": true,
+        "inViewport": true,
+        "scrollable": true,
+        "live": "polite"
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 375,
+      "cap": 2,
+      "importantDelivered": 5,
+      "geometry": {
+        "bounded": true,
+        "inViewport": true,
+        "scrollable": true,
+        "live": "polite"
+      },
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "cap": 3,
+      "importantDelivered": 5,
+      "geometry": {
+        "bounded": true,
+        "inViewport": true,
+        "scrollable": true,
+        "live": "polite"
+      },
+      "violations": []
+    }
+  ],
+  "browser": "151.0.7922.34",
+  "database": {
+    "schema": 33,
+    "expectedRequiredAuditEvents": 12,
+    "explicitTreatingDoctorChanges": 1,
+    "unchangedOtherMedicalRows": true,
+    "unusedAutomaticClinicalWrites": 0
+  },
+  "audit": {
+    "matchedExactResponseDigests": 39,
+    "authorizedReads": 134,
+    "authorizedReadManifests": 134
+  },
+  "candidateSha": "be90971ee2ae3219509b1af1d7f2fd806dcf8bf5",
+  "candidateTree": "da6898fa9dfd79688256456f96f13cc0271cb17f",
+  "dirtyCheckout": false,
+  "syntheticOnly": true,
+  "cleanup": {
+    "cleanExit": true,
+    "listenerClosed": true,
+    "databaseRemoved": true
+  },
+  "screenshots": {
+    "f9-staff-clean-dark-320.png": "3032e7a77a753ec1703314f81345e2e2c94c9afc89151afe7499f4632e78fb17",
+    "f9-staff-clean-dark-375.png": "5db421dc0f242063509578f3c865e15160c51e5f2221cbf11123881167483ab7",
+    "f9-staff-clean-light-320.png": "0c4f247b555bfd7ba2db62f3fc1d385eb8fb9db3779e158b72c0ea567f78e498",
+    "f9-staff-clean-light-375.png": "07834fd386d537bf61e495f1c751a2c25b11b9757430813ee61b7aeae3959cf1",
+    "f9-staff-dark-375.png": "667bb723462268dccd727e21db214db1e5bd449a9f480b3b7a69b673beb8b2c8",
+    "f9-staff-expanded-dark-375.png": "96e07534c46897eed73e01b76fb2988050904591c104076f2e0f1c37974cfd77",
+    "f9-staff-light-1440.png": "cf59610d391e884a823bf3408d588d62ec876ea7050321870eb1b3d4f7716a89",
+    "f9-structure-dark-375.png": "ee8989aa04520dae6f39d29eccc612e686c91069ac31b0803c1a932b1310e6ed",
+    "f9-structure-light-1440.png": "c781e6f01bddfe82e2439693ac1723bec1e5d9da1ed60f82668419de7ca18a72"
+  }
+}
