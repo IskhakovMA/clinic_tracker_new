@@ -761,7 +761,7 @@ def test_static_contract():
     helper = helper[:helper.index("\n}\n")]
     assert "headers: { 'Idempotency-Key': key }" in helper and "console." not in helper and "?" not in helper.split("apiFetch(path")[1][:5]
     for call in ("apiPostIdempotent('/api/patients', payload, this.addPatientKey, {retryTransport: false})",
-                 "apiPostIdempotent('/api/import/commit', body, this.importCommitKey)",
+                 "apiPostIdempotent('/api/import/commit', JSON.parse(operation.bodyText), operation.key,",
                  "apiPostIdempotent('/api/migrate/localstorage/commit', body, this.migrationKey)"):
         assert call in js, call
     opener = js[js.index("    openAddModal() {"):]
@@ -885,7 +885,8 @@ def _run_client_scenario(scenario: dict) -> dict:
         start = js.index(f"    {name}(")
         return js[start:js.index("\n    },\n", start) + 7]
 
-    names = ["async confirmImportCommit", "closeImportReviewModal", "async runLegacyMigration",
+    names = ["async confirmImportCommit", "async sendImportOperation", "closeImportReviewModal",
+             "setImportExecutionState", "async runLegacyMigration",
              "async refreshAfterSavedOperation"]
     # B-03: отдельная стадия удаления локальной копии (если она есть в этой версии app.js).
     names += [n for n in ("async removeLegacyLocalCopy",) if f"    {n}(" in js]
@@ -899,7 +900,7 @@ let posts = 0, confirms = 0, keyCounter = 0;
 const elements = {};
 function $(id) {
   if (!elements[id]) elements[id] = { value: id === 'importModeSelect' ? 'add' : '', checked: true, disabled: false,
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } };
+    focus() {}, replaceChildren() {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } };
   return elements[id];
 }
 const ui = {
@@ -917,12 +918,20 @@ async function apiPost() { return { valid: true, totalRecords: 1, historicalDeci
 async function apiPostIdempotent(path, body, key) {
   posts += 1; keys.push(key);
   if (scenario.commit === 'network') { const e = new Error('Нет ответа от сервера.'); e.network = true; throw e; }
+  if (scenario.commit === '503' || scenario.commit === 'rollback') {
+    const detail = scenario.commit === 'rollback'
+      ? 'Импорт не сохранён: не удалось записать данные вместе с журналом аудита. Данные не изменены.'
+      : 'Service Unavailable';
+    throw Object.assign(new Error(detail), {status: 503, data: {detail}});
+  }
   return { added: 1, updated: 0, unchanged: 0, skipped: 0 };
 }
 global.localStorage = { getItem: k => (k === 'patients' ? '[{"name":"x"}]' : null),
   removeItem: k => { if (scenario.removeFail === k) throw new Error('хранилище недоступно'); removed.push(k); } };
 const app = {
 METHODS
+  importContext: {}, transferContextCurrent: () => true,
+  patientDetails: new Map(), clearAnalyticsRelease() {}, clearQualityV1() {}, renderImportProvenance() {},
   importReport: { provenance: { confirmationRequired: false, fileSha256: 'a'.repeat(64) } },
   pendingImportRaw: '{"patients":[]}',
   loadPatients: async () => { if (scenario.fail === 'loadPatients') throw new Error('сбой обновления списка'); },
@@ -933,7 +942,8 @@ METHODS
   if (scenario.operation === 'import') await app.confirmImportCommit();
   else await app.runLegacyMigration();
   process.stdout.write(JSON.stringify({ toasts, posts, removed, closed, keys,
-    importKey: app.importCommitKey || null, migrationKey: app.migrationKey || null }));
+    importKey: app.importOperation?.key || null, migrationKey: app.migrationKey || null,
+    importStatus: $('importExecutionStatus').textContent, retryHidden: $('retryImportCommitBtn').hidden }));
 })();
 """
     script = harness.replace("SCENARIO", json.dumps(scenario)).replace("METHODS", methods)
@@ -955,9 +965,27 @@ def test_import_success_with_a_failing_refresh_is_not_reported_as_failed(fail):
 
 
 def test_import_without_a_confirmed_answer_keeps_the_key_and_the_window():
-    result = _run_client_scenario({"operation": "import", "commit": "network", "fail": None})
-    assert [t["type"] for t in result["toasts"]] == ["danger"] and "Импорт не выполнен" in result["toasts"][0]["message"]
+    _assert_import_outcome_is_uncertain("network")
+
+
+def test_import_generic_503_keeps_the_original_operation():
+    _assert_import_outcome_is_uncertain("503")
+
+
+def _assert_import_outcome_is_uncertain(failure):
+    result = _run_client_scenario({"operation": "import", "commit": failure, "fail": None})
+    assert result["posts"] == 1
+    assert "Результат импорта не подтвержден" in result["importStatus"]
+    assert result["retryHidden"] is False and not result["toasts"]
     assert result["importKey"] == result["keys"][0] and "importReviewModal" not in result["closed"]
+
+
+def test_import_explicit_server_rollback_does_not_offer_replay():
+    result = _run_client_scenario({"operation": "import", "commit": "rollback"})
+    assert result["posts"] == 1
+    assert result["importStatus"] == "Импорт отменен сервером. Данные не изменены."
+    assert result["retryHidden"] is True and result["importKey"] is None
+    assert "importReviewModal" not in result["closed"]
 
 
 @pytest.mark.parametrize("fail", ["loadPatients", "loadActivity"])

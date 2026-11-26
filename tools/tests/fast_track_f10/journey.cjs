@@ -39,20 +39,16 @@ async function request(context, url, status, method='GET', data) {
 async function openAudit(context) {
     const page = await context.newPage();
     await page.goto(origin);
-    if (await page.locator('#loginForm').isVisible()) {
-        await page.locator('#username').fill(users.admin);
-        await page.locator('#password').fill(password);
-        await page.locator('#loginSubmit').click();
-    }
-    await page.waitForFunction(()=>app.appReady && !app.sessionExpired);
+    // Both callers authenticate via FastAPI before opening this page.
+    await page.waitForFunction(()=>app.appReady && !app.sessionExpired && app.user?.roleId === 'developer');
     const assets = await page.evaluate(() => performance.getEntriesByType('resource').map(entry => new URL(entry.name))
         .filter(url => url.origin === location.origin && ['/static/app.js','/static/styles.css'].includes(url.pathname))
         .map(url => url.pathname + url.search));
     const scripts = assets.filter(url => url.startsWith('/static/app.js'));
     const styles = assets.filter(url => url.startsWith('/static/styles.css'));
-    assert.deepEqual(scripts,['/static/app.js?v=fast-track-f10']);
+    assert.deepEqual(scripts,['/static/app.js?v=fast-track-f11']);
     assert.equal(styles.length,1);
-    assert(styles[0].endsWith('-fast-track-f9-fast-track-f10'));
+    assert(styles[0].endsWith('-fast-track-f9-fast-track-f10-fast-track-f11'));
     await page.locator('[data-view="audit"]').first().click();
     await ready(page);
     return page;

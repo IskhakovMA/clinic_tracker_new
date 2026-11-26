@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8-fast-track-f9-fast-track-f10">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7-fast-track-f8-fast-track-f9-fast-track-f10-fast-track-f11">
 </head>
 <body>
 
@@ -1619,7 +1619,7 @@
             </div>
             <div class="chips" id="exportHeadsFilter"></div>
             <div class="modal__toolbar">
-                <span class="muted">Выбрано: <strong id="exportSelectedCount">0</strong> из <span id="exportTotalCount">0</span></span>
+                <span class="muted">Выбрано: <strong id="exportSelectedCount">0</strong> · В текущей выдаче: <span id="exportTotalCount">0</span></span>
                 <span class="modal__toolbar-actions">
                     <button type="button" class="btn btn--ghost btn--sm" id="exportSelectAllBtn">Выбрать всех</button>
                     <button type="button" class="btn btn--ghost btn--sm" id="exportSelectNoneBtn">Снять выбор</button>
@@ -1645,6 +1645,7 @@
         </div>
         <div class="modal__body">
             <div id="importProvenance" aria-live="polite"></div>
+            <p id="importExecutionStatus" class="field__hint" role="status" tabindex="-1"></p>
             <div class="summary" id="importReviewSummary"></div>
             <div class="field">
                 <label class="field__label" for="importModeSelect">Режим импорта</label>
@@ -1686,6 +1687,7 @@
         </div>
         <div class="modal__foot">
             <button type="button" class="btn btn--ghost" id="closeImportReviewBtn">Отмена</button>
+            <button type="button" class="btn btn--primary" id="retryImportCommitBtn" hidden>Проверить результат</button>
             <button type="button" class="btn btn--primary" id="confirmImportCommitBtn">Импортировать</button>
         </div>
     </div>
@@ -1976,6 +1978,6 @@
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
 <script src="/static/f1-management.js?v=fast-track-f5"></script>
 <script src="/static/f1-doctor.js?v=fast-track-f5"></script>
-<script src="/static/app.js?v=fast-track-f10"></script>
+<script src="/static/app.js?v=fast-track-f11"></script>
 </body>
 </html>

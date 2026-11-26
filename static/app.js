@@ -248,8 +248,8 @@ function newIdempotencyKey() {
 const IDEMPOTENT_TIMEOUT_MS = 30000;
 const NETWORK_FAILURE_MESSAGE = 'Нет ответа от сервера. Повторите отправку: повтор с теми же данными безопасен и не создаст копию.';
 
-// Для импорта разрешен один сетевой повтор. Создание карточки выполняет
-// один POST за явное действие и сохраняет прежний ключ до проверки результата.
+// Импорт и создание карточки выполняют один POST за явное действие.
+// Перенос старых данных сохраняет собственный протокол сетевого повтора.
 async function apiPostIdempotent(path, body, key, {retryTransport = true} = {}) {
     const text = JSON.stringify(body === undefined ? {} : body);
     const attempts = retryTransport ? 2 : 1;
@@ -328,6 +328,7 @@ const ui = {
             $('doctorModalSelect').replaceChildren();
         }
         if (!modal || modal.hidden) return;
+        if (id === 'exportModal') app.clearExportWorkspace();
         if (id === 'staffModal') {
             $('staffForm').reset();
             app.staffEditorIdentity = null;
@@ -2514,6 +2515,7 @@ const app = {
         this.clearQualityV1(accessChanged);
         this.clearAnalyticsRelease();
         this.clearAuditWorkspace();
+        this.clearImportExportWorkspace();
         this.analytics.pendingDetails = null;
         if (this.sessionExpired || !this.user) return;
         browserNavigation.invalidate();
@@ -2561,6 +2563,7 @@ const app = {
         this.clearQualityV1(true);
         this.clearAnalyticsRelease();
         this.clearAuditWorkspace();
+        this.clearImportExportWorkspace();
         ui.clearToasts();
         document.body.classList.add('session-locked');
         browserNavigation.invalidate();
@@ -12290,14 +12293,47 @@ const app = {
 
     /* ========================================================= ЭКСПОРТ И ИМПОРТ */
 
+    transferContextCurrent(context, permission) {
+        return !!context && !!this.user && !this.sessionExpired && !this.sessionReconciling &&
+            this.can(permission) && context.owner === this.user.id &&
+            context.access === this.accessSignature(this.user) && context.epoch === this.sessionEpoch;
+    },
+
+    transferContext() {
+        return {owner: this.user.id, access: this.accessSignature(this.user), epoch: this.sessionEpoch};
+    },
+
+    clearExportWorkspace() {
+        this.exportContext = null;
+        this.exportOperation = null;
+        this.exportPage = null;
+        this.exportQuery = null;
+        this.exportSelectedIds?.clear();
+        this.exportAllSelection = null;
+        this.beginRead('export-list');
+        $('exportPatientList').replaceChildren();
+        $('exportHeadsFilter').replaceChildren();
+        $('exportSearchInput').value = '';
+        $('exportSelectedCount').textContent = '0';
+        $('exportTotalCount').textContent = '0';
+    },
+
+    clearImportExportWorkspace() {
+        ui.closeModal('exportModal', {force: true});
+        this.clearExportWorkspace();
+        this.closeImportReviewModal(true);
+    },
+
     openExportModal() {
+        if (!this.can('exportData') || this.sessionExpired || this.sessionReconciling || !$('exportModal').hidden) return;
+        this.exportContext = this.transferContext();
         this.exportSelectedIds = new Set();
         this.exportAllSelection=null;
         this.exportHeadFilter = null;
         $('exportSearchInput').value = '';
         this.renderExportHeadsFilter();
-        this.renderExportPatientList('');
         ui.openModal('exportModal');
+        this.renderExportPatientList('');
     },
 
     renderExportHeadsFilter() {
@@ -12315,12 +12351,19 @@ const app = {
     },
 
     async renderExportPatientList(query, cursor = null, restarted = false) {
+        const context = this.exportContext;
+        if (!this.transferContextCurrent(context, 'exportData')) return;
         const version=this.beginRead('export-list');
+        const current = () => this.exportContext === context && !$('exportModal').hidden &&
+            this.transferContextCurrent(context, 'exportData') && this.isCurrentRead('export-list', version);
+        this.exportPage = null;
+        $('exportPatientList').replaceChildren(el('p', {class: 'empty', role: 'status', text: 'Загрузка выборки…'}));
+        this.updateExportCount();
         const p=new URLSearchParams({view:'page',limit:'50',sort:'name',include_terminal:'true'});
         if(query)p.set('q',query);if(this.exportHeadFilter)p.set('head',this.exportHeadFilter);if(cursor)p.set('cursor',cursor);
         try {
             const data=await apiGetJson('/api/patients?'+p);
-            if(!this.isCurrentRead('export-list',version))return;
+            if(!current())return;
             this.exportPage=data;this.exportQuery=Object.fromEntries([...p].filter(([k])=>k!=='cursor'));
             this.exportPaging ||= {trail:[null],index:0};if(!cursor)this.exportPaging={trail:[null],index:0};
             const rows=data.patients.map(card=>el('label',{class:'pick'},[
@@ -12331,8 +12374,11 @@ const app = {
             $('exportPatientList').append(this.boundedPager(data,this.exportPaging,next=>this.renderExportPatientList(query,next)));
             this.updateExportCount();
         } catch(error) {
-            if(!this.isCurrentRead('export-list',version))return;
+            if(!current())return;
             if(!restarted&&[409,410].includes(error.status)&&['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code)){this.exportAllSelection=null;ui.toast('Выдача экспорта изменилась. Проверьте выбор.','warning');return this.renderExportPatientList(query,null,true);}
+            this.exportAllSelection = null;
+            this.updateExportCount();
+            $('exportPatientList').replaceChildren(el('p', {class: 'empty', role: 'alert', text: 'Не удалось загрузить выборку.'}));
             ui.toast(error.message,'danger');
         }
     },
@@ -12359,78 +12405,127 @@ const app = {
 
     updateExportCount() {
         $('exportSelectedCount').textContent=this.exportAllSelection?this.exportAllSelection.total:(this.exportSelectedIds?.size||0);
-        $('exportTotalCount').textContent=this.patientPage?.summary.total||0;
+        $('exportTotalCount').textContent = this.exportPage?.page.total ?? '—';
+        $('exportSelectAllBtn').disabled = !this.exportPage || !this.exportPage.page.total;
+        $('confirmExportBtn').disabled = !this.exportPage || Boolean(this.exportOperation);
     },
 
     async confirmExport() {
-        if (!this.exportAllSelection && (!this.exportSelectedIds || this.exportSelectedIds.size === 0)) {
+        const context = this.exportContext;
+        if (this.exportOperation || !this.exportPage || !this.transferContextCurrent(context, 'exportData')) return;
+        const selection = this.exportAllSelection;
+        const ids = [...this.exportSelectedIds];
+        const count = selection?.total ?? ids.length;
+        if (!count) {
             ui.toast('Выберите хотя бы одного пациента.', 'warning');
             return;
         }
-        const confirmed = await ui.confirm({
-            title: 'Скачать файл с медицинскими данными?',
-            text: `В файл попадут данные ${this.exportAllSelection?.total || this.exportSelectedIds.size} пациент(ов): ФИО, диагнозы, контакты. Храните его так же осторожно, как медицинскую карту.`,
-            okLabel: 'Скачать',
-            danger: false,
-        });
-        if (!confirmed) return;
-
+        const operation = {};
+        const version = this.readVersions['export-list'];
+        const current = () => this.exportContext === context && this.exportOperation === operation &&
+            ! $('exportModal').hidden && this.transferContextCurrent(context, 'exportData') &&
+            this.isCurrentRead('export-list', version) && selection === this.exportAllSelection &&
+            ids.length === this.exportSelectedIds.size && ids.every(id => this.exportSelectedIds.has(id));
+        this.exportOperation = operation;
+        this.updateExportCount();
         try {
-            const ids = Array.from(this.exportSelectedIds);
-            const response = await apiFetch(this.exportAllSelection ? '/api/export/selection' : '/api/export?ids=' + encodeURIComponent(ids.join(',')), {
-                ...(this.exportAllSelection ? {method:'POST',body:JSON.stringify({query:this.exportAllSelection.query,revision:this.exportAllSelection.revision})} : {}),
+            const confirmed = await ui.confirm({
+                title: 'Скачать файл с медицинскими данными?',
+                text: `В файл попадут медицинские данные ${count} пациент(ов). Храните его так же осторожно, как медицинскую карту.`,
+                okLabel: 'Скачать',
+                danger: false,
+            });
+            if (!confirmed || !current()) return;
+            const response = await apiFetch(selection ? '/api/export/selection' : '/api/export?ids=' + encodeURIComponent(ids.join(',')), {
+                ...(selection ? {method: 'POST', body: JSON.stringify({query: selection.query, revision: selection.revision})} : {}),
                 rawResponse: true,
-                headers: { 'X-CSRF-Token': getCookie('clinic_csrf') || '' },
+                headers: {'X-CSRF-Token': getCookie('clinic_csrf') || ''},
             });
             const blob = await response.blob();
-            const disposition = response.headers.get('content-disposition') || '';
-            const match = disposition.match(/filename="([^"]+)"/);
+            const match = (response.headers.get('content-disposition') || '').match(/^attachment; filename="([a-z0-9_.-]+\.json)"$/i);
+            if (!current()) return;
+            if (!blob.size || !match || !/^application\/json(?:;|$)/i.test(blob.type)) {
+                throw new Error('Сервер не вернул файл выгрузки.');
+            }
+            const documentData = JSON.parse(await blob.text());
+            if (!current()) return;
+            if (!Array.isArray(documentData?.patients) || documentData.signature?.algorithm !== 'HMAC-SHA256' ||
+                typeof documentData.signature.value !== 'string' || !/^[a-f0-9]{64}$/.test(documentData.signature.value)) {
+                throw new Error('Сервер вернул неполную выгрузку.');
+            }
             const url = URL.createObjectURL(blob);
-            const link = el('a', { href: url, download: match ? match[1] : `patients_export_${new Date().toISOString().slice(0, 10)}.json` });
+            const link = el('a', {href: url, download: match[1]});
             document.body.append(link);
-            link.click();
-            link.remove();
-            URL.revokeObjectURL(url);
+            try { link.click(); } finally {
+                link.remove();
+                setTimeout(() => URL.revokeObjectURL(url), 0);
+            }
             ui.closeModal('exportModal');
             ui.toast('Файл выгружен.', 'good');
-        } catch (e) {
-            ui.toast('Не удалось выполнить экспорт: ' + e.message, 'danger');
+        } catch (error) {
+            if (!current()) return;
+            if (error.status === 409 && error.data?.code === 'PATIENT_QUERY_CHANGED') {
+                this.exportAllSelection = null;
+                ui.toast('Выдача изменилась. Выберите пациентов заново и подтвердите выгрузку.', 'warning');
+                void this.renderExportPatientList($('exportSearchInput').value);
+            } else {
+                ui.toast('Не удалось выполнить экспорт: ' + error.message, 'danger');
+            }
+        } finally {
+            if (this.exportOperation === operation) {
+                this.exportOperation = null;
+                this.updateExportCount();
+            }
         }
     },
 
     triggerImport() {
+        if (!this.can('importData') || this.sessionExpired || this.sessionReconciling) return;
+        if (this.importOperation) {
+            if ($('importReviewModal').hidden) ui.openModal('importReviewModal');
+            return;
+        }
         $('importFileInput').click();
     },
 
-    handleImportFile(input) {
+    async handleImportFile(input) {
         const file = input.files[0];
-        if (!file) return;
+        input.value = '';
+        if (!file || this.importOperation || !this.can('importData') || this.sessionExpired || this.sessionReconciling) return;
+        this.closeImportReviewModal(true);
+        const context = this.transferContext();
+        this.importContext = context;
+        const current = () => this.importContext === context && this.transferContextCurrent(context, 'importData');
         if (file.size > 5 * 1024 * 1024) {
             ui.toast('Файл слишком большой (максимум 5 МБ).', 'danger');
-            input.value = '';
             return;
         }
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-            this.pendingImportRaw = event.target.result;
-            await this.previewImport();
-        };
-        reader.onerror = () => ui.toast('Не удалось прочитать файл.', 'danger');
-        reader.readAsText(file);
-        input.value = '';
-    },
-
-    async previewImport() {
+        $('importModeSelect').value = 'add';
+        for (const option of $('importModeSelect').options) {
+            option.disabled = option.value !== 'add' && this.user.roleId !== 'developer';
+        }
+        $('importModeSelect').disabled = true;
+        $('confirmImportCommitBtn').disabled = true;
+        this.renderImportProvenance(null);
+        $('importExecutionStatus').textContent = 'Проверка файла…';
+        ui.openModal('importReviewModal');
         try {
-            const report = await apiPost('/api/import/preview', { raw: this.pendingImportRaw });
+            const raw = await file.text();
+            if (!current()) return;
+            this.pendingImportRaw = raw;
+            const report = await apiPost('/api/import/preview', {raw});
+            if (!current()) return;
+            $('importExecutionStatus').textContent = '';
             if (!report.valid) {
+                this.pendingImportRaw = null;
                 this.showImportErrors(report.errors, report.provenance, report.code);
                 return;
             }
             this.showImportReviewModal(report);
-        } catch (e) {
-            ui.toast('Файл не прошёл проверку: ' + e.message, 'danger');
+        } catch (error) {
+            if (!current()) return;
             this.pendingImportRaw = null;
+            $('importExecutionStatus').textContent = 'Не удалось проверить файл. Закройте окно и выберите файл снова.';
         }
     },
 
@@ -12480,7 +12575,6 @@ const app = {
             ]));
             $('importModeSelect').disabled = true;
             $('confirmImportCommitBtn').disabled = true;
-            ui.openModal('importReviewModal');
             return;
         }
         $('importReviewSummary').replaceChildren(frag([
@@ -12492,7 +12586,6 @@ const app = {
         ]));
         $('importModeSelect').disabled = true;
         $('confirmImportCommitBtn').disabled = true;
-        ui.openModal('importReviewModal');
     },
 
     showImportReviewModal(report) {
@@ -12517,7 +12610,6 @@ const app = {
             ]),
         ]));
         this.updateImportModeHint();
-        ui.openModal('importReviewModal');
     },
 
     updateImportModeHint() {
@@ -12578,7 +12670,7 @@ const app = {
             || (repeatRequired && !$('importRepeatConfirm').checked)
             || (possibleRows.length > 0 && !$('importDuplicateReason').value.trim());
         const blocked = consiliumBlocked || archiveBlocked || duplicateBlocked || accessBlocked || overwriteBlocked
-            || policyDuplicatesBlocked || limitExceeded || needsConfirmation || Boolean(this.importCommitPending);
+            || policyDuplicatesBlocked || limitExceeded || needsConfirmation || !this.importReport || Boolean(this.importOperation);
         $('confirmImportCommitBtn').disabled = blocked;
         const overwriteAlert = overwrite && (overwrite.blocked || mode === 'update')
             ? el('div', { class: `alert ${overwrite.blocked ? 'alert--danger' : 'alert--info'}`, role: overwrite.blocked ? 'alert' : null }, [
@@ -12694,29 +12786,59 @@ const app = {
         ]), ...extra);
     },
 
-    closeImportReviewModal() {
-        ui.closeModal('importReviewModal');
+    closeImportReviewModal(force = false) {
+        if (!force && this.importOperation?.pending) return;
+        ui.closeModal('importReviewModal', {force});
+        if (!force && this.importOperation) return; // Keep recovery available through «Импорт».
+        this.importContext = null;
+        this.importConfirming = null;
         this.pendingImportRaw = null;
         this.importReport = null;
-        this.importCommitKey = null;
-        this.importCommitSentBody = null;
-        $('importUnsignedConfirm').checked = false;
-        $('importPreserveIdsConfirm').checked = false;
-        $('importHistoricalDecisionsConfirm').checked = false;
-        $('importRepeatConfirm').checked = false;
-        $('importDuplicateReason').value = '';
+        this.importOperation = null;
+        $('importFileInput').value = '';
+        this.renderImportProvenance(null);
+        $('importReviewSummary').replaceChildren();
+        $('importConsiliumImpact').replaceChildren();
+        $('importExecutionStatus').textContent = '';
+        this.setImportExecutionState();
+    },
+
+    setImportExecutionState(message) {
+        const operation = this.importOperation;
+        const locked = Boolean(operation);
+        const pending = Boolean(operation?.pending);
+        $('importModeSelect').disabled = locked || !this.importReport;
+        for (const id of ['importUnsignedConfirm', 'importPreserveIdsConfirm', 'importHistoricalDecisionsConfirm',
+            'importRepeatConfirm', 'importDuplicateReason']) $(id).disabled = locked;
+        $('closeImportIconBtn').disabled = pending;
+        $('closeImportReviewBtn').disabled = pending;
+        $('retryImportCommitBtn').hidden = !operation?.uncertain;
+        $('retryImportCommitBtn').disabled = pending || Boolean(operation?.replayExpired);
+        if (message !== undefined) $('importExecutionStatus').textContent = message;
+        this.renderImportConsiliumImpact($('importModeSelect').value);
     },
 
     async confirmImportCommit() {
-        if (!this.pendingImportRaw) return;
+        const context = this.importContext;
+        if (!this.pendingImportRaw || !this.importReport || this.importOperation || this.importConfirming ||
+            $('importReviewModal').hidden || $('confirmImportCommitBtn').disabled ||
+            !this.transferContextCurrent(context, 'importData')) return;
         const mode = $('importModeSelect').value;
         if (mode === 'replace') {
-            const sure = await ui.confirm({
-                title: 'Загрузить файл в пустую базу?',
-                text: 'Режим «полная замена» выполняется только в пустую базу: существующие записи не удаляются, при наличии пациентов сервер отклонит импорт.',
-                okLabel: 'Продолжить',
-            });
-            if (!sure) return;
+            const confirmation = {};
+            this.importConfirming = confirmation;
+            let sure;
+            try {
+                sure = await ui.confirm({
+                    title: 'Загрузить файл в пустую базу?',
+                    text: 'Режим выполняется только в пустой базе. Существующие записи не удаляются.',
+                    okLabel: 'Продолжить',
+                });
+            } finally {
+                if (this.importConfirming === confirmation) this.importConfirming = null;
+            }
+            if (!sure || this.importContext !== context || !this.transferContextCurrent(context, 'importData') ||
+                $('importReviewModal').hidden || $('importModeSelect').value !== mode) return;
         }
         const provenance = this.importReport && this.importReport.provenance;
         const body = { raw: this.pendingImportRaw, mode };
@@ -12757,56 +12879,98 @@ const app = {
             // WP2.4-C: подтверждение всего набора совпадений из проверки файла; сервер сверит его заново.
             body.duplicateConfirmation = { reason, matchedPatientIds: possible.matchedPatientIds };
         }
-        // WP2.4-B: ключ этой операции импорта. Те же данные — тот же ключ (безопасный
-        // повтор потерянного ответа); другой режим или подтверждения — новый ключ.
-        const bodyText = JSON.stringify(body);
-        if (!this.importCommitKey || this.importCommitSentBody !== bodyText) this.importCommitKey = newIdempotencyKey();
-        this.importCommitSentBody = bodyText;
-        if (this.importCommitPending) return;
-        this.importCommitPending = true;
-        $('confirmImportCommitBtn').disabled = true;
-        let result = null;
-        try {
-            result = await apiPostIdempotent('/api/import/commit', body, this.importCommitKey);
-        } catch (e) {
-            // Импорт не подтвержден сервером: окно и ключ остаются, повтор тех же
-            // данных безопасен (при уже выполненном импорте сервер вернет его итог).
-            if (this.isDuplicateLimitExceeded(e) && this.importReport) {
-                // C-01: набор вырос сверх лимита — режим блокируется, поле причины скрыто.
-                this.importReport.possibleDuplicates = {
-                    ...(this.importReport.possibleDuplicates || {}),
-                    [mode]: { rows: [], matchedPatientIds: [], limitExceeded: true, limitExceededRows: e.data.rows || [] },
-                };
-                $('importDuplicateReason').value = '';
-                ui.toast('Импорт не выполнен. ' + apiErrorMessage(e.status, e.data), 'danger');
-            } else if (this.isPossibleDuplicate(e) && this.importReport && e.data.rows) {
-                // WP2.4-C: набор совпадений изменился — окно показывает актуальный список
-                // от сервера, причину нужно указать заново для нового набора.
-                this.importReport.possibleDuplicates = {
-                    ...(this.importReport.possibleDuplicates || {}),
-                    [mode]: { rows: e.data.rows, matchedPatientIds: e.data.matchedPatientIds || [] },
-                };
-                $('importDuplicateReason').value = '';
-                ui.toast('Импорт не выполнен: совпадения с вашими карточками изменились после проверки файла. '
-                    + 'Проверьте обновленный список и укажите причину снова.', 'danger');
-            } else {
-                ui.toast('Импорт не выполнен: ' + e.message, 'danger');
-            }
-        } finally {
-            this.importCommitPending = false;
-            if (!result && this.importReport) this.renderImportConsiliumImpact($('importModeSelect').value);
+        this.importOperation = {context, mode, bodyText: JSON.stringify(body), key: newIdempotencyKey(),
+            startedAt: Date.now(), startedMonotonic: performance.now()};
+        await this.sendImportOperation();
+    },
+
+    async sendImportOperation() {
+        const operation = this.importOperation;
+        const current = () => this.importOperation === operation &&
+            this.transferContextCurrent(operation?.context, 'importData');
+        if (!operation || operation.pending || !current() || $('importReviewModal').hidden) return;
+        // The server keeps idempotency receipts for seven days. Leave margin for clock drift.
+        const replayWindow = 6 * 24 * 60 * 60 * 1000;
+        if (operation.uncertain && (Date.now() - operation.startedAt >= replayWindow ||
+            performance.now() - operation.startedMonotonic >= replayWindow || Date.now() < operation.startedAt)) {
+            operation.replayExpired = true;
+            this.setImportExecutionState('Срок безопасного повторения истек. Проверьте журнал и данные на сервере перед новым импортом.');
+            $('importExecutionStatus').focus();
+            return;
         }
-        if (!result) return;
+        operation.pending = true;
+        $('importExecutionStatus').focus();
+        this.setImportExecutionState(operation.uncertain ? 'Проверка результата прежней операции…' : 'Импорт выполняется…');
+        let result;
+        try {
+            result = await apiPostIdempotent('/api/import/commit', JSON.parse(operation.bodyText), operation.key,
+                {retryTransport: false});
+            if (!result || !['added', 'updated', 'skipped'].every(key =>
+                Number.isSafeInteger(result[key]) && result[key] >= 0)) {
+                throw Object.assign(new Error('Unexpected import result'), {network: true});
+            }
+        } catch (error) {
+            if (!current()) return;
+            operation.pending = false;
+            const rolledBack = error.status === 503 && error.data?.detail ===
+                'Импорт не сохранён: не удалось записать данные вместе с журналом аудита. Данные не изменены.';
+            if (operation.uncertain || error.network || (error.status >= 500 && !rolledBack)) {
+                operation.uncertain = true;
+                this.setImportExecutionState('Результат импорта не подтвержден. Проверьте его повтором прежней операции с тем же файлом и ключом. Новый импорт временно недоступен.');
+                $('retryImportCommitBtn').focus();
+                return;
+            }
+            this.importOperation = null;
+            const mode = operation.mode;
+            const rejection = {
+                403: 'У вашей учетной записи нет разрешения на этот импорт.',
+                409: 'Данные на сервере изменились или конфликтуют с файлом.',
+                422: 'Сервер отклонил параметры импорта.',
+                428: 'Сервер требует обновить проверку и подтвердить условия импорта.',
+            };
+            let message = rolledBack ? 'Импорт отменен сервером. Данные не изменены.' :
+                rejection[error.status] || 'Сервер отклонил импорт: ' + apiErrorMessage(error.status, error.data);
+            if (this.isDuplicateLimitExceeded(error) || this.isPossibleDuplicate(error) && error.data.rows) {
+                const exceeded = this.isDuplicateLimitExceeded(error);
+                this.importReport.possibleDuplicates = {
+                    ...this.importReport.possibleDuplicates,
+                    [mode]: {rows: exceeded ? [] : error.data.rows, matchedPatientIds: exceeded ? [] : error.data.matchedPatientIds || [],
+                        limitExceeded: exceeded, limitExceededRows: exceeded ? error.data.rows || [] : []},
+                };
+                $('importDuplicateReason').value = '';
+                message = 'Набор совпадений изменился. Проверьте свежий список и подтвердите причину заново.';
+            } else if (error.status === 428 && error.data?.code === 'FILE_ALREADY_IMPORTED' && error.data.previouslyImported) {
+                this.importReport.previouslyImported = error.data.previouslyImported;
+                $('importRepeatConfirm').checked = false;
+                message = 'Файл уже обработан. Ознакомьтесь с прежним результатом перед подтверждением повтора.';
+            } else if ([403, 409, 428].includes(error.status)) {
+                this.pendingImportRaw = null;
+                this.importReport = null;
+                $('importReviewSummary').replaceChildren();
+                this.renderImportProvenance(null);
+                message += ' Для новой попытки выберите файл заново.';
+            }
+            this.setImportExecutionState(message);
+            $('importExecutionStatus').focus();
+            return;
+        }
+        if (!current()) return;
         // B-02: сервер подтвердил импорт — операция закрыта (окно и ключ сброшены).
         // Ошибка обновления экрана дальше не выдается за ошибку импорта.
-        this.closeImportReviewModal();
+        this.closeImportReviewModal(true);
+        this.patientDetails.clear();
+        this.patientListDirty = true;
+        this.clearAnalyticsRelease();
+        this.clearQualityV1(true);
         ui.toast(`Импорт завершён: добавлено ${result.added}, обновлено ${result.updated}, без изменений ${result.unchanged || 0}, пропущено ${result.skipped}.`
             + (result.futureFacts ? ` Фактических дат позже сегодняшней: ${result.futureFacts} — они отмечены в карточках как неподтверждённые.` : '')
             + (result.unverifiedFacts ? ` Неподтверждённых фактических дат из файла: ${result.unverifiedFacts} — отметка сохранена.` : ''),
             (result.futureFacts || result.unverifiedFacts) ? 'warning' : 'good');
         await this.refreshAfterSavedOperation('Импорт сохранен', async () => {
             await this.loadPatients();
+            if (!this.transferContextCurrent(operation.context, 'importData')) return;
             await this.loadActivity();
+            if (!this.transferContextCurrent(operation.context, 'importData')) return;
             this.fillStaticSelects();
             this.showView('patients');
         });
@@ -13474,12 +13638,14 @@ const app = {
         on('closeImportReviewBtn', 'click', () => this.closeImportReviewModal());
         on('closeImportIconBtn', 'click', () => this.closeImportReviewModal());
         on('confirmImportCommitBtn', 'click', () => this.confirmImportCommit());
+        on('retryImportCommitBtn', 'click', () => this.sendImportOperation());
         on('importModeSelect', 'change', () => {
             // Подтверждение даётся для конкретного режима: смена режима его сбрасывает.
             $('importUnsignedConfirm').checked = false;
             $('importPreserveIdsConfirm').checked = false;
             $('importHistoricalDecisionsConfirm').checked = false;
             $('importRepeatConfirm').checked = false;
+            $('importDuplicateReason').value = '';
             this.updateImportModeHint();
         });
         on('importUnsignedConfirm', 'change', () => this.renderImportConsiliumImpact($('importModeSelect').value));
