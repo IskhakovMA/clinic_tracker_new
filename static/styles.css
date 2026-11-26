@@ -3735,6 +3735,29 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 #staffTable th:first-child { width: 18%; }
 #staffTable th:last-child { width: 22%; }
 
+#staffTable .staff-value {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
+#staffTable code.staff-value { -webkit-line-clamp: 1; }
+
+#staffTable .staff-values-expanded .staff-value {
+    display: block;
+    overflow: visible;
+}
+
+#staffTable .staff-expand {
+    margin-top: var(--sp-1);
+    max-width: 100%;
+}
+
+#staffTable .staff-expand[hidden] { display: none; }
+
 #staffTable .cell-actions .btn {
     margin: 2px;
     max-width: 100%;

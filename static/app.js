@@ -11541,6 +11541,8 @@ const app = {
             $('staffFormError').textContent = 'Список обновляется. Откройте редактор из свежего списка.';
             $('staffFormError').classList.remove('is-hidden');
         }
+        this.staffValueObserver?.disconnect();
+        this.staffValueObserver = null;
         this.staffUsers = [];
         if ($('staffBody').contains(document.activeElement)) $('staffPageTitle').focus();
         $('staffBody').replaceChildren();
@@ -11581,6 +11583,13 @@ const app = {
             empty.classList.toggle('is-hidden', !!this.staffUsers.length);
             empty.textContent = 'Сотрудники не найдены. Измените фильтры или создайте учетную запись.';
             $('staffBody').replaceChildren(frag(this.staffUsers.map(user => this.staffRow(user))));
+            this.staffValueObserver = new ResizeObserver(entries => {
+                const rows = new Set(entries.map(entry => entry.target.closest('tr')));
+                for (const row of rows) this.updateStaffDisclosure(row);
+            });
+            for (const value of $('staffBody').querySelectorAll('.staff-value')) {
+                this.staffValueObserver.observe(value);
+            }
         } catch (error) {
             if (current()) this.setStaffReadState(error.status === 403 ? 'denied' : 'error');
         }
@@ -11606,6 +11615,16 @@ const app = {
         ]));
     },
 
+    updateStaffDisclosure(row) {
+        if (!row?.isConnected) return;
+        const toggle = row.querySelector('.staff-expand');
+        if (toggle.getAttribute('aria-expanded') === 'true') return;
+        const focused = document.activeElement === toggle;
+        toggle.hidden = ![...row.querySelectorAll('.staff-value')]
+            .some(value => value.scrollHeight > value.clientHeight + 1);
+        if (toggle.hidden && focused) row.querySelector('.cell-actions button').focus();
+    },
+
     staffRow(u) {
         const deptNames = (u.departments || []).map(d => d.name).join(', ') || '—';
         const statusChipClass = { active: 'chip--good', blocked: 'chip--danger', deactivated: 'chip--neutral' }[u.status] || 'chip--neutral';
@@ -11622,11 +11641,25 @@ const app = {
         }
         actions.push(actionBtn('Сброс пароля', () => this.resetStaffPassword(u)));
         actions.push(actionBtn('Завершить сессии', () => this.terminateStaffSessions(u)));
+        const toggle = el('button', {
+            type: 'button', class: 'btn btn--ghost btn--sm staff-expand', hidden: true,
+            text: 'Показать полностью', 'aria-expanded': 'false',
+            on: {click: () => {
+                if (!this.staffActionCurrent(u, ticket)) return;
+                const row = toggle.closest('tr');
+                const expanded = row.classList.toggle('staff-values-expanded');
+                toggle.setAttribute('aria-expanded', String(expanded));
+                toggle.textContent = expanded ? 'Свернуть' : 'Показать полностью';
+                this.updateStaffDisclosure(row);
+            }},
+        });
         return el('tr', {role: 'row'}, [
-            el('td', {role: 'cell'}, el('div', { class: 'person__name', text: u.fullName })),
-            el('td', {role: 'cell'}, el('code', { text: u.username })),
-            el('td', {role: 'cell', text: u.roleLabel }),
-            el('td', {role: 'cell', text: deptNames }),
+            el('td', {role: 'cell'}, [
+                el('div', {class: 'person__name staff-value', text: u.fullName}), toggle,
+            ]),
+            el('td', {role: 'cell'}, el('code', {class: 'staff-value', text: u.username})),
+            el('td', {role: 'cell', text: u.roleLabel}),
+            el('td', {role: 'cell'}, el('span', {class: 'staff-value', text: deptNames})),
             el('td', {role: 'cell'}, el('span', { class: `chip ${statusChipClass}`, text: this.STATUS_LABELS[u.status] || u.status })),
             el('td', {role: 'cell', class: 'cell-when', text: u.lastLoginAt ? this.formatDateTime(u.lastLoginAt) : '—' }),
             el('td', {role: 'cell', class: 'cell-actions' }, actions),

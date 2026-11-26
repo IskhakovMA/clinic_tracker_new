@@ -15,8 +15,8 @@ const checks = [], responseProofs = [], accessibility = [], nativeZoom = [];
 const eventPath = '/api/patients/workspace/events?limit=100';
 const patientPath = '/api/patients/' + patients.overdue.id;
 const transferPath = '/api/patients/' + patients.revoked.id;
-const headLogin = 'f9.synthetic.head';
-const headName = 'Синтетический Заведующий F9 ' + 'ДлиннаяФамилия'.repeat(9);
+const headLogin = 'f9.synthetic.' + 'h'.repeat(51);
+const headName = ('Синтетический Заведующий F9 ' + 'ДлиннаяФамилия'.repeat(15)).slice(0,200);
 const deptName = 'Синтетическое отделение F9 ' + 'ДлинноеНазвание'.repeat(10);
 const randomPassword = () => randomBytes(24).toString('hex');
 let phase = 'startup';
@@ -340,6 +340,53 @@ async function staleStructure(page) {
     checks.push('held genuine Structure HTTP 200 cannot restore administrative controls after navigation');
 }
 
+async function compactStaff(page, width, theme) {
+    const row = page.locator('#staffBody tr').filter({hasText:headLogin});
+    const ordinary = page.locator('#staffBody tr').filter({hasText:users.admin});
+    const toggle = row.locator('button.staff-expand');
+    await toggle.waitFor({state:'visible'});
+    assert.equal(await ordinary.locator('button.staff-expand:visible').count(),0);
+    const values = row.locator('.staff-value');
+    const exact = await values.allTextContents();
+    assert.deepEqual(exact,[headName,headLogin,deptName]);
+    const measure = target => target.evaluate(node=>Math.round(node.getBoundingClientRect().height));
+    const shortHeight = await measure(ordinary), compactHeight = await measure(row);
+    const context = `Staff ${theme} ${width}px: compact ${compactHeight}px, ordinary ${shortHeight}px`;
+    process.stdout.write(context+'\n');
+    assert(compactHeight <= shortHeight + 90,context);
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    assert.match(await toggle.textContent(),/Показать полностью/);
+    let writes = 0;
+    const countWrite = request => {
+        if (['POST','PUT','PATCH','DELETE'].includes(request.method())) writes++;
+    };
+    page.on('request',countWrite);
+    await press(toggle);
+    assert.equal(await toggle.getAttribute('aria-expanded'),'true');
+    assert.match(await toggle.textContent(),/Свернуть/);
+    assert.deepEqual(await values.allTextContents(),exact);
+    assert(await measure(row) > compactHeight);
+    assert.equal(await values.evaluateAll(nodes=>nodes.every(node=>node.scrollHeight <= node.clientHeight + 1)),true);
+    const block=row.getByRole('button',{name:'Блокировать',exact:true});
+    const end=row.getByRole('button',{name:'Завершить сессии',exact:true});
+    assert(await block.isEnabled() && await end.isEnabled());
+    if (theme==='dark' && width===375) {
+        const edit = row.getByRole('button',{name:'Изменить',exact:true});
+        await page.keyboard.press('Tab');
+        assert(await edit.evaluate(node=>node===document.activeElement));
+        await page.keyboard.press('Shift+Tab');
+        assert(await toggle.evaluate(node=>node===document.activeElement));
+        await toggle.scrollIntoViewIfNeeded();
+        await page.screenshot({path:path.join(process.env.OUT,'f9-staff-expanded-dark-375.png'),animations:'disabled'});
+    }
+    await press(toggle,'Space');
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    assert.equal(await measure(row),compactHeight);
+    page.off('request',countWrite);
+    assert.equal(writes,0);
+    return {shortHeight,compactHeight};
+}
+
 async function layout(page) {
     phase = 'Stage 3.5 accessibility and viewport checks';
     await page.evaluate(fs.readFileSync(process.env.AXE_SOURCE,'utf8'));
@@ -358,8 +405,13 @@ async function layout(page) {
                         .violations.map(row=>row.id)
                 }));
                 assert.deepEqual(checks,{overflow:false,violations:[]},section+'/'+theme+'/'+width);
-                accessibility.push({section,theme,width,...checks});
+                const heights = section === 'staff' ? await compactStaff(page,width,theme) : {};
+                accessibility.push({section,theme,width,...checks,...heights});
                 if ((theme==='light' && width===1440) || (theme==='dark' && width===375)) {
+                    if (section==='staff') {
+                        await page.locator('#staffBody tr').filter({hasText:headLogin})
+                            .locator('button.staff-expand').scrollIntoViewIfNeeded();
+                    }
                     await page.screenshot({path:path.join(process.env.OUT,'f9-'+section+'-'+theme+'-'+width+'.png'),
                         animations:'disabled'});
                 }
@@ -367,6 +419,42 @@ async function layout(page) {
         }
         await page.setViewportSize({width:1440,height:1000});
     }
+    await navigate(page,'staff');
+    // Change only the display response to exercise multiple long departments
+    // without changing the real membership and audit fixtures.
+    const extraDepartment = '<b>Синтетическое отделение</b> ' + 'д'.repeat(100);
+    const match = /\/api\/users\?.+$/;
+    const fixture = async route => {
+        const response = await route.fetch();
+        assert.equal(response.status(),200);
+        const data = await response.json();
+        const head = data.users.find(user=>user.username===headLogin);
+        assert(head);
+        head.departments.push({id:'synthetic-render-only',name:extraDepartment});
+        await route.fulfill({response,json:data});
+    };
+    await page.route(match,fixture);
+    try {
+        await page.locator('#staffSearchInput').fill(headLogin);
+        await page.waitForFunction(()=>app.staffReadState==='ready' && app.staffUsers.length===1);
+        const row=page.locator('#staffBody tr').filter({hasText:headLogin});
+        const toggle=row.locator('button.staff-expand');
+        const department=row.locator('.staff-value').last();
+        await toggle.waitFor({state:'visible'});
+        assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+        await press(toggle);
+        assert.equal(await toggle.getAttribute('aria-expanded'),'true');
+        assert.equal(await department.textContent(),deptName+', '+extraDepartment);
+        assert.equal(await department.locator('b').count(),0);
+        assert(await department.evaluate(node=>node.scrollHeight<=node.clientHeight+1));
+        await press(toggle,'Space');
+        assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    } finally {
+        await page.unroute(match,fixture);
+    }
+    await page.locator('#staffSearchInput').fill('');
+    await page.waitForFunction(()=>app.staffReadState==='ready' && app.staffUsers.length>1);
+    checks.push('compact staff values expand and collapse on keyboard across widths and themes, including after filter');
     checks.push('Stage 3.5 desktop/mobile themes and scoped axe checks');
 }
 
