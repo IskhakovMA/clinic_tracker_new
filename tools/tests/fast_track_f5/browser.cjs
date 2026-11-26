@@ -324,6 +324,37 @@ async function manager(page, context) {
     assert.deepEqual((await audited(restored, 'fresh back to drilldown')).items, pageTwo.items);
     await detailsPanel(page).getByRole('button', {name: 'Предыдущая страница', exact: true}).waitFor();
     await page.waitForFunction(id => document.activeElement?.dataset.analyticsPatient === id, patient.id);
+
+    active = 'passive same-identity analytics reconciliation';
+    const before = await page.evaluate(() => ({epoch: app.sessionEpoch || 0, user: app.user.id,
+        position: document.activeElement.dataset.analyticsPosition}));
+    // Trigger the public lifecycle event without re-focusing or modifying the app.
+    // The real session, dashboard and details responses must pass the normal barrier.
+    const [identity, newDashboard, newDetails] = await Promise.all([
+        reply(page, '/api/auth/me'), reply(page, dashboardPath), detailReply(page, 50),
+        page.evaluate(() => window.dispatchEvent(new FocusEvent('focus'))),
+    ]);
+    assert.equal(identity.status(), 200);
+    assert.equal((await identity.json()).user.id, before.user);
+    assert.equal((await audited(newDashboard, 'dashboard after passive session recheck')).meta.filters.stage, 'exam');
+    assert.deepEqual((await audited(newDetails, 'page two after passive session recheck')).items, pageTwo.items);
+    await page.waitForFunction(({user, epoch, position, patient}) => app.user?.id === user &&
+        app.sessionEpoch > epoch && !app.sessionExpired && !app.sessionReconciling &&
+        document.activeElement?.dataset.analyticsPatient === patient &&
+        document.activeElement.dataset.analyticsPosition === position, {...before, patient: patient.id}).catch(async error => {
+        const diagnostic = await page.evaluate(({user, epoch, position, patient}) => ({
+            sameUser: app.user?.id === user, freshEpoch: app.sessionEpoch > epoch, expired: app.sessionExpired,
+            reconciling: app.sessionReconciling, view: app.currentView, offset: app.analytics.details?.offset,
+            tag: document.activeElement?.tagName, id: document.activeElement?.id,
+            expectedPosition: position, activePosition: document.activeElement?.dataset.analyticsPosition,
+            matchesPatient: document.activeElement?.dataset.analyticsPatient === patient,
+        }), {...before, patient: patient.id});
+        throw new Error('Passive focus restoration failed: ' + JSON.stringify(diagnostic), {cause: error});
+    });
+    assert.equal(clinicalWrites.length, 0);
+    receipt.checks.push('passive same-user session recheck reloads real scoped dashboard and page two, restoring exact row focus and stage without writes');
+
+    active = 'manager browser Forward and explicit return';
     const [forward] = await Promise.all([reply(page, '/api/patients/' + patient.id), page.goForward()]);
     assert.equal((await audited(forward, 'analytics history forwards object')).id, patient.id);
     const [explicit, fresh] = await Promise.all([

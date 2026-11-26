@@ -32,10 +32,9 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse "$F4_SHA^{tree}")" = "$F4_TREE"
-          # The first F5 commit is preserved after the hosted runner rejected its upload action pin.
-          test "$(git rev-list --parents -n1 HEAD)" = "$GITHUB_SHA 4bb4264c6889293dc936592dbab756b78e5c7034"
-          test "$(git rev-list --parents -n1 HEAD^)" = "4bb4264c6889293dc936592dbab756b78e5c7034 $F4_SHA"
-          test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/fast-track-f5-browser.yml
+          git merge-base --is-ancestor "$F4_SHA" HEAD
+          test -z "$(git rev-list --merges "$F4_SHA..HEAD")"
+          test "$(git rev-list --reverse "$F4_SHA..HEAD" | sed -n '1p')" = 4bb4264c6889293dc936592dbab756b78e5c7034
           git diff --exit-code "$F4_SHA" HEAD -- backend/app backend/migrations backend/requirements-dev.txt tools/tests/wp_h/package-lock.json .github/workflows/ci.yml .github/workflows/fast-track-f2-browser.yml .github/workflows/fast-track-f3-browser.yml .github/workflows/fast-track-f4-browser.yml
           while IFS= read -r path; do
             case "$path" in

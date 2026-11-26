@@ -6242,13 +6242,13 @@ const app = {
         }}, {allowed});
     },
 
-    analyticsReturnContext(patientId) {
+    analyticsReturnContext(patientId, focusIndex) {
         const state = this.analytics.details;
         return {
             source: this.analytics.source,
             filters: {...this.analytics.filters},
             detail: state && {type: state.type, title: state.title, extra: {...state.extra}, offset: state.offset,
-                focusPatient: patientId, focusIndex: state.items.indexOf(state.openedItem)},
+                focusPatient: patientId, focusIndex: focusIndex ?? state.items.indexOf(state.openedItem)},
         };
     },
 
@@ -6936,7 +6936,9 @@ const app = {
         state.offset = offset;
         this.drawAnalyticsDetails(state);
         const heading = $('analyticsDetailTitle');
-        if ($('view-analytics').contains(initialFocus) || !initialFocus?.isConnected) heading.focus();
+        // A same-user workspace rebuild replaces every DOM node and may return focus to body.
+        const restoreAfterRebuild = state.focusPatient && initialFocus === document.body && !ui.topModal();
+        if ($('view-analytics').contains(initialFocus) || !initialFocus?.isConnected || restoreAfterRebuild) heading.focus();
         try {
             // These drilldowns describe current state. Date filters apply to the period chart,
             // never to the patient/event list opened from a current dashboard metric.
@@ -12674,7 +12676,9 @@ const browserNavigation = {
     snapshot() {
         if (!this.committed || this.entry(history.state) !== this.committed) return null;
         if (this.committed.route.screen === 'analytics' && app.currentView === 'analytics') {
-            this.committed.route.analytics = app.analyticsReturnContext(document.activeElement?.dataset.analyticsPatient);
+            const focused = document.activeElement?.dataset;
+            this.committed.route.analytics = app.analyticsReturnContext(
+                focused?.analyticsPatient, focused?.analyticsPosition && Number(focused.analyticsPosition));
         }
         return {nonce: this.nonce, committed: this.committed, entries: new Map(this.entries),
             owner: app.user.id, access: app.accessSignature(app.user)};
