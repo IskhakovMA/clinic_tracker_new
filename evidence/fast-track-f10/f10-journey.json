@@ -1,0 +1,127 @@
+{
+  "checks": [
+    "historical dashed UUID renders unchanged; malformed, empty and null IDs and free text stay out of audit details",
+    "real 225+ records and exact 50-record page contents; live count growth, all pages, forward/back/first",
+    "actual staff creation, role update, session termination, department and membership changes, versioned clinical edit",
+    "manifest exact saved digest from released HTTP bytes; no object IDs or access context in manifest view",
+    "actual manifest 404 and overrun empty response; real 401/403 for list and manifest",
+    "Stage 3.5 at five widths and both themes, keyboard toggle, document axe WCAG A/AA",
+    "native browser zoom through 400% for audit in both themes",
+    "controlled empty and truncated pages, one fallback; manifest absence and same-context denial recovery",
+    "real expired session with changed epoch fences an already admitted late HTTP 200"
+  ],
+  "layout": [
+    {
+      "theme": "light",
+      "width": 320,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 375,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 768,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 1024,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 320,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 375,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 768,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 1024,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "overflow": false,
+      "violations": []
+    }
+  ],
+  "nativeZoom": [
+    {
+      "theme": "light",
+      "percent": 100,
+      "width": 1280
+    },
+    {
+      "theme": "light",
+      "percent": 200,
+      "width": 640
+    },
+    {
+      "theme": "light",
+      "percent": 400,
+      "width": 320
+    },
+    {
+      "theme": "dark",
+      "percent": 100,
+      "width": 1280
+    },
+    {
+      "theme": "dark",
+      "percent": 200,
+      "width": 640
+    },
+    {
+      "theme": "dark",
+      "percent": 400,
+      "width": 320
+    }
+  ],
+  "browser": "151.0.7922.34",
+  "database": {
+    "versionedClinicalWrites": 1,
+    "otherMedicalRowsUnchanged": true
+  },
+  "candidateSha": "71836a4b6942e629a857015e08e9e2cdf89466fa",
+  "candidateTree": "3969c6b56ffe2b931e8e4b44590bc8fd9f7c1ae5",
+  "dirtyCheckout": false,
+  "syntheticOnly": true,
+  "cleanup": {
+    "cleanExit": true,
+    "listenerClosed": true,
+    "databaseRemoved": true
+  },
+  "screenshots": {
+    "f10-audit-dark-1440.png": "e92b2640fdd00afbbfa96ad52cee37bbb084756fb0bb1797f0df2f4ca8541988",
+    "f10-audit-dark-375.png": "285b0ca361b28f88d8ec7fb3af5b8c52472ad2e75ecfdb685fdc1f55b34e5232",
+    "f10-audit-light-1440.png": "82a03cdedbef65fba4f050b9e140dc46b8caf47593487667696d4d84d2e91ff3",
+    "f10-audit-light-375.png": "8f75b227394d367d8b9ccd423e32bded072811dcd7ba9e057054345685fba9ee"
+  }
+}
