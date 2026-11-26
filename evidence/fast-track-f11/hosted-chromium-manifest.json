@@ -1,0 +1,29 @@
+{
+  "partial": true,
+  "artifactId": 15115596254,
+  "archiveSha256": "f4c9c5d82a759403f0687fcdc80529c259b594c490a46d1a9010541289aa84a6",
+  "sha256ByMember": {
+    "audit-chair-workflows.json": "f1da276eb24ccdc8b94301710441fa432ed7b1df967916bea7d8261ce3f32262",
+    "f10-journey.json": "44e2db948962768f9c2078dd2e6a381bbeeadaed42197a3adeb3112fe51fbd76",
+    "f11-journey.json": "44485221a79a9604c36c8a922f7f22fbb0816f234d42670040bf4991742ea140",
+    "f6-decisions.json": "6ab5351eae5adab10f64fc0028681ba8792e7665b6cb97ce71857222e3791e97",
+    "f6-journey.json": "7f221c3c03f431c7065f7d8d4a74664e4ed28b29f298bc69edb99cbb06da153f",
+    "f6-loading.json": "c1faf197d109249d3b60d448471727dfb3355bfd75820663f821642e39e83c48",
+    "f6-schedule.json": "d48440949e56b2d1e7fae7c498c96432e267ac99d64e5ee52b9f402702671c3e",
+    "f6-workflows.json": "8e992ab24404ba96da79cb747e6aa055af398c26fc4e9b50fb2a1b84a523fda7",
+    "f7-journey.json": "f682224d714f1f02d6e18eeab06550831afb88d1f7d53ac5ffed1771be13127d",
+    "f8-journey.json": "1654032a6a274b3c20f3eb20af7965629d7fa27674357b21376fcc8b02989b6a",
+    "f9-journey.json": "1e4c3f5e941d346b3e7f865c08cbab9631089cc40e66af7666b79cf5e6f12bb1",
+    "i4-create.json": "85437d3bd0a17c73692ffe38ad5f814a0391fa91957e33bbf01177e0b47adc69",
+    "i4-errors.json": "178cb8486681085eaf502a5751862a8eee08a27b429fb568e551e2ea88057719",
+    "i4-workflows.json": "ff09bd55e976ba4cb2fd7d37388bcf99cc5c0df328933ba501a2a0fda57f8735",
+    "i4-zoom.json": "cb29ebf4357cd7a7eec1b41f2c4074a1f82aa5f04df331ab4a5dcf2149ba534b",
+    "management-browser.json": "96d3a1203135b6414b2f2c26fe7140a003b6c93587ee327e754f45c0d0937626",
+    "management-workflows.json": "ff09bd55e976ba4cb2fd7d37388bcf99cc5c0df328933ba501a2a0fda57f8735",
+    "management-zoom.json": "cb29ebf4357cd7a7eec1b41f2c4074a1f82aa5f04df331ab4a5dcf2149ba534b",
+    "wp-i-quality-browser-execution.json": "8c139ab63a57bc38ee79d9359a9564b1ad79e04fe2b84445c879224080d5a684",
+    "wp-i-quality-browser.json": "5c1bb42171478ea18922ea4775cf05d06a4d824d501f52cce2d9d0df8d655d7d",
+    "wp-i-quality-browser_zoom-execution.json": "7da53f6344fca95fda4f2718819f1191cd1d95d12af0f689574a554528194a54",
+    "wp-i-quality-browser_zoom.json": "0f563e2f5fd7e90d7724586d90101c6d0b61661fbf4a775a2558b954d18507ed"
+  }
+}
