@@ -126,12 +126,14 @@ const f1Doctor = (() => {
         return row.time ? `${date} · ${row.time}` : date;
     }
 
-    function replayAction(app, patient, action) {
+    function replayAction(app, patient, action, internalNotice = false) {
         const index = (patient.history || []).findIndex(occurrence =>
             occurrence.id === action.occurrenceId && occurrence.stage === action.stage);
         const event = patient.history?.[index]?.events?.find(item => item.id === action.eventId);
         if (event?.actualDate) return 'Факт события уже отмечен.';
-        if (!event?.date) return 'Плановое событие больше недоступно.';
+        if (!event?.date || (internalNotice && (event.noPlan || app.terminalStages.includes(patient.stage)))) {
+            return 'Плановое событие больше недоступно.';
+        }
         if (event.date !== action.date || (event.time || '') !== action.time) return 'Плановый срок изменился.';
         app.selectedTimelineNodes[patient.id] = 'occ:' + index;
         return null;
@@ -220,7 +222,12 @@ const f1Doctor = (() => {
                 secondary ? el('p', { class: 'f1-description', text: secondary }) : null,
                 el('span', { class: `chip chip--${status[0]}`, text: status[1] }),
             ]),
-            patientAction(app, row, mode, live, refresh, readFailed),
+            mode === 'events' ? el('div', {class: 'f1-item__action schedule-row-actions'}, [
+                patientAction(app, row, mode, live, refresh, readFailed),
+                button('Найти в расписании', () => {
+                    if (live()) void app.openWorkingSchedule(row.patientName, live);
+                }, {'data-f4-schedule-event': '', 'aria-label': `Найти в расписании — ${name}`}),
+            ]) : patientAction(app, row, mode, live, refresh, readFailed),
         ]);
     }
 
@@ -330,9 +337,14 @@ const f1Doctor = (() => {
                 sort: 'name', include_terminal: 'true',
             }, current);
         }, { id: 'f3MyDayRegistry' });
+        const schedule = button('Открыть расписание', () => {
+            const mode = state.mode;
+            const current = () => schedule.isConnected && permitted(app) && app.f1Doctor === state && state.mode === mode;
+            if (current()) void app.openWorkingSchedule('', current);
+        }, {id: 'f4MyDaySchedule'});
         host.replaceChildren(
             el('div', { class: 'f1-actions', role: 'group', 'aria-label': 'Разделы моего дня' }, controls),
-            heading, detail, el('div', {class: 'f1-actions'}, [select, registry]), body,
+            heading, detail, el('div', {class: 'f1-actions'}, [select, registry, schedule]), body,
         );
 
         function show(message = '') {

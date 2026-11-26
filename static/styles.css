@@ -3447,3 +3447,74 @@ html[data-theme="light"] #consiliumForm .alert--danger { color:#b91c1c; }
 #view-patient .crumbs:has(#backToF1:not([hidden])) {
     flex-wrap: wrap;
 }
+
+/* Stage 3.5: компактный список событий с подтвержденными датами и временем. */
+.schedule-workspace .pagehead__actions > [hidden] { display: none; }
+.schedule-workspace .workspace-search { margin-bottom: var(--sp-4); }
+.schedule-workspace .workspace-result { padding: var(--sp-3) var(--sp-4); }
+.schedule-workspace .workspace-table :is(th, td) {
+    padding: var(--sp-2) var(--sp-4);
+    overflow-wrap: anywhere;
+}
+.schedule-workspace .workspace-table td:first-child { min-width: 0; }
+.schedule-workspace .workspace-date {
+    margin-bottom: var(--sp-1);
+    font-weight: 600;
+}
+.schedule-workspace .workspace-table .person__name { font-size: var(--text-base); }
+.schedule-workspace .workspace-table .list-row:focus-within { background: var(--surface-2); }
+.schedule-workspace .workspace-result,
+#patientPanels [id^="patient-event-"] { scroll-margin-top: calc(var(--topbar-h) + var(--sp-3)); }
+
+/* Stage 3.5: тип, состояние прочтения и действия сотрудника. */
+:is(#notificationsInboxPanel, .notification-drawer) .internal-notification {
+    padding: var(--sp-3) var(--sp-4);
+    border-inline-start: 3px solid transparent;
+    background: var(--surface);
+}
+:is(#notificationsInboxPanel, .notification-drawer) .internal-notification--unread {
+    border-inline-start-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-soft) 40%, var(--surface));
+}
+:is(#notificationsInboxPanel, .notification-drawer) .internal-notification__read {
+    color: var(--text-3);
+    font-size: var(--text-sm);
+}
+:is(#notificationsInboxPanel, .notification-drawer) :is(.internal-notification__title, .internal-notification__text, .internal-notification__meta) {
+    margin-top: var(--sp-1);
+}
+#notificationsInboxPanel .notification-group { margin-bottom: var(--sp-3); }
+#notificationsInboxPanel .notification-group__title {
+    color: var(--text-2);
+    padding: var(--sp-2) 0;
+}
+
+@media (max-width: 700px) {
+    .schedule-workspace .pagehead__actions { grid-template-columns: minmax(0, 1fr); }
+    .schedule-workspace .workspace-table .list-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0 var(--sp-3);
+    }
+    .schedule-workspace .workspace-table td { padding: var(--sp-1) 0; }
+    .schedule-workspace .workspace-table td:is(:first-child, :last-child) { grid-column: 1 / -1; }
+    .schedule-workspace .workspace-table :is(.btn, .chip),
+    :is(#notificationsInboxPanel, .notification-drawer) .internal-notification__actions .btn {
+        max-width: 100%;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+    #notificationsInboxPanel .section-head { flex-wrap: wrap; }
+    #notificationsInboxPanel .notification-header-actions { width: auto; }
+    #notificationsInboxPanel .toolbar__filters { gap: var(--sp-2); }
+    :is(#notificationsInboxPanel, .notification-drawer) .internal-notification {
+        grid-template-columns: minmax(0, 1fr);
+        gap: var(--sp-2);
+    }
+}
+
+.schedule-row-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2);
+}

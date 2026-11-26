@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4">
 </head>
 <body>
 
@@ -675,11 +675,15 @@
             </section>
 
             <!-- ВСПОМОГАТЕЛЬНЫЕ РАЗДЕЛЫ -->
-            <section class="view is-hidden patient-workspace-list" id="view-calendar">
+            <section class="view is-hidden patient-workspace-list schedule-workspace" id="view-calendar" aria-labelledby="scheduleTitle">
                 <div class="pagehead">
                     <div class="pagehead__text">
-                        <h1 class="pagehead__title">Расписание пациентских событий</h1>
-                        <p class="pagehead__subtitle">События с плановой датой без отмеченного факта, включая просроченные. Время учреждения — МСК.</p>
+                        <h1 class="pagehead__title" id="scheduleTitle">Расписание</h1>
+                        <p class="pagehead__subtitle">Плановые события доступных пациентов без отмеченного факта, включая просроченные. Время учреждения — МСК.</p>
+                    </div>
+                    <div class="pagehead__actions">
+                        <button type="button" class="btn btn--ghost" id="backToScheduleSource" data-route-click hidden></button>
+                        <button type="button" class="btn btn--ghost" id="scheduleNotifications" data-route-click hidden>Внутренние уведомления</button>
                     </div>
                 </div>
                 <form class="workspace-search panel panel--pad" id="eventsWorkspaceSearch" role="search" aria-label="Поиск событий">
@@ -707,7 +711,7 @@
                 <div class="pagehead">
                     <div class="pagehead__text">
                         <h1 class="pagehead__title">Уведомления</h1>
-                        <p class="pagehead__subtitle">Напоминания пациентам и статусы отправки</p>
+                        <p class="pagehead__subtitle">Внутренние уведомления сотрудников и статусы отправки пациентам</p>
                     </div>
                     <div class="pagehead__actions">
                         <button type="button" class="btn btn--ghost is-hidden" id="notificationsGenerateBtn">Сформировать напоминания</button>
@@ -715,14 +719,13 @@
                     </div>
                 </div>
 
-                <p class="alert alert--info" id="notificationsMockBanner">Тестовый режим: реальные SMS не отправляются</p>
-
                 <div class="notification-tabs notifications-page-tabs" id="notificationsPageTabs" role="tablist" aria-label="Раздел уведомлений">
                     <button type="button" class="notification-tab is-active" id="notificationsInboxTab" role="tab" aria-selected="true" aria-controls="notificationsInboxPanel" data-notifications-tab="inbox">Входящие</button>
                     <button type="button" class="notification-tab" id="notificationsOutboundTab" role="tab" aria-selected="false" aria-controls="notificationsOutboundPanel" data-notifications-tab="outbound">Отправка пациентам</button>
                 </div>
 
                 <div id="notificationsOutboundPanel" role="tabpanel" aria-labelledby="notificationsOutboundTab" hidden>
+                    <p class="alert alert--info" id="notificationsMockBanner">Тестовый режим: реальные SMS не отправляются</p>
                     <div class="stats" id="notificationsStatsRow"></div>
 
                     <div class="toolbar">
@@ -780,7 +783,7 @@
                     <div class="section-head">
                         <div>
                             <h2 class="section-title">Центр уведомлений сотрудников</h2>
-                            <p class="pagehead__subtitle">Системные уведомления: события по доступным пациентам</p>
+                            <p class="pagehead__subtitle">Системные уведомления по доступным пациентам</p>
                         </div>
                         <div class="notification-header-actions"><button type="button" class="btn btn--ghost" id="internalNotificationsFullReadAllBtn">Прочитать все</button><button type="button" class="btn btn--ghost" id="internalNotificationsRefreshBtn">Обновить</button></div>
                     </div>
@@ -1912,8 +1915,8 @@
 <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
-<script src="/static/f1-management.js?v=fast-track-f3"></script>
-<script src="/static/f1-doctor.js?v=fast-track-f3"></script>
-<script src="/static/app.js?v=fast-track-f3"></script>
+<script src="/static/f1-management.js?v=fast-track-f4"></script>
+<script src="/static/f1-doctor.js?v=fast-track-f4"></script>
+<script src="/static/app.js?v=fast-track-f4"></script>
 </body>
 </html>

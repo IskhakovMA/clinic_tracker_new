@@ -2250,7 +2250,9 @@ const app = {
         }
         const f1Back = $('backToF1');
         f1Back.hidden = view !== 'patient' || !this.f1CardOrigin || !this.navigationVisibility()[this.f1CardOrigin];
-        f1Back.textContent = f1Back.hidden ? '' : this.f1CardOrigin === 'pulse' ? 'К пульсу клиники' : 'К моему дню';
+        f1Back.textContent = f1Back.hidden ? '' : {
+            pulse: 'К пульсу клиники', myDay: 'К моему дню', calendar: 'К расписанию', notifications: 'К уведомлениям',
+        }[this.f1CardOrigin];
         if (previousView === 'pulse' && view !== 'pulse') f1Management.clear(this);
         if (previousView === 'myDay' && view !== 'myDay') f1Doctor.clear(this);
         if (this.qualityV1 && previousView !== view) {
@@ -2286,7 +2288,15 @@ const app = {
             }
             this.renderConsilium();
         }
-        if (view === 'calendar') this.renderCalendar();
+        if (view === 'calendar') {
+            const schedule = this.workspaceListState('events');
+            $('eventsWorkspaceQuery').value = schedule.query;
+            const back = $('backToScheduleSource');
+            back.hidden = schedule.source !== 'myDay' || !this.navigationVisibility().myDay;
+            back.textContent = back.hidden ? '' : 'К моему дню';
+            $('scheduleNotifications').hidden = !this.navigationVisibility().notifications;
+            void this.renderCalendar(schedule.trail[schedule.index]);
+        }
         if (view === 'checklists') this.renderChecklistsView();
         if (view === 'notifications') {
             this.renderNotificationsPage();
@@ -2358,6 +2368,20 @@ const app = {
 
     /* ------------------------------------------------------------ Авторизация */
 
+    clearScheduleAndInbox() {
+        if (this.workspacePages) delete this.workspacePages.events;
+        $('calendarPanel').replaceChildren();
+        $('calendarPanel').removeAttribute('aria-busy');
+        this.closeInternalNotificationsDrawer({restoreFocus: false});
+        this.internalNotifications.fullItems = [];
+        this.internalNotifications.summary = null;
+        this.internalReady.full = false;
+        this.internalSummaryReady = false;
+        this.internalNotificationReturnId = null;
+        $('internalNotificationsFullList').replaceChildren();
+        this.updateInternalNotificationsBadge();
+    },
+
     expireSession(accessChanged = false) {
         f1Management.clear(this, true);
         f1Doctor.clear(this, true);
@@ -2366,6 +2390,7 @@ const app = {
         browserNavigation.invalidate();
         this.sessionExpired = true;
         this.sessionEpoch = (this.sessionEpoch || 0) + 1;
+        this.clearScheduleAndInbox();
         this.draftOwnerId = this.user.id;
         document.body.classList.add('session-locked');
         $('loginScreen').classList.remove('is-hidden');
@@ -2405,6 +2430,7 @@ const app = {
         this.sessionExpired = true;
         this.sessionEpoch = (this.sessionEpoch || 0) + 1;
         this.discardingSession = true;
+        this.clearScheduleAndInbox();
         location.reload();
     },
 
@@ -5650,20 +5676,25 @@ const app = {
 
     renderInternalNotificationCard(item, compact) {
         const unread = !item.read_at;
-        return el('article', { class: `internal-notification${unread ? ' internal-notification--unread' : ''}` }, [
+        const eventDate = item.event_at || item.first_seen_at;
+        const planned = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}:\d{2}):00)?$/.exec(eventDate || '');
+        const dateLabel = planned ? [`${planned[3]}.${planned[2]}.${planned[1]}`, planned[4]].filter(Boolean).join(' · ')
+            : eventDate ? this.formatDateTime(eventDate) : 'Дата не указана';
+        return el('article', { class: `internal-notification internal-notification--${unread ? 'unread' : 'read'}` }, [
             el('div', { class: 'internal-notification__main' }, [
                 el('div', { class: 'internal-notification__head' }, [
                     el('span', {
                         class: `chip chip--${this.internalNotificationTone(item.type)}`,
                         text: this.INTERNAL_NOTIFICATION_TYPE_LABELS[item.type] || item.type,
                     }),
-                    unread ? el('span', { class: 'internal-notification__unread', text: 'Новое' }) : null,
+                    el('span', { class: unread ? 'internal-notification__unread' : 'internal-notification__read',
+                        text: unread ? 'Новое' : 'Прочитано' }),
                 ]),
                 el('h3', { class: 'internal-notification__title', text: item.title || 'Уведомление' }),
                 compact ? null : el('p', { class: 'internal-notification__text', text: item.description || '' }),
                 el('div', { class: 'internal-notification__meta', text: [
                     item.patient_name || 'Пациент',
-                    item.event_at ? this.formatDateTime(item.event_at) : 'Дата не указана',
+                    dateLabel,
                 ].join(' · ') }),
             ]),
             el('div', { class: 'internal-notification__actions' }, [
@@ -5671,6 +5702,8 @@ const app = {
                     type: 'button',
                     class: 'btn btn--ghost btn--sm',
                     text: 'Открыть', disabled:!!this.notificationMutation,
+                    'data-internal-notification-open': '',
+                    'data-internal-notification-return': !compact && this.internalNotificationReturnId === item.id ? '' : null,
                     on: { click: () => this.openInternalNotificationPatient(item) },
                 }) : null,
                 unread ? el('button', {
@@ -5693,7 +5726,7 @@ const app = {
         await this.renderInternalNotificationsDrawer();
     },
 
-    closeInternalNotificationsDrawer() {
+    closeInternalNotificationsDrawer({restoreFocus = true} = {}) {
         this.beginRead('internal-drawer');this.internalReady=this.internalReady||{};this.internalReady.drawer=false;this.internalNotifications.drawerItems=[];
         $('internalNotificationsDrawerList').replaceChildren();
         $('internalNotificationsScrim').classList.add('is-hidden');
@@ -5701,7 +5734,7 @@ const app = {
         $('internalNotificationsDrawer').setAttribute('aria-hidden', 'true');
         $('internalNotificationsBell').setAttribute('aria-expanded', 'false');
         const focusId = this.internalNotifications.lastFocusId || 'internalNotificationsBell';
-        if ($(focusId)) $(focusId).focus();
+        if (restoreFocus) $(focusId)?.focus();
     },
 
     async renderInternalNotificationsDrawer() {
@@ -5772,6 +5805,12 @@ const app = {
             } else {
                 list.replaceChildren(this.internalGroups(rows,false));
             }
+            const returnTarget = list.querySelector('[data-internal-notification-return]');
+            this.internalNotificationReturnId = null;
+            if (returnTarget && this.currentView === 'notifications' && !ui.topModal() &&
+                document.activeElement === $('view-notifications').querySelector('h1')) {
+                returnTarget.focus();
+            }
             const { offset, limit } = this.internalNotifications.filters;
             const total = this.internalNotifications.total || 0;
             $('internalNotificationsPageInfo').textContent = total
@@ -5791,7 +5830,7 @@ const app = {
 
     async refreshInternalNotificationLists() {
         if (!$('internalNotificationsDrawer').classList.contains('is-hidden')) await this.renderInternalNotificationsDrawer();
-        if (this.currentView==='notifications')await this.renderInternalNotificationCenter();
+        if (this.currentView === 'notifications' && this.notifications.activeTab === 'inbox') await this.renderInternalNotificationCenter();
         await this.refreshInternalNotificationSummary();
     },
     async markInternalNotificationRead(id) {
@@ -5809,31 +5848,82 @@ const app = {
     },
 
     async openInternalNotificationPatient(item) {
-        if(!this.internalItemCurrent(item)||this.notificationMutation)return;const epoch=this.sessionEpoch||0;
-        if (item.source_type === 'consilium_revision') {
-            if(!await this.confirmClinicalNavigation()||epoch!==(this.sessionEpoch||0)||!this.internalItemCurrent(item))return;
-            if (!item.read_at) {
-                if(!await this.markInternalNotificationRead(item.id))return;
+        if (!this.internalItemCurrent(item) || this.notificationMutation || !item.patient_id) return false;
+        const ticket = this.notificationTicket('notification-navigation');
+        const current = () => this.notificationCurrent(ticket) && this.internalItemCurrent(item) && !this.notificationMutation;
+        const refresh = message => {
+            if (!current()) return;
+            ui.toast(message, 'warning');
+            void this.refreshInternalNotificationLists();
+        };
+        const drawer = !$('internalNotificationsDrawer').classList.contains('is-hidden');
+        let opened;
+        if (item.source_type === 'consilium_revision' && item.source_id) {
+            try {
+                const {appointments} = await apiGetJson('/api/consilium/appointments');
+                if (!current()) return false;
+                const revision = appointments.find(record => record.id === item.source_id &&
+                    record.patientId === item.patient_id && record.status === 'needs_revision');
+                if (!revision) {
+                    refresh('Запись консилиума больше не ожидает доработки или недоступна.');
+                    return false;
+                }
+                opened = await browserNavigation.navigate({screen: 'consilium'}, {
+                    objectId: item.patient_id, allowed: current,
+                    prepare: () => {
+                        this.consilium.focusId = item.source_id;
+                        this.consilium.search = '';
+                        this.consilium.doctorDate = '';
+                        this.consilium.groupFilters = [];
+                        this.consilium.loaded = false;
+                        $('consiliumSearchInput').value = '';
+                        $('consiliumDoctorDate').value = '';
+                        this.renderConsiliumGroupPicker('doctor');
+                        return true;
+                    },
+                    denied: () => refresh('Карточка больше недоступна.'),
+                    readFailed: () => refresh('Не удалось проверить действие.'),
+                });
+            } catch (error) {
+                if (!error.obsolete) refresh('Не удалось проверить запись консилиума.');
+                return false;
             }
-            if(epoch!==(this.sessionEpoch||0)||this.sessionExpired)return;
-            this.closeInternalNotificationsDrawer();
-            this.consilium.focusId = item.source_id;
-            this.consilium.search = '';
-            this.consilium.doctorDate = '';
-            this.consilium.groupFilters = [];
-            this.consilium.loaded = false;
-            $('consiliumSearchInput').value = '';
-            $('consiliumDoctorDate').value = '';
-            this.renderConsiliumGroupPicker('doctor');
-            await this.refreshInternalNotificationSummary();
-            if(epoch!==(this.sessionEpoch||0)||this.sessionExpired||this.clinicalWriteInFlight||this.dirtyClinicalControls().length)return;
-            await this.navigateView('consilium');
-            return;
+        } else {
+            const tab = item.source_type === 'checklist' ? 'checklist'
+                : item.source_type === 'data_quality' ? 'data'
+                : item.source_type === 'event' ? 'events' : 'overview';
+            const action = item.source_type === 'event' && item.source_id
+                ? {kind: 'day-event', eventId: item.source_id}
+                : null;
+            opened = await this.openPatient(item.patient_id, tab, {
+                cardOrigin: 'notifications',
+                allowed: current,
+                historyAction: action,
+                prepare: patient => {
+                    if (!action) return true;
+                    const occurrence = patient.history?.find(entry => entry.events?.some(event => event.id === action.eventId));
+                    const event = occurrence?.events.find(event => event.id === action.eventId);
+                    if (!event?.date || this.terminalStages.includes(patient.stage) ||
+                        (item.event_at && item.event_at !== (event.time ? `${event.date}T${event.time}:00` : event.date))) {
+                        refresh('Плановое событие изменилось или больше недоступно.');
+                        return false;
+                    }
+                    Object.assign(action, {occurrenceId: occurrence.id, stage: occurrence.stage,
+                        date: event.date, time: event.time || ''});
+                    const reason = f1Doctor.replayAction(this, patient, action, true);
+                    if (reason) refresh(reason);
+                    return !reason;
+                },
+                focus: action ? () => f1Doctor.focusAction(action) : undefined,
+                denied: () => refresh('Карточка больше недоступна.'),
+                readFailed: () => refresh('Не удалось проверить действие.'),
+            });
         }
-        const tab = item.source_type === 'checklist' ? 'checklist'
-            : item.source_type === 'data_quality' ? 'data'
-            : 'events';
-        if(await this.openNotificationPatient(item.patient_id, tab))this.closeInternalNotificationsDrawer();
+        if (opened && this.notificationCurrent(ticket)) {
+            if (drawer) this.closeInternalNotificationsDrawer({restoreFocus: false});
+            this.internalNotificationReturnId = item.id;
+        }
+        return Boolean(opened);
     },
 
     /* ============================================================ РЕНДЕР: УВЕДОМЛЕНИЯ */
@@ -7036,6 +7126,25 @@ const app = {
 
     /* ==================================================== РЕНДЕР: ПРОЧИЕ РАЗДЕЛЫ */
 
+    openWorkingSchedule(query = '', allowed) {
+        if (this.currentView !== 'myDay' || !this.navigationVisibility().myDay) return false;
+        return browserNavigation.navigate({screen: 'calendar', schedule: {query, source: 'myDay', trail: [null], index: 0}}, {allowed});
+    },
+
+    scheduleContext(eventId = null) {
+        const state = this.workspaceListState('events');
+        return {query: state.query, source: state.source || null, eventId,
+            trail: state.ready ? state.trail.slice(0, state.index + 1) : [null], index: state.ready ? state.index : 0};
+    },
+
+    scheduleDateCell(row, today) {
+        const tone = row.date < today ? 'danger' : row.date === today ? 'accent' : 'neutral';
+        const label = row.date < today ? 'Просрочено' : row.date === today ? 'Сегодня' : 'Запланировано';
+        const date = row.date.split('-').reverse().join('.');
+        return [el('div', {class: 'workspace-date', text: `${date} · ${row.time || 'Время не указано'}`}),
+            el('span', {class: `chip chip--${tone}`, text: label})];
+    },
+
     async renderCalendar(cursor = null) {
         return this.renderWorkspacePage('events','calendarPanel','calendar',cursor);
     },
@@ -7046,6 +7155,12 @@ const app = {
     async renderWorkspacePage(kind,hostId,view,cursor=null,_unused=null,restarted=false) {
         const state=this.workspaceListState(kind),epoch=this.sessionEpoch,owner=this.user?.id;
         const version=this.beginRead('workspace-'+kind),host=$(hostId),returnFocus=host.contains(document.activeElement);
+        const scheduleTitle = kind === 'events' ? $('scheduleTitle') : null;
+        if (returnFocus && scheduleTitle && !ui.topModal()) {
+            scheduleTitle.tabIndex = -1;
+            scheduleTitle.focus({preventScroll: true});
+        }
+        const scheduleFocus = () => scheduleTitle && document.activeElement === scheduleTitle && !ui.topModal();
         const current=()=>this.isCurrentRead('workspace-'+kind,version)&&this.sessionEpoch===epoch&&this.user?.id===owner&&!this.sessionReconciling&&this.currentView===view;
         state.ready=false;state.rows=[];host.setAttribute('aria-busy','true');
         host.replaceChildren(el('p',{class:'empty',role:'status',text:'Загрузка актуальных данных…'}));
@@ -7056,11 +7171,12 @@ const app = {
             if(!current())return;
             state.rows=data[kind];state.page=data.page;state.ready=true;state.epoch=epoch;
             const event=kind==='events',headers=event?['Пациент и этап','Плановая дата и время','Заведующий','Действие']:['Пациент и этап','Обязательные пункты','Лечащий врач','Действие'];
+            const today = event ? new Intl.DateTimeFormat('sv-SE', {timeZone: 'Europe/Moscow', dateStyle: 'short'}).format() : null;
             const rows=state.rows.map(row=>{
                 const name=event?row.patientName:row.patient_name,stage=this.stageNames[row.stage]||row.stage;
                 return el('tr',{class:'list-row','data-workspace-row':event?row.id:row.patient_id},[
                     el('td',{'data-label':headers[0]},[el('div',{class:'person__name',text:name}),el('div',{class:'person__meta',text:stage})]),
-                    el('td',{'data-label':headers[1]},event?[el('div',{class:'workspace-date',text:row.date+(row.time?' · '+row.time:' · Время не указано')}),this.dateChip(this.getDaysUntil(row.date),row.time)]:[
+                    el('td',{'data-label':headers[1]},event?this.scheduleDateCell(row,today):[
                         el('div',{class:'workspace-progress',role:'progressbar','aria-label':'Выполнение обязательных пунктов','aria-valuemin':'0','aria-valuemax':String(row.total_required),'aria-valuenow':String(row.completed_required)},el('span',{class:'workspace-progress__fill','data-complete':String(row.completed_required===row.total_required)},String(row.completed_required)+' / '+String(row.total_required))),
                         el('span',{class:row.incomplete_required?'chip chip--warning':'chip chip--good',text:row.incomplete_required?'Не выполнено: '+row.incomplete_required:'Обязательные пункты выполнены'})]),
                     el('td',{'data-label':headers[2],text:(event?row.head:row.treating_doctor_name)||'Не указан'}),
@@ -7073,7 +7189,16 @@ const app = {
             ]));
             const load=next=>this.renderWorkspacePage(kind,hostId,view,next);
             host.replaceChildren(el('div',{class:'workspace-result',role:'status','aria-live':'polite',tabindex:'-1',text:`Найдено в разрешенной области: ${data.page.total}`}),rows.length?table:el('div',{class:'empty',text:state.query?'По вашему запросу ничего не найдено. Измените поиск.':event?'Плановых событий без факта нет.':'Чек-листов с обязательными пунктами нет.'}),this.boundedPager(data,state,load));
-            if(returnFocus)host.querySelector('.workspace-result').focus({preventScroll:true});
+            if (event) {
+                const eventId = state.focusEventId;
+                state.focusEventId = null;
+                if (scheduleFocus()) {
+                    const previous = eventId && [...host.querySelectorAll('[data-workspace-row]')]
+                        .find(node => node.dataset.workspaceRow === eventId)?.querySelector('button');
+                    if (previous) previous.focus();
+                    else if (returnFocus || restarted) host.querySelector('.workspace-result').focus({preventScroll:true});
+                }
+            } else if(returnFocus)host.querySelector('.workspace-result').focus({preventScroll:true});
         } catch(error) {
             if(!current())return;
             if(!restarted&&[409,410].includes(error.status)&&['PATIENT_QUERY_CHANGED','CURSOR_EXPIRED'].includes(error.data?.code)){
@@ -7081,7 +7206,11 @@ const app = {
                 return this.renderWorkspacePage(kind,hostId,view,null,null,true);
             }
             state.ready=false;state.rows=[];
-            if(!error.obsolete)host.replaceChildren(el('p',{class:'alert alert--danger',role:'alert',text:'Нет актуальных данных. '+error.message}),el('button',{type:'button',class:'btn btn--ghost',text:'Повторить загрузку',on:{click:()=>loadWorkspace()}}));
+            if(!error.obsolete) {
+                const retry = el('button',{type:'button',class:'btn btn--ghost',text:'Повторить загрузку',on:{click:()=>loadWorkspace()}});
+                host.replaceChildren(el('p',{class:'alert alert--danger',role:'alert',text:'Нет актуальных данных. '+error.message}),retry);
+                if (scheduleFocus()) retry.focus();
+            }
         } finally {if(current())host.removeAttribute('aria-busy');}
         const loadWorkspace=()=>this.renderWorkspacePage(kind,hostId,view);
     },
@@ -7089,20 +7218,27 @@ const app = {
         const state = this.workspaceListState(kind);
         const view = kind === 'events' ? 'calendar' : 'checklists';
         const id = row.patientId || row.patient_id;
+        const action = kind === 'events' ? {kind: 'day-event', occurrenceId: row.historyEntryId,
+            eventId: row.id, stage: row.stage, date: row.date, time: row.time || ''} : null;
+        const refresh = () => {
+            if (this.currentView === 'calendar' && this.isCurrentRead('workspace-events', version)) {
+                void this.renderCalendar(state.trail[state.index]);
+            }
+        };
         return this.openPatient(id, kind === 'events' ? 'events' : 'checklist', {
-            registryOnDenial: true,
+            registryOnDenial: !action,
+            historyAction: action,
+            denied: action ? refresh : undefined,
+            readFailed: action ? refresh : undefined,
             allowed: () => state.ready && state.rows.includes(row) && state.epoch === this.sessionEpoch &&
                 this.currentView === view && this.isCurrentRead('workspace-' + kind, version),
             prepare: patient => {
-                if (kind !== 'events') return true;
-                const index = (patient.history || []).findIndex(occ => occ.id === row.historyEntryId &&
-                    occ.events.some(event => event.id === row.id));
-                if (index < 0) {
-                    ui.toast('Событие больше недоступно. Обновите расписание.', 'warning');
-                    return false;
-                }
-                this.selectedTimelineNodes[id] = 'occ:' + index;
-                return true;
+                if (!action) return true;
+                const unavailable = f1Doctor.replayAction(this, patient, action);
+                if (!unavailable) return true;
+                ui.toast(unavailable, 'warning');
+                refresh();
+                return false;
             },
             focus: () => {
                 const target = kind === 'events' ? $('patient-event-' + row.id) : $('patientPanels');
@@ -7301,7 +7437,7 @@ const app = {
         }
         // A row can be denied after returning from its previous card. Clear the
         // hidden card, then let the active workspace refresh its own selection.
-        if (this.currentPatientId === patientId && ['myDay', 'pulse'].includes(this.currentView)) {
+        if (this.currentPatientId === patientId && ['myDay', 'pulse', 'calendar', 'notifications'].includes(this.currentView)) {
             this.clearPatientNavigationView();
         }
         if (this.currentPatientId !== patientId) {
@@ -11776,8 +11912,17 @@ const app = {
             if (this.registrySource && this.navigationVisibility()[this.registrySource]) this.navigateView(this.registrySource);
         });
         on('backToF1', 'click', () => {
-            if (this.f1CardOrigin) this.navigateView(this.f1CardOrigin);
+            const origin = this.f1CardOrigin;
+            if (origin === 'calendar') {
+                void browserNavigation.navigate({screen: origin, schedule: browserNavigation.committed?.route.scheduleReturn});
+            } else if (origin === 'notifications') {
+                void browserNavigation.navigate({screen: origin, internalInbox: true});
+            } else if (origin) this.navigateView(origin);
         });
+        on('backToScheduleSource', 'click', () => {
+            if (this.workspaceListState('events').source === 'myDay') this.navigateView('myDay');
+        });
+        on('scheduleNotifications', 'click', () => browserNavigation.navigate({screen: 'notifications', internalInbox: true}));
         on('sidebarToggle', 'click', () => {
             const shell = $('appScreen');
             if (window.matchMedia('(min-width: 861px)').matches && this.can('consiliumChair')) {
@@ -12523,7 +12668,7 @@ const browserNavigation = {
             .map(node => [node, JSON.stringify(app.patientDraftControls.get(node).readValue())]);
     },
 
-    async navigate(route, {entry, replace = false, allowed, prepare, focus, objectId, denied, registryOnDenial, historyAction, readFailed} = {}) {
+    async navigate(route, {entry, replace = false, allowed, prepare, focus, objectId, denied, registryOnDenial, historyAction, readFailed, cardOrigin} = {}) {
         if (!app.user || app.sessionExpired || app.sessionReconciling || !this.nonce) return false;
         if (this.correction && !replace) return false;
         this.closeNavigationDialog();
@@ -12534,9 +12679,13 @@ const browserNavigation = {
         const positionKey = history.state?.route;
         const sourceView = app.currentView, sourcePatient = app.currentPatientId, sourceTab = app.currentTab;
         if (!entry && route.screen === 'patient') {
-            const origin = sourceView === 'patient' && sourcePatient === route.patientId ? app.f1CardOrigin : sourceView;
-            if (origin === 'pulse' || origin === 'myDay') route = {...route, f1Source: origin};
-            if (origin === 'myDay' && historyAction?.kind === 'day-event') route = {...route, historyAction};
+            const origin = cardOrigin || (sourceView === 'patient' && sourcePatient === route.patientId
+                ? app.f1CardOrigin : sourceView === 'notifications' ? null : sourceView);
+            if (['pulse', 'myDay', 'calendar', 'notifications'].includes(origin)) route = {...route, f1Source: origin};
+            if (['myDay', 'calendar', 'notifications'].includes(origin) && historyAction?.kind === 'day-event') route = {...route, historyAction};
+            if (sourceView === 'patient' && sourcePatient === route.patientId && this.committed?.route.scheduleReturn) {
+                route = {...route, scheduleReturn: this.committed.route.scheduleReturn};
+            }
             const registryReturn = sourceView === 'patients' ? app.registryContext(route.patientId)
                 : sourceView === 'patient' && sourcePatient === route.patientId ? this.committed?.route.registryReturn : null;
             if (registryReturn) route = {...route, registryReturn};
@@ -12557,8 +12706,9 @@ const browserNavigation = {
                 }
                 return false;
             }
-            if (!entry && !replace && this.sameRoute(this.committed?.route, route) &&
-                app.currentView === route.screen && (route.screen !== 'patient' || app.currentTab === route.tab)) return true;
+            const same = !entry && !replace && this.sameRoute(this.committed?.route, route) &&
+                app.currentView === route.screen && (route.screen !== 'patient' || app.currentTab === route.tab);
+            if (same && cardOrigin !== 'notifications' && !objectId) return true;
             const consent = await this.confirmExit(current, route);
             if (!consent || !current() || (allowed && !allowed())) return false;
             reading = Boolean(id);
@@ -12581,13 +12731,17 @@ const browserNavigation = {
                 return false;
             }
             if (entry && route.historyAction?.kind === 'day-event') {
-                const unavailable = f1Doctor.replayAction(app, patient, route.historyAction);
+                const unavailable = f1Doctor.replayAction(app, patient, route.historyAction, route.f1Source === 'notifications');
                 if (unavailable) {
                     ui.toast(unavailable, 'warning');
-                    f1Doctor.render(app, unavailable);
+                    if (sourceView === 'myDay') f1Doctor.render(app, unavailable);
+                    else if (sourceView === 'calendar') {
+                        const schedule = app.workspaceListState('events');
+                        void app.renderCalendar(schedule.trail[schedule.index]);
+                    } else if (sourceView === 'notifications') void app.refreshInternalNotificationLists();
                     return false;
                 }
-                focus = () => f1Doctor.focusAction(route.historyAction);
+                if (route.f1Source === 'myDay') focus = () => f1Doctor.focusAction(route.historyAction);
             }
             if (sourceView === 'patients' && this.committed?.route.screen === 'patients') {
                 const registry = app.registryContext(route.patientId);
@@ -12597,8 +12751,19 @@ const browserNavigation = {
                 app.pageLoading = false;
                 app.beginRead('patients');
             }
+            if (sourceView === 'calendar' && this.committed?.route.screen === 'calendar') {
+                const schedule = app.scheduleContext(historyAction?.eventId);
+                this.committed.route.schedule = schedule;
+                if (!entry && route.screen === 'patient') route = {...route, scheduleReturn: schedule};
+                app.beginRead('workspace-events');
+                const state = app.workspaceListState('events');
+                state.ready = false;
+                state.rows = [];
+                $('calendarPanel').replaceChildren();
+            }
             this.render(route, patient, focus, replace);
             if (entry) this.committed = entry;
+            else if (same) this.committed.route = route;
             else if (replace) this.reset(route);
             else this.save(route, false);
             finished = true;
@@ -12654,6 +12819,16 @@ const browserNavigation = {
                 $('patientRegistryCount').textContent = '—';
                 app.setPatientListState('loading');
             }
+            if (route.screen === 'calendar') {
+                const state = app.workspaceListState('events');
+                const schedule = route.schedule;
+                state.source = schedule?.source || null;
+                if (schedule) state.query = schedule.query;
+                state.index = schedule?.index || 0;
+                state.trail = schedule?.trail.slice() || [null];
+                state.focusEventId = schedule?.eventId || null;
+            }
+            if (route.screen === 'notifications' && route.internalInbox) app.notifications.activeTab = 'inbox';
             app.showView(route.screen);
         }
         const target = focus?.() || (route.tab ? $('tab-' + route.tab) : $('view-' + route.screen)?.querySelector('h1'));
