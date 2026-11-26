@@ -1,0 +1,126 @@
+{
+  "productSha": "be90971ee2ae3219509b1af1d7f2fd806dcf8bf5",
+  "productTree": "da6898fa9dfd79688256456f96f13cc0271cb17f",
+  "base": "cb8853079bba968a6430357198f156049a2bcba8",
+  "technicalStatus": "GO",
+  "scope": "F9 technical acceptance only",
+  "runs": [
+    {
+      "id": 45801199555,
+      "name": "Fast Track F9 Chromium",
+      "head_sha": "be90971ee2ae3219509b1af1d7f2fd806dcf8bf5",
+      "conclusion": "success",
+      "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45801199555"
+    },
+    {
+      "id": 45801199335,
+      "name": "CI",
+      "head_sha": "be90971ee2ae3219509b1af1d7f2fd806dcf8bf5",
+      "conclusion": "success",
+      "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45801199335"
+    }
+  ],
+  "backend": {
+    "collected": 2842,
+    "passed": 2842,
+    "failed": 0,
+    "skipped": 0,
+    "exactOnce": true,
+    "shards": [
+      474,
+      474,
+      474,
+      474,
+      473,
+      473
+    ],
+    "collectionSha256": "9beb662926e4644205a2fc6cf6cb44a483cfec90add0e602c3f375538597e920",
+    "jobs": [
+      {
+        "name": "backend-smoke",
+        "conclusion": "success",
+        "id": 139844546241
+      },
+      {
+        "name": "backend-test-plan",
+        "conclusion": "success",
+        "id": 139844546482
+      },
+      {
+        "name": "dependency-audit",
+        "conclusion": "success",
+        "id": 139844546536
+      },
+      {
+        "name": "frontend-security",
+        "conclusion": "success",
+        "id": 139844546579
+      },
+      {
+        "name": "secret-scan",
+        "conclusion": "success",
+        "id": 139844546599
+      },
+      {
+        "name": "workflow-policy",
+        "conclusion": "success",
+        "id": 139844546637
+      },
+      {
+        "name": "sast-bandit",
+        "conclusion": "success",
+        "id": 139844546801
+      },
+      {
+        "name": "backend-tests (5/6)",
+        "conclusion": "success",
+        "id": 139844738406
+      },
+      {
+        "name": "backend-tests (3/6)",
+        "conclusion": "success",
+        "id": 139844738420
+      },
+      {
+        "name": "backend-tests (4/6)",
+        "conclusion": "success",
+        "id": 139844738432
+      },
+      {
+        "name": "backend-tests (1/6)",
+        "conclusion": "success",
+        "id": 139844738440
+      },
+      {
+        "name": "backend-tests (2/6)",
+        "conclusion": "success",
+        "id": 139844738509
+      },
+      {
+        "name": "backend-tests (6/6)",
+        "conclusion": "success",
+        "id": 139844738593
+      },
+      {
+        "name": "backend-tests-verify",
+        "conclusion": "success",
+        "id": 139852042810
+      },
+      {
+        "name": "release-gate",
+        "conclusion": "success",
+        "id": 139852082628
+      }
+    ]
+  },
+  "browser": {
+    "suites": 29,
+    "receipts": 31,
+    "f9Groups": 22,
+    "toastCases": 6,
+    "layoutCases": 20,
+    "nativeZoomCases": 12,
+    "artifact": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45801199555/artifacts/15107343120"
+  },
+  "testData": "synthetic only"
+}
