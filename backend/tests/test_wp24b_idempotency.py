@@ -760,7 +760,7 @@ def test_static_contract():
     helper = js[js.index("async function apiPostIdempotent"):]
     helper = helper[:helper.index("\n}\n")]
     assert "headers: { 'Idempotency-Key': key }" in helper and "console." not in helper and "?" not in helper.split("apiFetch(path")[1][:5]
-    for call in ("apiPostIdempotent('/api/patients', payload, this.addPatientKey)",
+    for call in ("apiPostIdempotent('/api/patients', payload, this.addPatientKey, {retryTransport: false})",
                  "apiPostIdempotent('/api/import/commit', body, this.importCommitKey)",
                  "apiPostIdempotent('/api/migrate/localstorage/commit', body, this.migrationKey)"):
         assert call in js, call

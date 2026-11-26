@@ -247,13 +247,13 @@ function newIdempotencyKey() {
 const IDEMPOTENT_TIMEOUT_MS = 30000;
 const NETWORK_FAILURE_MESSAGE = 'Нет ответа от сервера. Повторите отправку: повтор с теми же данными безопасен и не создаст копию.';
 
-// POST с ключом идемпотентности. Если ответ не получен (сеть, таймаут), запрос
-// один раз повторяется с тем же ключом: сервер вернет результат первого
-// выполнения, а не выполнит операцию снова. Ответ сервера с ошибкой не повторяется.
-async function apiPostIdempotent(path, body, key) {
+// Для импорта разрешен один сетевой повтор. Создание карточки выполняет
+// один POST за явное действие и сохраняет прежний ключ до проверки результата.
+async function apiPostIdempotent(path, body, key, {retryTransport = true} = {}) {
     const text = JSON.stringify(body === undefined ? {} : body);
+    const attempts = retryTransport ? 2 : 1;
     let lastError = null;
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), IDEMPOTENT_TIMEOUT_MS);
         try {
@@ -262,7 +262,7 @@ async function apiPostIdempotent(path, body, key) {
         } catch (err) {
             if (err && err.status) throw err;          // сервер ответил: повтор не нужен
             lastError = err;
-            if (attempt === 0) await new Promise(resolve => setTimeout(resolve, 1000));
+            if (attempt + 1 < attempts) await new Promise(resolve => setTimeout(resolve, 1000));
         } finally {
             clearTimeout(timer);
         }
@@ -3892,8 +3892,42 @@ const app = {
         });
         return el('section', {class: 'panel panel--pad', 'aria-labelledby': 'patientConsiliumTitle'}, [
             el('h2', {id: 'patientConsiliumTitle', class: 'section-title', text: 'Онкологический консилиум'}),
+            this.can('bookConsilium') ? el('button', {
+                id: 'bookPatientConsiliumBtn', type: 'button', class: 'btn btn--primary btn--sm',
+                text: 'Записать на консилиум',
+                on: {click: event => this.openPatientConsiliumBooking(patientId, event.currentTarget)},
+            }) : null,
             load, results,
         ]);
+    },
+
+    async openPatientConsiliumBooking(patientId, trigger) {
+        if (trigger.getAttribute('aria-busy') === 'true' || this.sessionExpired || !this.can('bookConsilium')) return;
+        const epoch = this.sessionEpoch;
+        const current = () => trigger.isConnected && this.currentView === 'patient' && this.currentTab === 'overview' &&
+            this.currentPatientId === patientId && this.sessionEpoch === epoch && !this.sessionExpired && this.can('bookConsilium');
+        if (!current()) return;
+        trigger.setAttribute('aria-busy', 'true');
+        try {
+            const patient = await apiGetJson('/api/patients/' + encodeURIComponent(patientId));
+            if (!current() || patient?.id !== patientId) return;
+            await this.loadConsilium();
+            if (!current()) return;
+            const group = this.consiliumGroupForDiagnosis(patient.diagnosis);
+            if (this.consilium.blockedPatientIds.includes(patientId)) {
+                ui.toast('У пациента уже есть незавершенная запись.', 'warning');
+                return;
+            }
+            if (!group || !this.consilium.schedule.some(slot => slot.consiliumGroup === group && slot.bookable && !slot.occupied)) {
+                ui.toast('Для пациента нет доступного свободного времени.', 'warning');
+                return;
+            }
+            await this.openConsiliumModal(null, null, {patient, current});
+        } catch {
+            if (current()) ui.toast('Не удалось проверить карточку и расписание.', 'warning');
+        } finally {
+            trigger.removeAttribute('aria-busy');
+        }
     },
 
     async loadPatientConsiliumRecords(patientId, results, load) {
@@ -8253,6 +8287,7 @@ const app = {
         $('addForm').reset();
         this.clearCreateFieldErrors();
         $('addFormError').classList.add('is-hidden');
+        $('createErrorSummaryList').replaceChildren();
         this.clearPgiResultDateError();
         this.resetDiagnosisSelect();
         this.updateClientPathStatus();
@@ -8359,6 +8394,7 @@ const app = {
         $('diagnosis').value = item.code;
         $('diagnosisSearch').value = `${item.code} — ${item.label}`;
         this.setDiagnosisComboboxOpen(false);
+        this.clearCorrectedCreateError($('diagnosisSearch'));
     },
 
     onDiagnosisSearchInput() {
@@ -8405,6 +8441,7 @@ const app = {
         for (const [id, visible] of Object.entries(groups)) {
             $(id).classList.toggle('is-hidden', !visible);
         }
+        this.updateCreateEventPreview();
     },
 
     buildEventsFromForm(stage) {
@@ -8425,11 +8462,59 @@ const app = {
         return [{ date, time, treatmentType }];
     },
 
-    showFormError(message) {
+    updateCreateEventPreview() {
+        const stage = $('stage').value;
+        const event = this.buildEventsFromForm(stage)[0];
+        const preview = $('createEventPreview');
+        if (!event) {
+            preview.textContent = 'Начальное событие не добавлено.';
+            return;
+        }
+        const facts = [
+            event.actualDate && 'фактическая дата ' + event.actualDate.split('-').reverse().join('.'),
+            event.date && 'плановая дата ' + event.date.split('-').reverse().join('.'),
+            (event.actualTime || event.time) && 'время ' + (event.actualTime || event.time),
+            this.TREATMENT_LABELS[event.treatmentType],
+        ].filter(Boolean);
+        preview.textContent = 'Начальное событие для этапа «' + this.stageNames[stage] + '»: ' + facts.join(', ') + '.';
+    },
+
+    refreshCreateErrorLinks() {
+        const list = $('createErrorSummaryList');
+        const previousCount = list.childElementCount;
+        const fields = [...$('addForm').querySelectorAll('input,select,textarea')].filter(field =>
+            !field.disabled && !field.closest('.is-hidden,[hidden]') &&
+            (field.getAttribute('aria-invalid') === 'true' || !field.validity.valid));
+        list.replaceChildren(...fields.map(field => el('li', {}, el('button', {
+            type: 'button', class: 'btn btn--ghost btn--sm',
+            text: field.labels?.[0]?.textContent.trim() || field.getAttribute('aria-label') || 'Проверить поле',
+            on: {click: () => field.focus()},
+        }))));
+        return previousCount > 0 && fields.length === 0;
+    },
+
+    clearCorrectedCreateError(field) {
+        const id = field.id === 'diagnosisSearch' ? 'diagnosis' : field.id;
+        const source = $(id);
+        const message = $(id + 'CreateError');
+        if (message && source?.value.trim() && field.validity.valid) {
+            message.remove();
+            field.removeAttribute('aria-invalid');
+            const described = (field.getAttribute('aria-describedby') || '').split(' ').filter(part => part && part !== message.id);
+            if (described.length) field.setAttribute('aria-describedby', described.join(' '));
+            else field.removeAttribute('aria-describedby');
+        }
+        if (!$('addFormError').classList.contains('is-hidden') && this.refreshCreateErrorLinks()) {
+            $('addFormError').classList.add('is-hidden');
+        }
+    },
+
+    showFormError(message, {focus = true} = {}) {
         const box = $('addFormError');
-        box.textContent = message;
+        $('createErrorSummaryText').textContent = message;
+        this.refreshCreateErrorLinks();
         box.classList.remove('is-hidden');
-        box.focus();
+        if (focus) box.focus();
     },
 
     clearPgiResultDateError() {
@@ -8472,24 +8557,25 @@ const app = {
         if (this.addPatientPending) return;
         if (!this.can('createPatients') || this.sessionExpired) return;
         this.clearCreateFieldErrors();
+        $('addFormError').classList.add('is-hidden');
         const fio = $('fio').value.trim();
         const stage = $('stage').value;
         const head = $('head').value;
         const diagnosis = $('diagnosis').value;
 
-        if (!fio) return this.showFormError('Укажите ФИО пациента.');
-        if (!diagnosis) return this.showFormError('Выберите локализацию и диагноз (код МКБ-10).');
-        if (!stage) return this.showFormError('Выберите текущий этап лечения.');
-        if (!head) return this.showFormError('Выберите заведующего.');
+        const required = [
+            [fio, 'fio'], [diagnosis, 'diagnosis'], [stage, 'stage'], [head, 'head'],
+            [stage !== 'primary-appointment' || $('primaryAppointmentDate').value, 'primaryAppointmentDate'],
+        ].filter(([value]) => !value);
+        if (required.length) {
+            for (const [,id] of required) this.showCreateFieldError(id);
+            return this.showFormError('Заполните обязательные поля.');
+        }
         if ($('pgiResult').value && !$('pgiResultDate').value) {
-            this.showFormError('Проверьте дату результата ПГИ.');
             this.showPgiResultDateError('Укажите дату результата ПГИ.');
+            this.showFormError('Проверьте дату результата ПГИ.', {focus: false});
             return;
         }
-        if (stage === 'primary-appointment' && !$('primaryAppointmentDate').value) {
-            return this.showFormError('Для первичного приёма укажите фактическую дату — это обязательное поле.');
-        }
-
         const doctorSelect = $('doctor');
         const doctorUserId = doctorSelect.value || null;
         const doctorLabel = doctorSelect.selectedOptions.length
@@ -8518,6 +8604,7 @@ const app = {
         if (this.addPatientDuplicateConfirmation) payload.duplicateConfirmation = this.addPatientDuplicateConfirmation;
 
         if (this.addPatientUncertain && this.addPatientSentBody) payload=JSON.parse(this.addPatientSentBody);
+        const owner = this.user, epoch = this.sessionEpoch;
         let created;
         for (;;) {
             // Изменились отправляемые данные — это новая операция и новый ключ
@@ -8529,7 +8616,7 @@ const app = {
             this.addPatientSentBody = payloadText;
             this.setAddPatientPending(true);
             try {
-                created = await apiPostIdempotent('/api/patients', payload, this.addPatientKey);
+                created = await apiPostIdempotent('/api/patients', payload, this.addPatientKey, {retryTransport: false});
                 break;
             } catch (e) {
                 // Unknown outcomes freeze the exact body/key; only an explicit replay is permitted.
@@ -8546,6 +8633,7 @@ const app = {
                         title: 'Возможный дубль пациента', confirmLabel: 'Создать новую карточку',
                         reasonLabel: 'Причина, по которой нужна отдельная карточка',
                     });
+                    if (this.user !== owner || this.sessionEpoch !== epoch || this.sessionExpired) return;
                     if (!answer) {
                         this.showFormError('Карточка не создана: в вашей области уже есть карточка с таким номером полиса ОМС.');
                         return;
@@ -8572,7 +8660,7 @@ const app = {
             await this.loadActivity();
             this.fillStaticSelects();
         } catch (e) { /* карточка уже создана; обновление сводок не критично */ }
-        this.openPatient(created.id);
+        if (this.user === owner && this.sessionEpoch === epoch && !this.sessionExpired) this.openPatient(created.id);
     },
 
     /* ========================================= ВОЗМОЖНЫЕ ДУБЛИ ПАЦИЕНТОВ */
@@ -10167,6 +10255,7 @@ const app = {
     },
 
     async fillConsiliumPatientsForGroup(record = null, cursor = null, restarted = false) {
+        if (!record && this.consilium.bookingPatientId) return [];
         const version=this.beginRead('consilium-candidates');
         const group=this.consiliumGroupKey();
         const known=(this.consilium.meta?.groups||[]).some(g=>g.value===group);
@@ -10209,7 +10298,8 @@ const app = {
     },
 
     async openConsiliumModal(appointmentId = null, selectedSlot = null, options = {}) {
-        if (this.sessionExpired || this.consilium.loading) return;
+        if (this.sessionExpired || this.consilium.loading || (options.current && !options.current())) return;
+        const patient = options.patient;
         if (selectedSlot) {
             if (!this.consiliumGridReady()) return;
             const fresh=this.consilium.schedule.find(slot=>slot.id===selectedSlot.id
@@ -10226,6 +10316,8 @@ const app = {
         }
         const prepareEpoch=this.sessionEpoch,prepareVersion=this.readVersions['consilium-load'];
         this.consilium.editingId = appointmentId;
+        this.consilium.bookingPatientId = patient?.id || null;
+        $('consiliumPatientSearch').disabled = Boolean(patient);
         const record = appointmentId
             ? this.consilium.appointments.find(item => item.id === appointmentId)
             : null;
@@ -10245,24 +10337,34 @@ const app = {
 
         const today = this.consiliumToday();
         $('consiliumDate').min = today;
-        const firstFree = !record ? (selectedSlot || (this.consilium.schedule || []).find(slot => slot.bookable)) : null;
+        const group = patient ? this.consiliumGroupForDiagnosis(patient.diagnosis) : '';
+        const firstFree = !record ? (selectedSlot || this.consilium.schedule.find(slot =>
+            slot.bookable && !slot.occupied && (!patient || slot.consiliumGroup === group))) : null;
+        if (patient && !firstFree) return;
         $('consiliumDate').value = record ? record.scheduledDate : (firstFree ? firstFree.scheduledDate : today);
-        $('consiliumDate').disabled = !record;
-        $('consiliumTime').disabled = !record;
+        $('consiliumDate').disabled = !record && !patient;
+        $('consiliumTime').disabled = !record && !patient;
         $('consiliumDoctor').value = (this.user && this.user.fullName) || '';
         $('consiliumBenefit').value = record && record.hasBenefit ? 'yes' : 'no';
         $('consiliumPolicyNumber').value = record ? record.policyNumber : '';
         $('consiliumGroup').value = record
             ? record.consiliumGroupLabel
             : (firstFree ? firstFree.consiliumGroupLabel : '');
-        const patients = await this.fillConsiliumPatientsForGroup(record);
+        let patients;
+        if (patient) {
+            patients = [patient];
+            $('consiliumPatient').replaceChildren(option(patient.id, patient.name, true));
+            $('consiliumPatientHint').textContent = 'Пациент выбран из открытой карточки.';
+            $('consiliumCandidatePager')?.replaceChildren();
+        } else patients = await this.fillConsiliumPatientsForGroup(record);
+        if (options.current && !options.current()) return;
         if (prepareEpoch!==this.sessionEpoch || this.sessionExpired || this.consilium.loading || !this.consilium.loaded
             ||prepareVersion!==this.readVersions['consilium-load']) return;
         for (const notice of $('consiliumModal').querySelectorAll('[data-consilium-read-notice]')) notice.remove();
-        $('consiliumPatient').disabled = !!record;
-        $('consiliumGroup').readOnly = !!record;
+        $('consiliumPatient').disabled = Boolean(record || patient);
+        $('consiliumGroup').readOnly = Boolean(record || patient);
         this.updateConsiliumAvailableSlots(record);
-        if (!record && firstFree) $('consiliumTime').value = firstFree.scheduledTime;
+        if (!record && firstFree && !patient) $('consiliumTime').value = firstFree.scheduledTime;
         $('consiliumLocalization').value = record ? record.diagnosisLocalization : '';
         $('consiliumPrimaryDiagnosis').value = record ? record.primaryDiagnosis : '';
         $('consiliumAdditionalDiagnosis').value = record ? record.additionalDiagnosis : '';
@@ -10652,6 +10754,10 @@ const app = {
             needsRadiotherapist: $('consiliumNeedsRadiotherapist').value === 'yes',
             uvRuv: $('consiliumUvRuv').checked,
         };
+        if (this.consilium.bookingPatientId && payload.patientId !== this.consilium.bookingPatientId) {
+            this.showConsiliumFormError('Пациент в форме изменился. Откройте запись из карточки заново.');
+            return null;
+        }
         if (!payload.patientId || !payload.scheduledDate || !payload.scheduledTime || !payload.consiliumGroup || !payload.diagnosisLocalization) {
             this.showConsiliumFormError('Заполните пациента, группу, дату, свободный слот и локализацию.');
             return null;
@@ -10710,13 +10816,22 @@ const app = {
             ui.closeModal('consiliumModal',{force:true});
             ui.toast(this.consilium.editingId ? 'Запись обновлена.'
                 : (backdated ? 'Консилиум оформлен задним числом.' : 'Пациент записан на консилиум.'), 'good');
+            const bookedFromCard = formOwner.bookingPatientId;
             this.consilium.editingId = null;
             this.consilium.loaded = false;
-            await this.renderConsilium();
+            formOwner.bookingPatientId = null;
+            if (bookedFromCard && this.currentView === 'patient' && this.currentPatientId === bookedFromCard &&
+                $('patientConsiliumRecords') && $('loadPatientConsiliumBtn')) {
+                await this.loadPatientConsiliumRecords(bookedFromCard, $('patientConsiliumRecords'), $('loadPatientConsiliumBtn'));
+            } else await this.renderConsilium();
         } catch (error) {
             if (this.isConsiliumVersionConflict(error)) return this.showConsiliumConflict(error);
             if(epoch!==this.sessionEpoch || this.sessionExpired)return;
-            if (!error.status || error.status >= 500) {
+            if (error.status === 409 && booking && formOwner.bookingPatientId) {
+                this.showConsiliumConflict({message: error.message + ' Проверьте расписание перед новой отправкой.'});
+                const {patientId, scheduledDate, scheduledTime, consiliumGroup} = booking;
+                formOwner.unconfirmedBooking = {patientId, scheduledDate, scheduledTime, consiliumGroup};
+            } else if (!error.status || error.status >= 500) {
                 if (booking) {
                     const {patientId, scheduledDate, scheduledTime, consiliumGroup, backdated} = booking;
                     formOwner.unconfirmedBooking = {patientId, scheduledDate, scheduledTime, consiliumGroup, backdated};
@@ -12595,7 +12710,18 @@ const app = {
         on('pgiResultDate', 'change', () => {
             if ($('pgiResultDate').value) this.clearPgiResultDateError();
         });
+        $('addForm').addEventListener('invalid', event => {
+            if (event.target.closest('.is-hidden,[hidden]')) return;
+            this.showCreateFieldError(event.target.id);
+            this.showFormError('Проверьте выделенные поля.', {focus: false});
+        }, true);
+        for (const id of ['primaryAppointmentDate', 'primaryAppointmentTime', 'examDate', 'examTime',
+            'appointmentDate', 'appointmentTime', 'consultDate', 'consultTime', 'treatmentDate',
+            'treatmentTime', 'treatmentType']) on(id, 'input', () => this.updateCreateEventPreview());
         on('stage', 'change', () => this.updateStageFields());
+        for (const eventName of ['input', 'change']) $('addForm').addEventListener(eventName, event => {
+            if (event.target.matches('input,select,textarea')) this.clearCorrectedCreateError(event.target);
+        });
 
         // Пациент требует внимания
         on('closeAttentionIconBtn', 'click', () => ui.closeModal('attentionModal'));

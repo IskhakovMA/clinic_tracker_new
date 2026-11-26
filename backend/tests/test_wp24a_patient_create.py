@@ -667,6 +667,7 @@ def test_static_client_guards_double_submission():
     assert "if (this.addPatientPending) return;" in block
     # WP2.4-B: запрос создания отправляется с ключом идемпотентности (apiPostIdempotent).
     assert block.index("this.setAddPatientPending(true)") < block.index("apiPostIdempotent('/api/patients'")
+    assert "{retryTransport: false}" in block
     # Ошибка: кнопка снова доступна, введенные поля не сбрасываются (форма не закрывается и не очищается).
     error_branch = block[block.index("} catch (e) {"):block.index("return;", block.index("} catch (e) {"))]
     assert "setAddPatientPending(false)" in error_branch and "reset()" not in error_branch

@@ -3132,10 +3132,19 @@ html[data-theme="light"] :is(.patient-workspace, .f1-workspace, .registry) .chip
 .create-patient__form .fieldset__legend { font-size:var(--text-lg);text-transform:none;letter-spacing:normal;color:var(--text); }
 .create-patient__aside h2 { font-size:var(--text-lg);margin:0 0 var(--sp-3); }
 .create-patient__aside p { color:var(--text-2);line-height:1.6; }
-.create-patient__actions { display:flex;gap:var(--sp-3);justify-content:flex-end;padding:var(--sp-4) 0;border-top:1px solid var(--border); }
+.create-patient__actions { position:sticky;bottom:0;z-index:5;display:flex;gap:var(--sp-3);justify-content:flex-end;padding:var(--sp-4) 0;border-top:1px solid var(--border);background:var(--bg); }
 .create-patient input,.create-patient select,.create-patient textarea { min-width:0;max-width:100%; }
+.create-patient__form :is(input, select, textarea, button) { scroll-margin-block-end: 6rem; }
+.create-patient__error,
+.create-patient__event-preview { overflow-wrap:anywhere; }
+.create-patient__error ul { margin:var(--sp-2) 0 0; padding-inline-start:var(--sp-5); }
+.create-patient__error ul:empty { display:none; }
+.create-patient__error button { min-height:32px; padding:0; border:0; background:transparent; color:inherit; font:inherit; text-align:start; text-decoration:underline; cursor:pointer; }
+.create-patient__event-preview { margin-top:var(--sp-3); padding:var(--sp-2) var(--sp-3); border-radius:var(--r-md); background:var(--surface-2); color:var(--text-2); }
+.create-patient__event-preview:empty { margin:0; padding:0; }
 @media(max-width:1000px){.create-patient__layout{grid-template-columns:minmax(0,1fr);}.create-patient__aside{grid-row:2;}}
 @media(max-width:600px){.create-patient__form .grid-2{grid-template-columns:minmax(0,1fr);}.create-patient__form .fieldset{padding:var(--sp-4);}.create-patient__actions{flex-wrap:wrap;}.create-patient__actions .btn{flex:1 1 140px;}}
+@media(max-height:470px){.create-patient__actions{position:static;}}
 
 /* Error text must retain AA contrast on the light creation surface. */
 html[data-theme="light"] .create-patient .alert--danger { color: #b91c1c; }

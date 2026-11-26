@@ -888,7 +888,7 @@ const sent = [], errors = [], asked = [], opened = [];
 let keyCounter = 0;
 const elements = {};
 function $(id) {
-  if (!elements[id]) elements[id] = { value: '', selectedOptions: [], reset() {},
+  if (!elements[id]) elements[id] = { value: '', selectedOptions: [], reset() {}, replaceChildren() {},
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } } };
   return elements[id];
 }
@@ -899,7 +899,8 @@ Object.assign($('diagnosis'), { value: 'C34.1' });
 Object.assign($('policyNumber'), { value: '7700000000031001' });
 const ui = { toast() {}, closeModal() {}, openModal() {} };
 function newIdempotencyKey() { keyCounter += 1; return 'key-' + keyCounter; }
-async function apiPostIdempotent(path, body, key) {
+async function apiPostIdempotent(path, body, key, options) {
+  if (path !== '/api/patients' || options?.retryTransport !== false) throw new Error('Expected explicit patient replay only');
   sent.push({ key, body: JSON.parse(JSON.stringify(body)) });
   const kind = responses.shift();
   if (kind === 'network') { const e = new Error('Нет ответа от сервера.'); e.network = true; throw e; }

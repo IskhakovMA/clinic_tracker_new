@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light">
     <title>Система планирования — маршрут лечения</title>
     <link rel="icon" href="/static/logo.png">
-    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6">
+    <link rel="stylesheet" href="/static/styles.css?v=consilium-stage2-closeout-v36-wp-i-consilium-v5a-wp-i-quality-v1-fast-track-f1-fast-track-f2-fast-track-f3-fast-track-f4-fast-track-f5-fast-track-f6-fast-track-f7">
 </head>
 <body>
 
@@ -496,14 +496,17 @@
 <div class="create-patient" id="addModal" hidden>
     <div class="create-patient__box">
         <div class="pagehead">
-            <div><h1 id="addModalTitle" tabindex="-1">Новый пациент</h1><p class="pagehead__sub">Заполните данные пациента. Поля со звездочкой обязательны.</p></div>
+            <div><h1 class="pagehead__title" id="addModalTitle" tabindex="-1">Новый пациент</h1><p class="pagehead__subtitle">Заполните данные пациента. Поля со звездочкой обязательны.</p></div>
             <button type="button" class="btn btn--icon" id="closeAddIconBtn" aria-label="Закрыть">
                 <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
             </button>
         </div>
 
         <div class="create-patient__layout"><form class="form create-patient__form" id="addForm">
-            <p class="alert alert--danger is-hidden" id="addFormError" role="alert" tabindex="-1"></p>
+            <div class="alert alert--danger create-patient__error is-hidden" id="addFormError" role="alert" tabindex="-1">
+                <p id="createErrorSummaryText"></p>
+                <ul id="createErrorSummaryList"></ul>
+            </div>
 
             <fieldset class="fieldset">
                 <legend class="fieldset__legend">Личные данные</legend>
@@ -514,7 +517,8 @@
                 <div class="grid-2">
                     <div class="field">
                         <label class="field__label" for="age">Возраст</label>
-                        <input class="input" type="number" id="age" min="0" max="150">
+                        <input class="input" type="number" id="age" min="0" max="150" aria-describedby="createAgeHint">
+                        <p class="field__hint" id="createAgeHint">Возраст в полных годах.</p>
                     </div>
                     <div class="field">
                         <label class="field__label" for="phone">Телефон</label>
@@ -523,7 +527,8 @@
                 </div>
                 <div class="field">
                     <label class="field__label" for="policyNumber">Номер полиса ОМС</label>
-                    <input class="input" type="text" id="policyNumber" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="7700000000000001">
+                    <input class="input" type="text" id="policyNumber" inputmode="numeric" maxlength="64" autocomplete="off" placeholder="7700000000000001" aria-describedby="createPolicyHint">
+                    <p class="field__hint" id="createPolicyHint">Пробелы и дефисы будут убраны при сохранении.</p>
                 </div>
             </fieldset>
 
@@ -531,17 +536,17 @@
                 <legend class="fieldset__legend">Диагноз</legend>
                 <div class="field">
                     <label class="field__label" for="diagnosisLocalization">Локализация <span class="req">*</span></label>
-                    <select class="select" id="diagnosisLocalization"></select>
+                    <select class="select" id="diagnosisLocalization" aria-required="true"></select>
                 </div>
                 <div class="field">
                     <label class="field__label" for="diagnosisSearch">Диагноз <span class="req">*</span></label>
                     <div class="diagnosis-combobox">
                         <input class="input" type="search" id="diagnosisSearch" autocomplete="off" placeholder="Код или название, например D48.6 или молочная"
-                               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="diagnosisOptions" aria-describedby="diagnosisHint">
+                               role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="diagnosisOptions" aria-describedby="diagnosisHint" aria-required="true">
                         <input type="hidden" id="diagnosis">
                         <div class="diagnosis-combobox__list is-hidden" id="diagnosisOptions" role="listbox" aria-label="Варианты диагнозов"></div>
                     </div>
-                    <p class="field__hint" id="diagnosisHint">Список ограничен выбранной локализацией.</p>
+                    <p class="field__hint" id="diagnosisHint">Выберите диагноз МКБ-10 из списка по указанной локализации.</p>
                 </div>
                 <div class="client-path-status" id="clientPathStatus" role="status"></div>
             </fieldset>
@@ -556,7 +561,7 @@
                 <div class="field is-hidden" id="primaryAppointmentGroup">
                     <label class="field__label" for="primaryAppointmentDate">Дата фактического первичного приёма <span class="req">*</span></label>
                     <div class="grid-2">
-                        <input class="input" type="date" id="primaryAppointmentDate">
+                        <input class="input" type="date" id="primaryAppointmentDate" aria-required="true">
                         <input class="input" type="time" id="primaryAppointmentTime" aria-label="Время первичного приёма">
                     </div>
                 </div>
@@ -597,6 +602,7 @@
                     </div>
                 </div>
 
+                <div class="create-patient__event-preview field__hint" id="createEventPreview" role="status" aria-atomic="true"></div>
             </fieldset>
             <fieldset class="fieldset"><legend class="fieldset__legend">Ответственные и приоритет</legend>
                 <div class="grid-2">
@@ -610,7 +616,7 @@
                     </div>
                     <div class="field">
                         <label class="field__label" for="doctor">Лечащий врач</label>
-                        <select class="select" id="doctor"></select>
+                        <select class="select" id="doctor" aria-describedby="doctorHint"></select>
                         <p class="field__hint is-hidden" id="doctorHint"></p>
                     </div>
                 </div>
@@ -642,7 +648,7 @@
                 </div>
             </fieldset>
             <p id="createSaveStatus" class="field__hint" role="status"></p>
-        </form><aside class="create-patient__aside panel panel--pad" aria-label="Перед сохранением"><h2>Перед сохранением</h2><p>Проверьте ФИО, диагноз и ответственного врача.</p><p>Начальные события относятся к выбранному этапу лечения.</p><p>Если найден возможный дубль, система предложит проверить совпадения перед созданием.</p></aside></div>
+        </form><aside class="create-patient__aside panel panel--pad" aria-label="Перед сохранением"><h2>Перед сохранением</h2><p>Проверьте ФИО, диагноз и ответственного врача.</p><p>Если найден возможный дубль, система предложит проверить совпадения перед созданием.</p></aside></div>
 
         <div class="create-patient__actions">
             <button type="button" class="btn btn--ghost" id="closeAddBtn">Отмена</button>
@@ -1948,6 +1954,6 @@
 <script src="/static/quality-v1.js?v=wp-i-quality-v1"></script>
 <script src="/static/f1-management.js?v=fast-track-f5"></script>
 <script src="/static/f1-doctor.js?v=fast-track-f5"></script>
-<script src="/static/app.js?v=fast-track-f6"></script>
+<script src="/static/app.js?v=fast-track-f7"></script>
 </body>
 </html>
