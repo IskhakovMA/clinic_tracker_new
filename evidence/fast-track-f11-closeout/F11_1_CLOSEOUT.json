@@ -1,0 +1,128 @@
+{
+  "productSha": "4efcb1a64ff347ed03576e2edf9f99050476f4ab",
+  "productTree": "9d572776df709f98aa296a224b5f8ee63327f1e5",
+  "parent": "18eb20ee1cdc56600f355f68715ebcb2705d1704",
+  "technicalStatus": "GO",
+  "scope": "F11 technical acceptance",
+  "historicalFailure": {
+    "runId": 45814440782,
+    "classification": "INTERMITTENT / ROOT CAUSE UNCONFIRMED",
+    "priorEvidenceSha": "6eb5ccce8f00212240228dff17f1e4cbf0b2c0ce"
+  },
+  "runs": [
+    {
+      "id": 45818551779,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45818551779"
+    },
+    {
+      "id": 45818551846,
+      "name": "Fast Track F11 Chromium",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45818551846"
+    }
+  ],
+  "backend": {
+    "passed": 2844,
+    "failed": 0,
+    "skipped": 0,
+    "exactOnce": true,
+    "shards": [
+      474,
+      474,
+      474,
+      474,
+      474,
+      474
+    ],
+    "collectionSha256": "fd3fb065d7360de2be0e2fb592da655a8910d2bbc50002e94fb0d2f9e808b29c",
+    "jobs": [
+      {
+        "id": 139904509099,
+        "name": "secret-scan",
+        "result": "success"
+      },
+      {
+        "id": 139904509438,
+        "name": "frontend-security",
+        "result": "success"
+      },
+      {
+        "id": 139904509443,
+        "name": "backend-smoke",
+        "result": "success"
+      },
+      {
+        "id": 139904509554,
+        "name": "backend-test-plan",
+        "result": "success"
+      },
+      {
+        "id": 139904509569,
+        "name": "sast-bandit",
+        "result": "success"
+      },
+      {
+        "id": 139904509574,
+        "name": "dependency-audit",
+        "result": "success"
+      },
+      {
+        "id": 139904509605,
+        "name": "workflow-policy",
+        "result": "success"
+      },
+      {
+        "id": 139904692164,
+        "name": "backend-tests (5/6)",
+        "result": "success"
+      },
+      {
+        "id": 139904692207,
+        "name": "backend-tests (6/6)",
+        "result": "success"
+      },
+      {
+        "id": 139904692223,
+        "name": "backend-tests (2/6)",
+        "result": "success"
+      },
+      {
+        "id": 139904692238,
+        "name": "backend-tests (4/6)",
+        "result": "success"
+      },
+      {
+        "id": 139904692343,
+        "name": "backend-tests (3/6)",
+        "result": "success"
+      },
+      {
+        "id": 139904692524,
+        "name": "backend-tests (1/6)",
+        "result": "success"
+      },
+      {
+        "id": 139912146733,
+        "name": "backend-tests-verify",
+        "result": "success"
+      },
+      {
+        "id": 139912183185,
+        "name": "release-gate",
+        "result": "success"
+      }
+    ]
+  },
+  "browser": {
+    "suites": 32,
+    "sanitizedReceipts": 35,
+    "f11GroupsPassed": 12,
+    "f6Records": "PASS",
+    "artifactId": 15116967174
+  },
+  "testData": "synthetic only"
+}
