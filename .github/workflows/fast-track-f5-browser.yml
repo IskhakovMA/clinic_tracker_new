@@ -32,7 +32,10 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git rev-parse "$F4_SHA^{tree}")" = "$F4_TREE"
-          test "$(git rev-list --parents -n1 HEAD)" = "$GITHUB_SHA $F4_SHA"
+          # The first F5 commit is preserved after the hosted runner rejected its upload action pin.
+          test "$(git rev-list --parents -n1 HEAD)" = "$GITHUB_SHA 4bb4264c6889293dc936592dbab756b78e5c7034"
+          test "$(git rev-list --parents -n1 HEAD^)" = "4bb4264c6889293dc936592dbab756b78e5c7034 $F4_SHA"
+          test "$(git diff --name-only HEAD^ HEAD)" = .github/workflows/fast-track-f5-browser.yml
           git diff --exit-code "$F4_SHA" HEAD -- backend/app backend/migrations backend/requirements-dev.txt tools/tests/wp_h/package-lock.json .github/workflows/ci.yml .github/workflows/fast-track-f2-browser.yml .github/workflows/fast-track-f3-browser.yml .github/workflows/fast-track-f4-browser.yml
           while IFS= read -r path; do
             case "$path" in
@@ -131,7 +134,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           git diff --exit-code
       - name: Retain sanitized machine receipts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f53607fa02 # v4.6.2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fast-track-f5-browser-${{ github.sha }}
           path: ${{ runner.temp }}/f5-public/*.json
