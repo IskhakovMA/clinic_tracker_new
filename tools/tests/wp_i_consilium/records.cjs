@@ -1,3 +1,4 @@
+const {observeReferral} = require('./records_diagnostic.cjs');
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE),assert=require('assert/strict'),fs=require('fs'),path=require('path'),crypto=require('crypto'),{spawnSync}=require('child_process');const {setup,login,password}=require('./fixtures.cjs');
 (async()=>{const origin=process.env.WP_H_ORIGIN,b=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE}),results={checks:[],axe:[],roles:[],xlsx:[],realBackend:true,transportFaults:[]};try{
 const f=await setup(b,origin),doc=await b.newContext(),head=await b.newContext();await f.call(doc,'POST','/api/auth/login',{username:f.roles.doctor.username,password});await f.call(head,'POST','/api/auth/login',{username:f.roles.department_head.username,password});
@@ -17,7 +18,96 @@ for(const [kind,id] of [['chemotherapy','exportChemoRegistryBtn'],['goc','export
 results.checks.push('all three actual UI downloads: exact bytes/hash/technical IDs, one original event and one linked manifest; foreign unsigned record excluded');
 // Favorites are chair-only bookmarks, not patient-card access.
 const favorite=cp.locator('#consilium-grid-row-'+surgery.id).getByRole('button',{name:'☆ В избранное',exact:true});await favorite.click();await cp.waitForFunction(()=>!app.consilium.loading&&!app.consilium.favoritePending);assert((await cp.locator('#consiliumFavoritesList').textContent()).includes(f.patients[0].name));results.checks.push('favorite persists through real server refresh; no medical card authority granted');
-let markRelease,markReached;const markHeld=new Promise(r=>markRelease=r),markArrived=new Promise(r=>markReached=r);let marks=0;await cp.route('**/referral-completion',async route=>{marks++;markReached();await markHeld;await route.continue()});const marked=cp.waitForResponse(r=>r.url().endsWith('/referral-completion'));await cp.locator('#surgicalRegistryBody input').check();await markArrived;assert.equal(await cp.locator('#surgicalRegistryBody input').isDisabled(),true);await cp.evaluate(id=>app.setSurgicalReferralCompleted(id,false),surgery.id);assert.equal(marks,1);markRelease();assert.equal((await marked).status(),200);await cp.unrouteAll({behavior:'wait'});await cp.waitForFunction(()=>!app.consilium.loading&&!app.consilium.referralPending);assert.equal(await cp.locator('#surgicalRegistryBody input').isChecked(),true);results.checks.push('one explicit referral completion, concurrent click blocked, server state retained without changing patient stage');
+// Capture only technical phases; the original wait and row assertion remain required.
+const auditBaseline = (await f.api('GET', '/api/audit?limit=1')).events[0]?.id ?? 0;
+const patientPath = '/api/patients/' + surgery.patientId;
+const stageBefore = (await f.call(doc, 'GET', patientPath)).stage;
+const originalSurgery = (await f.call(cc, 'GET', '/api/consilium/appointments')).appointments.find(row => row.id === surgery.id);
+const signedDecision = row => [row.status, row.signedAt, row.treatmentType, row.treatmentScheme,
+    row.treatmentSchemeCode, row.goc, row.goc65Plus, row.routeContext];
+assert.equal(originalSurgery.referralCompleted, false);
+const stopObservation = await observeReferral(cp, origin);
+let postStatus = null, waitMs = null, failure = null, marks = 0;
+let markRelease, markReached;
+const markHeld = new Promise(resolve => { markRelease = resolve; });
+const markArrived = new Promise(resolve => { markReached = resolve; });
+try {
+    await cp.route('**/referral-completion', async route => {
+        marks++;
+        markReached();
+        await markHeld;
+        await route.continue();
+    });
+    const marked = cp.waitForResponse(response => response.url().endsWith('/referral-completion'));
+    // If the click fails, the response waiter must not produce an unhandled rejection.
+    marked.catch(() => {});
+    await cp.locator('#surgicalRegistryBody input').check();
+    await Promise.race([markArrived, marked]);
+    assert.equal(await cp.locator('#surgicalRegistryBody input').isDisabled(),true);
+    await cp.evaluate(id=>app.setSurgicalReferralCompleted(id,false),surgery.id);
+    assert.equal(marks,1);
+    markRelease();
+    postStatus = (await marked).status();
+    assert.equal(postStatus,200);
+    await cp.unrouteAll({behavior:'wait'});
+    const waitStarted = performance.now();
+    try {
+        await cp.waitForFunction(()=>!app.consilium.loading&&!app.consilium.referralPending);
+    } finally {
+        waitMs = Math.round(performance.now() - waitStarted);
+    }
+    assert.equal(await cp.locator('#surgicalRegistryBody input').isChecked(),true);
+} catch (error) {
+    failure = error;
+} finally {
+    markRelease();
+}
+const observation = await stopObservation();
+const server = {
+    appointmentsStatus: null, patientStatus: null, auditStatus: null,
+    referralCompleted: null, stageUnchanged: null, signedUnchanged: null, auditEvents: null,
+};
+const probes = await Promise.allSettled([
+    cc.request.get(origin + '/api/consilium/appointments', {timeout: 8000}).then(async response => {
+        server.appointmentsStatus = response.status();
+        if (response.ok()) {
+            const row = (await response.json()).appointments.find(item => item.id === surgery.id);
+            if (row) {
+                server.referralCompleted = row.referralCompleted === true;
+                server.signedUnchanged = JSON.stringify(signedDecision(row)) === JSON.stringify(signedDecision(originalSurgery));
+            }
+        }
+    }),
+    doc.request.get(origin + patientPath, {timeout: 8000}).then(async response => {
+        server.patientStatus = response.status();
+        if (response.ok()) server.stageUnchanged = (await response.json()).stage === stageBefore;
+    }),
+    f.admin.request.get(origin + '/api/audit?limit=200', {timeout: 8000}).then(async response => {
+        server.auditStatus = response.status();
+        if (response.ok()) server.auditEvents = (await response.json()).events.filter(row =>
+            row.id > auditBaseline && row.event_type === 'consilium_referral_completed' &&
+            row.patient_id === surgery.patientId && row.result === 'ok' && row.detail === 'completed=true').length;
+    }),
+]);
+try {
+    if (!failure) {
+        assert(probes.every(result => result.status === 'fulfilled'));
+        assert.equal(observation.requests.filter(request => request.endpoint === 'referral' && request.method === 'POST').length, 1);
+        assert.deepEqual(server, {appointmentsStatus: 200, patientStatus: 200, auditStatus: 200,
+            referralCompleted: true, stageUnchanged: true, signedUnchanged: true, auditEvents: 1});
+    }
+} catch (error) {
+    failure = error;
+}
+fs.writeFileSync(path.join(process.env.OUT, 'records-diagnostic.json'), JSON.stringify({
+    schema: 1, assertion: 'referral-completion-settled', outcome: failure ? 'fail' : 'pass',
+    durationMs: observation.durationMs, ui: observation.ui, requests: observation.requests, server,
+    phases: {postStatus, postCount: marks, waitMs, error: failure ?
+        (['AssertionError', 'TimeoutError', 'Error', 'TypeError'].includes(failure.name) ? failure.name : 'other') : null,
+        executions: observation.executions},
+}, null, 2) + '\n');
+if (failure) throw failure;
+results.checks.push('one explicit referral completion, concurrent click blocked, server state retained without changing patient stage');
 const dp=await doc.newPage();await workspace(dp,f.roles.doctor.username,true);let signed=(await f.call(doc,'GET','/api/consilium/appointments')).appointments.find(x=>x.id===surgery.id);const stage=(await f.call(doc,'GET','/api/patients/'+surgery.patientId)).stage;
 await dp.evaluate(item=>app.openConsiliumDetails(item),signed);await f.call(head,'POST','/api/consilium/appointments/'+signed.id+'/archive',{version:signed.version});const conflict=dp.waitForResponse(r=>r.url().endsWith('/'+signed.id+'/archive'));await dp.locator('#consiliumArchiveToggleBtn').click();assert.equal((await conflict).status(),409);assert.equal(await dp.locator('#consiliumArchiveToggleBtn').isDisabled(),true);await dp.locator('#consiliumDetailsConflictRefreshBtn').click();await dp.waitForFunction(()=>app.consilium.detailsItem?.archived);assert.equal(await dp.locator('#consiliumArchiveToggleBtn').textContent(),'Восстановить из архива');
 const restored=dp.waitForResponse(r=>r.url().endsWith('/'+signed.id+'/restore'));await dp.locator('#consiliumArchiveToggleBtn').click();assert.equal((await restored).status(),200);await dp.locator('#consiliumDetailsModal').waitFor({state:'hidden'});await dp.waitForFunction(()=>!app.consilium.archivePending&&app.consiliumGridReady());signed=(await f.call(doc,'GET','/api/consilium/appointments')).appointments.find(x=>x.id===surgery.id);
