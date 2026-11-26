@@ -1,0 +1,136 @@
+{
+  "checks": [
+    "signed one and two cross-page patient downloads, full 51-record server selection, transfer bytes checked",
+    "doctor and head scope, readonly/chair denials, missing CSRF and stale revision denied, missing key fails closed",
+    "native browser zoom through 400% holds import review in both themes",
+    "actual invalid replacement stays authoritative after older valid preview HTTP 200 is released",
+    "unsigned-file consent and duplicate reason reset on real mode change; Escape closes review without writing",
+    "separate installation verifies exported signature, rejects invalid signature, previews unsigned and invalid files",
+    "preview does not change medical records; five widths and two themes pass document axe",
+    "transport abort after real 200 preserves unknown outcome, explicit exact body and key replay only",
+    "changed body with old key rejected, imported file recognized, registry reread shows one new patient",
+    "expired session cannot commit reviewed import",
+    "a real versioned source rename invalidates the selected revision, clears selection with no download, fresh confirmation succeeds",
+    "already released export HTTP 200 cannot trigger a browser download after observed session expiry"
+  ],
+  "layout": [
+    {
+      "theme": "light",
+      "width": 320,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 375,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 768,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 1024,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 320,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 375,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 768,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 1024,
+      "overflow": false,
+      "violations": []
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "overflow": false,
+      "violations": []
+    }
+  ],
+  "nativeZoom": [
+    {
+      "theme": "light",
+      "percent": 100,
+      "width": 1280
+    },
+    {
+      "theme": "light",
+      "percent": 200,
+      "width": 640
+    },
+    {
+      "theme": "light",
+      "percent": 400,
+      "width": 320
+    },
+    {
+      "theme": "dark",
+      "percent": 100,
+      "width": 1280
+    },
+    {
+      "theme": "dark",
+      "percent": 200,
+      "width": 640
+    },
+    {
+      "theme": "dark",
+      "percent": 400,
+      "width": 320
+    }
+  ],
+  "exportSha256": "cc8929f73fef968e5f2d8bfb8b0e19915041843ec3189a32b915d8d28b8b2e88",
+  "browser": "151.0.7922.34",
+  "database": {
+    "expectedImportWrites": 1,
+    "existingMedicalRowsUnchanged": true,
+    "expectedSourceVersionedWrites": 1,
+    "otherSourceMedicalRowsUnchanged": true,
+    "newHistory": 1,
+    "newEvents": 1,
+    "exactExportAuditManifest": true
+  },
+  "candidateSha": "4efcb1a64ff347ed03576e2edf9f99050476f4ab",
+  "candidateTree": "9d572776df709f98aa296a224b5f8ee63327f1e5",
+  "dirtyCheckout": false,
+  "syntheticOnly": true,
+  "cleanup": {
+    "serversStopped": true,
+    "listenersClosed": true,
+    "databasesAndKeyRemoved": true
+  },
+  "screenshots": {
+    "f11-preview-dark-1440.png": "f2e6813b9520df0856bf1b13dc653a378cdf77aba9db0e66b231917ee358de53",
+    "f11-preview-dark-375.png": "09135ecfdb0ad827ce47de8dff2a5114c26ab611cee548d1a5823b2fe7add724",
+    "f11-preview-light-1440.png": "7204d263a2546a49b8c9303016c264ca4c69f813aa1d2b710700c020a1aed824",
+    "f11-preview-light-375.png": "937e63453cbe9616ecc0f27156a5114e5c2d867e4772a2d39b96632c184b42cd"
+  }
+}
