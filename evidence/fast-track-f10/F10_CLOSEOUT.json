@@ -1,0 +1,121 @@
+{
+  "productSha": "71836a4b6942e629a857015e08e9e2cdf89466fa",
+  "productTree": "3969c6b56ffe2b931e8e4b44590bc8fd9f7c1ae5",
+  "base": "be90971ee2ae3219509b1af1d7f2fd806dcf8bf5",
+  "runs": [
+    {
+      "id": 45807882466,
+      "name": "Fast Track F10 Chromium",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45807882466"
+    },
+    {
+      "id": 45807882484,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/IskhakovMA/clinic_tracker_new/actions/runs/45807882484"
+    }
+  ],
+  "backend": {
+    "passed": 2842,
+    "failed": 0,
+    "skipped": 0,
+    "exactOnce": true,
+    "shards": [
+      474,
+      474,
+      474,
+      474,
+      473,
+      473
+    ],
+    "collectionSha256": "9beb662926e4644205a2fc6cf6cb44a483cfec90add0e602c3f375538597e920",
+    "jobs": [
+      {
+        "id": 139867798549,
+        "name": "backend-test-plan",
+        "conclusion": "success"
+      },
+      {
+        "id": 139867798936,
+        "name": "frontend-security",
+        "conclusion": "success"
+      },
+      {
+        "id": 139867799013,
+        "name": "dependency-audit",
+        "conclusion": "success"
+      },
+      {
+        "id": 139867799027,
+        "name": "sast-bandit",
+        "conclusion": "success"
+      },
+      {
+        "id": 139867799054,
+        "name": "backend-smoke",
+        "conclusion": "success"
+      },
+      {
+        "id": 139867799086,
+        "name": "secret-scan",
+        "conclusion": "success"
+      },
+      {
+        "id": 139867799321,
+        "name": "workflow-policy",
+        "conclusion": "success"
+      },
+      {
+        "id": 139868108626,
+        "name": "backend-tests (2/6)",
+        "conclusion": "success"
+      },
+      {
+        "id": 139868108667,
+        "name": "backend-tests (6/6)",
+        "conclusion": "success"
+      },
+      {
+        "id": 139868108707,
+        "name": "backend-tests (4/6)",
+        "conclusion": "success"
+      },
+      {
+        "id": 139868108736,
+        "name": "backend-tests (5/6)",
+        "conclusion": "success"
+      },
+      {
+        "id": 139868108756,
+        "name": "backend-tests (1/6)",
+        "conclusion": "success"
+      },
+      {
+        "id": 139868108816,
+        "name": "backend-tests (3/6)",
+        "conclusion": "success"
+      },
+      {
+        "id": 139875777709,
+        "name": "backend-tests-verify",
+        "conclusion": "success"
+      },
+      {
+        "id": 139875819456,
+        "name": "release-gate",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "browser": {
+    "suites": 31,
+    "receipts": 33,
+    "f10Groups": 9,
+    "artifactId": 15110758342
+  },
+  "technicalStatus": "GO",
+  "testData": "synthetic only"
+}
