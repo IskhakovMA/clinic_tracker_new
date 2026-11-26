@@ -93,34 +93,55 @@ jobs:
           })().catch(error => { console.error(error.message); process.exitCode = 1; });
           """
           def launch(temp):
-              process = subprocess.run(["node", "-e", probe],
-                  env={**os.environ, "TMPDIR": temp, "DEBUG": "pw:browser"},
-                  capture_output=True, timeout=30)
+              measures = {
+                  "tmpdirBytes": len(os.fsencode(temp)),
+                  "profilePathBytes": None, "socketPathBytes": None,
+              }
+              try:
+                  process = subprocess.run(["node", "-e", probe],
+                      env={**os.environ, "TMPDIR": temp, "DEBUG": "pw:browser"},
+                      capture_output=True, timeout=30)
+              except subprocess.TimeoutExpired:
+                  return {**measures, "exitCode": 124, "reason": "probe_timeout"}
+              except OSError:
+                  return {**measures, "exitCode": 127, "reason": "probe_start_failed"}
               log = process.stderr
               profile = re.search(rb"--user-data-dir=([^\r\n]+?)(?= --|\r?\n|$)", log)
               socket = re.search(rb"Socket path too long:\s*([^\r\n]+)", log, re.I)
               return {
-                  "exitCode": process.returncode, "tmpdirBytes": len(os.fsencode(temp)),
+                  **measures, "exitCode": process.returncode,
                   "profilePathBytes": len(profile[1]) if profile else None,
                   "socketPathBytes": len(socket[1].strip()) if socket else None,
                   "reason": "socket_path_too_long" if socket else
                       ("unclassified_launch_failure" if process.returncode else None),
               }
 
-          old_output.mkdir(mode=0o700)
+          long_run = short_run = None
+          receipt = runner / "f8-public/wp-i-quality-launch-probe.json"
           try:
-              with tempfile.TemporaryDirectory(prefix="private-fixture-", dir=old_output) as old:
-                  with tempfile.TemporaryDirectory(prefix="wq.", dir="/tmp") as new:
-                      long_run, short_run = launch(old), launch(new)
-              assert not Path(old).exists() and not Path(new).exists()
-          finally:
-              old_output.rmdir()
+              old_output.mkdir(mode=0o700)
+              try:
+                  with tempfile.TemporaryDirectory(prefix="private-fixture-", dir=old_output) as old:
+                      with tempfile.TemporaryDirectory(prefix="wq.", dir="/tmp") as new:
+                          long_run, short_run = launch(old), launch(new)
+                  assert not Path(old).exists() and not Path(new).exists()
+              finally:
+                  old_output.rmdir()
+          except Exception:
+              # Only a bounded error category reaches the Actions log/artifact.
+              receipt.write_text(json.dumps({
+                  "candidateSha": os.environ["GITHUB_SHA"],
+                  "syntheticOnly": True, "reason": "probe_infrastructure_failed",
+                  "longTmpdir": long_run, "shortTmpdir": short_run,
+              }, indent=2) + "\n")
+              print("Chromium launch probe infrastructure failed; inspect private logs", file=sys.stderr)
+              raise SystemExit(1)
           data = {
               "candidateSha": os.environ["GITHUB_SHA"], "platform": sys.platform,
               "architecture": platform.machine(), "sameBinary": True, "syntheticOnly": True,
               "longTmpdir": long_run, "shortTmpdir": short_run,
           }
-          (runner / "f8-public/wp-i-quality-launch-probe.json").write_text(json.dumps(data, indent=2) + "\n")
+          receipt.write_text(json.dumps(data, indent=2) + "\n")
           print(json.dumps(data))
           assert short_run["exitCode"] == 0, "Chromium did not launch with the short TMPDIR"
           PYTHON
@@ -132,6 +153,25 @@ jobs:
             if test -f "$out/browser-execution.json"; then
               cp "$out/browser-execution.json" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite-execution.json"
               cat "$out/browser-execution.json"
+            elif test "$status" -ne 0; then
+              # Preserve a sanitized status even if the Python runner fails before writing its receipt.
+              python - "$suite" "$status" "$RUNNER_TEMP/f8-public/wp-i-quality-$suite-execution.json" <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+          import sys
+
+          suite, status, target = sys.argv[1:]
+          Path(target).write_text(json.dumps({
+              "suite": suite, "candidateSha": os.environ["GITHUB_SHA"],
+              "syntheticOnly": True, "phase": "runner_unhandled",
+              "exitCode": int(status), "errorType": "RunnerException",
+              "reason": "missing_execution_receipt",
+          }, indent=2) + "\n")
+          PYTHON
+            else
+              echo 'Quality runner returned success without an execution receipt' >&2
+              exit 1
             fi
             if test "$status" -ne 0; then
               if test -f "$out/browser.local.log"; then
