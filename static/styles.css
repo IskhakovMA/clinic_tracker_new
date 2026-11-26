@@ -1741,6 +1741,7 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     z-index: var(--z-toast);
     display: flex; flex-direction: column; gap: var(--sp-2);
     max-width: min(380px, calc(100vw - var(--sp-10)));
+    pointer-events: none;
 }
 .toast {
     padding: var(--sp-3) var(--sp-4);
@@ -1751,6 +1752,14 @@ code { font-size: 0.92em; background: var(--surface-3); padding: 1px 5px; border
     box-shadow: var(--shadow-md);
     font-size: var(--text-md);
     animation: toast-in var(--transition);
+    max-block-size: 12dvh;
+    overflow: auto;
+    overflow-wrap: anywhere;
+}
+.toast--scrollable { pointer-events: auto; }
+.toast:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+@media (prefers-reduced-motion: reduce) {
+    .toast { animation: none; }
 }
 .toast--good { border-left-color: var(--good); }
 .toast--danger { border-left-color: var(--danger); }

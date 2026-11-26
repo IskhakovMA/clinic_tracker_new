@@ -471,10 +471,86 @@ const ui = {
         });
     },
 
+    toastQueue: [],
+    visibleToasts: [],
+    additionalSuccesses: 0,
+
     toast(message, kind = 'info') {
-        const node = el('div', { class: `toast toast--${kind}`, text: message });
-        $('toasts').append(node);
-        setTimeout(() => node.remove(), 5000);
+        if (app.sessionExpired || app.discardingSession) return;
+        kind = {success: 'good', error: 'danger'}[kind] || kind;
+        if (!this.toastViewport) {
+            this.toastViewport = matchMedia('(max-width: 560px)');
+            this.toastViewport.addEventListener('change', () => this.renderToasts());
+        }
+        if (kind !== 'good' || this.visibleToasts.length < this.toastLimit()) {
+            this.toastQueue.push({message, kind});
+        } else {
+            this.additionalSuccesses++;
+        }
+        this.renderToasts();
+    },
+
+    toastLimit() {
+        return this.toastViewport?.matches ? 2 : 3;
+    },
+
+    removeToast(entry) {
+        this.visibleToasts.splice(this.visibleToasts.indexOf(entry), 1);
+        clearTimeout(entry.timer);
+        entry.observer.disconnect();
+        entry.node.remove();
+    },
+
+    clearToasts() {
+        this.toastQueue.length = 0;
+        this.additionalSuccesses = 0;
+        while (this.visibleToasts.length) this.removeToast(this.visibleToasts[0]);
+    },
+
+    renderToasts() {
+        const limit = this.toastLimit();
+        while (this.visibleToasts.length >= limit) {
+            const replaceable = this.visibleToasts.find(entry =>
+                entry.kind === 'good' && entry.node !== document.activeElement);
+            if (replaceable && (this.visibleToasts.length > limit || this.toastQueue.length)) {
+                this.removeToast(replaceable);
+            } else if (this.visibleToasts.length > limit) {
+                const entry = this.visibleToasts.findLast(item => item.node !== document.activeElement);
+                this.toastQueue.unshift({message: entry.message, kind: entry.kind});
+                this.removeToast(entry);
+            } else {
+                break;
+            }
+        }
+        while (this.visibleToasts.length < limit && (this.toastQueue.length || this.additionalSuccesses)) {
+            const entry = this.toastQueue.shift();
+            if (!entry) {
+                this.toastQueue.push({kind: 'good', message: `Успешных действий: ${this.additionalSuccesses}`});
+                this.additionalSuccesses = 0;
+                continue;
+            }
+            const node = el('div', { class: `toast toast--${entry.kind}`, text: entry.message });
+            entry.node = node;
+            const startTimer = () => {
+                entry.timer = setTimeout(() => {
+                    this.removeToast(entry);
+                    this.renderToasts();
+                }, entry.kind === 'good' ? 5000 : 8000);
+            };
+            node.addEventListener('focus', () => clearTimeout(entry.timer));
+            node.addEventListener('blur', () => {
+                if (this.visibleToasts.includes(entry)) startTimer();
+            });
+            entry.observer = new ResizeObserver(() => {
+                const scrollable = node.scrollHeight > node.clientHeight + 1;
+                node.classList.toggle('toast--scrollable', scrollable);
+                node.tabIndex = scrollable ? 0 : -1;
+            });
+            this.visibleToasts.push(entry);
+            $('toasts').append(node);
+            entry.observer.observe(node);
+            startTimer();
+        }
     },
 };
 
@@ -2427,6 +2503,7 @@ const app = {
         ui.closeModal('doctorModal');
         this.clearScheduleAndInbox();
         this.draftOwnerId = this.user.id;
+        ui.clearToasts();
         document.body.classList.add('session-locked');
         $('loginScreen').classList.remove('is-hidden');
         $('loginForm').classList.remove('is-hidden');
@@ -2461,6 +2538,7 @@ const app = {
         f1Doctor.clear(this, true);
         this.clearQualityV1(true);
         this.clearAnalyticsRelease();
+        ui.clearToasts();
         document.body.classList.add('session-locked');
         browserNavigation.invalidate();
         this.sessionExpired = true;

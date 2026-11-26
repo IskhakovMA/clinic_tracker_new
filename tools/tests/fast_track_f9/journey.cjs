@@ -11,7 +11,7 @@ const fixture = JSON.parse(fs.readFileSync(process.env.F9_FIXTURE, 'utf8'));
 const {origin, patients, users, accountIds} = fixture;
 assert(fixture.syntheticOnly && fixture.schema === 33);
 assert.match(origin, /^http:\/\/127\.0\.0\.1:\d+$/);
-const checks = [], responseProofs = [], accessibility = [], nativeZoom = [];
+const checks = [], responseProofs = [], accessibility = [], nativeZoom = [], toastProofs = [];
 const eventPath = '/api/patients/workspace/events?limit=100';
 const patientPath = '/api/patients/' + patients.overdue.id;
 const transferPath = '/api/patients/' + patients.revoked.id;
@@ -548,6 +548,114 @@ async function editRoleAndArchive(page, admin, headContext, setup) {
     checks.push('archived department persists with no active membership controls');
 }
 
+async function toastLayout(page) {
+    phase = 'responsive toast queue, priority and keyboard';
+    await navigate(page,'staff');
+    await page.waitForFunction(()=>app.staffReadState==='ready');
+    await page.waitForFunction(()=>!document.querySelector('#toasts .toast'));
+    await page.evaluate(fs.readFileSync(process.env.AXE_SOURCE,'utf8'));
+    const items = page.locator('#toasts .toast');
+    const search = page.locator('#staffSearchInput');
+    const single = 'Синтетическое подтверждение сохранения.';
+    await search.focus();
+    await page.evaluate(text=>ui.toast(text,'good'),single);
+    await items.filter({hasText:single}).waitFor();
+    assert.deepEqual(await items.allTextContents(),[single]);
+    assert(await search.evaluate(node=>node===document.activeElement));
+    await page.waitForFunction(()=>!document.querySelector('#toasts .toast'));
+
+    await page.clock.install();
+    const priority = [
+        ['Синтетическое предупреждение.','warning'],
+        ['Синтетический отказ.','error'],
+        ['Результат синтетической записи неизвестен. Сначала проверьте сервер.','warning'],
+        ['Синтетическая ошибка проверки.','danger'],
+        ['Синтетическое предупреждение проверки.','warning'],
+    ];
+    const long = ('Ошибка проверки. Выполните безопасное контрольное чтение. ').repeat(20);
+    for (const theme of ['light','dark']) {
+        for (const width of [320,375,1440]) {
+            const cap = width <= 560 ? 2 : 3;
+            await page.setViewportSize({width,height:812});
+            await page.evaluate(theme=>app.applyTheme(theme),theme);
+            await search.scrollIntoViewIfNeeded();
+            await search.focus();
+            await page.evaluate(()=>{
+                for (let i=0;i<6;i++) ui.toast('Синтетическое действие '+i,'success');
+            });
+            assert((await items.count()) <= cap);
+            await page.clock.runFor(5000);
+            const aggregate='Успешных действий: '+(6-cap);
+            assert((await items.allTextContents()).includes(aggregate));
+
+            // Install the receipt before enqueueing to observe queued as well as immediately visible failures.
+            await page.evaluate(messages=>{
+                const target=document.getElementById('toasts');
+                const visible=new Set();
+                const capture=()=>target.querySelectorAll('.toast').forEach(node=>visible.add(node.textContent));
+                globalThis.f9ToastReceipt={visible,observer:new MutationObserver(capture)};
+                globalThis.f9ToastReceipt.observer.observe(target,{childList:true,subtree:true,characterData:true});
+                for (const [text,kind] of messages) ui.toast(text,kind);
+            },priority);
+            assert.equal(await items.count(),cap);
+            const firstVisible = await items.allTextContents();
+            assert(firstVisible.includes(priority[0][0]) && firstVisible.includes(priority[1][0]));
+            assert(await search.evaluate(node=>node===document.activeElement));
+            await page.evaluate(()=>{
+                const bounds=document.getElementById('staffSearchInput').getBoundingClientRect();
+                if (document.elementFromPoint(bounds.x+bounds.width/2,bounds.y+bounds.height/2)?.id!=='staffSearchInput') {
+                    throw new Error('Toast covers the active staff search control');
+                }
+            });
+            for (let batch=0;batch<priority.length+1 && await items.count();batch++) {
+                await page.clock.runFor(8000);
+                assert((await items.count()) <= cap);
+            }
+            const delivered = await page.evaluate(()=>{
+                const {visible,observer}=globalThis.f9ToastReceipt;
+                observer.disconnect();
+                delete globalThis.f9ToastReceipt;
+                return [...visible];
+            });
+            assert(priority.every(([text])=>delivered.includes(text)));
+            assert.equal(await items.count(),0);
+
+            await page.evaluate(text=>ui.toast(text,'danger'),long);
+            const error = items.first();
+            const geometry = await error.evaluate(node=>{
+                const region=node.closest('#toasts');
+                const rect=region.getBoundingClientRect();
+                return {bounded:rect.height <= innerHeight*0.4,
+                    inViewport:rect.left>=0 && rect.right<=innerWidth,
+                    scrollable:node.scrollHeight>node.clientHeight,live:region.getAttribute('aria-live')};
+            });
+            assert.deepEqual(geometry,{bounded:true,inViewport:true,scrollable:true,live:'polite'});
+            assert.equal(await error.textContent(),long);
+            await error.and(page.locator('[tabindex="0"]')).waitFor();
+            assert(await search.evaluate(node=>node===document.activeElement));
+            await error.focus();
+            await page.keyboard.press('End');
+            await page.waitForFunction(()=>document.querySelector('#toasts .toast')?.scrollTop>0);
+            await page.clock.runFor(8000);
+            assert(await error.evaluate(node=>node===document.activeElement));
+            await search.focus();
+            const violations = await page.locator('#toasts').evaluate(async node=>
+                (await axe.run(node,{runOnly:{type:'tag',values:['wcag2a','wcag2aa','wcag21a','wcag21aa']}}))
+                    .violations.map(entry=>entry.id));
+            assert.deepEqual(violations,[],theme+'/'+width);
+            await page.clock.runFor(8000);
+            await page.waitForFunction(()=>!document.querySelector('#toasts .toast'));
+            if (width!==1440) {
+                await page.locator('#staffBody tr').filter({hasText:headLogin}).scrollIntoViewIfNeeded();
+                await page.screenshot({path:path.join(process.env.OUT,'f9-staff-clean-'+theme+'-'+width+'.png'),
+                    animations:'disabled'});
+            }
+            toastProofs.push({theme,width,cap,importantDelivered:priority.length,geometry,violations});
+        }
+    }
+    checks.push('toast single with real timer, six-success aggregation, priority delivery, viewport/axe and keyboard');
+}
+
 async function main() {
     const browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE,
         args:['--disable-background-networking']});
@@ -573,8 +681,9 @@ async function main() {
         await layout(page);
         await zoomViews();
         await editRoleAndArchive(page,admin,b,setup);
+        await toastLayout(page);
         fs.writeFileSync(path.join(process.env.OUT,'journey.local.json'),JSON.stringify({
-            checks,responseProofs,accessibility,nativeZoom,browser:browser.version(),
+            checks,responseProofs,accessibility,nativeZoom,toastProofs,browser:browser.version(),
             auditTargets:{head:setup.newHead.id,department:setup.target.id},
         }));
     } finally {
